@@ -25,27 +25,32 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
   const [state, setState] = useState({ active: false, url: "", title: "", loading: false, viewport: { width: 1280, height: 800 }, hasFrame: false });
   const [tabs, setTabs] = useState([]);
   const [frame, setFrame] = useState(null);
+  const [frameSize, setFrameSize] = useState({ width: 0, height: 0 });
   const [urlDraft, setUrlDraft] = useState("");
   const [openDraft, setOpenDraft] = useState("");
-  const [textDraft, setTextDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [connected, setConnected] = useState(false);
   const [takeover, setTakeover] = useState(false);
   const imgRef = useRef(null);
+  const viewRef = useRef(null);
+  const keyboardRef = useRef(null);
+  const composingRef = useRef(false);
   const sourceRef = useRef(null);
   // 画面是否已出现：img 元素只在有帧后渲染，监听器必须等它挂载后再绑定；
   // 用布尔值而不是 frame 字符串做依赖，避免每 100ms 一帧导致监听器反复重建、拖拽状态被重置。
   const hasFrame = Boolean(frame);
 
   // Agent 虚拟鼠标：Agent 的点击/输入/滚动等操作以事件流下发，这里叠加显示，与用户鼠标区分。
-  const viewRef = useRef(null);
   const [agentAction, setAgentAction] = useState(null);
   const [agentPoint, setAgentPoint] = useState({ nx: 0.5, ny: 0.5 });
   const [agentVisible, setAgentVisible] = useState(false);
   const [imgBox, setImgBox] = useState(null); // 帧画面相对 .browser-view 的像素位置，用于叠加定位
   const agentSeqRef = useRef(0);
   const agentHideTimerRef = useRef(null);
+
+  const addressEditingRef = useRef(false);
+  const inputQueueRef = useRef(Promise.resolve());
 
   // 先读取状态，再订阅帧流；这样用户切回“浏览器”页签时不会先看到旧的未启动状态。
   useEffect(() => {
@@ -58,7 +63,10 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
     const syncState = async () => {
       try {
         const result = await browserState(clientId, threadId || "");
-        if (!stopped && result?.state) setState((previous) => ({ ...previous, ...result.state }));
+        if (!stopped && result?.state) {
+          setState((previous) => ({ ...previous, ...result.state }));
+          if (result.state.frameSize) setFrameSize(result.state.frameSize);
+        }
       } catch {}
     };
 
@@ -82,10 +90,12 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
           const payload = JSON.parse(event.data || "{}");
           if (payload.type === "state") {
             setState((previous) => ({ ...previous, ...(payload.data || {}) }));
+            if (payload.data?.frameSize) setFrameSize(payload.data.frameSize);
           } else if (payload.type === "tabs") {
             setTabs(Array.isArray(payload.data?.tabs) ? payload.data.tabs : []);
           } else if (payload.type === "frame" && payload.data?.data) {
             setFrame(payload.data.data);
+            if (payload.data.width && payload.data.height) setFrameSize({ width: payload.data.width, height: payload.data.height });
           } else if (payload.type === "agent-action") {
             const data = payload.data || {};
             if (Number.isFinite(data.nx) && Number.isFinite(data.ny)) setAgentPoint({ nx: data.nx, ny: data.ny });
@@ -95,6 +105,7 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
             agentHideTimerRef.current = setTimeout(() => setAgentVisible(false), 6000);
           } else if (payload.type === "closed") {
             setFrame(null);
+            setFrameSize({ width: 0, height: 0 });
             setTabs([]);
             setTakeover(false);
             setState((previous) => ({ ...previous, active: false, hasFrame: false }));
@@ -114,35 +125,30 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
     };
   }, [clientId, threadId]);
 
-  // 所有输入共用一个串行队列：按下/抬起、连续按键必须按顺序到达服务端。
-  // 并发 POST 可能乱序（实测 mouseup 先于 mousedown 时 click 不触发、验证码拖动断裂）。
-  const inputChainRef = useRef(Promise.resolve());
-  const enqueueInput = useCallback((payload) => {
-    const run = inputChainRef.current
+  // 所有 CDP 输入都经过同一条队列，保证 down → move → up、滚轮和键盘不会乱序。
+  const queueBrowserInput = useCallback((payload) => {
+    const run = inputQueueRef.current
       .catch(() => {})
-      .then(() => browserInput({ client: clientId, thread: threadId || "", ...payload }))
-      .then((result) => {
-        if (result?.ok === false) setMessage(result.error || "操作失败");
-        return result;
-      })
-      .catch((error) => {
-        setMessage(String(error?.message || error));
-        return { ok: false, error: String(error?.message || error) };
-      });
-    inputChainRef.current = run.catch(() => {});
+      .then(() => browserInput({ client: clientId, thread: threadId || "", ...payload }));
+    inputQueueRef.current = run.catch(() => {});
     return run;
   }, [clientId, threadId]);
+
+  useEffect(() => {
+    if (!addressEditingRef.current) setUrlDraft(state.url || "");
+  }, [state.url]);
 
   const send = useCallback(async (payload) => {
     setBusy(true);
     setMessage("");
     try {
-      await enqueueInput(payload);
+      const result = await queueBrowserInput(payload);
+      if (result?.ok === false) setMessage(result.error || "操作失败");
       if (["click", "pointer", "wheel", "type", "key", "scroll", "back", "reload", "tab_new", "tab_switch", "tab_close"].includes(payload.action)) setTakeover(true);
     } finally {
       setBusy(false);
     }
-  }, [enqueueInput]);
+  }, [queueBrowserInput]);
 
   const openUrl = useCallback(async (url) => {
     const target = resolveTarget(url);
@@ -154,7 +160,8 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
       if (result?.ok === false) throw new Error(result.error || "打开网页失败");
       if (result?.state) setState((previous) => ({ ...previous, ...result.state }));
       setOpenDraft(target);
-      setUrlDraft("");
+      addressEditingRef.current = false;
+      setUrlDraft(target);
       setTakeover(false);
     } catch (error) {
       setMessage(String(error.message || error));
@@ -169,23 +176,62 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
     if (!img) return null;
     const rect = img.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
+    const sourceWidth = Number(frameSize.width) || Number(state.viewport?.width) || 1440;
+    const sourceHeight = Number(frameSize.height) || Number(state.viewport?.height) || 900;
+    const scale = Math.max(rect.width / sourceWidth, rect.height / sourceHeight);
+    const renderedWidth = sourceWidth * scale;
+    const renderedHeight = sourceHeight * scale;
+    const cropX = Math.max(0, (renderedWidth - rect.width) / 2);
+    const cropY = Math.max(0, (renderedHeight - rect.height) / 2);
+    const localX = (event.clientX - rect.left) + cropX;
+    const localY = (event.clientY - rect.top) + cropY;
     return {
-      nx: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
-      ny: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+      nx: Math.max(0, Math.min(1, localX / renderedWidth)),
+      ny: Math.max(0, Math.min(1, localY / renderedHeight)),
     };
-  }, []);
+  }, [frameSize.height, frameSize.width, state.viewport?.height, state.viewport?.width]);
+
+  // 让 Chromium 的 CSS viewport 跟右侧栏同步，网页本身按真实面板宽度排版，
+  // 避免把固定 1440×900 的截图硬塞进窄栏后再裁切/放大。
+  useEffect(() => {
+    const node = viewRef.current;
+    if (!node || !state.active || typeof ResizeObserver === "undefined") return undefined;
+    let timer = null;
+    let last = "";
+    const resize = () => {
+      const rect = node.getBoundingClientRect();
+      const width = Math.max(320, Math.floor(rect.width));
+      const height = Math.max(240, Math.floor(rect.height));
+      const signature = `${width}x${height}`;
+      if (!width || !height || signature === last) return;
+      last = signature;
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        queueBrowserInput({ action: "resize", width, height }).catch(() => {});
+      }, 120);
+    };
+    const observer = new ResizeObserver(resize);
+    observer.observe(node);
+    resize();
+    return () => {
+      observer.disconnect();
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [queueBrowserInput, state.active]);
 
   // 鼠标接管：按下 → 拖动 → 抬起（支持滑块验证码/画布/文本选择；单击即按下+抬起）
   const dragRef = useRef({ active: false, lastSentAt: 0 });
   const sendPointer = useCallback((phase, point) => {
     setTakeover(true);
-    enqueueInput({ action: "pointer", phase, nx: point.nx, ny: point.ny });
-  }, [enqueueInput]);
+    return queueBrowserInput({ action: "pointer", phase, nx: point.nx, ny: point.ny });
+  }, [queueBrowserInput]);
   useEffect(() => {
     const img = imgRef.current;
     if (!img || !state.active) return undefined;
     const onDown = (event) => {
       if (event.button !== 0) return;
+      img.focus({ preventScroll: true });
+      keyboardRef.current?.focus({ preventScroll: true });
       event.preventDefault();
       // preventDefault 会阻止浏览器默认的聚焦行为；手动聚焦保证点击画面后键盘可直输
       try { img.focus({ preventScroll: true }); } catch {}
@@ -235,7 +281,7 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
       const { deltaX, deltaY, point } = pending;
       pending.deltaX = 0;
       pending.deltaY = 0;
-      enqueueInput({ action: "wheel", nx: point.nx, ny: point.ny, deltaX, deltaY });
+      queueBrowserInput({ action: "wheel", nx: point.nx, ny: point.ny, deltaX, deltaY }).catch(() => {});
     };
     const onWheel = (event) => {
       event.preventDefault();
@@ -253,7 +299,7 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
       img.removeEventListener("wheel", onWheel);
       if (wheelRef.current.timer) window.clearTimeout(wheelRef.current.timer);
     };
-  }, [state.active, hasFrame, enqueueInput, normalizedPoint]);
+  }, [state.active, hasFrame, queueBrowserInput, normalizedPoint]);
 
   // 测量帧画面在面板中的实际位置，供 Agent 虚拟鼠标叠加定位（标题栏显隐、面板缩放时自动更新）
   useLayoutEffect(() => {
@@ -299,23 +345,26 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
     return "";
   }, [agentAction]);
 
-  // 键盘直输：点击画面后可直接打字（ASCII 字符 + 常用按键），IME 中文建议用下方输入行
+  // 键盘直输：点击画面后把本地键盘焦点交给不可见捕获层，再通过 CDP
+  // Input.insertText/dispatchKeyEvent 转发到真实网页，支持中文输入法。
   const sendQuiet = useCallback((payload) => {
     setTakeover(true);
-    enqueueInput(payload);
-  }, [enqueueInput]);
-  const handleImageKeyDown = useCallback((event) => {
+    return queueBrowserInput(payload);
+  }, [queueBrowserInput]);
+  const flushKeyboardText = useCallback((target) => {
+    if (composingRef.current) return;
+    const text = target.value;
+    if (!text) return;
+    target.value = "";
+    sendQuiet({ action: "type", text });
+  }, [sendQuiet]);
+  const handleKeyboardKeyDown = useCallback((event) => {
     if (!state.active) return;
     const key = event.key;
     const specialKeys = ["Backspace", "Tab", "Enter", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Delete"];
     if (specialKeys.includes(key)) {
       event.preventDefault();
       sendQuiet({ action: "key", key });
-      return;
-    }
-    if (key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
-      event.preventDefault();
-      sendQuiet({ action: "type", text: key });
     }
   }, [state.active, sendQuiet]);
 
@@ -408,9 +457,11 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
           <Icon name="lock" size={12} />
           <input
             className="browser-url-input"
-            value={urlDraft || state.url || ""}
+            value={urlDraft}
             onChange={(event) => setUrlDraft(event.target.value)}
-            placeholder="输入网址或搜索词，回车打开"
+            onFocus={() => { addressEditingRef.current = true; }}
+            onBlur={() => { addressEditingRef.current = false; }}
+            placeholder="输入网址或搜索内容后回车"
             spellCheck={false}
           />
         </form>
@@ -441,15 +492,27 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
         <button className="btn-icon" onClick={handleClose} disabled={busy} title="关闭浏览器" aria-label="关闭浏览器"><Icon name="close" size={13} /></button>
       </div>
       {state.title && <div className="browser-title" title={state.title}>{state.title}</div>}
-      <div className="browser-view" ref={viewRef} title="滚轮滚动 · 单击接管 · 按住拖动可操作滑块">
+      <div ref={viewRef} className="browser-view" title="滚轮滚动 · 单击接管 · 按住拖动可操作滑块">
+        <textarea
+          ref={keyboardRef}
+          className="browser-keyboard-capture"
+          aria-label="网页键盘输入"
+          tabIndex={-1}
+          onInput={(event) => flushKeyboardText(event.currentTarget)}
+          onCompositionStart={() => { composingRef.current = true; }}
+          onCompositionEnd={(event) => {
+            composingRef.current = false;
+            flushKeyboardText(event.currentTarget);
+          }}
+          onKeyDown={handleKeyboardKeyDown}
+        />
         {frame ? (
           <img
             ref={imgRef}
             src={`data:image/jpeg;base64,${frame}`}
             alt="浏览器画面"
             draggable={false}
-            tabIndex={0}
-            onKeyDown={handleImageKeyDown}
+            style={frameSize.width && frameSize.height ? { aspectRatio: `${frameSize.width} / ${frameSize.height}` } : undefined}
           />
         ) : (
           <div className="browser-placeholder"><span>{state.loading ? "正在加载网页…" : "正在获取画面…"}</span><button className="btn-sm" onClick={() => send({ action: "reload" })} disabled={busy}>重新连接</button></div>
@@ -469,25 +532,7 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
           </div>
         )}
       </div>
-      <div className="browser-hint"><Icon name="cursor" size={11} /> 点击画面后可直接用键盘打字 · 滚轮滚动 · 按住拖动滑块/验证码 · 中文用下方输入行</div>
-      <div className="browser-input-row">
-        <span className="browser-input-label">向网页输入</span>
-        <input
-          className="browser-text-input"
-          value={textDraft}
-          onChange={(event) => setTextDraft(event.target.value)}
-          placeholder="输入文本（先点击页面输入框）"
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.nativeEvent.isComposing) {
-              event.preventDefault();
-              if (textDraft) { send({ action: "type", text: textDraft }); setTextDraft(""); }
-            }
-          }}
-        />
-        <button className="btn-sm" disabled={busy || !textDraft} onClick={() => { send({ action: "type", text: textDraft }); setTextDraft(""); }}>输入</button>
-        <button className="btn-sm" disabled={busy} onClick={() => send({ action: "key", key: "Enter" })}>回车</button>
-        <button className="btn-sm" disabled={busy} onClick={() => send({ action: "scroll", direction: "down" })}>滚动</button>
-      </div>
+      <div className="browser-hint"><Icon name="cursor" size={11} /> 点击网页控件后直接键盘输入 · 滚轮滚动 · 按住拖动滑块/验证码 · 回车提交</div>
       {message && <div className="browser-msg">{message}</div>}
     </div>
   );
