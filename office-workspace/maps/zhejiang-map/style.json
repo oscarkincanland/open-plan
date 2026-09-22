@@ -30,13 +30,6 @@
       ],
       "maxzoom": 13
     },
-    "roads-rural": {
-      "type": "vector",
-      "tiles": [
-        "/api/map/data/zhejiang-map/tiles/roads-rural/{z}/{x}/{y}.pbf"
-      ],
-      "maxzoom": 14
-    },
     "toll-stations": {
       "type": "vector",
       "tiles": [
@@ -62,13 +55,6 @@
       "type": "vector",
       "tiles": [
         "/api/map/data/zhejiang-map/tiles/gis_osm_railways_free_1/{z}/{x}/{y}.pbf"
-      ],
-      "maxzoom": 13
-    },
-    "gis_osm_roads_free_1": {
-      "type": "vector",
-      "tiles": [
-        "/api/map/data/zhejiang-map/tiles/gis_osm_roads_free_1/{z}/{x}/{y}.pbf"
       ],
       "maxzoom": 13
     },
@@ -259,78 +245,6 @@
         "basemap": true
       }
     },
-    "maptiler-streets": {
-      "name": "MapTiler 街道（无标注）",
-      "type": "raster",
-      "tileSize": 256,
-      "tiles": [
-        "https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=__MAP_SERVICE_KEY__&language=none"
-      ],
-      "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
-      "metadata": {
-        "basemap": true
-      }
-    },
-    "maptiler-satellite": {
-      "name": "MapTiler 卫星（无标注）",
-      "type": "raster",
-      "tileSize": 256,
-      "tiles": [
-        "https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=__MAP_SERVICE_KEY__&language=none"
-      ],
-      "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
-      "metadata": {
-        "basemap": true
-      }
-    },
-    "maptiler-hybrid": {
-      "name": "MapTiler 卫星混合（无标注）",
-      "type": "raster",
-      "tileSize": 256,
-      "tiles": [
-        "https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=__MAP_SERVICE_KEY__&language=none"
-      ],
-      "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
-      "metadata": {
-        "basemap": true
-      }
-    },
-    "maptiler-outdoor": {
-      "name": "MapTiler 户外地形（无标注）",
-      "type": "raster",
-      "tileSize": 256,
-      "tiles": [
-        "https://api.maptiler.com/maps/outdoor-v2/{z}/{x}/{y}.png?key=__MAP_SERVICE_KEY__&language=none"
-      ],
-      "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
-      "metadata": {
-        "basemap": true
-      }
-    },
-    "maptiler-winter": {
-      "name": "MapTiler 冬季地形（无标注）",
-      "type": "raster",
-      "tileSize": 256,
-      "tiles": [
-        "https://api.maptiler.com/maps/winter-v2/{z}/{x}/{y}.png?key=__MAP_SERVICE_KEY__&language=none"
-      ],
-      "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
-      "metadata": {
-        "basemap": true
-      }
-    },
-    "maptiler-basic": {
-      "name": "MapTiler 简洁底图（无标注）",
-      "type": "raster",
-      "tileSize": 256,
-      "tiles": [
-        "https://api.maptiler.com/maps/basic-v2/{z}/{x}/{y}.png?key=__MAP_SERVICE_KEY__&language=none"
-      ],
-      "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
-      "metadata": {
-        "basemap": true
-      }
-    },
     "ningbo-zhoushan-port-areas": {
       "type": "vector",
       "tiles": [
@@ -465,7 +379,7 @@
       "type": "raster",
       "source": "esri-sat",
       "layout": {
-        "visibility": "none"
+        "visibility": "visible"
       },
       "paint": {
         "raster-opacity": 1
@@ -477,72 +391,6 @@
       "source": "esri-street",
       "layout": {
         "visibility": "none"
-      },
-      "paint": {
-        "raster-opacity": 1
-      }
-    },
-    {
-      "id": "basemap-maptiler-streets",
-      "type": "raster",
-      "source": "maptiler-streets",
-      "layout": {
-        "visibility": "none"
-      },
-      "paint": {
-        "raster-opacity": 1
-      }
-    },
-    {
-      "id": "basemap-maptiler-satellite",
-      "type": "raster",
-      "source": "maptiler-satellite",
-      "layout": {
-        "visibility": "none"
-      },
-      "paint": {
-        "raster-opacity": 1
-      }
-    },
-    {
-      "id": "basemap-maptiler-hybrid",
-      "type": "raster",
-      "source": "maptiler-hybrid",
-      "layout": {
-        "visibility": "none"
-      },
-      "paint": {
-        "raster-opacity": 1
-      }
-    },
-    {
-      "id": "basemap-maptiler-outdoor",
-      "type": "raster",
-      "source": "maptiler-outdoor",
-      "layout": {
-        "visibility": "none"
-      },
-      "paint": {
-        "raster-opacity": 1
-      }
-    },
-    {
-      "id": "basemap-maptiler-winter",
-      "type": "raster",
-      "source": "maptiler-winter",
-      "layout": {
-        "visibility": "none"
-      },
-      "paint": {
-        "raster-opacity": 1
-      }
-    },
-    {
-      "id": "basemap-maptiler-basic",
-      "type": "raster",
-      "source": "maptiler-basic",
-      "layout": {
-        "visibility": "visible"
       },
       "paint": {
         "raster-opacity": 1
@@ -609,62 +457,6 @@
       "paint": {
         "line-color": "#f2079c",
         "line-width": 2,
-        "line-opacity": 0.85
-      }
-    },
-    {
-      "id": "roads-rural",
-      "source": "roads-rural",
-      "source-layer": "roads-rural",
-      "layout": {
-        "visibility": "visible"
-      },
-      "type": "line",
-      "paint": {
-        "line-color": "#2ca02c",
-        "line-width": [
-          "interpolate",
-          [
-            "linear"
-          ],
-          [
-            "zoom"
-          ],
-          5,
-          0.8,
-          10,
-          1.8,
-          13,
-          3.2
-        ],
-        "line-opacity": 0.85
-      }
-    },
-    {
-      "id": "gis_osm_roads_free_1",
-      "source": "gis_osm_roads_free_1",
-      "source-layer": "gis_osm_roads_free_1",
-      "layout": {
-        "visibility": "visible"
-      },
-      "type": "line",
-      "paint": {
-        "line-color": "#ff7f0e",
-        "line-width": [
-          "interpolate",
-          [
-            "linear"
-          ],
-          [
-            "zoom"
-          ],
-          5,
-          0.8,
-          10,
-          1.8,
-          13,
-          3.2
-        ],
         "line-opacity": 0.85
       }
     },
@@ -1043,52 +835,6 @@
         "text-rotation-alignment": "map",
         "text-allow-overlap": false,
         "visibility": "none"
-      },
-      "paint": {
-        "text-color": "#ffffff",
-        "text-halo-color": "rgba(0,0,0,0.75)",
-        "text-halo-width": 1.2
-      }
-    },
-    {
-      "id": "gis_osm_roads_free_1-label",
-      "type": "symbol",
-      "source": "gis_osm_roads_free_1",
-      "source-layer": "gis_osm_roads_free_1",
-      "minzoom": 7,
-      "layout": {
-        "symbol-placement": "line",
-        "text-field": [
-          "coalesce",
-          [
-            "get",
-            "ref"
-          ],
-          [
-            "get",
-            "name"
-          ],
-          ""
-        ],
-        "text-size": [
-          "interpolate",
-          [
-            "linear"
-          ],
-          [
-            "zoom"
-          ],
-          8,
-          10,
-          13,
-          12
-        ],
-        "text-font": [
-          "Noto Sans Regular"
-        ],
-        "text-rotation-alignment": "map",
-        "text-allow-overlap": false,
-        "visibility": "visible"
       },
       "paint": {
         "text-color": "#ffffff",
@@ -1536,5 +1282,5 @@
       }
     }
   ],
-  "glyphs": "https://glyphs.openfreestyle.com/{fontstack}/{range}.pbf"
+  "glyphs": "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf"
 }

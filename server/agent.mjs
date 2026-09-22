@@ -48,14 +48,18 @@ import {
   browserBack,
   browserClick,
   browserClose,
+  browserEvaluate,
+  browserHover,
   browserOpen,
   browserPress,
   browserScreenshot,
   browserScroll,
+  browserSelect,
   browserSessionKey,
   browserSnapshot,
   browserTabs,
   browserType,
+  browserWait,
 } from "./内置浏览器.mjs";
 import { CHANNEL_HISTORY_LIMIT, PROTOCOL_VERSION, createStreamId, pushChannelEvent } from "./事件协议.mjs";
 import { completionStatusLabel, inferCompletion, normalizeCompletion } from "./运行轨迹.mjs";
@@ -178,6 +182,23 @@ function usageFromEvent(event) {
 // 工具结果同时会进入 Pi 上下文和前端事件流。保留首尾，避免一次读取大文档
 // 把后续任务的上下文预算吃满；需要全文时让模型继续按 offset/range 分段读取。
 const TOOL_OUTPUT_MAX_CHARS = 16000;
+
+// 扩展（.pi/extensions、npm 包）注册的工具名。Pi 的 tools 白名单是硬门槛：
+// 未列入白名单的工具连注册都会被过滤，因此扩展工具必须并入白名单才能被模型调用。
+function extensionToolNamesFromLoader(loader) {
+  try {
+    const loaded = loader?.getExtensions?.();
+    const names = new Set();
+    for (const ext of loaded?.extensions || []) {
+      const keys = ext?.tools?.keys?.();
+      if (!keys) continue;
+      for (const name of keys) names.add(name);
+    }
+    return [...names];
+  } catch {
+    return [];
+  }
+}
 function limitToolText(value, max = TOOL_OUTPUT_MAX_CHARS) {
   const text = String(value ?? "");
   if (text.length <= max) return text;
@@ -239,7 +260,11 @@ const RESOURCE_RELOAD_INTERVAL_MS = 30000;
 const AUTO_COMPACT_PROMPT_CHARS = 90000;
 const AUTO_COMPACT_INPUT_TOKENS = 26000;
 const AUTO_COMPACT_COOLDOWN_MS = 10000;
-const DEFAULT_CONTEXT_WINDOW = 1_000_000;
+// 模型标称窗口可能远超实际稳定推理区（1M 窗口的模型在 20 万 token 后延迟与
+// 失稳概率明显上升）。压缩阈值按「实用窗口上限」而不是标称窗口计算，
+// 否则长会话永远等不到压缩；可用环境变量 OAW_COMPACT_TOKEN_CAP 调整。
+const AUTO_COMPACT_TOKEN_CAP = Math.max(60000, Number(process.env.OAW_COMPACT_TOKEN_CAP || 200000));
+const DEFAULT_CONTEXT_WINDOW = 200_000;
 // 只监控“首个模型/工具事件”的等待时间，不限制已经开始执行的长任务。
 // 供应商连接卡住时必须自动释放 Agent，否则前端会永久停留在“连接模型”。
 const MODEL_FIRST_EVENT_TIMEOUT_MS = Math.max(10000, Number.parseInt(process.env.OAW_MODEL_FIRST_EVENT_TIMEOUT_MS || "45000", 10) || 45000);
@@ -769,6 +794,7 @@ class AgentManager extends EventEmitter {
       }),
     });
     await loader.reload();
+    const extensionToolNames = extensionToolNamesFromLoader(loader);
 
     const activeWriteContext = (kind = "agent") => {
       const runId = entry?.activeRunId;
@@ -1015,7 +1041,7 @@ execute: async (_toolCallId, params) => {
       }),
       execute: async (_toolCallId, params) => {
         try {
-          const state = await browserOpen(browserKeyOf(), params.url);
+          const state = await browserOpen(browserKeyOf(), params.url, { agent: true });
           return browserToolResult(`已打开：${state.url}\n标题：${state.title || "（加载中）"}\n下一步用 browser_snapshot 查看页面元素。`, state);
         } catch (error) {
           return browserToolResult(browserErrorText(error));
@@ -1694,7 +1720,7 @@ execute: async (_toolCallId, params) => {
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
         customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool],
-        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "todo", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close"],
+        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "todo", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", ...extensionToolNames],
       }));
     } catch (error) {
       piRuntimeManager.markFailure(runtimeRecord.runtimeId, error, { recovering: true, reason: "session_create_failed" });
@@ -1703,7 +1729,7 @@ execute: async (_toolCallId, params) => {
     // 显式激活全部自定义工具（pi SDK 仅激活 tools 白名单中的工具，customTools 需手动激活，
     // 否则 kb_search/map_read/ask_user 等对模型不可见）
     try {
-      piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), "ask_user", "officecli", "todo", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close"]);
+      piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), "ask_user", "officecli", "todo", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", ...extensionToolNames]);
     } catch {}
 
     // event channel with history for SSE replay
@@ -2074,7 +2100,9 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     // 出现在 cacheRead 中。只看 input 会让 4 万 token 的会话误判为很短。
     const contextTokens = inputTokens + cacheReadTokens + cacheWriteTokens;
     const modelContextWindow = this.resolveEntryContextWindow(entry);
-    const compactTokenThreshold = Math.floor(modelContextWindow * 0.78);
+    // 按实用窗口上限压缩：标称 1M 的模型在 ~20 万 token 时每轮延迟已明显上升
+    const effectiveContextWindow = Math.min(modelContextWindow, AUTO_COMPACT_TOKEN_CAP);
+    const compactTokenThreshold = Math.floor(effectiveContextWindow * 0.78);
     if (entry.promptChars < AUTO_COMPACT_PROMPT_CHARS && contextTokens < compactTokenThreshold) return;
     entry.compacting = true;
     entry.autoCompacting = true;
@@ -2139,7 +2167,10 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       try {
         const modePolicyKey = `${modePolicy.mode}:${entry.task?.agentProfile || "通用 Agent"}`;
         if (entry.modePolicyKey !== modePolicyKey) {
-          piRuntimeManager.setActiveTools(entry.runtimeId, entry.session, modePolicy.tools);
+          // 扩展工具只在 Agent 模式放行：Chat/Office 保持最小权限，
+          // 避免扩展（如 subagent）绕过只读或仅-Office 编辑的约束。
+          const extensionToolsForMode = modePolicy.mode === "agent" ? extensionToolNamesFromLoader(entry.loader) : [];
+          piRuntimeManager.setActiveTools(entry.runtimeId, entry.session, [...modePolicy.tools, ...extensionToolsForMode]);
           entry.modePolicy = modePolicy;
           entry.modePolicyKey = modePolicyKey;
           piRuntimeManager.update(entry.runtimeId, {
@@ -2584,7 +2615,12 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       modelSpec: spec,
     });
     if (entry.busy || entry.compacting || entry.queuedCount > 0) throw new Error("agent busy — wait for queued tasks to finish");
-    const [provider, id] = String(spec).split("/");
+    // 模型 id 可能自带斜线（例如 commandcode/deepseek/deepseek-v4-flash）：只在第一个斜线处切分
+    const specValue = String(spec);
+    const separatorIndex = specValue.indexOf("/");
+    if (separatorIndex <= 0) throw new Error("model spec must be provider/model: " + spec);
+    const provider = specValue.slice(0, separatorIndex);
+    const id = specValue.slice(separatorIndex + 1);
     if (!localModelProviders().has(provider)) throw new Error("model is not in local Pi catalog: " + spec);
     const mr = await this.modelRuntime();
     // 优先使用 Pi Runtime；当 SDK 忽略了较新的 models-store overlay 时，

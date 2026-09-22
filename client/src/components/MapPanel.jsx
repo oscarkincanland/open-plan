@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import MapViewer from "./MapViewer.jsx";
 import ChatPanel from "./ChatPanel.jsx";
 import LayerPanel from "./LayerPanel.jsx";

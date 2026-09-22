@@ -1673,9 +1673,11 @@ app.get("/api/browser/state", (req, res) => {
 
 app.post("/api/browser/open", async (req, res) => {
   const { client, thread, url } = req.body || {};
+  if (!client) return res.status(400).json({ ok: false, error: "client required" });
   const key = browserModule.browserSessionKey(client, thread);
   try {
-    const state = await browserModule.browserOpen(key, url);
+    // 用户可独立使用内置浏览器（无需 Agent）：未填地址时默认打开必应
+    const state = await browserModule.browserOpen(key, String(url || "").trim() || "https://cn.bing.com");
     res.json({ ok: true, state });
   } catch (error) {
     res.status(400).json({ ok: false, error: String(error?.message || error), code: error?.code || null });
@@ -1718,6 +1720,9 @@ app.get("/api/browser/stream", (req, res) => {
   if (withFrames && session?.frame?.data) write({ type: "frame", data: { data: session.frame.data, at: session.frame.at } });
   unsubscribe = browserModule.subscribeBrowser(key, (type, data) => {
     if (type === "frame" && !withFrames) return;
+    // 帧流背压：上游推帧快于本连接消费（writableNeedDrain）时丢弃当前帧，
+    // 客户端只保留最新画面即可，避免 SSE 缓冲无限堆积。
+    if (type === "frame" && res.writableNeedDrain) return;
     write({ type, data });
   });
   req.on("close", cleanup);
@@ -1744,20 +1749,6 @@ app.post("/api/browser/close", async (req, res) => {
     res.status(500).json({ ok: false, error: String(error?.message || error) });
   }
 });
-
-// 用户可独立使用内置浏览器（无需 Agent）：打开/导航到指定网址
-app.post("/api/browser/open", async (req, res) => {
-  const { client, thread, url } = req.body || {};
-  if (!client) return res.status(400).json({ ok: false, error: "client required" });
-  const key = browserModule.browserSessionKey(client, thread);
-  try {
-    const state = await browserModule.browserOpen(key, String(url || "").trim() || "https://cn.bing.com");
-    res.json({ ok: true, state });
-  } catch (error) {
-    res.status(400).json({ ok: false, error: String(error?.message || error), code: error?.code || null });
-  }
-});
-
 
 app.get("/api/agent/import-preview", (_req, res) => {
   try {

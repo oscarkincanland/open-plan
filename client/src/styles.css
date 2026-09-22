@@ -5553,6 +5553,65 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .browser-title { padding: 4px 10px; color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-bottom: 1px solid var(--border); }
 .browser-view { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: auto; padding: 12px; background: radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 45%), var(--body-bg); }
 .browser-view img { max-width: 100%; max-height: 100%; width: auto; height: auto; display: block; cursor: crosshair; user-select: none; box-shadow: 0 10px 26px rgba(0, 0, 0, .28); }
+/* ---------- Agent 虚拟鼠标（与用户指针区分，仅显示不拦截事件） ---------- */
+.browser-agent-cursor {
+  position: absolute;
+  z-index: 6;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-2px, -2px);
+  transition: left .3s cubic-bezier(.22, .61, .36, 1), top .3s cubic-bezier(.22, .61, .36, 1), opacity .35s ease;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, .35));
+}
+.browser-agent-cursor.visible { opacity: 1; }
+.browser-agent-ripple {
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border-radius: 50%;
+  border: 2px solid rgba(139, 92, 246, .85);
+  animation: browser-agent-pulse .8s ease-out forwards;
+}
+.browser-agent-cursor.kind-scroll .browser-agent-ripple,
+.browser-agent-cursor.kind-key .browser-agent-ripple { border-color: rgba(56, 189, 248, .85); }
+@keyframes browser-agent-pulse {
+  from { transform: scale(.35); opacity: .95; }
+  to { transform: scale(2.6); opacity: 0; }
+}
+.browser-agent-tag {
+  position: absolute;
+  left: 13px;
+  top: 15px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #8b5cf6;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  white-space: nowrap;
+  box-shadow: 0 2px 10px rgba(139, 92, 246, .45);
+}
+.browser-agent-bubble {
+  position: absolute;
+  left: 14px;
+  top: 34px;
+  max-width: 240px;
+  padding: 4px 9px;
+  border-radius: 9px;
+  background: rgba(17, 20, 26, .92);
+  border: 1px solid rgba(139, 92, 246, .5);
+  color: #f1f5f9;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+}
 .browser-hint { display: flex; align-items: center; gap: 5px; padding: 5px 10px; color: var(--dim); font-size: 9px; border-top: 1px solid var(--border); background: var(--panel2-bg); }
 .browser-placeholder { display: flex; flex-direction: column; align-items: center; gap: 10px; align-self: center; color: var(--dim); font-size: 11px; padding: 30px; }
 .browser-input-row { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-top: 1px solid var(--border); background: var(--panel2-bg); }

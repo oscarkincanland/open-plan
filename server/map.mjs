@@ -302,6 +302,12 @@ function layerStyle(def) {
   }
 }
 
+// 地图标注字体（glyphs）。历史域名 glyphs.openfreestyle.com 已失效（DNS 无解析），
+// 会导致道路编号/地名等 symbol 图层取不到字形。改用 MapLibre 官方字形服务，
+// 其 Noto Sans Regular 同时覆盖拉丁与 CJK 区段。
+const DEFAULT_GLYPHS = "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf";
+const DEAD_GLYPH_HOSTS = ["glyphs.openfreestyle.com"];
+
 function getDefaultStyle(project, baseProject = null) {
   const basemaps = getBasemaps();
   const sources = { ...basemaps };
@@ -341,7 +347,7 @@ function getDefaultStyle(project, baseProject = null) {
     name: `${project} 地图样式`,
     sources,
     layers,
-    glyphs: "https://glyphs.openfreestyle.com/{fontstack}/{range}.pbf",
+    glyphs: DEFAULT_GLYPHS,
   };
 }
 
@@ -412,6 +418,14 @@ export function hydrateBasemapSources(style) {
   const out = { ...style, sources: { ...(style?.sources || {}) } };
   const runtime = getBasemaps();
   for (const [id, source] of Object.entries(runtime)) out.sources[id] = source;
+  // 运行时保护：移除已不可用的底图 source。典型场景是未配置 MapTiler Key 时，
+  // 历史样式里残留的 maptiler-* 仍带着占位符 Key 请求瓦片，上游返回 403，
+  // 用户看到的是空白/错误底图。底图一律以 getBasemaps() 为唯一事实来源。
+  const runtimeBasemapIds = new Set(Object.keys(runtime));
+  for (const [id, source] of Object.entries(out.sources)) {
+    const isBasemap = source?.metadata?.basemap === true || source?.basemap === true;
+    if (isBasemap && !runtimeBasemapIds.has(id)) delete out.sources[id];
+  }
 
   // 运行时保护：用户/Agent 手写的样式可能遗留非法 paint.line-cap，或引用了
   // 尚未生成的矢量瓦片。修正/剔除后再交给 MapLibre，避免整份 style 加载失败。
@@ -451,7 +465,24 @@ export function hydrateBasemapSources(style) {
   // 兼容旧的 tracked style.json：新增免 Key 底图无需用户先保存一次设置，
   // 也能在动态样式响应中直接出现。缺失的底图图层插入到第一个业务图层之前，
   // 避免栅格覆盖道路、边界和分析图层。
-  const layers = Array.isArray(out.layers) ? [...out.layers] : [];
+  // 同步剔除已失效的底图图层；若原本可见的底图被移除（例如未配 Key 的 MapTiler），
+  // 回退到免 Key 底图，避免出现「所有底图都隐藏」的空白画布。
+  let layers = (Array.isArray(out.layers) ? [...out.layers] : []).filter((l) => {
+    const lid = String(l?.id || "");
+    if (!lid.startsWith("basemap-")) return true;
+    return runtimeBasemapIds.has(lid.slice("basemap-".length));
+  });
+  const hasVisibleBasemap = layers.some((l) => String(l?.id || "").startsWith("basemap-") && l.layout?.visibility === "visible");
+  if (!hasVisibleBasemap) {
+    const fallbackBasemapId = runtimeBasemapIds.has("gaode-road") ? "gaode-road" : [...runtimeBasemapIds][0];
+    layers = layers.map((l) => {
+      const lid = String(l?.id || "");
+      if (!lid.startsWith("basemap-")) return l;
+      const id = lid.slice("basemap-".length);
+      return { ...l, layout: { ...(l.layout || {}), visibility: id === fallbackBasemapId ? "visible" : "none" } };
+    });
+  }
+  out.layers = layers;
   const baseIds = new Set(layers.filter((l) => String(l?.id || "").startsWith("basemap-")).map((l) => String(l.id).slice("basemap-".length)));
   const visibleId = layers.find((l) => String(l?.id || "").startsWith("basemap-") && l.layout?.visibility === "visible")?.id?.slice("basemap-".length) || "gaode-road";
   const missing = Object.keys(runtime).filter((id) => !baseIds.has(id));
@@ -474,6 +505,10 @@ export function hydrateBasemapSources(style) {
     layers.splice(insertAt < 0 ? layers.length : insertAt, 0, ...baseLayers);
     out.layers = layers;
   }
+  // 字体服务同样以运行时配置为准：历史样式里写死的失效域名会被纠正，
+  // 否则道路编号/地名等标注图层全部取不到字形。
+  const glyphsUrl = String(out.glyphs || "");
+  if (!glyphsUrl || DEAD_GLYPH_HOSTS.some((host) => glyphsUrl.includes(host))) out.glyphs = DEFAULT_GLYPHS;
   return out;
 }
 
