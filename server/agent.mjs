@@ -57,18 +57,14 @@ import {
   browserBack,
   browserClick,
   browserClose,
-  browserEvaluate,
-  browserHover,
   browserOpen,
   browserPress,
   browserScreenshot,
   browserScroll,
-  browserSelect,
   browserSessionKey,
   browserSnapshot,
   browserTabs,
   browserType,
-  browserWait,
 } from "./内置浏览器.mjs";
 import { CHANNEL_HISTORY_LIMIT, PROTOCOL_VERSION, createStreamId, pushChannelEvent } from "./事件协议.mjs";
 import { completionStatusLabel, inferCompletion, normalizeCompletion } from "./运行轨迹.mjs";
