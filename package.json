@@ -43,6 +43,7 @@
     "test:event-archive": "node scripts/事件流归档测试.mjs",
     "test:event-replay": "node scripts/事件流回放窗口测试.mjs",
     "test:artifacts": "node scripts/产物误报回归测试.mjs",
+    "smoke:chat": "node scripts/聊天界面冒烟检查.mjs",
     "clean:artifacts": "node scripts/清理误报产物.mjs",
     "test:progress-narration": "node scripts/进度播报测试.mjs"
   },

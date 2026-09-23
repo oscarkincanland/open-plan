@@ -3,7 +3,11 @@ import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
 import DesktopAgentPrototype from "./components/桌面端Agent原型.jsx";
 import { ThemeProvider } from "./theme.jsx";
+import { installStaleChunkRecovery } from "./分包恢复.js";
 import "./styles.css";
+
+// 服务端重新构建后旧页面会持有已失效的分包哈希（组件加载失败），入口先装全局自动恢复
+installStaleChunkRecovery();
 
 // 某些第三方库会在 bundle 加载时把 window.FileReader 覆盖为自己的空壳类，
 // 导致图片/附件导入的 FileReader.readAsDataURL 不可用。index.html 已保存原生引用，

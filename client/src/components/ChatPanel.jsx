@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
+﻿import React, { useEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
 import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon, { ProviderIcon } from "./Icon.jsx";
@@ -10,6 +10,7 @@ import { completionLabel, reduceRunTrace, runTraceElapsedText, runTraceSummaryTe
 import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, phaseForEvent } from "../事件展示.js";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
+import { isStaleChunkError, recoverFromStaleChunk } from "../分包恢复.js";
 
 // 错误边界包装器
 class ErrorBoundary extends React.Component {
@@ -24,6 +25,8 @@ class ErrorBoundary extends React.Component {
 
   componentDidCatch(error, errorInfo) {
     console.error("ChatPanel error:", error, errorInfo);
+    // 分包过期导致的加载失败：自动刷新一次，不再停留在错误页
+    if (isStaleChunkError(error)) recoverFromStaleChunk(error?.message);
   }
 
   render() {
@@ -2508,6 +2511,17 @@ case "runtime_connecting":
       ? { key: "verification", label: `产物校验 ${runState.verificationStatus === "passed" ? "通过" : runState.verificationStatus === "warning" ? "有提示" : "失败"}` }
       : null,
   ].filter(Boolean);
+  // 执行流头行的悬停说明：模式/上下文/推理等信息只有父组件持有，因此在父层拼好后传入，
+  // 子组件不再引用父作用域变量（此前直接引用导致 ReferenceError → 错误边界报"组件出错"）。
+  const flowStatusTitle = [
+    agentPhase ? `当前阶段：${agentPhase}` : "",
+    !busy && statusText ? `状态：${statusText}` : "",
+    `${executionEvents.length} 个事件`,
+    `模式 ${MODE_META[normalizeUiMode(runState.mode || editMode)]?.label || currentMode.label}`,
+    runState.thinkingLevel ? `推理 ${runState.thinkingLevel === "low" ? "快速" : runState.thinkingLevel === "high" ? "深度" : runState.thinkingLevel}` : "",
+    selectedUsage.context > 0 ? `上下文约 ${Number(selectedUsage.context).toLocaleString()} tokens` : "",
+    runState.references?.length ? `引用 ${runState.references.length} 个文件` : "",
+  ].filter(Boolean).join(" · ");
   // 最近一段"像进度小结"的模型正文：进度行右侧展示"最近小结"，
   // 只在正文出现进度关键词时摘取首行，避免把普通正文误当小结。
   const recentNarration = useMemo(() => {
@@ -2620,6 +2634,7 @@ case "runtime_connecting":
                 statusText={statusText}
                 statusChips={statusChips}
                 statusDotClass={runState.status}
+                statusTitle={flowStatusTitle}
               />
             )}
             <div className="chat-top-controls" aria-label="会话控制">
@@ -2941,7 +2956,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
   const [open, setOpen] = useState(m.expanded !== false);
   // 历史 Run 的工具聚合：从 run.events 归约，不必依赖实时事件流
   const trace = useMemo(() => (Array.isArray(m.events) && m.events.length ? reduceRunTrace(m.events, m.runId) : null), [m.events, m.runId]);
-  const traceSummary = trace ? runTraceSummaryText(trace) : "";
+  const traceSummary = trace ? runTraceSummaryText(trace, { includeCompletion: false }) : "";
   const completion = m.completion || trace?.completion || null;
   const reviewSources = useMemo(() => {
     const sourceMap = new Map((Array.isArray(m.reviewSources) ? m.reviewSources : []).map((item) => [item.sourceId, { ...item }]));
@@ -3472,7 +3487,7 @@ function ApprovalModeControl({ mode, saving, onChange }) {
 }
 
 // ========== SSE 执行流（顶部可折叠/隐藏，独立于消息气泡） ==========
-function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], note = "", compaction = null, hidden = false, onHiddenChange, statusText = "", statusChips = [], statusDotClass = "" }) {
+function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], note = "", compaction = null, hidden = false, onHiddenChange, statusText = "", statusChips = [], statusDotClass = "", statusTitle = "" }) {
   // 默认折叠，避免几十条启动/工具事件把正文和输入框顶出视口
   const [expanded, setExpanded] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
@@ -3486,7 +3501,8 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
   // 归约为执行轨迹：工具按 toolCallId 聚合，折叠态展示聚合统计而不是最后一条事件
   const runTrace = useMemo(() => reduceRunTrace(contentEvents), [contentEvents]);
   const traceStats = summarizeRunTrace(runTrace);
-  const traceSummary = runTraceSummaryText(runTrace);
+  // 完成语义由状态位承载，摘要不再重复"已完成"
+  const traceSummary = runTraceSummaryText(runTrace, { includeCompletion: false });
   const completion = traceStats.completion;
   // 运行中的进度行：秒级刷新"用时"，让长任务一眼看出进行到哪一步
   const [now, setNow] = useState(() => Date.now());
@@ -3512,26 +3528,23 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
     );
   }
   const phaseLabel = PHASE_LABELS[runTrace.phase] || "执行";
-  // 单行执行流：状态/阶段 · 工具统计 · 用时 · 最近小结 · 产物/校验 · 实时。
-  // 事件数、模式、上下文、引用、精细阶段改为悬停提示，避免一行里堆六七个标签。
-  const flowStatusTitle = [
-    agentPhase ? `当前阶段：${agentPhase}` : "",
-    statusText && !running ? `状态：${statusText}` : "",
-    `${contentEvents.length} 个事件`,
-    `模式 ${MODE_META[normalizeUiMode(runState.mode || editMode)]?.label || currentMode.label}`,
-    runState.thinkingLevel ? `推理 ${runState.thinkingLevel === "low" ? "快速" : runState.thinkingLevel === "high" ? "深度" : runState.thinkingLevel}` : "",
-    selectedUsage.context > 0 ? `上下文约 ${Number(selectedUsage.context).toLocaleString()} tokens` : "",
-    runState.references?.length ? `引用 ${runState.references.length} 个文件` : "",
-  ].filter(Boolean).join(" · ");
+  // 单行执行流：状态/阶段 · 工具统计 · 用时 · 产物/校验 · 实时。
+  // 事件数、模式、上下文、引用、精细阶段来自父层拼好的悬停说明（statusTitle）。
   return (
     <div className={`execution-flow ${expanded ? "expanded" : ""} ${running ? "live" : ""}`}>
       <div className="execution-flow-head">
-        <button type="button" className="execution-flow-toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} title={flowStatusTitle}>
+        <button type="button" className="execution-flow-toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} title={statusTitle}>
           <span className="execution-flow-chevron">{expanded ? "▾" : "▸"}</span>
           <Icon name="flow" size={12} />
           <strong>执行过程</strong>
-          {/* 状态位：运行中显示阶段（脉冲点），结束后显示任务状态（圆点） */}
-          <span className={`execution-flow-state ${running ? "live" : ""}`} role="status" aria-live="polite">
+          {/* 状态位：运行中显示阶段（脉冲点），结束后显示任务状态（圆点）。
+              完成语义（显式声明/推断）收进 title，正文里不再重复"已完成"。 */}
+          <span
+            className={`execution-flow-state ${running ? "live" : ""}`}
+            role="status"
+            aria-live="polite"
+            title={completion ? (completion.source === "inferred" ? "完成状态由回合结束推断（模型未显式声明）" : `模型显式声明完成${completion.summary ? `：${completion.summary}` : ""}`) : ""}
+          >
             {running ? phaseLabel : statusText}
           </span>
           {!running && <span className={`task-status-dot ${statusDotClass}`} />}
@@ -3540,14 +3553,6 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
           {!running && statusChips.map((chip) => (
             <span className="execution-flow-chip" key={chip.key} title={chip.title || ""}>{chip.label}</span>
           ))}
-          {completion && (
-            <span
-              className={`flow-completion ${completion.status}`}
-              title={completion.source === "inferred" ? "由回合结束推断（模型未显式声明完成状态）" : `模型显式声明${completion.summary ? `：${completion.summary}` : ""}`}
-            >
-              {completionLabel(completion.status)}
-            </span>
-          )}
           {running && <span className="execution-flow-live"><i /> 实时</span>}
         </button>
         <button type="button" className="execution-flow-hide" onClick={() => onHiddenChange?.(true)} title="隐藏执行流（状态栏会回到上方）" aria-label="隐藏执行流"><Icon name="eyeOff" size={12} /></button>

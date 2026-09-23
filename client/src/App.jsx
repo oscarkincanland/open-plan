@@ -14,6 +14,7 @@ import Icon from "./components/Icon.jsx";
 import Logo from "./components/Logo.jsx";
 import TaskCenter from "./components/任务中心.jsx";
 import WorkProductPanel from "./components/工作产物面板.jsx";
+import { isStaleChunkError, recoverFromStaleChunk } from "./分包恢复.js";
 import BrowserPanel from "./components/内置浏览器面板.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 import MemoryTab from "./components/MemoryTab.jsx";
@@ -71,6 +72,8 @@ class AppErrorBoundary extends React.Component {
 
   componentDidCatch(error, errorInfo) {
     console.error("App error:", error, errorInfo);
+    // 分包过期导致的加载失败：自动刷新一次，不再停留在错误页
+    if (isStaleChunkError(error)) recoverFromStaleChunk(error?.message);
   }
 
   render() {

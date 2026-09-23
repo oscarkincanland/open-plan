@@ -368,8 +368,11 @@ export function verificationLabel(status) {
   }[String(status || "not_checked")] || "未验收";
 }
 
-/** 折叠态一行摘要，例如：已调用 6 个工具 · 5 成功 · 待办 3/4 · 验收通过 · 2 个文件变更 */
-export function runTraceSummaryText(trace) {
+/**
+ * 折叠态一行摘要，例如：已调用 6 个工具 · 5 成功 · 待办 3/4 · 验收通过 · 2 个文件变更
+ * includeCompletion=false 用于已经有独立完成徽标/状态位的界面，避免“已完成”重复出现。
+ */
+export function runTraceSummaryText(trace, { includeCompletion = true } = {}) {
   const stats = summarizeRunTrace(trace);
   const parts = [];
   if (stats.toolTotal) {
@@ -387,6 +390,6 @@ export function runTraceSummaryText(trace) {
   if (stats.errorCount) parts.push(`${stats.errorCount} 次错误`);
   // 验收只在有产物或明确校验过时展示，避免每个纯问答回合都写"未验收"
   if (stats.fileCount || stats.verification !== "not_checked") parts.push(verificationLabel(stats.verification));
-  if (stats.completion) parts.push(completionLabel(stats.completion.status));
+  if (includeCompletion && stats.completion) parts.push(completionLabel(stats.completion.status));
   return parts.join(" · ");
 }
