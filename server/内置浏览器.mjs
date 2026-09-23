@@ -142,6 +142,36 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * 结束仍占用同一 profile 的残留浏览器进程。
+ *
+ * 场景：Edge 自动升级后旧实例仍在运行，或上一次异常退出没清干净。
+ * 此时用同一个 --user-data-dir 启动新实例会被旧进程截获并立刻退出，
+ * CDP 调试端口永远起不来，前端只看到「浏览器启动失败」。
+ * 只在首次启动已经失败后才调用，避免误杀其他会话正在使用的浏览器。
+ */
+function killProfileBrowserProcesses(profileDir) {
+  return new Promise((resolve) => {
+    if (process.platform !== "win32") return resolve(0);
+    const script = [
+      "$d = $env:OAW_BROWSER_PROFILE_DIR",
+      "$procs = Get-CimInstance Win32_Process -Filter \"Name='msedge.exe' or Name='chrome.exe'\" -ErrorAction SilentlyContinue",
+      "$hits = @($procs | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($d) })",
+      "foreach ($p in $hits) { try { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }",
+      "Write-Output $hits.Count",
+    ].join("; ");
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+      { windowsHide: true, timeout: 20000, env: { ...process.env, OAW_BROWSER_PROFILE_DIR: profileDir } },
+      (_error, stdout) => {
+        const n = Number.parseInt(String(stdout || "").trim(), 10);
+        resolve(Number.isFinite(n) ? n : 0);
+      },
+    );
+  });
+}
+
 /** 页面内同源 iframe 递归查找脚本片段：注入到快照/定位/聚焦脚本中复用。 */
 const FIND_EL_SNIPPET = `const findEl = (doc, ref) => {
   if (!doc) return null;
@@ -630,6 +660,22 @@ class BrowserSession {
     // 1) 尝试复用上次启动且仍在运行的实例（服务重启后浏览器不中断）
     if (await this.tryReuse()) return;
 
+    try {
+      await this.launch(executable);
+    } catch (error) {
+      // 2) 自愈重试：Edge 自动升级 / 异常退出会留下仍持有同一 profile 的旧进程，
+      //    新实例会被旧进程截获并立即退出，CDP 端口永远起不来。
+      //    这里清理占用同一 profile 的残留进程后再启动一次；没有残留就直接抛出原错误。
+      const killed = await killProfileBrowserProcesses(this.profileDir);
+      if (!killed) throw error;
+      this.child = null;
+      await sleep(400);
+      await this.launch(executable);
+    }
+  }
+
+  /** 启动一个新的浏览器实例并等待 CDP 就绪（不含复用与残留清理）。 */
+  async launch(executable) {
     this.port = await allocatePort();
     const headless = process.env.OAW_BROWSER_HEADLESS !== "0";
     const args = [

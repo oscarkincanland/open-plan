@@ -14,6 +14,7 @@
   --error: #cc6666;
   --warning: #f0c674;
   --user-bg: #2a2a44;
+  --user-fg: #eef2ff;
   --tool-pending: #282832;
   --tool-success: #283228;
   --tool-error: #3c2828;
@@ -44,6 +45,7 @@
   --error: #c0392b;
   --warning: #b7791f;
   --user-bg: #e6f0ee;
+  --user-fg: #1b2420;
   --tool-pending: #eceef4;
   --tool-success: #e8f0e2;
   --tool-error: #f5e3e0;
@@ -653,7 +655,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   border-left: 3px solid var(--accent);
 }
 .msg.user .bubble .msg-text {
-  color: var(--text);
+  color: var(--user-fg, var(--text));
   font-weight: 600;
   font-size: 13px;
 }
@@ -2668,7 +2670,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .avatar.user-avatar {
   background: var(--user-bg);
-  color: var(--accent);
+  color: var(--user-fg, var(--accent));
   border: 1px solid var(--border);
 }
 .avatar.agent-avatar {
@@ -5282,6 +5284,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   --border: #d9e0d5;
   --selected: #e5ecdf;
   --user-bg: #eaf2e3;
+  --user-fg: #1b2420;
 }
 .sidebar {
   border-right: 1px solid var(--border);
@@ -6464,6 +6467,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   --error: #f87171;
   --warning: #fbbf24;
   --user-bg: #27364d;
+  --user-fg: #eaf1ff;
   --tool-pending: #252525;
   --tool-success: #1e3325;
   --tool-error: #3b2424;
@@ -6483,6 +6487,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   --error: #dc2626;
   --warning: #ca8a04;
   --user-bg: #eff6ff;
+  --user-fg: #16233a;
   --tool-pending: #f6f6f6;
   --tool-success: #edf9f0;
   --tool-error: #fff1f0;
@@ -8365,6 +8370,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   --border: #3a443b;
   --selected: #293226;
   --user-bg: #d4ff4f;
+  /* 用户气泡是亮底，必须用深色文字；沿用 --text 会在暗黑主题下变成近白字，对比度不足 */
+  --user-fg: #0f1110;
   --tool-pending: #1b201d;
   --tool-success: #1d2a1c;
   --tool-error: #33201f;
@@ -8382,6 +8389,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   --border: #d2dbd0;
   --selected: #e4ecdf;
   --user-bg: #cbe99b;
+  --user-fg: #1d281f;
   --tool-pending: #edf2eb;
   --tool-success: #e6f0de;
   --tool-error: #f7e8e5;
@@ -8439,10 +8447,18 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   border: 0;
   border-radius: 15px 15px 3px 15px;
   background: var(--user-bg);
-  color: var(--text);
+  color: var(--user-fg, var(--text));
   box-shadow: none;
 }
-.center-chat-slot .msg.user .bubble .msg-text { font-size: 13px; font-weight: 500; color: var(--text); }
+.center-chat-slot .msg.user .bubble .msg-text { font-size: 13px; font-weight: 500; color: var(--user-fg, var(--text)); }
+/* 用户气泡是亮底：内部的小标签/引用块同样要用深色前景，否则会与亮底融在一起 */
+.msg.user .bubble .msg-context { color: var(--text); }
+.msg.user .bubble .msg-reference-chip {
+  color: var(--user-fg, var(--text));
+  background: color-mix(in srgb, var(--user-fg, #000) 12%, transparent);
+  border-color: color-mix(in srgb, var(--user-fg, #000) 24%, transparent);
+}
+.msg.user .bubble .msg-reference-chip .reference-chip-kind { color: inherit; }
 .center-chat-slot .flow-markdown,
 .center-chat-slot .flow-markdown .markdown-body,
 .center-chat-slot .flow-stream-text { font-size: 13px; line-height: 1.62; color: var(--text); }
@@ -8911,6 +8927,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   --error: #ff9c9c;
   --warning: #ffd99a;
   --user-bg: rgba(120, 205, 178, .22);
+  --user-fg: var(--text);
   --tool-pending: rgba(34, 58, 56, .65);
   --tool-success: rgba(49, 97, 74, .48);
   --tool-error: rgba(104, 47, 54, .46);
@@ -8930,6 +8947,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   --error: #c75555;
   --warning: #a8751d;
   --user-bg: rgba(126, 213, 185, .26);
+  --user-fg: var(--text);
   --tool-pending: rgba(232, 246, 241, .72);
   --tool-success: rgba(222, 246, 229, .72);
   --tool-error: rgba(255, 232, 232, .72);
