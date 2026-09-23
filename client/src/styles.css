@@ -9006,3 +9006,471 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 [data-skin="glass"] .sp-opt.active {
   box-shadow: 0 7px 18px color-mix(in srgb, var(--accent) 18%, transparent);
 }
+
+/* ==========================================================================
+   v0.11.8 · 进度叙事与界面美化
+   1) 跑马灯文本（运行中会话/项目名滚动 + 流动高光）
+   2) 会话列表间隔与卡片化
+   3) 执行过程：进度行 + 系统提示聚合
+   4) 上下文预算浮层
+   5) 思考块视觉优化
+   6) 对话框与地图紧凑模式
+   ========================================================================== */
+
+/* ---------- 1. 跑马灯文本（v0.11.10：修闪烁 + 多风格/多配色/速度/动效档位） ---------- */
+.marquee {
+  position: relative;
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  /* 配色与速度由 <html> 上的 data-* 决定，组件不再各传一份 */
+  --marquee-a: var(--accent);
+  --marquee-b: #7dd3fc;
+  --marquee-speed-scale: 1;
+}
+[data-marquee-color="cyan"] .marquee { --marquee-a: #22d3ee; --marquee-b: #3b82f6; }
+[data-marquee-color="violet"] .marquee { --marquee-a: #a78bfa; --marquee-b: #f472b6; }
+[data-marquee-color="amber"] .marquee { --marquee-a: #fbbf24; --marquee-b: #f97316; }
+[data-marquee-color="emerald"] .marquee { --marquee-a: #34d399; --marquee-b: #10b981; }
+[data-marquee-color="rainbow"] .marquee { --marquee-a: #f87171; --marquee-b: #60a5fa; }
+[data-marquee-speed="slow"] .marquee { --marquee-speed-scale: 1.6; }
+[data-marquee-speed="fast"] .marquee { --marquee-speed-scale: 0.6; }
+
+.marquee-inner {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 隐藏测量元素：位置固定在容器内但不占位、不参与动画，保证测量稳定 */
+.marquee-measure {
+  position: absolute;
+  left: 0;
+  top: 0;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: nowrap;
+  font: inherit;
+  letter-spacing: inherit;
+}
+
+.marquee.is-active .marquee-inner { color: var(--marquee-a); font-weight: 600; }
+
+/* 滚动：位移量由组件按溢出宽度写入 --marquee-shift，时长固定，速度倍率只改时长 */
+.marquee.is-scrolling .marquee-inner {
+  display: inline-block;
+  width: max-content;
+  overflow: visible;
+  text-overflow: clip;
+  will-change: transform;
+  animation: marquee-scroll calc(9s * var(--marquee-speed-scale, 1)) ease-in-out infinite alternate;
+}
+@keyframes marquee-scroll {
+  0%, 12% { transform: translateX(0); }
+  88%, 100% { transform: translateX(var(--marquee-shift, -40px)); }
+}
+
+/* 灯效：按 data-marquee-style 切换；只在支持 background-clip:text 时才用渐变文字，
+   否则宁可不做效果，也不能让文字变透明看不见。 */
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  [data-marquee-style="shine"] .marquee.is-active .marquee-inner,
+  [data-marquee-style="rainbow"] .marquee.is-active .marquee-inner {
+    background-image: linear-gradient(
+      100deg,
+      var(--marquee-a) 0%,
+      var(--marquee-a) 34%,
+      color-mix(in srgb, var(--marquee-a) 60%, #ffffff) 47%,
+      var(--marquee-b) 52%,
+      color-mix(in srgb, var(--marquee-a) 60%, #ffffff) 57%,
+      var(--marquee-a) 70%,
+      var(--marquee-a) 100%
+    );
+    background-size: 260% 100%;
+    background-position: 140% 0;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: var(--marquee-a);
+    animation: marquee-shine calc(3.4s * var(--marquee-speed-scale, 1)) linear infinite;
+  }
+  [data-marquee-style="rainbow"] .marquee.is-active .marquee-inner {
+    background-image: linear-gradient(
+      100deg,
+      #f87171 0%, #fbbf24 16%, #34d399 32%, #22d3ee 48%, #60a5fa 64%, #a78bfa 80%, #f472b6 100%
+    );
+    background-size: 320% 100%;
+    animation-duration: calc(4.6s * var(--marquee-speed-scale, 1));
+  }
+}
+@keyframes marquee-shine {
+  0% { background-position: 140% 0; }
+  100% { background-position: -40% 0; }
+}
+
+/* 霓虹呼吸：不加渐变，只做亮度与描边呼吸，最不容易"闪" */
+[data-marquee-style="neon"] .marquee.is-active .marquee-inner {
+  color: var(--marquee-a);
+  text-shadow: 0 0 7px color-mix(in srgb, var(--marquee-a) 55%, transparent);
+  animation: marquee-neon calc(2.8s * var(--marquee-speed-scale, 1)) ease-in-out infinite;
+}
+@keyframes marquee-neon {
+  0%, 100% { opacity: .72; text-shadow: 0 0 5px color-mix(in srgb, var(--marquee-a) 35%, transparent); }
+  50% { opacity: 1; text-shadow: 0 0 11px color-mix(in srgb, var(--marquee-a) 70%, transparent); }
+}
+
+/* 终端扫描：等宽 + 硬边亮带，steps 让它像扫描线而不是渐变 */
+[data-marquee-style="terminal"] .marquee.is-active .marquee-inner {
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+  letter-spacing: .2px;
+  color: var(--marquee-a);
+}
+[data-marquee-style="terminal"] .marquee.is-active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--marquee-b) 38%, transparent) 46%, transparent 62%);
+  transform: translateX(-100%);
+  animation: marquee-scan calc(3.2s * var(--marquee-speed-scale, 1)) steps(28, end) infinite;
+}
+@keyframes marquee-scan {
+  0% { transform: translateX(-100%); opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { transform: translateX(100%); opacity: 0; }
+}
+
+/* 斜纹跑马：斜向条纹灯带滚动 */
+[data-marquee-style="stripe"] .marquee.is-active .marquee-inner {
+  color: var(--marquee-a);
+}
+[data-marquee-style="stripe"] .marquee.is-active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: .5;
+  background-image: repeating-linear-gradient(
+    115deg,
+    transparent 0 6px,
+    color-mix(in srgb, var(--marquee-b) 42%, transparent) 6px 9px,
+    transparent 9px 15px
+  );
+  background-size: 28px 100%;
+  animation: marquee-stripe calc(1.6s * var(--marquee-speed-scale, 1)) linear infinite;
+}
+@keyframes marquee-stripe {
+  0% { background-position: 0 0; }
+  100% { background-position: 28px 0; }
+}
+
+/* 静态高亮：完全不动，只用颜色和一条左侧色标表示运行中 */
+[data-marquee-style="static"] .marquee.is-active .marquee-inner { color: var(--marquee-a); }
+
+/* 动效档位：克制 → 去掉扫描/条纹与呼吸，只留滚动 + 轻微高光；关闭 → 只留滚动与颜色 */
+[data-motion-level="calm"] [data-marquee-style="terminal"] .marquee.is-active::after,
+[data-motion-level="calm"] [data-marquee-style="stripe"] .marquee.is-active::after,
+[data-motion-level="calm"] [data-marquee-style="neon"] .marquee.is-active .marquee-inner { animation: none; }
+[data-motion-level="calm"] [data-marquee-style="neon"] .marquee.is-active .marquee-inner { opacity: 1; }
+[data-motion-level="off"] .marquee.is-active .marquee-inner { animation: none !important; background-image: none !important; -webkit-text-fill-color: currentColor !important; }
+[data-motion-level="off"] .marquee.is-active::after { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .marquee.is-active .marquee-inner,
+  .marquee.is-scrolling .marquee-inner,
+  .marquee.is-active.is-scrolling .marquee-inner,
+  .marquee.is-active::after { animation: none; }
+  .marquee.is-active .marquee-inner { background-image: none; -webkit-text-fill-color: currentColor; }
+}
+.session-label-text, .project-session-name, .sidebar-project-name, .task-center-item-title {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* ---------- 2. 会话列表：卡片化 + 间隔 ---------- */
+.session-group { margin-bottom: 6px; }
+.session-group-title { padding: 4px 10px 2px; }
+.session-item {
+  margin: 0 6px 6px;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  border-bottom: 1px solid transparent;
+  transition: background .16s ease, border-color .16s ease, transform .16s ease;
+}
+.session-item:hover {
+  border-color: color-mix(in srgb, var(--border) 90%, transparent);
+  background: color-mix(in srgb, var(--selected) 88%, transparent);
+}
+.session-item.selected { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.session-item .session-indicator { border-radius: 3px; }
+.session-label { display: flex; align-items: center; gap: 4px; min-width: 0; }
+/* 运行中的会话：左侧指示条 + 卡片边框跟着呼吸，和名字灯效呼应 */
+.session-item.is-running,
+.session-item:has(.marquee.is-active) {
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+.session-item.is-running .session-indicator[data-status="running"],
+.session-item:has(.marquee.is-active) .session-indicator[data-status="running"] { animation: session-pulse 1.9s ease-in-out infinite; }
+@keyframes session-pulse {
+  0%, 100% { opacity: .55; box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent); }
+  50% { opacity: 1; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
+}
+/* 左侧栏「最近会话」行：同样给运行中的行留出间隔与高亮 */
+.project-session-row {
+  margin-bottom: 3px;
+  padding: 0 2px;
+  border-radius: 7px;
+  transition: background .16s ease;
+}
+.project-session-row:hover { background: color-mix(in srgb, var(--selected) 80%, transparent); }
+.project-session-row.is-running,
+.project-session-row:has(.marquee.is-active) { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.project-session-open { padding: 6px 4px; }
+
+/* ---------- 3. 执行过程：进度行 + 系统提示聚合 ---------- */
+.execution-flow-progress {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 26px;
+  padding: 4px 10px 6px 11px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.efp-pulse {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: dot-breathe 1.5s ease-in-out infinite;
+}
+.efp-phase {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 9px;
+}
+.efp-items { flex: 0 0 auto; color: var(--dim); }
+.efp-note {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.execution-flow-progress.phase-verifying .efp-phase { border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); color: var(--warning); }
+.execution-flow-progress.phase-delivering .efp-phase { border-color: color-mix(in srgb, var(--success) 45%, var(--border)); color: var(--success); }
+.execution-flow-notes { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.efn-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 24px;
+  padding: 3px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  text-align: left;
+}
+.efn-toggle:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.efn-chip {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+}
+.efn-chevron { margin-left: auto; color: var(--accent); font-family: monospace; }
+.efn-list { padding: 2px 10px 8px; }
+.efn-item {
+  display: flex;
+  gap: 6px;
+  padding: 3px 0;
+  border-top: 1px dashed color-mix(in srgb, var(--border) 70%, transparent);
+  color: var(--muted);
+  font-size: 9px;
+}
+.efn-item:first-child { border-top: 0; }
+.efn-text { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.efn-count { flex: 0 0 auto; color: var(--accent); }
+.efn-item.kind-compact .efn-text { color: var(--warning); }
+.efn-item.kind-progress .efn-text { color: var(--accent); }
+
+/* ---------- 4. 上下文预算浮层 ---------- */
+.context-ring-meter { position: relative; }
+.context-ring-marker {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 9px;
+  border-radius: 2px;
+  background: var(--warning);
+  transform: translateX(-1px);
+}
+.context-ring-budget {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--dim);
+  font-size: 9px;
+}
+.crb-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 2px 0; }
+.crb-row b { color: var(--text); font-size: 10px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.crb-hint { margin: 1px 0 4px; color: var(--dim); font-size: 9px; line-height: 1.5; }
+
+/* ---------- 5. 思考块：更克制的排版 ---------- */
+.thinking-block {
+  border-left-width: 2px;
+  border-left-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 7px;
+}
+.thinking-header { gap: 7px; }
+.thinking-label { letter-spacing: .3px; }
+.thinking-text {
+  color: color-mix(in srgb, var(--muted) 92%, transparent);
+  font-style: normal;
+  font-size: 10.5px;
+  line-height: 1.62;
+  letter-spacing: .1px;
+}
+.thinking-block.expanded .thinking-text { border-top: 1px dashed color-mix(in srgb, var(--border) 75%, transparent); }
+.thinking-block:hover { border-left-color: var(--accent); }
+
+/* ---------- 6. 对话框：间距与层次 ---------- */
+.chat-body { scroll-behavior: smooth; }
+.msg + .msg { margin-top: 2px; }
+.msg .bubble { border-radius: 10px; }
+.msg.user .bubble { border-radius: 12px 12px 4px 12px; }
+.msg.system .bubble { border-radius: 999px; padding: 5px 12px; }
+.chat-compact .chat-head { padding: 6px 9px; }
+.chat-compact .chat-head .doc-hint,
+.chat-compact .chat-head .chat-project-badge { display: none; }
+.chat-compact .task-status-bar { padding: 3px 9px; font-size: 10px; }
+.chat-compact .task-status-bar code,
+.chat-compact .task-status-bar .task-mode-meta { display: none; }
+.chat-compact .chat-stream-shell { padding: 0 6px; }
+.chat-compact .chat-body { padding: 8px 8px 4px; }
+.chat-compact .msg { font-size: 12px; }
+.chat-compact .bubble { max-width: 94%; }
+.chat-compact .chat-input { padding: 6px 8px; }
+
+/* ---------- 7. 动效档位与呼吸指示（v0.11.10：降低"一直在闪"的观感） ---------- */
+/* 呼吸点放慢、减小幅度：原来 1.2s 的脉冲在密集 UI 里显得一直在闪 */
+@keyframes dot-breathe-soft {
+  0%, 100% { opacity: .5; transform: scale(.9); }
+  50% { opacity: .95; transform: scale(1.06); }
+}
+@keyframes pulse-status-soft {
+  0%, 100% { opacity: .45; }
+  50% { opacity: 1; }
+}
+.execution-flow-live i { animation: pulse-status-soft 2.4s ease-in-out infinite; }
+.efp-pulse { animation: dot-breathe-soft 2.6s ease-in-out infinite; }
+.streaming-dot { animation: dot-breathe-soft 1.8s ease-in-out infinite; }
+.session-item.is-running .session-indicator[data-status="running"],
+.session-item:has(.marquee.is-active) .session-indicator[data-status="running"] { animation-duration: 3s; }
+/* 状态栏圆点：去掉外发光扩散，避免整行看起来在闪 */
+.task-status-dot.running, .task-status-dot.finishing { box-shadow: none; }
+
+/* 克制档：只保留必要的滚动，关掉所有脉冲与呼吸 */
+[data-motion-level="calm"] .execution-flow-live i,
+[data-motion-level="calm"] .efp-pulse,
+[data-motion-level="calm"] .streaming-dot,
+[data-motion-level="calm"] .session-item .session-indicator,
+[data-motion-level="calm"] .project-session-open > i { animation: none; }
+
+/* 关闭动效：静态颜色标识 */
+[data-motion-level="off"] .execution-flow-live i,
+[data-motion-level="off"] .efp-pulse,
+[data-motion-level="off"] .streaming-dot,
+[data-motion-level="off"] .session-item .session-indicator,
+[data-motion-level="off"] .project-session-open > i,
+[data-motion-level="off"] .execution-flow-progress .efp-pulse { animation: none; opacity: 1; }
+
+/* ---------- 8. 设置面板：跑马灯与动效 ---------- */
+.sp-hint { margin: -2px 0 8px; color: var(--dim); font-size: 10.5px; line-height: 1.6; }
+.sp-marquee-styles { flex-wrap: wrap; }
+.sp-marquee-styles .sp-opt { min-width: 74px; }
+.sp-marquee-colors { flex-wrap: wrap; }
+.sp-color-opt { display: inline-flex; align-items: center; gap: 6px; }
+.marquee-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, #000 25%, transparent) inset;
+}
+.marquee-swatch.color-accent { background: linear-gradient(135deg, var(--accent), #7dd3fc); }
+.marquee-swatch.color-cyan { background: linear-gradient(135deg, #22d3ee, #3b82f6); }
+.marquee-swatch.color-violet { background: linear-gradient(135deg, #a78bfa, #f472b6); }
+.marquee-swatch.color-amber { background: linear-gradient(135deg, #fbbf24, #f97316); }
+.marquee-swatch.color-emerald { background: linear-gradient(135deg, #34d399, #10b981); }
+.marquee-swatch.color-rainbow { background: linear-gradient(135deg, #f87171, #fbbf24 25%, #34d399 50%, #60a5fa 75%, #a78bfa); }
+.sp-marquee-preview-row { align-items: center; }
+.sp-marquee-preview {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex: 0 1 auto;
+  /* 故意收窄：让预览里的长名字真的溢出，才能演示滚动与灯效 */
+  width: min(260px, 100%);
+  max-width: 260px;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--panel2-bg));
+}
+.sp-marquee-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: dot-breathe-soft 2.6s ease-in-out infinite;
+}
+.sp-marquee-preview-text { font-size: 11px; }
+.sp-marquee-preview small { flex: 0 0 auto; color: var(--dim); font-size: 9px; }
+
+/* ---------- 9. 执行流状态行（并入原状态栏，减少一条横栏） ---------- */
+.execution-flow-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  padding: 1px 10px 4px 11px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.efs-text { color: var(--text); font-weight: 500; }
+.efs-chip {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  border-radius: 999px;
+  color: var(--dim);
+  font-size: 9px;
+}
+.execution-flow-status .task-status-dot { flex: 0 0 auto; }
+/* 窄栏（如地图右侧紧凑对话）只留状态文字，避免横向堆满 */
+@media (max-width: 900px) {
+  .execution-flow-status .efs-chip { display: none; }
+}
+.chat-compact .execution-flow-status { padding: 0 8px 3px 9px; }
+.chat-compact .execution-flow-status .efs-chip { display: none; }
