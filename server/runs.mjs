@@ -304,6 +304,7 @@ function normalizeTrackedPath(run, value) {
 // 临时/调试类噪音文件：不进入工作产物列表（agent 执行过程中的脚本、日志、缓存等）
 const NOISE_ARTIFACT_PATTERNS = [
   /(^|\/)(node_modules|__pycache__|\.venv|venv|\.git|\.oaw|\.cache|\.pytest_cache|dist-info)(\/|$)/i,
+  /(^|\/)node_modules[^/]*(\/|$)/i,             // node_modules_dir 等同前缀派生目录
   /(^|\/)\./,                                   // 隐藏文件与目录（含 .agent-context.md）
   /(^|\/)~\$/,                                  // Office 锁文件（~$xxx.docx/xlsx/pptx）
   /(^|\/)_agent_write_test\./i,                 // 写入探针测试文件
@@ -314,6 +315,10 @@ const NOISE_ARTIFACT_PATTERNS = [
 ];
 // 根目录/任意目录的前导下划线脚本类临时文件：_head.py、_jscheck.txt、_mapdata_run.txt
 const SCRATCH_SCRIPT_BASENAME = /^_[^/]*\.(py|js|mjs|cjs|ts|sh|bat|ps1|txt|log|json)$/i;
+// 下划线开头的目录整体视为临时区：_gh_search/、_probe/ 下的过程脚本与中间数据
+// （此前只按文件名判断，导致 `_gh_search/sim1.mjs`、`_probe/node_modules_dir/...`
+//  这类"目录是临时的、文件名是正常的"文件全部混进了工作产物）。
+const SCRATCH_DIRECTORY_SEGMENT = /(^|\/)_[^/]*\//;
 
 /** 临时/调试文件判定：用于产物列表过滤，避免糟糕的中间文件混入“工作产物”。 */
 export function isNoiseArtifactPath(relativePath) {
@@ -322,6 +327,7 @@ export function isNoiseArtifactPath(relativePath) {
   for (const pattern of NOISE_ARTIFACT_PATTERNS) {
     if (pattern.test(value)) return true;
   }
+  if (SCRATCH_DIRECTORY_SEGMENT.test(value)) return true;
   const basename = value.split("/").pop() || "";
   return SCRATCH_SCRIPT_BASENAME.test(basename);
 }
@@ -728,6 +734,12 @@ export function getRun(id) {
 // eventByteBudget>0 时只保留尾部事件直到接近该字节预算（列表接口瘦身，单条 Run 查询不受限）。
 function publicRunView(run, { includeEvents = true, eventByteBudget = 0 } = {}) {
   const { before, after, ...publicRun } = run;
+  // 工作产物视图：不展示过程脚本/中间数据（touchedPaths 与磁盘记录仍保留原始清单，
+  // 便于审计与回滚定位）。历史上已固化的噪音条目（如 `_gh_search/*`）也因此不再出现在
+  // 产物面板与会话总结里，无需改写 Run 记录。
+  if (Array.isArray(publicRun.artifacts)) {
+    publicRun.artifacts = publicRun.artifacts.filter((item) => !isNoiseArtifactPath(item?.path));
+  }
   if (Array.isArray(publicRun.events) && !includeEvents) {
     publicRun.eventCount = publicRun.events.length;
     delete publicRun.events;

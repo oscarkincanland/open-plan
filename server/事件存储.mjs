@@ -215,11 +215,22 @@ export function listEvents({ after = 0, clientId = "", threadId = "", runId = ""
     (!runId || event.runId === runId)
   );
   const max = Math.max(1, Math.min(2000, Number(limit) || 500));
+  const window = filtered.slice(-max);
+  // 截断判定必须对着“本次真正返回的窗口”算，而不是全局最早序号：
+  // ① 内存窗口已不含游标之后的早期事件（run 太久远/服务跑久了）；
+  // ② 命中条数超过 limit，只能返回最后 max 条。
+  // 旧实现只看 n < events[0].seq，会漏报 ②，前端于是静默丢失中间事件。
+  const firstAvailable = events.length ? Number(events[0].seq) : 0;
+  const windowStart = window.length ? Number(window[0].seq) : 0;
+  const truncated = Boolean(
+    (firstAvailable > 0 && n + 1 < firstAvailable) ||
+    (window.length > 0 && filtered.length > window.length && n + 1 < windowStart)
+  );
   return {
-    events: filtered.slice(-max),
+    events: window,
     latest: nextSeq,
-    earliest: events[0]?.seq || nextSeq,
-    truncated: n > 0 && events.length > 0 && n < Number(events[0].seq),
+    earliest: firstAvailable || nextSeq,
+    truncated,
   };
 }
 

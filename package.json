@@ -10,6 +10,7 @@
     "start:foreground": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"./启动规聚服务.ps1\"",
     "build": "cd client && npm run build",
     "verify": "node scripts/验证脚本.mjs",
+    "inspect:events": "node scripts/事件流健康巡检.mjs",
     "test:phase1": "node scripts/阶段一稳定性测试.mjs",
     "test:phase2": "node scripts/第二阶段记忆治理测试.mjs",
     "test:phase3": "node scripts/第三阶段项目与会话测试.mjs",
@@ -40,6 +41,7 @@
     "test:repeat-guard": "node scripts/重复调用抑制测试.mjs",
     "test:event-registry": "node scripts/事件注册表测试.mjs",
     "test:event-archive": "node scripts/事件流归档测试.mjs",
+    "test:event-replay": "node scripts/事件流回放窗口测试.mjs",
     "test:progress-narration": "node scripts/进度播报测试.mjs"
   },
   "dependencies": {

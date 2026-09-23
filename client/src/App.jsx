@@ -407,6 +407,26 @@ const refreshFiles = useCallback(async (dir) => {
           }
         } catch {}
       };
+      // 服务端在回放结束后会下发具名 open 事件（cursor/latest/earliest/truncated）。
+      // 它与 EventSource 传输层的 open 事件同名：传输层事件没有 data，这里按 data 区分。
+      source.addEventListener("open", (message) => {
+        if (cancelled) return;
+        const raw = message?.data;
+        if (!raw) return;
+        try {
+          const payload = JSON.parse(raw);
+          if (!payload?.truncated) return;
+          // 回放窗口与本地游标已不连续（服务端只能返回最近 N 条）：把本地游标
+          // 对齐服务端最新，并立即做一次全量刷新，而不是静默漏掉中间事件。
+          const latest = Number(payload.latest || 0);
+          if (latest > eventCursorRef.current) {
+            eventCursorRef.current = latest;
+            localStorage.setItem(cursorKey, String(latest));
+          }
+          scheduleEventBatch(true);
+          if (document.visibilityState === "visible") window.setTimeout(() => refreshSessions(), 180);
+        } catch {}
+      });
       source.onerror = scheduleReconnect;
     };
     connect();

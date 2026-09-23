@@ -2047,17 +2047,27 @@ execute: async (_toolCallId, params) => {
     // event channel with history for SSE replay
     // streamId 是通道代际：Runtime/会话重建后序号从 1 重新开始，前端据此重置游标。
     const channel = { streamId: createStreamId(), history: [], seq: 0, historyLimit: CHANNEL_HISTORY_LIMIT, emitter: new EventEmitter() };
+    // 回合级 Run 归属：Pi 回调里的事件属于“当前回合”。排队任务接管时会先切换
+    // entry.activeRunId，如果收尾事件（turn_ended/message_end）此时才到达，就会被
+    // 记到新 Run 名下，造成两个 Run 的 start/end 配对断裂。这里按回合记录归属：
+    // 只在 Pi 回调内生效，工作台自身的事件（model_request_started/steer 等）仍用 activeRunId。
+    let piEventDepth = 0;
+    const runPiEvent = (handler) => (ev) => {
+      piEventDepth += 1;
+      try { return handler(ev); } finally { piEventDepth -= 1; }
+    };
     const emit = (type, data) => {
       const id = ++channel.seq;
       const at = new Date().toISOString();
+      const scopedRunId = piEventDepth > 0 ? (entry?.turnRunId || entry?.activeRunId) : entry?.activeRunId;
       const eventData = data && typeof data === "object" && !Array.isArray(data)
-        ? { ...data, runId: data.runId ?? entry?.activeRunId ?? null }
-        : { value: data, runId: entry?.activeRunId ?? null };
+        ? { ...data, runId: data.runId ?? scopedRunId ?? null }
+        : { value: data, runId: scopedRunId ?? null };
       const ev = { id, type, at, streamId: channel.streamId, protocolVersion: PROTOCOL_VERSION, data: eventData };
       pushChannelEvent(channel, ev);
       channel.emitter.emit("event", ev);
-      if (entry?.activeRunId && ["agent_started", "turn_started", "turn_ended", "message_start", "message_end", "tool_start", "tool_end", "tool_repeat_warning", "ask_user", "agent_error", "agent_retry", "assistant_final", "agent_end", "stats"].includes(type)) {
-        try { recordRunEvent(entry.activeRunId, type, data || {}); } catch {}
+      if (scopedRunId && ["agent_started", "turn_started", "turn_ended", "message_start", "message_end", "tool_start", "tool_end", "tool_repeat_warning", "ask_user", "agent_error", "agent_retry", "assistant_final", "agent_end", "stats"].includes(type)) {
+        try { recordRunEvent(scopedRunId, type, data || {}); } catch {}
       }
     };
     const emitUsage = (usage, cost = 0) => {
@@ -2067,7 +2077,7 @@ execute: async (_toolCallId, params) => {
       emit("stats", { tokens: normalized, cost: cost ?? 0 });
       return true;
     };
-    session.subscribe((ev) => {
+    session.subscribe(runPiEvent((ev) => {
       if (entry) entry.lastPiEventAt = Date.now();
       // forward interesting events
       switch (ev.type) {
@@ -2075,7 +2085,11 @@ execute: async (_toolCallId, params) => {
           emit("agent_started", {});
           break;
         case "turn_start":
-          if (entry) entry.turnCount = Number(entry.turnCount || 0) + 1;
+          if (entry) {
+            entry.turnCount = Number(entry.turnCount || 0) + 1;
+            // 记录“本回合属于哪个 Run”：回合收尾事件可能在新任务接管后才到达
+            entry.turnRunId = entry.activeRunId || null;
+          }
           emit("turn_started", { turnIndex: ev.turnIndex ?? null });
           // 轮次提醒：周期进度小结（每 N 轮）+ 25/45 轮关键点，
           // 判定与文案统一来自 server/轮次预算.mjs。
@@ -2091,6 +2105,8 @@ execute: async (_toolCallId, params) => {
           break;
         case "turn_end":
           emit("turn_ended", { turnIndex: ev.turnIndex ?? null, toolCount: Array.isArray(ev.toolResults) ? ev.toolResults.length : 0 });
+          // 回合已收尾，后续 Pi 事件不再属于本回合
+          if (entry) entry.turnRunId = null;
           break;
         case "message_update":
           if (entry) entry.turnStarted = true;
@@ -2141,6 +2157,8 @@ execute: async (_toolCallId, params) => {
             entry.firstResponseReceived = true;
             entry.activeToolCount = Number(entry.activeToolCount || 0) + 1;
             entry.runToolCount = Number(entry.runToolCount || 0) + 1;
+            // 记录在飞的工具，异常结束时用于补齐 tool_end
+            entry.activeTools.set(String(ev.toolCallId || ""), ev.toolName || "");
           }
           // 工具调用开始：传递工具名 + 输入参数（pi SDK 字段是 args）
           emit("tool_start", {
@@ -2165,6 +2183,7 @@ execute: async (_toolCallId, params) => {
         case "tool_execution_end":
           if (entry) {
             entry.activeToolCount = Math.max(0, Number(entry.activeToolCount || 0) - 1);
+            entry.activeTools.delete(String(ev.toolCallId || ""));
             entry.lastPiEventAt = Date.now();
           }
           emit("tool_end", {
@@ -2310,9 +2329,9 @@ execute: async (_toolCallId, params) => {
         default:
           break;
       }
-    });
+    }));
 
-    entry = { session, channel, busy: false, compacting: false, compactionKind: null, compactionPromise: null, compactionRunId: null, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, modePolicyKey: "", reviewConfirmed: false, reviewAwaitingConfirmation: false, reviewProtectedPaths: new Set(), reviewSources: [], lastAgentError: null, lastSettledError: null, lastAssistantText: "", lastFinalText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, activeToolCount: 0, lastPiEventAt: Date.now(), pendingAbortPromise: null, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, promptChars: estimateRestoredContextChars(session), lastUsage: null, lastCompactionAt: 0, autoCompacting: false };
+    entry = { session, channel, busy: false, compacting: false, compactionKind: null, compactionPromise: null, compactionRunId: null, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, turnRunId: null, activeTools: new Map(), task: null, mode: "agent", modePolicy: null, modePolicyKey: "", reviewConfirmed: false, reviewAwaitingConfirmation: false, reviewProtectedPaths: new Set(), reviewSources: [], lastAgentError: null, lastSettledError: null, lastAssistantText: "", lastFinalText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, activeToolCount: 0, lastPiEventAt: Date.now(), pendingAbortPromise: null, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, promptChars: estimateRestoredContextChars(session), lastUsage: null, lastCompactionAt: 0, autoCompacting: false };
     piRuntimeManager.bindSession(runtimeRecord.runtimeId, { session, profile: options.profile, toolPolicy: null });
     this.sessions.set(clientId, entry);
     return entry;
@@ -2877,6 +2896,30 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       if (activeRunId) {
         try { recordRunEvent(activeRunId, "runtime_health", piRuntimeManager.health(entry.runtimeId, entry.session)); } catch {}
       }
+      // 异常结束（模型超时、上游中断、服务停止）时，在飞的回合与工具收不到 Pi 的
+      // 收尾事件；这里补齐，避免运行轨迹里留下“有开始无结束”的孤儿事件。
+      try {
+        const openTools = [...(entry.activeTools || new Map()).entries()];
+        for (const [toolCallId, name] of openTools) {
+          emitChannelSafe(entry, "tool_end", {
+            toolCallId: toolCallId || null,
+            name: name || "",
+            isError: true,
+            recovered: true,
+            message: "任务异常结束，工具调用未正常收尾",
+          });
+        }
+        if (openTools.length) {
+          entry.activeTools.clear();
+          entry.activeToolCount = 0;
+          entry.toolStarted = false;
+        }
+        if (entry.turnRunId) {
+          emitChannelSafe(entry, "turn_ended", { turnIndex: null, toolCount: 0, recovered: true });
+          entry.turnRunId = null;
+          entry.turnStarted = false;
+        }
+      } catch {}
       entry.busy = false;
       entry.activeRunId = null;
     }
@@ -3360,15 +3403,17 @@ function emitChannelSafe(entry, type, data, { persist = true } = {}) {
   try {
     const id = ++entry.channel.seq;
     const at = new Date().toISOString();
+    // 与 emit 一致：回合内的事件优先归属开启该回合的 Run
+    const scopedRunId = entry?.turnRunId || entry?.activeRunId || null;
     const eventData = data && typeof data === "object" && !Array.isArray(data)
-      ? { ...data, runId: data.runId ?? entry?.activeRunId ?? null }
-      : { value: data, runId: entry?.activeRunId ?? null };
+      ? { ...data, runId: data.runId ?? scopedRunId }
+      : { value: data, runId: scopedRunId };
     const ev = { id, type, at, streamId: entry.channel.streamId, protocolVersion: PROTOCOL_VERSION, data: eventData };
     if (!entry.channel.historyLimit) entry.channel.historyLimit = CHANNEL_HISTORY_LIMIT;
     pushChannelEvent(entry.channel, ev);
     entry.channel.emitter.emit("event", ev);
-    if (persist && entry.activeRunId) {
-      try { recordRunEvent(entry.activeRunId, type, data || {}); } catch {}
+    if (persist && scopedRunId) {
+      try { recordRunEvent(scopedRunId, type, data || {}); } catch {}
     }
   } catch {}
 }

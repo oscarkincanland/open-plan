@@ -131,8 +131,14 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, refreshToken = 
     const requestSeq = ++refreshSeqRef.current;
     setLoading(true);
     try {
+      // 面板语义是“当前会话的产物”：有会话时按会话查询。此前固定用
+      // 工作区+项目过滤，一旦应用当前工作区被切走/服务重启后回到默认工作区，
+      // 本会话的 Run 会被整体过滤掉，面板就显示“本轮暂未生成产物”。
+      const scope = currentSessionId
+        ? { sessionId: currentSessionId }
+        : { cwd: workspace, projectId };
       const [runData, publishedData] = await Promise.all([
-        listRuns("", 100, { cwd: workspace, projectId }),
+        listRuns("", 100, scope),
         listPublishedArtifacts(workspace, projectId),
       ]);
       if (requestSeq !== refreshSeqRef.current) return;
