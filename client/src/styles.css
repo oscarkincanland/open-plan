@@ -1524,6 +1524,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   gap: 7px;
   min-width: 0;
   flex: 1 1 auto;
+  overflow: hidden;
   min-height: 32px;
   padding: 7px 6px 7px 0;
   border: 0;
@@ -1551,13 +1552,49 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   cursor: pointer;
 }
 .execution-flow-hide:hover { color: var(--text); background: var(--selected); }
-.execution-flow-count { color: var(--dim); font-variant-numeric: tabular-nums; }
-.execution-flow-current {
+/* 单行执行流：状态位 · 工具统计 · 用时 · 最近小结 · 收尾标签 */
+.execution-flow-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 9px;
+  white-space: nowrap;
+}
+.execution-flow-state.live {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent);
+}
+.execution-flow-state.live::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: dot-breathe-soft 2.6s ease-in-out infinite;
+}
+.execution-flow-stats,
+.execution-flow-elapsed { flex: 0 0 auto; color: var(--dim); font-variant-numeric: tabular-nums; }
+.execution-flow-note {
   min-width: 0;
-  margin-left: auto;
+  flex: 1 1 auto;
   overflow: hidden;
   color: var(--muted);
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.execution-flow-chip {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  border-radius: 999px;
+  color: var(--dim);
+  font-size: 9px;
   white-space: nowrap;
 }
 /* 完成语义徽标：success/partial/blocked/failed/cancelled */
@@ -9232,44 +9269,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .project-session-open { padding: 6px 4px; }
 
 /* ---------- 3. 执行过程：进度行 + 系统提示聚合 ---------- */
-.execution-flow-progress {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 26px;
-  padding: 4px 10px 6px 11px;
-  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
-  color: var(--muted);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-}
-.efp-pulse {
-  width: 6px;
-  height: 6px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: dot-breathe 1.5s ease-in-out infinite;
-}
-.efp-phase {
-  flex: 0 0 auto;
-  padding: 1px 6px;
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
-  border-radius: 999px;
-  color: var(--accent);
-  font-size: 9px;
-}
-.efp-items { flex: 0 0 auto; color: var(--dim); }
-.efp-note {
-  min-width: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
-  color: var(--muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.execution-flow-progress.phase-verifying .efp-phase { border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); color: var(--warning); }
-.execution-flow-progress.phase-delivering .efp-phase { border-color: color-mix(in srgb, var(--success) 45%, var(--border)); color: var(--success); }
+/* 原“进度行 / 状态行”已合并进执行流单行状态栏（见 .execution-flow-state 等） */
 .execution-flow-notes { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
 .efn-toggle {
   display: flex;
@@ -9378,7 +9378,6 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   50% { opacity: 1; }
 }
 .execution-flow-live i { animation: pulse-status-soft 2.4s ease-in-out infinite; }
-.efp-pulse { animation: dot-breathe-soft 2.6s ease-in-out infinite; }
 .streaming-dot { animation: dot-breathe-soft 1.8s ease-in-out infinite; }
 .session-item.is-running .session-indicator[data-status="running"],
 .session-item:has(.marquee.is-active) .session-indicator[data-status="running"] { animation-duration: 3s; }
@@ -9387,18 +9386,17 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 
 /* 克制档：只保留必要的滚动，关掉所有脉冲与呼吸 */
 [data-motion-level="calm"] .execution-flow-live i,
-[data-motion-level="calm"] .efp-pulse,
+[data-motion-level="calm"] .execution-flow-state.live::before,
 [data-motion-level="calm"] .streaming-dot,
 [data-motion-level="calm"] .session-item .session-indicator,
 [data-motion-level="calm"] .project-session-open > i { animation: none; }
 
 /* 关闭动效：静态颜色标识 */
 [data-motion-level="off"] .execution-flow-live i,
-[data-motion-level="off"] .efp-pulse,
+[data-motion-level="off"] .execution-flow-state.live::before,
 [data-motion-level="off"] .streaming-dot,
 [data-motion-level="off"] .session-item .session-indicator,
-[data-motion-level="off"] .project-session-open > i,
-[data-motion-level="off"] .execution-flow-progress .efp-pulse { animation: none; opacity: 1; }
+[data-motion-level="off"] .project-session-open > i { animation: none; opacity: 1; }
 
 /* ---------- 8. 设置面板：跑马灯与动效 ---------- */
 .sp-hint { margin: -2px 0 8px; color: var(--dim); font-size: 10.5px; line-height: 1.6; }
@@ -9446,31 +9444,10 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .sp-marquee-preview-text { font-size: 11px; }
 .sp-marquee-preview small { flex: 0 0 auto; color: var(--dim); font-size: 9px; }
 
-/* ---------- 9. 执行流状态行（并入原状态栏，减少一条横栏） ---------- */
-.execution-flow-status {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 22px;
-  padding: 1px 10px 4px 11px;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 10px;
-  white-space: nowrap;
-}
-.efs-text { color: var(--text); font-weight: 500; }
-.efs-chip {
-  flex: 0 0 auto;
-  padding: 1px 6px;
-  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
-  border-radius: 999px;
-  color: var(--dim);
-  font-size: 9px;
-}
-.execution-flow-status .task-status-dot { flex: 0 0 auto; }
-/* 窄栏（如地图右侧紧凑对话）只留状态文字，避免横向堆满 */
+/* ---------- 9. 窄栏降级：单行状态栏只留状态位，标签顺次隐藏 ---------- */
 @media (max-width: 900px) {
-  .execution-flow-status .efs-chip { display: none; }
+  .execution-flow-chip,
+  .execution-flow-stats { display: none; }
 }
-.chat-compact .execution-flow-status { padding: 0 8px 3px 9px; }
-.chat-compact .execution-flow-status .efs-chip { display: none; }
+.chat-compact .execution-flow-chip,
+.chat-compact .execution-flow-stats { display: none; }

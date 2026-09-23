@@ -350,6 +350,14 @@ export function runTraceProgressText(trace, { now = Date.now(), running = false 
   return parts.join(" · ");
 }
 
+/** 运行中用时文案（供执行流单行状态栏使用，避免与工具统计重复）。 */
+export function runTraceElapsedText(trace, { now = Date.now(), running = false } = {}) {
+  const stats = summarizeRunTrace(trace);
+  const startedAt = stats.startedAt ? new Date(stats.startedAt).getTime() : 0;
+  const elapsed = running && startedAt ? now - startedAt : stats.durationMs;
+  return elapsed > 0 ? `用时 ${formatDuration(elapsed)}` : "";
+}
+
 /** 验收状态文案：与产物验证（发布前预检、显式校验）保持一致。 */
 export function verificationLabel(status) {
   return {

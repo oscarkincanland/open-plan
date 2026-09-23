@@ -6,7 +6,7 @@ import Logo from "./Logo.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
 import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
-import { completionLabel, reduceRunTrace, runTraceProgressText, runTraceSummaryText, summarizeRunTrace } from "../运行轨迹.js";
+import { completionLabel, reduceRunTrace, runTraceElapsedText, runTraceSummaryText, summarizeRunTrace } from "../运行轨迹.js";
 import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, phaseForEvent } from "../事件展示.js";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
@@ -2500,12 +2500,10 @@ case "runtime_connecting":
                 : runState.status === "failed" ? "任务失败"
                   : runState.status === "completed" ? "任务已完成"
                     : "待命";
+  // 单行状态栏只保留收尾结论（产物 / 校验）；模式、上下文、引用、推理
+  // 都改成悬停提示，避免一行里堆满标签。
   const statusChips = [
-    { key: "mode", label: MODE_META[normalizeUiMode(runState.mode || editMode)]?.label || currentMode.label, title: "本轮工作模式" },
-    runState.thinkingLevel ? { key: "thinking", label: `推理 ${runState.thinkingLevel === "low" ? "快速" : runState.thinkingLevel === "high" ? "深度" : runState.thinkingLevel}` } : null,
-    selectedUsage.context > 0 ? { key: "context", label: `上下文 ${Math.round(Number(selectedUsage.context) / 1000)}k`, title: `当前上下文约 ${Number(selectedUsage.context).toLocaleString()} tokens` } : null,
-    runState.references?.length > 0 ? { key: "refs", label: `引用 ${runState.references.length}` } : null,
-    runState.artifacts?.length > 0 ? { key: "artifacts", label: `产物 ${runState.artifacts.length}` } : null,
+    runState.artifacts?.length > 0 ? { key: "artifacts", label: `产物 ${runState.artifacts.length}`, title: "本轮文件变更数量" } : null,
     runState.verificationStatus && runState.verificationStatus !== "not_checked"
       ? { key: "verification", label: `产物校验 ${runState.verificationStatus === "passed" ? "通过" : runState.verificationStatus === "warning" ? "有提示" : "失败"}` }
       : null,
@@ -3497,7 +3495,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [running]);
-  const progressText = runTraceProgressText(runTrace, { now, running });
+  const elapsedText = runTraceElapsedText(runTrace, { now, running });
   useEffect(() => {
     // 收到终结事件后自动回到一行摘要
     if (wasRunningRef.current && !running) setExpanded(false);
@@ -3514,15 +3512,35 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
     );
   }
   const phaseLabel = PHASE_LABELS[runTrace.phase] || "执行";
+  // 单行执行流：状态/阶段 · 工具统计 · 用时 · 最近小结 · 产物/校验 · 实时。
+  // 事件数、模式、上下文、引用、精细阶段改为悬停提示，避免一行里堆六七个标签。
+  const flowStatusTitle = [
+    agentPhase ? `当前阶段：${agentPhase}` : "",
+    statusText && !running ? `状态：${statusText}` : "",
+    `${contentEvents.length} 个事件`,
+    `模式 ${MODE_META[normalizeUiMode(runState.mode || editMode)]?.label || currentMode.label}`,
+    runState.thinkingLevel ? `推理 ${runState.thinkingLevel === "low" ? "快速" : runState.thinkingLevel === "high" ? "深度" : runState.thinkingLevel}` : "",
+    selectedUsage.context > 0 ? `上下文约 ${Number(selectedUsage.context).toLocaleString()} tokens` : "",
+    runState.references?.length ? `引用 ${runState.references.length} 个文件` : "",
+  ].filter(Boolean).join(" · ");
   return (
     <div className={`execution-flow ${expanded ? "expanded" : ""} ${running ? "live" : ""}`}>
       <div className="execution-flow-head">
-        <button type="button" className="execution-flow-toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+        <button type="button" className="execution-flow-toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} title={flowStatusTitle}>
           <span className="execution-flow-chevron">{expanded ? "▾" : "▸"}</span>
           <Icon name="flow" size={12} />
           <strong>执行过程</strong>
-          <span className="execution-flow-count">{contentEvents.length ? `${contentEvents.length} 个事件` : "等待首个事件"}</span>
-          <span className="execution-flow-current">{traceSummary || flowEventLabel(latest || visibleEvents[0])}</span>
+          {/* 状态位：运行中显示阶段（脉冲点），结束后显示任务状态（圆点） */}
+          <span className={`execution-flow-state ${running ? "live" : ""}`} role="status" aria-live="polite">
+            {running ? phaseLabel : statusText}
+          </span>
+          {!running && <span className={`task-status-dot ${statusDotClass}`} />}
+          {traceSummary && <span className="execution-flow-stats">{traceSummary}</span>}
+          {running && elapsedText && <span className="execution-flow-elapsed">{elapsedText}</span>}
+          {running && note && <span className="execution-flow-note" title={`最近小结：${note}`}>小结：{note}</span>}
+          {!running && statusChips.map((chip) => (
+            <span className="execution-flow-chip" key={chip.key} title={chip.title || ""}>{chip.label}</span>
+          ))}
           {completion && (
             <span
               className={`flow-completion ${completion.status}`}
@@ -3535,25 +3553,6 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
         </button>
         <button type="button" className="execution-flow-hide" onClick={() => onHiddenChange?.(true)} title="隐藏执行流（状态栏会回到上方）" aria-label="隐藏执行流"><Icon name="eyeOff" size={12} /></button>
       </div>
-      {/* 运行状态行：并入原独立状态栏，只占一条，避免上下两条横栏重复 */}
-      {(statusText || statusChips.length > 0) && (
-        <div className="execution-flow-status" role="status" aria-live="polite">
-          <span className={`task-status-dot ${statusDotClass}`} />
-          <span className="efs-text">{statusText}</span>
-          {statusChips.map((chip) => (
-            <span className="efs-chip" key={chip.key} title={chip.title || ""}>{chip.label}</span>
-          ))}
-        </div>
-      )}
-      {/* 进度行：只在运行中出现——"现在到哪一步 / 还要多久 / 最近说了什么" */}
-      {running && (progressText || note) && (
-        <div className={`execution-flow-progress phase-${runTrace.phase}`} title={note ? `最近小结：${note}` : progressText}>
-          <span className="efp-pulse" aria-hidden="true" />
-          <span className="efp-phase">{phaseLabel}</span>
-          {progressText && <span className="efp-items">{progressText}</span>}
-          {note && <span className="efp-note">{note}</span>}
-        </div>
-      )}
       {/* 系统提示聚合：压缩 / 文件变更等只留一条可展开摘要，不再逐条堆气泡 */}
       {notes.length > 0 && (
         <div className={`execution-flow-notes ${notesOpen ? "open" : ""}`}>
