@@ -15,7 +15,7 @@ import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges } from "./runs.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts } from "./runs.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
 import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
@@ -3251,10 +3251,13 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
     if (entry) emitChannel(entry, "agent_error", { message: diagnostic.message, code: diagnostic.errorCode || e?.code || null, category: diagnostic.errorCategory || null, providerStatus: diagnostic.providerStatus || null, runId: run?.id || null, requestId, retryable: diagnostic.retryable });
     // 失败前已生成的权威文本也写入 run 记录，供前端断线兜底渲染
     if (run && entry?.lastFinalText) recordRunEvent(run.id, "assistant_final", { text: entry.lastFinalText });
-// 出错也检测产物（agent 可能已部分写入文件）
+// 出错也检测产物（agent 可能已部分写入文件）；清单走内容哈希口径，
+// 只碰了 mtime、内容没变的文件不算变更。
     const stagedElsewhere = otherRunsStagedPaths(run?.id || "");
-    const changed = filterRunChanges(run, (tracksWorkspace ? await waitForFlush(before, runWorkspace) : [])
-      .filter((p) => !stagedElsewhere.has(String(p).replace(/\\/g, "/"))));
+    if (tracksWorkspace) await waitForFlush(before, runWorkspace);
+    const changed = listRunArtifacts(run, runWorkspace)
+      .map((item) => item.path)
+      .filter((p) => !stagedElsewhere.has(String(p).replace(/\\/g, "/")));
     const validations = validateArtifacts(changed, runWorkspace);
     const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
     if (changed.length && entry) {
@@ -3287,8 +3290,12 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
   // 把最终权威文本写入 run 记录（assistant_final），前端 run_finished 用它兜底渲染
   if (run && entry?.lastFinalText) recordRunEvent(run.id, "assistant_final", { text: entry.lastFinalText });
   const stagedElsewhere = otherRunsStagedPaths(run?.id || "");
-  const changed = filterRunChanges(run, (tracksWorkspace ? await waitForFlush(before, runWorkspace) : [])
-    .filter((p) => !stagedElsewhere.has(String(p).replace(/\\/g, "/"))));
+  if (tracksWorkspace) await waitForFlush(before, runWorkspace);
+  // 产物清单走内容哈希口径（与 run.artifacts 相同），而非 mtime 差异：
+  // 后者会把 Office/CLI 只是读取过、内容未变的文件也算成本轮产物。
+  const changed = listRunArtifacts(run, runWorkspace)
+    .map((item) => item.path)
+    .filter((p) => !stagedElsewhere.has(String(p).replace(/\\/g, "/")));
   const validations = validateArtifacts(changed, runWorkspace);
   const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
   const allValidations = [...validations, ...stagedValidations];
@@ -3544,8 +3551,12 @@ app.post("/api/agent/prompt", async (req, res) => {
       error: e,
     });
     if (entry) emitChannel(entry, "agent_error", { message: diagnostic.message, code: diagnostic.errorCode || e?.code || null, category: diagnostic.errorCategory || null, providerStatus: diagnostic.providerStatus || null, requestId: req.requestId, retryable: diagnostic.retryable });
-    // 出错也检测产物（agent 可能已部分写入文件）
-    const changed = run ? filterRunChanges(run, await waitForFlush(before, runWorkspace)) : await waitForFlush(before, runWorkspace);
+    // 出错也检测产物（agent 可能已部分写入文件）；清单走内容哈希口径，
+    // 只碰了 mtime、内容没变的文件不算变更。
+    if (run) await waitForFlush(before, runWorkspace);
+    const changed = run
+      ? listRunArtifacts(run, runWorkspace).map((item) => item.path)
+      : await waitForFlush(before, runWorkspace);
     const validations = validateArtifacts(changed, runWorkspace);
     const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
     if (changed.length) {
@@ -3611,8 +3622,11 @@ async function executeContinuation({ key, entry, run, task, references, workflow
   try {
     await agentManager.promptWithContext(key, continuationPrompt(task, task.recoveryAction), [], undefined, references, { runId: run.id, task, workflow });
     if (entry?.lastFinalText) recordRunEvent(run.id, "assistant_final", { text: entry.lastFinalText });
-    const changed = filterRunChanges(run, await waitForFlush(before, entry.workspace || run.cwd || getWorkspace()));
-    const validations = validateArtifacts(changed, entry.workspace || run.cwd || getWorkspace());
+    const continuationWorkspace = entry.workspace || run.cwd || getWorkspace();
+    await waitForFlush(before, continuationWorkspace);
+    // 内容哈希口径：只碰了 mtime 的文件不算变更
+    const changed = listRunArtifacts(run, continuationWorkspace).map((item) => item.path);
+    const validations = validateArtifacts(changed, continuationWorkspace);
     const stagedValidations = validateStagedArtifacts(run.id);
     const allValidations = [...validations, ...stagedValidations];
     const publishableStagedValidations = stagedValidations.filter((item) => item.status !== "failed");

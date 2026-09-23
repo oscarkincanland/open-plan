@@ -3537,7 +3537,6 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
           {!running && <span className={`task-status-dot ${statusDotClass}`} />}
           {traceSummary && <span className="execution-flow-stats">{traceSummary}</span>}
           {running && elapsedText && <span className="execution-flow-elapsed">{elapsedText}</span>}
-          {running && note && <span className="execution-flow-note" title={`最近小结：${note}`}>小结：{note}</span>}
           {!running && statusChips.map((chip) => (
             <span className="execution-flow-chip" key={chip.key} title={chip.title || ""}>{chip.label}</span>
           ))}

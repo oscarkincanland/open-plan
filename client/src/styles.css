@@ -1580,14 +1580,6 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 }
 .execution-flow-stats,
 .execution-flow-elapsed { flex: 0 0 auto; color: var(--dim); font-variant-numeric: tabular-nums; }
-.execution-flow-note {
-  min-width: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
-  color: var(--muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .execution-flow-chip {
   flex: 0 0 auto;
   padding: 1px 6px;

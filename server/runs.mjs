@@ -481,7 +481,36 @@ export function updateRunCheckpoint(id, patch = {}) {
   return getRun(saved.id);
 }
 
-function changedFiles(before, after) {
+/** 真哈希 vs 兜底哈希（`size:mtime`）判定：兜底值含冒号且长度远短于 sha1。 */
+function isRealHash(value) {
+  return typeof value === "string" && value.length >= 32 && !value.includes(":");
+}
+
+/**
+ * 大小相同时的内容复核（避免兜底哈希造成的误报）。
+ * ① before 快照 blob 与当前文件逐字节对比；② before 侧是真哈希时用当前内容回算；
+ * ③ 都拿不到内容时退化为 size+mtime 一致判断（兜底哈希本身就是 `size:mtime`）。
+ */
+function sameContent(runId, before, after, rel, oldItem) {
+  const currentRoot = after?.root || before?.root || "";
+  const current = path.join(currentRoot, rel);
+  const newItem = after?.files?.[rel];
+  if (runId && oldItem?.reversible) {
+    const blob = path.join(RUNS_DIR, String(runId), "before", rel);
+    try {
+      if (fs.existsSync(blob) && fs.existsSync(current)) return hashFile(blob) === hashFile(current);
+    } catch {}
+  }
+  // 只有 before 侧是真哈希时才能回算（用 after 的真哈希回算会永远相等，漏掉真实修改）
+  if (isRealHash(oldItem?.hash)) {
+    try {
+      if (fs.existsSync(current) && hashFile(current) === oldItem.hash) return true;
+    } catch {}
+  }
+  return Boolean(oldItem?.mtime && newItem?.mtime && oldItem.mtime === newItem.mtime);
+}
+
+function changedFiles(before, after, { runId = "" } = {}) {
   const a = before?.files || {};
   const b = after?.files || {};
   const deleted = [];
@@ -499,8 +528,13 @@ function changedFiles(before, after) {
     const newItem = b[rel];
     if (!oldItem && newItem) return [{ path: rel, status: "added", before: null, after: newItem }];
     if (oldItem && !newItem) return [{ path: rel, status: "deleted", before: oldItem, after: null }];
-    if (oldItem.hash !== newItem.hash || oldItem.size !== newItem.size) return [{ path: rel, status: "modified", before: oldItem, after: newItem }];
-    return [];
+    if (oldItem.size !== newItem.size) return [{ path: rel, status: "modified", before: oldItem, after: newItem }];
+    if (oldItem.hash === newItem.hash) return [];
+    // 快照预算耗尽后哈希会退化成 `size:mtime` 兜底值，而 before/after 两次快照的
+    // 遍历顺序可能不同，于是出现"一侧真哈希、一侧兜底哈希"，直接比较必然不等。
+    // 大小相同时必须复核内容，否则只是 mtime 变了的文件会被误报成"修改"。
+    if (sameContent(runId, before, after, rel, oldItem)) return [];
+    return [{ path: rel, status: "modified", before: oldItem, after: newItem }];
   });
   for (const rename of renames) {
     const oldItem = a[rename.from];
@@ -508,6 +542,19 @@ function changedFiles(before, after) {
     changed.push({ path: rename.to, status: "renamed", from: rename.from, before: oldItem, after: newItem });
   }
   return changed.filter((item) => !renames.some((r) => (item.status === "deleted" && item.path === r.from) || (item.status === "added" && item.path === r.to))).sort((x, y) => x.path.localeCompare(y.path));
+}
+
+/**
+ * 以内容哈希口径计算 Run 当前的真实文件变更（供汇总文案与产物清单共用）。
+ *
+ * 与 waitForFlush/mtime 快照 diff 的区别：只按 mtime 判断会把"只碰了修改时间、
+ * 内容没变"的文件也算成变更（Office/CLI 读取、外部同步、快照哈希预算耗尽都会触发），
+ * 因此这里复用 Run 自己的 before 快照与 run.artifacts 完全相同的比较逻辑。
+ */
+export function listRunArtifacts(run, root = "") {
+  if (!run || run.snapshotMode === "none") return [];
+  const after = snapshotWorkspace(root || run.cwd);
+  return filterRunChanges(run, changedFiles(run.before, after, { runId: run.id }));
 }
 
 function copyAfterBlobs(run, artifacts, after) {
@@ -583,7 +630,7 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
     const after = shouldTrackWorkspace
       ? snapshotWorkspace(run.cwd)
       : { root: path.resolve(run.cwd), capturedAt: new Date().toISOString(), files: {}, size: 0 };
-    const artifacts = shouldTrackWorkspace ? filterRunChanges(run, changedFiles(run.before, after)) : [];
+    const artifacts = shouldTrackWorkspace ? filterRunChanges(run, changedFiles(run.before, after, { runId: run.id })) : [];
     if (shouldTrackWorkspace) copyAfterBlobs(run, artifacts, after);
     run.after = after;
     run.artifacts = artifacts;
