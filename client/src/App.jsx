@@ -118,7 +118,16 @@ function sameWorkspacePath(a, b) {
   return normalize(a) === normalize(b);
 }
 
+// 取路径末段作为文件树匹配键：Agent 产物路径可能是绝对/相对/带子目录，
+// 文件树只显示当前目录的文件，用末段名做短时高亮匹配最稳（仅用于视觉提示，不参与业务判断）。
+function fileBasename(value) {
+  const parts = String(value || "").replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : "";
+}
+
 const GLOBAL_EVENT_NOTICES = new Set(["run_finished", "run_recovered", "run_cancel_requested", "agent_error", "ask_user"]);
+// 启动加载分区文案：失败提示与重试按钮按分区说明，避免只报一句笼统错误。
+const LOAD_SCOPE_LABELS = { files: "文件列表", sessions: "会话列表", projects: "项目列表", workspaces: "工作区列表" };
 
 export default function App() {
   const [files, setFiles] = useState([]);
@@ -200,12 +209,19 @@ export default function App() {
   const [workspaces, setWorkspaces] = useState([]);
   const [projects, setProjects] = useState([]);
   const [currentWorkspace, setCurrentWorkspace] = useState("");
+  // 启动加载状态：files/sessions/projects/workspaces 各自记录 ready/error，
+  // 失败时保留上一次可用数据并给出可重试的提示，而不是静默伪装成空结果。
+  const [loadStatus, setLoadStatus] = useState({ files: "loading", sessions: "loading", projects: "loading", workspaces: "loading" });
+  const [loadErrors, setLoadErrors] = useState({});
   const currentProject = projects.find((project) => sameWorkspacePath(project.rootPath, currentWorkspace)) || null;
   const [currentDir, setCurrentDir] = useState(""); // 相对路径子目录
   const currentDirRef = useRef(""); // 与 currentDir 同步的最新值，供无参 refreshFiles 使用
+  const [changedFiles, setChangedFiles] = useState(() => new Set()); // 本轮刚被改动的文件名（短时高亮文件树）
   const [historyMessages, setHistoryMessages] = useState(null); // 加载的历史会话消息
   const [historyThreadId, setHistoryThreadId] = useState(null); // 当前历史消息对应的 thread，避免切换 effect 覆盖恢复内容
   const [historyWindow, setHistoryWindow] = useState(null); // 服务端为长会话返回的展示窗口信息
+  const [sessionResumeError, setSessionResumeError] = useState(null); // { sessionId, message } Agent 恢复失败时历史只读
+  const [sessionResumeRetrying, setSessionResumeRetrying] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState(null); // 当前会话 id（用于界面恢复）
   const currentSession = sessions.find((session) => session.id === currentSessionId) || null;
   const [docLoading, setDocLoading] = useState(false); // 文档加载中
@@ -228,6 +244,8 @@ export default function App() {
   const eventCursorRef = useRef(Number(localStorage.getItem("oaw_event_cursor") || 0));
   const eventNoticeKeysRef = useRef(new Set());
   const autoOpenedRunRef = useRef(new Set());
+  const changedFilesTimerRef = useRef(null);
+  const previewToggleRef = useRef(null);
   const pendingChatInsertRef = useRef([]);
   const { theme, toggleTheme } = useTheme();
 
@@ -307,6 +325,7 @@ export default function App() {
     setHistoryMessages(null);
     setHistoryThreadId(null);
     setHistoryWindow(null);
+    setSessionResumeError(null);
     setTabs([]);
     setActiveTab(null);
     currentDirRef.current = "";
@@ -316,31 +335,61 @@ export default function App() {
     lastSessionIdRef.current = created?.sessionId || null;
   }, [clientId, currentWorkspace, projects]);
 
-const refreshFiles = useCallback(async (dir) => {
+  const setScopeStatus = useCallback((scope, status) => {
+    setLoadStatus((prev) => (prev[scope] === status ? prev : { ...prev, [scope]: status }));
+  }, []);
+
+  const setScopeError = useCallback((scope, error) => {
+    const message = error ? (error.message || "网络请求失败") : "";
+    setLoadErrors((prev) => {
+      if (!message) return prev[scope] ? { ...prev, [scope]: "" } : prev;
+      return prev[scope] === message ? prev : { ...prev, [scope]: message };
+    });
+  }, []);
+
+  const refreshFiles = useCallback(async (dir) => {
     const requestedDir = typeof dir === "string" ? dir : currentDirRef.current;
     const requestSeq = ++filesRequestSeqRef.current;
+    setScopeStatus("files", "loading");
     try {
       const result = await listFiles(requestedDir);
       // 目录已切换或本次请求不是最新时，过期响应不得覆盖列表
-      if (requestSeq === filesRequestSeqRef.current && requestedDir === currentDirRef.current) setFiles(result.files || []);
-    } catch {}
-  }, []);
+      if (requestSeq === filesRequestSeqRef.current && requestedDir === currentDirRef.current) {
+        setFiles(result.files || []);
+        setScopeStatus("files", "ready");
+        setScopeError("files", null);
+      }
+    } catch (error) {
+      if (requestSeq === filesRequestSeqRef.current) {
+        setScopeStatus("files", "error");
+        setScopeError("files", error);
+      }
+    }
+  }, [setScopeError, setScopeStatus]);
 
   const refreshSessions = useCallback(async () => {
     if (sessionsRefreshRef.current) return sessionsRefreshRef.current;
+    setScopeStatus("sessions", "loading");
     const request = listSessions()
       .then((data) => {
         const next = data.sessions || [];
         setSessions(next);
+        setScopeStatus("sessions", "ready");
+        setScopeError("sessions", null);
         return next;
       })
-      .catch(() => []);
+      .catch((error) => {
+        // 保留上一次可用会话列表，不用空数组冒充“没有会话”。
+        setScopeStatus("sessions", "error");
+        setScopeError("sessions", error);
+        return null;
+      });
     sessionsRefreshRef.current = request;
     try { return await request; }
     finally {
       if (sessionsRefreshRef.current === request) sessionsRefreshRef.current = null;
     }
-  }, []);
+  }, [setScopeError, setScopeStatus]);
 
   // 根级事件订阅：当前对话继续使用原有 thread SSE，App 额外监听所有 thread 的重要状态，
   // 让切换后的后台任务仍能刷新历史和未读提示。
@@ -451,19 +500,56 @@ const refreshFiles = useCallback(async (dir) => {
 
   const refreshProjects = useCallback(async () => {
     if (projectsRefreshRef.current) return projectsRefreshRef.current;
+    setScopeStatus("projects", "loading");
     const request = listProjects()
       .then((data) => {
         const next = data.projects || [];
         setProjects(next);
+        setScopeStatus("projects", "ready");
+        setScopeError("projects", null);
         return next;
       })
-      .catch(() => []);
+      .catch((error) => {
+        // 保留上一次可用项目列表，不把失败表现成“没有项目”。
+        setScopeStatus("projects", "error");
+        setScopeError("projects", error);
+        return null;
+      });
     projectsRefreshRef.current = request;
     try { return await request; }
     finally {
       if (projectsRefreshRef.current === request) projectsRefreshRef.current = null;
     }
-  }, []);
+  }, [setScopeError, setScopeStatus]);
+
+  const refreshWorkspaces = useCallback(async () => {
+    setScopeStatus("workspaces", "loading");
+    try {
+      const data = await listWorkspaces();
+      const list = data.workspaces || [];
+      setWorkspaces(list);
+      setScopeStatus("workspaces", "ready");
+      setScopeError("workspaces", null);
+      const savedWorkspace = loadUIState()?.workspace;
+      const restored = list.find((item) => sameWorkspacePath(item.path, savedWorkspace));
+      if (restored) setCurrentWorkspace(restored.path);
+      else if (list[0]) setCurrentWorkspace(list[0].path);
+      return list;
+    } catch (error) {
+      // 保留上一次可用工作区，避免界面卡在“等待工作区列表就绪”。
+      setScopeStatus("workspaces", "error");
+      setScopeError("workspaces", error);
+      return null;
+    }
+  }, [setScopeError, setScopeStatus]);
+
+  const retryStartupLoads = useCallback(() => {
+    const failed = Object.keys(loadErrors).filter((scope) => loadErrors[scope]);
+    if (!failed.length || failed.includes("files")) refreshFiles();
+    if (!failed.length || failed.includes("sessions")) refreshSessions();
+    if (!failed.length || failed.includes("projects")) refreshProjects();
+    if (!failed.length || failed.includes("workspaces")) refreshWorkspaces();
+  }, [loadErrors, refreshFiles, refreshSessions, refreshProjects, refreshWorkspaces]);
 
   useEffect(() => {
     refreshFiles();
@@ -487,23 +573,14 @@ const refreshFiles = useCallback(async (dir) => {
     modelTimer = window.setInterval(syncModels, 60_000);
     const onVisibility = () => { if (document.visibilityState === "visible") syncModels(); };
     document.addEventListener("visibilitychange", onVisibility);
-    (async () => {
-      try {
-        const w = await listWorkspaces();
-        setWorkspaces(w.workspaces || []);
-        const savedWorkspace = loadUIState()?.workspace;
-        const restored = w.workspaces?.find((item) => sameWorkspacePath(item.path, savedWorkspace));
-        if (restored) setCurrentWorkspace(restored.path);
-        else if (w.workspaces?.[0]) setCurrentWorkspace(w.workspaces[0].path);
-      } catch {}
-    })();
+    refreshWorkspaces();
     return () => {
       window.clearInterval(modelTimer);
       window.clearInterval(sessionTimer);
       window.clearInterval(projectTimer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [refreshFiles, refreshSessions, refreshProjects, refreshModelCatalog]);
+  }, [refreshFiles, refreshSessions, refreshProjects, refreshWorkspaces, refreshModelCatalog]);
 
   // 全局 Ctrl/Cmd+K 切换命令面板
   useEffect(() => {
@@ -556,6 +633,12 @@ const refreshFiles = useCallback(async (dir) => {
   const visibleSessions = currentWorkspace
     ? sessions.filter((session) => !session.cwd || sameWorkspacePath(session.cwd, currentWorkspace))
     : sessions;
+  // 启动加载失败提示：按分区列出，提供统一重试；失败期间保留上一次可用数据。
+  const loadFailures = Object.entries(loadErrors).filter(([, message]) => Boolean(message));
+  const loadFailureText = loadFailures.length
+    ? `${loadFailures.map(([scope]) => LOAD_SCOPE_LABELS[scope] || scope).join("、")}读取失败，已保留上一次可用数据`
+    : "";
+  const loadRetrying = loadFailures.some(([scope]) => loadStatus[scope] === "loading");
   const handleProjectChange = useCallback((id) => {
     const project = projects.find((item) => item.id === id);
     if (project?.rootPath) handleWorkspaceChange(project.rootPath);
@@ -685,7 +768,8 @@ const refreshFiles = useCallback(async (dir) => {
       listRuns("", 50, { sessionId: session.id }).catch(() => ({ runs: [] })),
     ]);
     const resumePromise = resumeAgentThread(clientId, conversationId, session.id, resumedWorkspace)
-      .catch((e) => { console.warn("恢复 Agent 会话失败，仍加载历史记录:", e.message); return null; });
+      .then(() => ({ ok: true }))
+      .catch((e) => { console.warn("恢复 Agent 会话失败，历史按只读展示:", e.message); return { ok: false, error: e.message || "恢复失败" }; });
     setUnreadByThread((prev) => {
       if (!prev[conversationId]) return prev;
       const next = { ...prev };
@@ -694,8 +778,10 @@ const refreshFiles = useCallback(async (dir) => {
     });
     markAgentEventsRead(clientId, eventCursorRef.current).catch(() => {});
     try {
-      const [[d, runData]] = await Promise.all([historyPromise, resumePromise]);
+      const [[d, runData], resumeResult] = await Promise.all([historyPromise, resumePromise]);
       if (loadSeq !== sessionLoadSeqRef.current) return;
+      // 恢复失败时仍展示历史，但明确标注为只读并提供重试，避免用户误以为可以继续对话。
+      setSessionResumeError(resumeResult?.ok ? null : { sessionId: session.id, message: resumeResult?.error || "Agent 会话恢复失败" });
       setCurrentSessionId(session.id);
       setThreadId(conversationId);
       localStorage.setItem("oaw_thread_id", conversationId);
@@ -829,6 +915,21 @@ const refreshFiles = useCallback(async (dir) => {
     }
   }, [clientId, currentWorkspace, open, refreshProjects]);
 
+  // 重试恢复当前历史会话的 Agent：成功后才允许继续对话。
+  const retrySessionResume = useCallback(async () => {
+    const targetId = sessionResumeError?.sessionId || currentSessionId;
+    if (!targetId) return;
+    const conversationId = threadId || targetId;
+    setSessionResumeRetrying(true);
+    try {
+      await resumeAgentThread(clientId, conversationId, targetId, currentWorkspace);
+      setSessionResumeError(null);
+    } catch (error) {
+      setSessionResumeError({ sessionId: targetId, message: error.message || "Agent 会话恢复失败" });
+    }
+    setSessionResumeRetrying(false);
+  }, [clientId, currentSessionId, currentWorkspace, sessionResumeError, threadId]);
+
   const handleForkSession = useCallback(async (id, label) => {
     const source = sessions.find((item) => item.id === id);
     const result = await forkSession(id, label, {
@@ -941,17 +1042,33 @@ const refreshFiles = useCallback(async (dir) => {
       }
     }
     setArtifactVersion((value) => value + 1);
-    const status = String(result.status || "completed").toLowerCase();
-    if (!["completed", "success"].includes(status)) return;
     const artifacts = (Array.isArray(result.artifacts) ? result.artifacts : [])
       .map((item) => typeof item === "string" ? { path: item } : item)
       .filter((item) => item?.path && item.status !== "deleted");
+    // 文件树的短时高亮：本轮确实改了文件就打标（部分失败也算），
+    // 由上面的 runId 去重保证重连回放不重播；2.6s 后自动清除，不常驻。
+    if (artifacts.length) {
+      const changed = new Set(artifacts.map((item) => fileBasename(item.path)).filter(Boolean));
+      setChangedFiles(changed);
+      if (changedFilesTimerRef.current) window.clearTimeout(changedFilesTimerRef.current);
+      changedFilesTimerRef.current = window.setTimeout(() => setChangedFiles(new Set()), 2600);
+    }
+    const status = String(result.status || "completed").toLowerCase();
+    if (!["completed", "success"].includes(status)) return;
     const firstArtifact = artifacts[0];
     if (!firstArtifact) return;
     setPreviewOpen(true);
     setPreviewTab("document");
     void open(firstArtifact.path, result.threadId || threadId, result.cwd || currentWorkspace);
   }, [currentWorkspace, open, threadId]);
+
+  // 关闭右预览后把焦点还给顶栏的预览开关，键盘用户不丢位置（对应计划 4.2 面板/命令入口）
+  const closePreview = useCallback(() => {
+    setPreviewLayout(0);
+    setPreviewOpen(false);
+    requestAnimationFrame(() => previewToggleRef.current?.focus());
+  }, []);
+  useEffect(() => () => { if (changedFilesTimerRef.current) window.clearTimeout(changedFilesTimerRef.current); }, []);
 
   // ChatPanel 上报 pi 会话 id → 持久化（刷新后恢复当前对话）
   const handleSessionChange = useCallback((id) => {
@@ -967,7 +1084,9 @@ const refreshFiles = useCallback(async (dir) => {
     lastSessionIdRef.current = loadUIState()?.lastSessionId || null;
   }, []);
 
-  // 恢复：工作区 → 打开的文档 tabs → 激活 tab → 模式/侧栏/子目录
+  // 恢复：工作区 → 打开的文档 tabs → 激活 tab → 侧栏/子目录。
+  // 外部模块（地图、知识库、模板库等）不跨刷新恢复，刷新后统一回到主对话页，
+  // 避免用户被留在某个子页面或进入一个尚未完成加载的懒加载模块。
   useEffect(() => {
     if (uiRestored) return;
     if (!currentWorkspace) return; // 等待工作区列表就绪
@@ -993,26 +1112,26 @@ const refreshFiles = useCallback(async (dir) => {
         setCurrentDir(saved.currentDir);
         refreshFiles(saved.currentDir);
       }
-      if (saved.activeModule) setActiveModule(saved.activeModule);
-      else if (saved.mapMode) setActiveModule("map");
-      else if (saved.kbMode) setActiveModule("knowledge");
-      else if (saved.tplMode) setActiveModule("templates");
+      setActiveModule(null);
       setSidebarOpen(saved.sidebarOpen !== false);
       setUiRestored(true);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentWorkspace]);
 
-  // 恢复最后会话（sessions 就绪后执行一次）
+  // 恢复最后会话（sessions 成功返回后执行一次）
   useEffect(() => {
     sessionsRef.current = sessions;
     if (!uiRestored || restoredSessionRef.current) return;
-    restoredSessionRef.current = true;
     const saved = loadUIState();
-    if (!saved?.lastSessionId) return;
+    if (!saved?.lastSessionId) { restoredSessionRef.current = true; return; }
+    // 会话列表尚未成功返回时不要定稿：首屏 sessions 可能仍是空数组，
+    // 若此时就把一次性标记置真，异步列表晚到后就再也无法恢复上次会话。
+    if (loadStatus.sessions !== "ready") return;
+    restoredSessionRef.current = true;
     const sess = sessions.find((x) => x.id === saved.lastSessionId);
     if (sess) handleSelectSession(sess);
-  }, [sessions, uiRestored, handleSelectSession]);
+  }, [sessions, uiRestored, handleSelectSession, loadStatus.sessions]);
 
   // 保存：界面状态变化时写入 localStorage
   useEffect(() => {
@@ -1078,6 +1197,17 @@ const refreshFiles = useCallback(async (dir) => {
   return (
     <AppErrorBoundary>
       <div className={`app ${previewLayout === 1 ? "preview-half" : previewLayout === 2 ? "preview-maximized" : ""} ${browserFullscreen ? "browser-fullscreen" : ""} ${sidebarOpen ? "sidebar-expanded" : "sidebar-collapsed"}`}>
+        {loadFailureText && (
+          <div
+            className="load-recovery"
+            role="alert"
+            title={loadFailures.map(([scope, message]) => `${LOAD_SCOPE_LABELS[scope] || scope}：${message}`).join("\n")}
+          >
+            <Icon name="warning" size={13} />
+            <span>{loadFailureText}</span>
+            <button className="btn-xs" onClick={retryStartupLoads} disabled={loadRetrying}>{loadRetrying ? "重试中…" : "重试"}</button>
+          </div>
+        )}
         {activeModule === "knowledge" && (
           <DeferredModule label="知识库">
           <KnowledgeBase
@@ -1178,6 +1308,8 @@ const refreshFiles = useCallback(async (dir) => {
               currentDir={currentDir}
               onDirChange={handleDirChange}
               onAtMention={handleAtMention}
+              loadStatus={loadStatus}
+              changedFiles={changedFiles}
               onNewSession={handleNewSession}
               onProjectUpdated={refreshProjects}
               models={models}
@@ -1270,7 +1402,7 @@ const refreshFiles = useCallback(async (dir) => {
             </div>
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
             <button className="btn-sm topbar-new-chat" onClick={handleNewSession} title="新建对话"><Icon name="plus" size={13} /></button>
-            <button className="btn-sm topbar-preview-toggle" onClick={() => { if (previewOpen) setPreviewLayout(0); setPreviewOpen((v) => !v); }} title={previewOpen ? "隐藏右侧预览" : "显示右侧预览"}><Icon name="layers" size={13} /></button>
+            <button ref={previewToggleRef} className="btn-sm topbar-preview-toggle" onClick={() => { if (previewOpen) setPreviewLayout(0); setPreviewOpen((v) => !v); }} title={previewOpen ? "隐藏右侧预览" : "显示右侧预览"} aria-label={previewOpen ? "隐藏右侧预览" : "显示右侧预览"} aria-expanded={previewOpen}><Icon name="layers" size={13} /></button>
             <button className={`btn-sm topbar-browser-toggle ${browserPanelOpen ? "active" : ""}`} onClick={() => setBrowserPanelOpen((v) => !v)} title={browserPanelOpen ? "隐藏内置浏览器" : "显示内置浏览器"} aria-label="内置浏览器"><Icon name="globe" size={13} /></button>
               <TaskCenter
                 sessions={visibleSessions}
@@ -1286,6 +1418,13 @@ const refreshFiles = useCallback(async (dir) => {
                 eventVersion={eventVersion}
               />
             </div>
+            {!activeModule && sessionResumeError && (
+              <div className="session-resume-warning" role="alert">
+                <Icon name="warning" size={13} />
+                <span>历史已加载为只读：Agent 会话恢复失败（{sessionResumeError.message}），继续对话前请先重试恢复。</span>
+                <button className="btn-xs" onClick={retrySessionResume} disabled={sessionResumeRetrying}>{sessionResumeRetrying ? "恢复中…" : "重试恢复"}</button>
+              </div>
+            )}
             <div className="center-chat-slot">{!activeModule && sharedChatPanel}</div>
           </div>
         </div>
@@ -1304,7 +1443,7 @@ const refreshFiles = useCallback(async (dir) => {
                   <Icon name={previewLayout === 2 ? "minimize" : "maximize"} size={14} />
                   <span className="preview-layout-label">{previewLayout === 0 ? "默认" : `${previewLayout * 50}%`}</span>
                 </button>
-                <button className="btn-icon" onClick={() => { setPreviewLayout(0); setPreviewOpen(false); }} title="隐藏右侧预览" aria-label="隐藏右侧预览"><Icon name="close" size={14} /></button>
+                <button className="btn-icon" onClick={closePreview} title="隐藏右侧预览" aria-label="隐藏右侧预览"><Icon name="close" size={14} /></button>
               </span>
             </div>
             <div className="preview-panel-tabs">

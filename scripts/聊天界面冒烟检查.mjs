@@ -95,7 +95,9 @@ try {
       hasFlow: Boolean(document.querySelector(".execution-flow")),
       flowText: head ? head.innerText.replace(/\s+/g, " ").trim() : "",
       hoverTitle: document.querySelector(".execution-flow-head .execution-flow-toggle")?.getAttribute("title") || "",
-      legacyRows: document.querySelectorAll(".execution-flow-status, .execution-flow-progress").length,
+      // 旧的两行（独立状态行/进度行）应已并入单行：只统计 .execution-flow-progress，
+      // 现在的 .execution-flow-status 是单行里的状态位（可访问性契约要求保留该类名）。
+      legacyRows: document.querySelectorAll(".execution-flow-progress").length,
       messages: document.querySelectorAll(".msg").length,
     };
   });

@@ -6,7 +6,7 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { listWorkspace, searchWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace } from "./workspace.mjs";
 import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, queryComments, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
-import { getApprovalMode, listPendingApprovals, listPermissionRules, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
+import { getApprovalMode, listPendingApprovals, listPermissionRules, removeUserRule, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
 import { agentManager, classifyAgentError, getCredentialErrors, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
@@ -3173,6 +3173,12 @@ app.get("/api/agent/permissions", (_req, res) => {
   res.json(listPermissionRules());
 });
 
+// 撤销一条“总是允许”规则（应用全局持久化，撤销后立即恢复逐次询问）
+app.delete("/api/agent/permissions/rule", (req, res) => {
+  const result = removeUserRule(req.body || {});
+  res.status(result.ok ? 200 : 409).json(result);
+});
+
 app.get("/api/agent/approval-mode", (_req, res) => {
   res.json({ mode: getApprovalMode() });
 });
@@ -3200,6 +3206,9 @@ app.post("/api/agent/approval", (req, res) => {
  * 这样供应商慢或断开时不会把浏览器的 prompt 请求长期挂住。
  */
 function getRunFinalText(run) {
+  // 权威终稿优先读 Run 根级投影（由 recordRunFinalText 单写入维护），
+  // 旧 Run 没有该字段时回退到事件流中的最后一条 assistant_final。
+  if (run && String(run.finalText || "").trim()) return String(run.finalText);
   return [...(run?.events || [])]
     .reverse()
     .find((item) => item?.type === "assistant_final" && String(item?.data?.text || "").trim())
@@ -3281,7 +3290,7 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
       validations: [...validations, ...stagedValidations],
       completion: failureCompletion,
     });
-    if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)) });
+    if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)), finalMessageId: getRun(run.id)?.finalMessageId || null });
     return;
   }
 
@@ -3318,7 +3327,7 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
         references: resolved,
       });
     }
-    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked", completion: completed?.completion || resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }), finalText: getRunFinalText(getRun(run.id)) });
+    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked", completion: completed?.completion || resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }), finalText: getRunFinalText(getRun(run.id)), finalMessageId: getRun(run.id)?.finalMessageId || null });
   }
 }
 
@@ -3576,7 +3585,7 @@ app.post("/api/agent/prompt", async (req, res) => {
       const cancelled = getRun(run.id)?.status === "cancel_requested";
       const failureCompletion = resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations], runId: run.id });
       const failed = finishRun(run.id, { status: cancelled ? "cancelled" : "failed", sessionId: entry?.session?.sessionId || null, error: cancelled ? "用户请求取消" : e.message, summary: cancelled ? "任务已取消" : "Agent 执行失败", validations: [...validations, ...stagedValidations], completion: failureCompletion });
-      if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)) });
+      if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)), finalMessageId: getRun(run.id)?.finalMessageId || null });
     }
     res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
     return;
@@ -3652,7 +3661,7 @@ async function executeContinuation({ key, entry, run, task, references, workflow
         references,
       });
     }
-    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, reviewSources: entry.reviewSources || [], status: finished?.status || status, verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)) });
+    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, reviewSources: entry.reviewSources || [], status: finished?.status || status, verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)), finalMessageId: getRun(run.id)?.finalMessageId || null });
     return finished;
   } catch (error) {
     const cancelled = getRun(run.id)?.status === "cancel_requested";
@@ -3665,7 +3674,7 @@ async function executeContinuation({ key, entry, run, task, references, workflow
       summary: cancelled ? "恢复任务已取消" : "恢复任务失败",
       completion: resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { runId: run.id }),
     });
-    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, reviewSources: entry.reviewSources || [], status: finished?.status || "failed", verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)) });
+    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, reviewSources: entry.reviewSources || [], status: finished?.status || "failed", verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)), finalMessageId: getRun(run.id)?.finalMessageId || null });
     return finished;
     return finished;
   }
