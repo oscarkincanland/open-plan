@@ -4,6 +4,7 @@ import ChatPanel, { normalizeHistoryMessages } from "./components/ChatPanel.jsx"
 import Resizer from "./components/Resizer.jsx";
 const SkillsManager = lazy(() => import("./components/SkillsManager.jsx"));
 const AgentMarket = lazy(() => import("./components/AgentMarket.jsx"));
+const IntegrationsCenter = lazy(() => import("./components/IntegrationsCenter.jsx"));
 const KnowledgeBase = lazy(() => import("./components/KnowledgeBase.jsx"));
 const TemplateLibrary = lazy(() => import("./components/TemplateLibrary.jsx"));
 const MapPanel = lazy(() => import("./components/MapPanel.jsx"));
@@ -11,6 +12,7 @@ const CommandPalette = lazy(() => import("./components/CommandPalette.jsx"));
 // 文档预览依赖 docx-preview / pptxviewjs / x-data-spreadsheet 等重库，按需加载
 const DocViewer = lazy(() => import("./components/DocViewer.jsx"));
 import Icon from "./components/Icon.jsx";
+import { useAppearance } from "./界面外观.js";
 import Logo from "./components/Logo.jsx";
 import TaskCenter from "./components/任务中心.jsx";
 import WorkProductPanel from "./components/工作产物面板.jsx";
@@ -20,7 +22,8 @@ import SettingsPanel from "./components/SettingsPanel.jsx";
 import MemoryTab from "./components/MemoryTab.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
-import { listFiles, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession } from "./api.js";
+import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession } from "./api.js";
+import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
 
 function historyReferences(text = "") {
   const refs = [];
@@ -135,23 +138,44 @@ export default function App() {
   const [unreadByThread, setUnreadByThread] = useState({});
   const [eventVersion, setEventVersion] = useState(0);
   const [artifactVersion, setArtifactVersion] = useState(0);
-  const [tabs, setTabs] = useState([]); // [{ name, kind, url?, sheets?, grids?, content? }]
-  const [activeTab, setActiveTab] = useState(null); // 当前激活的文件名
-  const current = activeTab ? tabs.find((t) => t.name === activeTab) || null : null;
+  const [tabs, setTabs] = useState([]); // [{ id, name, identity, kind, url?, sheets?, grids?, content? }]
+  const [activeTab, setActiveTab] = useState(null); // 当前激活标签的 id（工作区 + 相对路径）
+  const current = activeTab ? tabs.find((t) => (t.id || t.name) === activeTab) || null : null;
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeModule, setActiveModule] = useState(null); // 0.10 统一模块入口
   const [settingsModuleTab, setSettingsModuleTab] = useState("settings");
   const [settingsSection, setSettingsSection] = useState("model");
-  const [previewOpen, setPreviewOpen] = useState(true); // 0.10 右侧工作产物预览
+  const [previewOpen, setPreviewOpen] = useState(false); // 默认不打开右侧预览：没有内容时不显示空面板（打开文件/产物时才展开）
   const [previewLayout, setPreviewLayout] = useState(0); // 0=默认，1=50%，2=100%
   const [mapChatVisible, setMapChatVisible] = useState(true); // 地图模式保留 Agent 对话，可独立隐藏
   const [previewTab, setPreviewTab] = useState("document");
+  // B03：右栏三页签（预览 / 改动 / 产物）；改动与产物默认看“本轮”，可切回“会话”
+  const [changesRunId, setChangesRunId] = useState("");
+  const [artifactScope, setArtifactScope] = useState("session");
   const [browserPanelOpen, setBrowserPanelOpen] = useState(false); // 内置浏览器独立侧栏
   const [browserFullscreen, setBrowserFullscreen] = useState(false);
   const browserActiveRef = useRef(false);
 
+  const browserStateSeenRef = useRef(false); // 首个浏览器状态只记录，不触发自动展开
+
   useEffect(() => {
     if (!browserPanelOpen) setBrowserFullscreen(false);
+  }, [browserPanelOpen]);
+
+  // 窄屏防挤压（P1）：右侧只保留一列面板。窗口变窄或打开浏览器栏时自动收起预览，
+  // 避免「侧栏 + 对话 + 预览 + 浏览器」四条最小宽度之和超过视口把对话挤成细条。
+  // ≤768px 时侧栏与右侧面板都是覆盖层（抽屉），因此还要收起侧栏抽屉：
+  // 否则打开时它会整屏盖住对话，用户看不到输入框与发送键。
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const enforceNarrowLayout = () => {
+      if (window.innerWidth > 1024) return;
+      setPreviewOpen((open) => (open && browserPanelOpen ? false : open));
+      if (window.innerWidth <= 768) setSidebarOpen(false);
+    };
+    enforceNarrowLayout();
+    window.addEventListener("resize", enforceNarrowLayout);
+    return () => window.removeEventListener("resize", enforceNarrowLayout);
   }, [browserPanelOpen]);
   const [conversationMode, setConversationMode] = useState("chat");
   const [conversationPhase, setConversationPhase] = useState("");
@@ -183,9 +207,12 @@ export default function App() {
           const payload = JSON.parse(event.data || "{}");
           if (payload.type !== "state") return;
           const active = Boolean(payload.data?.active);
-          if (active && !browserActiveRef.current) {
+          // 刷新后首个 state 只记录、不自动展开（浏览器在服务器侧仍活跃），
+          // 仅当会话过程中从“不活跃”变为“活跃”才自动打开面板。
+          if (active && browserStateSeenRef.current && !browserActiveRef.current) {
             setBrowserPanelOpen(true);
           }
+          browserStateSeenRef.current = true;
           browserActiveRef.current = active;
         } catch {}
       };
@@ -216,11 +243,18 @@ export default function App() {
   const currentProject = projects.find((project) => sameWorkspacePath(project.rootPath, currentWorkspace)) || null;
   const [currentDir, setCurrentDir] = useState(""); // 相对路径子目录
   const currentDirRef = useRef(""); // 与 currentDir 同步的最新值，供无参 refreshFiles 使用
+  const currentWorkspaceRef = useRef(""); // 与 currentWorkspace 同步：文件请求必须带上它，避免用旧闭包值
+  const filesRef = useRef([]); // 与 files 同步：工作区切换失败时用它恢复原列表，不给回调加 files 依赖
   const [changedFiles, setChangedFiles] = useState(() => new Set()); // 本轮刚被改动的文件名（短时高亮文件树）
   const [historyMessages, setHistoryMessages] = useState(null); // 加载的历史会话消息
   const [historyThreadId, setHistoryThreadId] = useState(null); // 当前历史消息对应的 thread，避免切换 effect 覆盖恢复内容
   const [historyWindow, setHistoryWindow] = useState(null); // 服务端为长会话返回的展示窗口信息
   const [sessionResumeError, setSessionResumeError] = useState(null); // { sessionId, message } Agent 恢复失败时历史只读
+  // 新建会话的进行中/失败状态（交互 2）：失败必须可见，且不得清空旧会话。
+  const [creatingSession, setCreatingSession] = useState(false);
+  const [newSessionError, setNewSessionError] = useState(null); // { message, workspace }
+  // 工作区切换失败（交互 8）：保留原状态并提示原因，不再静默 refreshFiles。
+  const [workspaceSwitchError, setWorkspaceSwitchError] = useState(null); // { message, workspace }
   const [sessionResumeRetrying, setSessionResumeRetrying] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState(null); // 当前会话 id（用于界面恢复）
   const currentSession = sessions.find((session) => session.id === currentSessionId) || null;
@@ -238,8 +272,13 @@ export default function App() {
   const mapBridgeRef = useRef(null); // 地图模式复用同一个 ChatPanel，保持消息与 SSE 事件流连续
   const sessionLoadSeqRef = useRef(0);
   const workspaceSwitchSeqRef = useRef(0);
+  // 统一导航代际（交互 8）：项目/工作区/会话/新建共享一条失效边界；
+  // 任一导航都会推进它，异步返回后若不匹配就丢弃，避免逆序响应互相覆盖。
+  const navGenerationRef = useRef(0);
+  const newSessionInFlightRef = useRef(false);
   const filesRequestSeqRef = useRef(0);
   const docRequestSeqRef = useRef(0);
+  const docAbortRef = useRef(null); // 打开文件请求的中止器：切文件/关标签/切工作区时取消旧请求
   const currentThreadRef = useRef(threadId);
   const eventCursorRef = useRef(Number(localStorage.getItem("oaw_event_cursor") || 0));
   const eventNoticeKeysRef = useRef(new Set());
@@ -282,8 +321,18 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [activeModule]);
 
+  // 设置面板的“刷新模型”需要走一次供应商网络刷新；启动、定时轮询和切回标签页
+  // 只读已缓存目录：POST /api/models/refresh 会重置共享 ModelRuntime 并等待网络
+  // 往返（实测约 1 秒），既拖慢首屏，也会在会话进行中打断运行时预热。
   const refreshModelCatalog = useCallback(async () => {
     const data = await refreshModels();
+    setModels(data.models || []);
+    setDefaultModel(data.default || "");
+    return data;
+  }, []);
+
+  const syncModelCatalog = useCallback(async () => {
+    const data = await listModels();
     setModels(data.models || []);
     setDefaultModel(data.default || "");
     return data;
@@ -306,33 +355,70 @@ export default function App() {
     window.setTimeout(() => chatInputRef.current?.startAgentTask?.(payload), 120);
   }, [closeExternalModules]);
 
-  // 新建会话：清空历史消息和当前文档
-  const handleNewSession = useCallback(async (workspace = currentWorkspace) => {
+  // 新建会话：清空历史消息和当前文档。
+  // 交互 2：所有 UI 入口统一零参数调用；历史实现直接把入口当 workspace 传，
+  // React 点击事件被序列化成 cwd，抛出 "Converting circular structure to JSON"，
+  // 而失败又被吞掉、界面照常切换，用户看到的是"清空了但没有新会话"。
+  // 现在：只接受字符串工作区，连续点击去重，失败保留旧会话与草稿并给出可重试提示，
+  // 成功后才提交 thread 与清空旧上下文。
+  const handleNewSession = useCallback(async (workspaceArg) => {
+    const requested = typeof workspaceArg === "string" ? workspaceArg.trim() : "";
+    const targetWorkspace = requested || currentWorkspaceRef.current || currentWorkspace;
+    if (newSessionInFlightRef.current) return null;
+    newSessionInFlightRef.current = true;
+    // 导航代际（交互 8）：与工作区切换、选择历史共享同一条失效边界，
+    // await 返回后若用户已经做了别的导航，这次结果必须丢弃。
+    const generation = ++navGenerationRef.current;
+    setCreatingSession(true);
+    setNewSessionError(null);
     const next = `thread-${globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)}`;
     let created = null;
     try {
       // 先让后端创建并固定 session/workspace，再切换前端 thread，避免 SSE 先创建一个错误 cwd 的空 Agent。
-      const project = projects.find((item) => sameWorkspacePath(item.rootPath, workspace || currentWorkspace));
-      created = await createAgentThread(clientId, next, workspace || undefined, { projectId: project?.id || null });
-      // 新会话已经由当前 Chat 状态立即接管；历史列表刷新延后，避免工作区切换
-      // 立刻触发一次全量 JSONL 扫描，阻塞刚完成的界面切换。
-      window.setTimeout(() => refreshSessions(), 600);
+      const project = projects.find((item) => sameWorkspacePath(item.rootPath, targetWorkspace));
+      created = await createAgentThread(clientId, next, targetWorkspace || undefined, { projectId: project?.id || null });
     } catch (e) {
-      console.warn("创建新会话失败，将在首次对话时自动创建:", e.message);
+      newSessionInFlightRef.current = false;
+      setCreatingSession(false);
+      if (generation === navGenerationRef.current) {
+        // 保留旧会话、标签与未发送输入，只提示失败原因并提供重试。
+        setNewSessionError({ message: e?.message || "创建新会话失败", workspace: targetWorkspace || "" });
+      }
+      return null;
     }
+    if (generation !== navGenerationRef.current) {
+      newSessionInFlightRef.current = false;
+      setCreatingSession(false);
+      return null;
+    }
+    // 新会话已经由当前 Chat 状态立即接管；历史列表刷新延后，避免工作区切换
+    // 立刻触发一次全量 JSONL 扫描，阻塞刚完成的界面切换。
+    window.setTimeout(() => refreshSessions(), 600);
     setThreadId(next);
     localStorage.setItem("oaw_thread_id", next);
     setHistoryMessages(null);
     setHistoryThreadId(null);
     setHistoryWindow(null);
     setSessionResumeError(null);
+    // 切会话时丢弃在途的文件打开请求与已打开标签，避免旧结果写入新会话预览。
+    docRequestSeqRef.current += 1;
+    if (docAbortRef.current) { try { docAbortRef.current.abort(); } catch {} docAbortRef.current = null; }
     setTabs([]);
     setActiveTab(null);
+    // 交互 5：目录归根必须与列表同一次导航——清掉旧子目录项并读根列表，
+    // 否则根目录下仍显示旧子目录内容，点开会按新的根路径解释。
     currentDirRef.current = "";
     setCurrentDir("");
+    setFiles([]);
+    void refreshFiles("");
     setCurrentSessionId(created?.sessionId || null);
     setMapContexts((prev) => ({ ...prev, [next]: null }));
     lastSessionIdRef.current = created?.sessionId || null;
+    newSessionInFlightRef.current = false;
+    setCreatingSession(false);
+    return created;
+    // 不把 refreshFiles / refreshSessions 列入依赖：它们在下方才声明，依赖数组在
+    // 渲染期求值会命中 TDZ；两者都是依赖稳定的 useCallback，闭包捕获始终有效。
   }, [clientId, currentWorkspace, projects]);
 
   const setScopeStatus = useCallback((scope, status) => {
@@ -349,16 +435,27 @@ export default function App() {
 
   const refreshFiles = useCallback(async (dir) => {
     const requestedDir = typeof dir === "string" ? dir : currentDirRef.current;
+    // 工作区身份必须显式传给服务端并在响应里核对：只传 dir 时，服务端会用
+    // 自己的全局工作区解析相对路径，页面显示 A、列表来自 B（交接文档交互 1）。
+    const requestedWorkspace = currentWorkspaceRef.current;
     const requestSeq = ++filesRequestSeqRef.current;
     setScopeStatus("files", "loading");
     try {
-      const result = await listFiles(requestedDir);
-      // 目录已切换或本次请求不是最新时，过期响应不得覆盖列表
-      if (requestSeq === filesRequestSeqRef.current && requestedDir === currentDirRef.current) {
-        setFiles(result.files || []);
-        setScopeStatus("files", "ready");
-        setScopeError("files", null);
+      const result = await listFiles(requestedDir, requestedWorkspace);
+      // 目录已切换、工作区已切换或本次请求不是最新时，过期响应不得覆盖列表
+      const stale = requestSeq !== filesRequestSeqRef.current
+        || requestedDir !== currentDirRef.current
+        || !sameWorkspacePath(requestedWorkspace, currentWorkspaceRef.current);
+      if (stale) return;
+      // 服务端回显的来源与页面不一致：判定为身份错位，阻止把它当当前目录展示。
+      if (result.workspace && requestedWorkspace && !sameWorkspacePath(result.workspace, requestedWorkspace)) {
+        setScopeStatus("files", "error");
+        setScopeError("files", new Error(`文件列表来源与当前工作区不一致（${result.workspace}）`));
+        return;
       }
+      setFiles(result.files || []);
+      setScopeStatus("files", "ready");
+      setScopeError("files", null);
     } catch (error) {
       if (requestSeq === filesRequestSeqRef.current) {
         setScopeStatus("files", "error");
@@ -366,6 +463,12 @@ export default function App() {
       }
     }
   }, [setScopeError, setScopeStatus]);
+
+  // 同步工作区 ref：文件请求由回调发起，若只依赖闭包里的 currentWorkspace，
+  // 工作区刚切换时仍可能用旧值（交互 8 的失效边界之一）。
+  useEffect(() => { currentWorkspaceRef.current = currentWorkspace; }, [currentWorkspace]);
+  // 同理同步文件列表：切换失败要能恢复原列表，但不能让回调依赖 files 频繁重建。
+  useEffect(() => { filesRef.current = files; }, [files]);
 
   const refreshSessions = useCallback(async () => {
     if (sessionsRefreshRef.current) return sessionsRefreshRef.current;
@@ -564,7 +667,7 @@ export default function App() {
     }, 30000);
     const syncModels = async () => {
       try {
-        await refreshModelCatalog();
+        await syncModelCatalog();
       } catch {
         // 扫描失败时保留上一次列表，避免模型下拉框瞬间清空。
       }
@@ -580,7 +683,7 @@ export default function App() {
       window.clearInterval(projectTimer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [refreshFiles, refreshSessions, refreshProjects, refreshWorkspaces, refreshModelCatalog]);
+  }, [refreshFiles, refreshSessions, refreshProjects, refreshWorkspaces, syncModelCatalog]);
 
   // 全局 Ctrl/Cmd+K 切换命令面板
   useEffect(() => {
@@ -599,10 +702,18 @@ export default function App() {
     const requestedPath = String(dir || "").trim();
     if (!requestedPath || sameWorkspacePath(requestedPath, currentWorkspace)) return;
     const switchSeq = ++workspaceSwitchSeqRef.current;
+    // 工作区切换同样推进统一导航代际：在途的新建/历史加载结果不得再写入。
+    navGenerationRef.current += 1;
+    // 记下失败时要恢复的原状态：切换未成功前不应让用户丢掉当前目录。
+    const previousDir = currentDirRef.current;
+    const previousFiles = filesRef.current;
     // 先清空旧工作区的视图，避免等待服务端时继续操作旧文件。
     currentDirRef.current = "";
     setCurrentDir("");
     setFiles([]);
+    // 切工作区时中止在途打开请求并清空标签，旧工作区的预览结果不得写入。
+    docRequestSeqRef.current += 1;
+    if (docAbortRef.current) { try { docAbortRef.current.abort(); } catch {} docAbortRef.current = null; }
     setTabs([]);
     setActiveTab(null);
     setHistoryMessages(null);
@@ -611,6 +722,9 @@ export default function App() {
     try {
       const r = await switchWorkspace(requestedPath);
       if (switchSeq !== workspaceSwitchSeqRef.current) return;
+      // 先同步 ref 再触发任何文件请求：refreshFiles 与 handleNewSession 都从
+      // currentWorkspaceRef 取身份，晚一拍就会把新工作区的请求发到旧路径上。
+      currentWorkspaceRef.current = r.workspace;
       setCurrentWorkspace(r.workspace);
       // 新工作区加入下拉列表（自定义路径切换后也能在下拉中看到）
       setWorkspaces((prev) => {
@@ -624,8 +738,11 @@ export default function App() {
       void handleNewSession(r.workspace);
     } catch (e) {
       if (switchSeq === workspaceSwitchSeqRef.current) {
-        refreshFiles();
-        alert("切换失败: " + e.message);
+        // 切换失败保留原有效状态：恢复原目录与文件列表，只提示失败原因。
+        currentDirRef.current = previousDir;
+        setCurrentDir(previousDir);
+        setFiles(previousFiles);
+        setWorkspaceSwitchError({ message: e?.message || "切换工作区失败", workspace: requestedPath });
       }
     }
   }, [currentWorkspace, handleNewSession, refreshFiles, refreshProjects]);
@@ -667,35 +784,54 @@ export default function App() {
 
   const open = useCallback(async (name, thread = threadId, cwd = currentWorkspace) => {
     const requestSeq = ++docRequestSeqRef.current;
+    // 中止上一次未完成的打开请求：旧响应（可能来自另一个工作区的同名文件）不得写入新预览。
+    docAbortRef.current?.abort();
+    const controller = new AbortController();
+    docAbortRef.current = controller;
     setDocLoading(true);
     // 容错：调用方可能只传了工作区（例如产物跨工作区打开），thread 缺失时回退到当前会话
     const effectiveThread = thread || threadId;
     const effectiveCwd = cwd || currentWorkspace;
+    // 打开前先构造本地身份（workspaceId + relativePath），后续所有预览请求都用它。
+    const localIdentity = makeFileIdentity({ workspaceId: effectiveCwd, cwd: effectiveCwd, relativePath: name });
     try {
-      const revision = Date.now();
-      // 携带 cwd：产物可能属于其他工作区，不能依赖服务端全局当前工作区
-      const cwdQuery = effectiveCwd ? `&cwd=${encodeURIComponent(effectiveCwd)}` : "";
-      const response = await fetch(`/api/doc/${encodeURIComponent(name)}?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(effectiveThread)}${cwdQuery}&v=${revision}`, { cache: "no-store" });
+      const urls = buildDocUrls(localIdentity);
+      const params = new URLSearchParams({ client: clientId, thread: effectiveThread || "" });
+      const response = await fetch(`${urls.open}&${params.toString()}`, { cache: "no-store", signal: controller.signal });
       const doc = await response.json();
       if (!response.ok || doc?.error) throw new Error(doc?.error || `加载失败 HTTP ${response.status}`);
-      if (requestSeq !== docRequestSeqRef.current) return;
-      const previewUrl = doc.url ? `${doc.url}${doc.url.includes("?") ? "&" : "?"}v=${revision}` : doc.url;
-      const nextDoc = { ...doc, url: previewUrl, previewRevision: revision };
+      if (requestSeq !== docRequestSeqRef.current) return null;
+      // 服务端返回的文件身份（含真实 version/hash）优先；前端核对一致后才使用，不一致则标记 failed。
+      const identity = mergeFileIdentity(localIdentity, doc?.identity);
+      const identityVerified = doc?.identity ? identityMatches(localIdentity, doc.identity) : true;
+      const resolvedUrls = buildDocUrls(identity);
+      // 预览地址一律由本地身份重建（带上 cwd + revision），不直接信任 doc.url。
+      const previewUrl = doc.kind === "pdf" ? resolvedUrls.raw : doc.kind === "html" ? resolvedUrls.html : (doc.url || "");
+      const id = fileIdentityKey(identity);
+      const nextDoc = {
+        ...doc,
+        identity,
+        id,
+        url: previewUrl,
+        previewRevision: identity.revision,
+        identityVerified,
+      };
       // 文件从“本轮产物”或 Agent 自动产出打开时，直接切到文档预览，
       // 避免用户还停留在产物列表而误以为文件没有打开。
       setPreviewOpen(true);
       setPreviewTab("document");
-      // 单次 setTabs：避免 React 批处理导致重复 tab
+      // 单次 setTabs：按「工作区 + 相对路径」去重，不同工作区的同名文件是不同标签。
       setTabs((prev) => {
-        const exists = prev.find((t) => t.name === name);
-        if (exists) {
-          return prev.map((t) => (t.name === name ? { ...t, ...nextDoc } : t));
-        }
+        const exists = prev.find((t) => (t.id || t.name) === id);
+        if (exists) return prev.map((t) => ((t.id || t.name) === id ? { ...t, ...nextDoc, name } : t));
         return [...prev, { name, ...nextDoc }];
       });
-      setActiveTab(name);
+      setActiveTab(id);
       setDocLoading(false);
+      return id;
     } catch (e) {
+      // 被更新请求取代：静默丢弃，不弹窗、不清 loading（由新请求负责）。
+      if (e?.name === "AbortError") return null;
       const message = String(e?.message || "");
       // 文件被移动/删除，或文件列表还是切换工作区之前的旧数据时，不弹生硬的 "not found"，
       // 而是刷新列表并提示重新选择。
@@ -706,6 +842,7 @@ export default function App() {
         alert("打开失败: " + message);
       }
       setDocLoading(false);
+      return null;
     }
   }, [clientId, threadId, currentWorkspace]);
 
@@ -714,24 +851,34 @@ export default function App() {
     else open(name);
   }, [activeModule, open]);
 
-  // 关闭 tab
-  const closeTab = useCallback((name) => {
+  // 关闭 tab（按标签 id；关闭当前标签时中止在途打开请求，避免旧结果写入已关闭的预览）
+  const closeTab = useCallback((id) => {
     setTabs((prev) => {
-      const idx = prev.findIndex((t) => t.name === name);
+      const idx = prev.findIndex((t) => (t.id || t.name) === id);
       if (idx === -1) return prev;
-      const next = prev.filter((t) => t.name !== name);
-      if (activeTab === name) {
+      const next = prev.filter((t) => (t.id || t.name) !== id);
+      if (activeTab === id) {
         // 激活相邻 tab
         const neighbor = next[Math.min(idx, next.length - 1)];
-        setActiveTab(neighbor ? neighbor.name : null);
+        setActiveTab(neighbor ? (neighbor.id || neighbor.name) : null);
       }
       return next;
     });
+    if (activeTab === id) {
+      if (docAbortRef.current) { try { docAbortRef.current.abort(); } catch {} docAbortRef.current = null; }
+      docRequestSeqRef.current += 1;
+    }
   }, [activeTab]);
 
   // 点击历史会话：加载该会话的消息记录，并尝试打开关联文件
   const handleSelectSession = useCallback(async (session) => {
+    // 会话切换：重置右栏“改动/产物”的 runId 与范围，
+    // 避免上一个会话的“本轮产物”污染到当前会话（用户反馈的跨会话污染）。
+    setChangesRunId("");
+    setArtifactScope("session");
     const loadSeq = ++sessionLoadSeqRef.current;
+    // 选择历史同样推进统一导航代际：在途的新建/工作区切换不得覆盖本次结果。
+    navGenerationRef.current += 1;
     // 会话自带工作区归属；先切换文件视图，再切换 thread，避免历史会话在另一个项目目录下恢复。
     const targetWorkspace = session.cwd || currentWorkspace;
     let resumedWorkspace = targetWorkspace;
@@ -744,6 +891,8 @@ export default function App() {
         currentDirRef.current = "";
         setCurrentDir("");
         setFiles(switched.files || []);
+        docRequestSeqRef.current += 1;
+        if (docAbortRef.current) { try { docAbortRef.current.abort(); } catch {} docAbortRef.current = null; }
         setTabs([]);
         setActiveTab(null);
       } catch (e) {
@@ -907,7 +1056,9 @@ export default function App() {
         const fn = fileMatch.text.match(/当前打开文件:\s*([^\]\n]+)/);
         if (fn?.[1]) {
           // 历史文本先显示，关联文档在后台打开，不再阻塞会话切换。
-          void open(fn[1].trim(), conversationId).catch(() => {});
+          // 交互 9：必须显式传本次恢复后的工作区——setCurrentWorkspace 还没让
+          // 正在执行的 open 闭包看到新值，否则跨工作区会在旧目录取同名文件或 404。
+          void open(fn[1].trim(), conversationId, resumedWorkspace || undefined).catch(() => {});
         }
       }
     } catch (e) {
@@ -1013,13 +1164,14 @@ export default function App() {
   const handleFileChanged = useCallback((changed) => {
     const changedPaths = new Set((Array.isArray(changed) ? changed : []).map((item) => String(item || "").replace(/\\/g, "/")));
     refreshFiles();
-    if (activeTab && changedPaths.has(String(activeTab).replace(/\\/g, "/"))) {
+    const active = tabs.find((t) => (t.id || t.name) === activeTab);
+    if (active && changedPaths.has(String(active.name).replace(/\\/g, "/"))) {
       // 添加延迟避免与 agent_end 竞态
       setTimeout(() => {
-        open(activeTab);
+        open(active.name, undefined, active.identity?.cwd || active.identity?.workspaceId || currentWorkspace);
       }, 100);
     }
-  }, [activeTab, refreshFiles, open]);
+  }, [activeTab, tabs, currentWorkspace, refreshFiles, open]);
 
   // 暴露 refreshSessions 给 ChatPanel（agent_end 时刷新）
   const handleAgentEnd = useCallback(() => {
@@ -1031,6 +1183,23 @@ export default function App() {
 
   // 一轮任务以 run_finished 为权威结束点：刷新产物列表，并自动打开本轮首个产物。
   // 用 runId 去重，避免 SSE 重连回放导致同一个文件重复打开或反复刷新。
+  // B02：自动打开预览的策略来自外观设置（共享订阅，改设置立即生效）
+  const appearance = useAppearance();
+  const previewAutoOpen = appearance.previewAutoOpen;
+
+  // B03：结果卡的交付入口 → 右栏对应页签（带 runId，保证“本轮”语义）
+  const openChangesForRun = useCallback((runId = "") => {
+    setChangesRunId(String(runId || ""));
+    setPreviewOpen(true);
+    setPreviewTab("changes");
+  }, []);
+  const openArtifactsForRun = useCallback((runId = "") => {
+    setChangesRunId(String(runId || ""));
+    setArtifactScope(runId ? "run" : "session");
+    setPreviewOpen(true);
+    setPreviewTab("artifacts");
+  }, []);
+
   const handleRunFinished = useCallback((result = {}) => {
     const runId = String(result.runId || "");
     if (runId && autoOpenedRunRef.current.has(runId)) return;
@@ -1057,10 +1226,16 @@ export default function App() {
     if (!["completed", "success"].includes(status)) return;
     const firstArtifact = artifacts[0];
     if (!firstArtifact) return;
+    // B02 自动打开预览：never 从不；deliverable 仅通过验收的交付文件；requested 本轮有产物就打开
+    if (previewAutoOpen === "never") return;
+    if (previewAutoOpen === "deliverable") {
+      const acceptanceStatus = String(firstArtifact.acceptanceStatus || firstArtifact.acceptance?.status || "");
+      if (!["passed", "warning", "manual_review"].includes(acceptanceStatus)) return;
+    }
     setPreviewOpen(true);
     setPreviewTab("document");
     void open(firstArtifact.path, result.threadId || threadId, result.cwd || currentWorkspace);
-  }, [currentWorkspace, open, threadId]);
+  }, [currentWorkspace, open, previewAutoOpen, threadId]);
 
   // 关闭右预览后把焦点还给顶栏的预览开关，键盘用户不丢位置（对应计划 4.2 面板/命令入口）
   const closePreview = useCallback(() => {
@@ -1084,9 +1259,9 @@ export default function App() {
     lastSessionIdRef.current = loadUIState()?.lastSessionId || null;
   }, []);
 
-  // 恢复：工作区 → 打开的文档 tabs → 激活 tab → 侧栏/子目录。
-  // 外部模块（地图、知识库、模板库等）不跨刷新恢复，刷新后统一回到主对话页，
-  // 避免用户被留在某个子页面或进入一个尚未完成加载的懒加载模块。
+  // 恢复：只恢复工作区与必要的视图偏好。
+  // 已批准规则（交接文档交互 4）：刷新/服务重启后停留在工作区根目录的空白新会话，
+  // 不自动恢复旧子目录、旧会话或旧文件；历史会话与旧文件只走手动入口。
   useEffect(() => {
     if (uiRestored) return;
     if (!currentWorkspace) return; // 等待工作区列表就绪
@@ -1100,51 +1275,38 @@ export default function App() {
           setFiles(switched.files || []);
         }
       } catch {}
-      for (const t of saved.tabs || []) {
-        if (!t?.name) continue;
-        // 防御：过滤非法/脏文件名（历史遗留的 URL 编码或正则片段），避免打开失败
-        if (!/^(?![\\/])[^:*?"<>|\[\]]{1,300}$/.test(t.name) || t.name.split(/[\\/]/).includes("..")) continue;
-        try { await open(t.name); } catch {}
-      }
-      if (saved.activeTab) setActiveTab(saved.activeTab);
-      if (saved.currentDir) {
-        currentDirRef.current = saved.currentDir;
-        setCurrentDir(saved.currentDir);
-        refreshFiles(saved.currentDir);
-      }
+      // 目录一律回到工作区根：上一次的子目录不再恢复（曾被保存值带回旧列表）。
+      currentDirRef.current = "";
+      setCurrentDir("");
+      void refreshFiles("");
       setActiveModule(null);
       setSidebarOpen(saved.sidebarOpen !== false);
+      // 清掉会触发旧行为的持久化字段，避免遗留值继续自动恢复。
+      saveUIState({ ...saved, currentDir: "", lastSessionId: null });
       setUiRestored(true);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentWorkspace]);
 
-  // 恢复最后会话（sessions 成功返回后执行一次）
+  // 已批准规则：刷新不再自动恢复上次会话。会话 id 与 thread 只在用户手动
+  // 选择历史时使用；这里保留 ref 同步，但不再触发 handleSelectSession。
   useEffect(() => {
     sessionsRef.current = sessions;
-    if (!uiRestored || restoredSessionRef.current) return;
-    const saved = loadUIState();
-    if (!saved?.lastSessionId) { restoredSessionRef.current = true; return; }
-    // 会话列表尚未成功返回时不要定稿：首屏 sessions 可能仍是空数组，
-    // 若此时就把一次性标记置真，异步列表晚到后就再也无法恢复上次会话。
-    if (loadStatus.sessions !== "ready") return;
     restoredSessionRef.current = true;
-    const sess = sessions.find((x) => x.id === saved.lastSessionId);
-    if (sess) handleSelectSession(sess);
-  }, [sessions, uiRestored, handleSelectSession, loadStatus.sessions]);
+    lastSessionIdRef.current = null;
+  }, [sessions]);
 
-  // 保存：界面状态变化时写入 localStorage
+  // 保存：界面状态变化时写入 localStorage。
+  // 只持久化工作区、目录与侧栏开关；不再写入 lastSessionId —— 刷新后必须进入
+  // 空白新会话，旧会话只从历史列表手动打开（交接文档交互 4）。
   useEffect(() => {
     if (!uiRestored) return;
-    if (currentSessionId) lastSessionIdRef.current = currentSessionId;
     saveUIState({
-      tabs: tabs.map((t) => ({ name: t.name, kind: t.kind || "" })),
-      activeTab,
+      // 不再持久化打开的标签与激活标签：刷新后回到主对话页，不自动恢复上次预览内容
       activeModule,
       workspace: currentWorkspace,
       currentDir,
       sidebarOpen,
-      lastSessionId: currentSessionId ?? lastSessionIdRef.current,
     });
   }, [tabs, activeTab, activeModule, currentWorkspace, currentDir, sidebarOpen, currentSessionId, uiRestored]);
 
@@ -1173,12 +1335,14 @@ export default function App() {
         mapBridgeRef.current?.onAgentEnd?.();
       }}
       onRunFinished={handleRunFinished}
+      onOpenRunChanges={openChangesForRun}
+      onOpenRunArtifacts={openArtifactsForRun}
       onModeChange={setConversationMode}
       onPhaseChange={setConversationPhase}
       historyMessages={historyMessages}
       historyThreadId={historyThreadId}
       historyWindow={historyWindow}
-      onNewSession={handleNewSession}
+      onNewSession={() => handleNewSession()}
       onOpenFile={handleChatOpenFile}
       referenceFiles={files.map((file) => currentDir ? currentDir + "/" + file.name : file.name)}
       sessions={visibleSessions}
@@ -1257,7 +1421,7 @@ export default function App() {
             models={models}
             defaultModel={defaultModel}
             onAgentEnd={handleAgentEnd}
-            onNewSession={handleNewSession}
+            onNewSession={() => handleNewSession()}
             historyMessages={historyMessages}
             sessions={visibleSessions}
             currentSessionId={currentSessionId}
@@ -1310,7 +1474,7 @@ export default function App() {
               onAtMention={handleAtMention}
               loadStatus={loadStatus}
               changedFiles={changedFiles}
-              onNewSession={handleNewSession}
+              onNewSession={() => handleNewSession()}
               onProjectUpdated={refreshProjects}
               models={models}
               clientId={clientId}
@@ -1333,6 +1497,8 @@ export default function App() {
               onOpenTemplates={() => openExternalModule("templates")}
               onOpenMap={() => openExternalModule("map")}
                onOpenTasks={() => openExternalModule("tasks")}
+               onOpenMcp={() => openExternalModule("mcp")}
+               onOpenPiPlugins={() => openExternalModule("piPlugins")}
                onOpenSettings={(tab = "settings") => { if (tab === "memory") setSettingsModuleTab("memory"); else { setSettingsModuleTab("settings"); setSettingsSection(tab === "project" ? "project" : "model"); } openExternalModule("settings"); }}
                onOpenArtifacts={() => openExternalModule("artifacts")}
               onBeforeOpenModal={closeExternalModules}
@@ -1345,14 +1511,14 @@ export default function App() {
         )}
         <div className="center-area">
           {!sidebarOpen && (
-            <button className="sidebar-toggle" onClick={() => setSidebarOpen(true)} title="展开侧栏">
-              {"\u25B6"}
+            <button className="sidebar-toggle" onClick={() => setSidebarOpen(true)} title="展开侧栏" aria-label="展开侧栏">
+              <Icon name="chevronRight" size={14} />
             </button>
           )}
           <div className="center-content">
             <div className="topbar">
               {sidebarOpen && (
-                <button className="btn-sm" onClick={() => setSidebarOpen(false)} title="收起侧栏">{"\u25C0"}</button>
+                <button className="btn-sm sidebar-collapse" onClick={() => setSidebarOpen(false)} title="收起侧栏" aria-label="收起侧栏"><Icon name="chevronLeft" size={13} /></button>
               )}
             <span className="topbar-title">
               <Icon name="comment" size={16} />
@@ -1401,7 +1567,7 @@ export default function App() {
               </button>
             </div>
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
-            <button className="btn-sm topbar-new-chat" onClick={handleNewSession} title="新建对话"><Icon name="plus" size={13} /></button>
+            <button className="btn-sm topbar-new-chat" onClick={() => handleNewSession()} disabled={creatingSession} title="新建对话"><Icon name="plus" size={13} /></button>
             <button ref={previewToggleRef} className="btn-sm topbar-preview-toggle" onClick={() => { if (previewOpen) setPreviewLayout(0); setPreviewOpen((v) => !v); }} title={previewOpen ? "隐藏右侧预览" : "显示右侧预览"} aria-label={previewOpen ? "隐藏右侧预览" : "显示右侧预览"} aria-expanded={previewOpen}><Icon name="layers" size={13} /></button>
             <button className={`btn-sm topbar-browser-toggle ${browserPanelOpen ? "active" : ""}`} onClick={() => setBrowserPanelOpen((v) => !v)} title={browserPanelOpen ? "隐藏内置浏览器" : "显示内置浏览器"} aria-label="内置浏览器"><Icon name="globe" size={13} /></button>
               <TaskCenter
@@ -1423,6 +1589,25 @@ export default function App() {
                 <Icon name="warning" size={13} />
                 <span>历史已加载为只读：Agent 会话恢复失败（{sessionResumeError.message}），继续对话前请先重试恢复。</span>
                 <button className="btn-xs" onClick={retrySessionResume} disabled={sessionResumeRetrying}>{sessionResumeRetrying ? "恢复中…" : "重试恢复"}</button>
+              </div>
+            )}
+            {/* 交互 2：新建失败必须可见。旧实现只 console.warn，界面照常清空，
+                用户以为已建好新会话。现在保留旧会话与草稿，并给出重试入口。 */}
+            {!activeModule && newSessionError && (
+              <div className="session-resume-warning" role="alert">
+                <Icon name="warning" size={13} />
+                <span>新建会话失败：{newSessionError.message}（已保留当前会话与未发送内容）</span>
+                <button className="btn-xs" onClick={() => handleNewSession()} disabled={creatingSession}>{creatingSession ? "创建中…" : "重试新建"}</button>
+                <button className="btn-xs" onClick={() => setNewSessionError(null)}>忽略</button>
+              </div>
+            )}
+            {/* 交互 8：工作区切换失败保留原目录与列表，说明失败原因并允许重试。 */}
+            {!activeModule && workspaceSwitchError && (
+              <div className="session-resume-warning" role="alert">
+                <Icon name="warning" size={13} />
+                <span>切换工作区失败：{workspaceSwitchError.message}（已保留原工作区与文件列表）</span>
+                <button className="btn-xs" onClick={() => { const target = workspaceSwitchError.workspace; setWorkspaceSwitchError(null); handleWorkspaceChange(target); }}>重试切换</button>
+                <button className="btn-xs" onClick={() => setWorkspaceSwitchError(null)}>忽略</button>
               </div>
             )}
             <div className="center-chat-slot">{!activeModule && sharedChatPanel}</div>
@@ -1447,17 +1632,20 @@ export default function App() {
               </span>
             </div>
             <div className="preview-panel-tabs">
-              {[['document', '文档预览'], ['artifacts', '产物']].map(([id, label]) => (
+              {[['document', '预览'], ['changes', '改动'], ['artifacts', '产物']].map(([id, label]) => (
                 <button key={id} className={previewTab === id ? "active" : ""} onClick={() => setPreviewTab(id)}>{label}</button>
               ))}
             </div>
             <WorkProductPanel
-              tab={previewTab}
+              tab={previewTab === "document" ? "document" : previewTab}
               clientId={clientId}
               threadId={threadId}
               workspace={currentWorkspace}
               projectId={currentProject?.id || ""}
               currentSessionId={currentSessionId}
+              selectedRunId={changesRunId}
+              artifactScope={artifactScope}
+              onArtifactScopeChange={setArtifactScope}
               refreshToken={artifactVersion}
               onOpenFile={open}
             >
@@ -1519,7 +1707,11 @@ export default function App() {
           onClose={closeExternalModules}
           onAtMention={insertChatText}
           onPromoteToAgent={handlePromoteToAgent}
+          workspace={currentWorkspace}
         />
+        </DeferredModule>
+        <DeferredModule label={activeModule === "mcp" ? "MCP" : "Pi 插件"}>
+        <IntegrationsCenter kind={activeModule === "mcp" ? "mcp" : "pi"} open={activeModule === "mcp" || activeModule === "piPlugins"} onClose={closeExternalModules} />
         </DeferredModule>
         </>
         )}

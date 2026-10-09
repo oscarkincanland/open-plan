@@ -31,6 +31,8 @@ const ChatPanel = read("client/src/components/ChatPanel.jsx");
 const App = read("client/src/App.jsx");
 const SessionSidebar = read("client/src/components/SessionSidebar.jsx");
 const TaskCenter = read("client/src/components/任务中心.jsx");
+const DocViewer = read("client/src/components/DocViewer.jsx");
+const DocxViewer = read("client/src/components/DocxViewer.jsx");
 const 界面外观 = read("client/src/界面外观.js");
 
 let failed = 0;
@@ -149,7 +151,7 @@ console.log("\n▶ 焦点可见与读屏状态");
 });
 
 检查("异步状态区可被读屏播报", () => {
-  assert.match(ChatPanel, /className="task-status-bar" role="status" aria-live="polite"/, "任务状态条应播报");
+  assert.doesNotMatch(ChatPanel, /className="task-status-bar"/, "移除顶栏任务状态条，避免重复播报与占位");
   assert.match(ChatPanel, /className="execution-flow-status" role="status" aria-live="polite"/, "执行流状态应播报");
   assert.match(ChatPanel, /className="execution-flow-next" role="status" aria-live="polite"/, "下一步指引应播报");
   assert.match(ChatPanel, /className="chat-pending-bar" aria-live="polite"/, "等待审批/提问应播报");
@@ -193,6 +195,45 @@ console.log("\n▶ 对比度（按主题变量实际计算）");
   console.log(`    实测最低：${最低.主题名} ${最低.名称} = ${最低.值.toFixed(2)}（阈值 ${最低.阈值}）`);
 });
 
+检查("用户气泡正文对比度达标（所有主题/皮肤）", () => {
+  // 每处 --user-bg 都必须紧跟一个针对该底色的 --user-fg。
+  const 配对 = [...样式.matchAll(/--user-bg:\s*([^;]+);\s*\n\s*--user-fg:\s*([^;]+);/g)]
+    .map((m) => ({ bg: m[1].trim(), fg: m[2].trim() }));
+  const bgCount = (样式.match(/--user-bg:/g) || []).length;
+  const fgCount = (样式.match(/--user-fg:/g) || []).length;
+  assert.equal(bgCount, fgCount, `--user-bg(${bgCount}) 与 --user-fg(${fgCount}) 必须成对声明`);
+  assert.ok(配对.length >= 9, `应至少声明 9 组 --user-bg/--user-fg，实际 ${配对.length}`);
+  for (const { bg, fg } of 配对) {
+    // 半透明底色（glass 皮肤）无法在静态样式表内确定叠底，另行人工复核。
+    if (!/^#[0-9a-fA-F]{6}$/.test(bg) || !/^#[0-9a-fA-F]{6}$/.test(fg)) continue;
+    const 值 = 对比度(fg, bg);
+    assert.ok(值 + 0.05 >= 4.5, `用户气泡 ${fg} on ${bg} 对比度 ${值.toFixed(2)} 低于 WCAG AA 4.5`);
+  }
+  // 生效层必须使用语义变量，不得再回退到固定浅色（浅字浅底的历史问题）。
+  assert.match(样式, /\.center-chat-slot \.msg\.user \.bubble \{[^}]*background:\s*var\(--user-bg\)[^}]*color:\s*var\(--user-fg\)/, "用户气泡必须用 --user-bg/--user-fg");
+  assert.match(样式, /\.center-chat-slot \.msg\.user \.bubble \.msg-text \{[^}]*color:\s*var\(--user-fg\)/, "用户气泡正文必须用 --user-fg");
+  assert.doesNotMatch(样式, /\.center-chat-slot \.msg\.user \.bubble \{[^}]*color:\s*#f9fff3/, "不得再使用固定浅色文字");
+  assert.match(样式, /\.center-chat-slot \.msg\.user \.bubble a \{[^}]*color:\s*inherit/, "气泡内链接必须继承高对比字色");
+});
+
+检查("文档预览自适应：不裁切正文且标签可键盘操作", () => {
+  // 窄栏 + 高倍缩放时宁可横向滚动，也不能把正文裁掉
+  assert.match(样式, /\.oaw-docx-host \{[\s\S]{0,200}?overflow-x: auto/, "Word 预览容器应允许横向滚动");
+  assert.doesNotMatch(样式, /\.oaw-docx-host \{[\s\S]{0,200}?overflow-x: hidden/, "不得再用 overflow-x: hidden 裁切正文");
+  // 默认适应宽度（按真实页宽与面板宽算档位）
+  assert.match(DocxViewer, /const applyFitWidth = useCallback/, "应提供适应宽度");
+  assert.match(DocxViewer, /applyFitWidth\(\{ silent: true \}\)/, "打开文档时应默认适应宽度");
+  assert.match(DocxViewer, /docx-fit-width/, "工具栏应有适应宽度入口");
+  // 缩放用 CSS zoom 保证编辑命中/光标精度，老浏览器才回退 transform
+  assert.match(DocxViewer, /CSS\.supports\("zoom"/, "应优先使用 CSS zoom");
+  assert.match(DocxViewer, /host\.style\.zoom = String\(next \/ 100\)/, "zoom 应作用在宿主容器上");
+  // 标签与关闭按钮：可键盘操作 + 可见焦点
+  assert.match(DocViewer, /role="tab"[\s\S]{0,160}?tabIndex=\{0\}/, "文档标签应可聚焦");
+  assert.match(DocViewer, /onKeyDown=\{\(event\) => \{[\s\S]{0,120}?onSwitchTab/, "标签应支持键盘切换");
+  assert.match(DocViewer, /aria-label=\{`关闭 \$\{t\.name\}`\}/, "关闭按钮应有可访问名");
+  assert.match(样式, /\.doc-tab-close:focus-visible/, "关闭按钮应有可见焦点");
+});
+
 console.log("\n▶ 最小点击目标与窄屏");
 
 检查("触屏设备放大命中区（桌面视觉不变）", () => {
@@ -217,8 +258,32 @@ console.log("\n▶ 最小点击目标与窄屏");
   assert.match(样式, /\.cmd-panel \{[^}]*max-height: 72vh/, "命令面板高度应受视口约束");
   assert.match(样式, /\.cmd-panel \{[^}]*overflow: hidden/, "命令面板应约束溢出");
   assert.match(样式, /@media \(max-width: 720px\), \(max-height: 560px\) \{\s*\.cmd-overlay \{ padding-top: 4vh; \}/, "小窗口应调整命令面板留白");
-  // 顶栏在极窄窗口换行而不是被裁掉
-  assert.match(样式, /@media \(max-width: 520px\) \{\s*\.chat-topbar \{ flex-wrap: wrap/, "极窄窗口顶栏应换行");
+  // 顶栏已收敛为控制按钮；极窄屏隐藏冗余文字，避免内容挤出视口。
+  assert.match(样式, /@media \(max-width: 520px\) \{[\s\S]{0,260}\.context-ring-label \{ display: none; \}/, "极窄窗口隐藏上下文环标签");
+  assert.match(样式, /@media \(max-width: 520px\) \{[\s\S]{0,320}\.approval-mode-control span \{ display: none; \}/, "极窄窗口隐藏审批按钮文字");
+});
+
+检查("窄屏不再强挤三栏，任务中心与地图可用（P1）", () => {
+  // 中等窗口：降低各栏最小宽度
+  assert.match(样式, /@media \(max-width: 1280px\) \{[\s\S]{0,200}?--sidebar-min: 180px/, "中等窗口应降低侧栏最小宽度");
+  // 窄窗口：最多两栏（浏览器栏/预览栏让位，对话列保底可读）
+  assert.match(样式, /@media \(max-width: 1024px\) \{[\s\S]{0,320}?\.app-browser-slot \{ --browser-w: [^}]*min-width: 0/, "窄窗口浏览器栏应可收缩");
+  assert.match(样式, /@media \(max-width: 1024px\) \{[\s\S]{0,320}?\.center-area \{ min-width: 300px/, "窄窗口对话列应保底可读");
+  // 极窄：右侧面板与侧栏改为覆盖层，主区获得全宽（不再以 flex 宽度与对话抢位）
+  assert.match(样式, /@media \(max-width: 768px\) \{[\s\S]{0,700}?\.app-preview-slot, \.app-browser-slot \{[\s\S]{0,300}?position: fixed;/, "极窄窗口右侧面板应改为覆盖层，不再与对话抢宽度");
+  assert.match(样式, /@media \(max-width: 768px\) \{[\s\S]{0,1200}?\.sidebar \{[\s\S]{0,400}?transform: translateX\(-100%\)/, "极窄窗口侧栏应改为抽屉，默认让出主区宽度");
+  // 任务中心：窄屏全宽 + 换行，无横向穿模
+  assert.match(样式, /@media \(max-width: 560px\) \{[\s\S]{0,260}?\.task-center-panel,?\s*\n?\s*\.mp-topbar \.task-center-panel \{[\s\S]{0,220}?position: fixed/, "任务中心窄屏应贴边全宽");
+  assert.match(样式, /\.task-center-filters \{ flex-wrap: wrap; \}/, "任务中心筛选应换行");
+  assert.match(样式, /\.task-center-events > div \{ overflow-wrap: anywhere; \}/, "任务中心事件不应横向溢出");
+  // 地图：画布最小宽度 + 工具栏进入文档流不遮盖
+  assert.match(样式, /\.map-canvas \{ min-width: 480px; \}/, "地图画布应有合理最小宽度");
+  assert.match(样式, /\.map-toolbar \{\n?\s*position: static;/, "窄屏地图工具栏应进入文档流，不遮盖图面");
+  assert.match(样式, /\.map-toolbar \{ flex-wrap: wrap;/, "地图工具栏应可换行");
+  // App 层自动折叠：窄屏或打开浏览器栏时收起预览
+  assert.match(App, /const enforceNarrowLayout = \(\) => \{/, "应有窄屏自动折叠逻辑");
+  assert.match(App, /if \(window\.innerWidth > 1024\) return;/, "窄屏阈值应为 1024");
+  assert.match(App, /window\.addEventListener\("resize", enforceNarrowLayout\)/, "窗口变化时应重新收口");
 });
 
 console.log("\n▶ 启动稳定骨架与焦点归还");

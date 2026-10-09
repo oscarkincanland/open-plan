@@ -153,7 +153,7 @@ export function applyRunTraceEvent(trace, event) {
     case "tool_output": {
       const tool = findTool(trace, data);
       if (!tool) break;
-      const chunk = String(data.output ?? data.text ?? "");
+      const chunk = runToolDetailText({ output: data.output ?? data.text });
       if (!chunk) break;
       tool.output = data.replace ? chunk : (tool.output || "") + chunk;
       break;
@@ -181,7 +181,7 @@ export function applyRunTraceEvent(trace, event) {
       }
       tool.status = "done";
       tool.isError = !!data.isError;
-      if (data.result !== undefined && data.result !== null) tool.result = String(data.result).slice(0, 4000);
+      if (data.result !== undefined && data.result !== null) tool.result = runToolDetailText({ result: data.result }).slice(0, 4000);
       tool.endAt = at;
       if (tool.startAt) {
         const ms = new Date(at).getTime() - new Date(tool.startAt).getTime();
@@ -322,6 +322,130 @@ export function summarizeRunTrace(trace) {
   };
 }
 
+/**
+ * 回合级指标（每轮用时与 token）。
+ *
+ * 数据来源：服务端持久化的 turn_started / turn_ended（时间戳、工具数）与 stats
+ * （每回合一次的 usage：输入/输出/缓存/上下文）。两者都在 Run.events 里，因此
+ * 实时流与历史回放算出来一致——这正是"每一轮用时 + token 数"要记录的东西。
+ * 缺失的字段保持 null，不编造数字。
+ */
+export function reduceTurnMetrics(events = []) {
+  const turns = [];
+  const current = () => turns[turns.length - 1] || null;
+  const ensureTurn = (at) => {
+    if (!current()) turns.push({ index: 1, startedAt: at || null, endedAt: null, toolCount: null, tokens: null });
+    return current();
+  };
+  for (const event of Array.isArray(events) ? events : []) {
+    const at = event?.at || null;
+    const data = event?.data || {};
+    switch (String(event?.type || "")) {
+      case "turn_started":
+        turns.push({ index: turns.length + 1, startedAt: at, endedAt: null, toolCount: null, tokens: null });
+        break;
+      case "stats": {
+        const tokens = normalizeTurnTokens(data.tokens || data.usage);
+        if (!tokens) break;
+        const target = ensureTurn(at);
+        // 同一回合可能收到多条 stats（重试/多次 usage），保留信息更全的一条。
+        target.tokens = target.tokens && Number(target.tokens.output) > Number(tokens.output) ? target.tokens : tokens;
+        break;
+      }
+      case "turn_ended": {
+        const target = current();
+        if (!target) break;
+        target.endedAt = at;
+        target.toolCount = Number.isFinite(Number(data.toolCount)) ? Number(data.toolCount) : null;
+        break;
+      }
+      case "agent_end":
+      case "run_finished": {
+        const target = current();
+        if (target && !target.endedAt) target.endedAt = at;
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return turns.map((turn) => ({
+    ...turn,
+    durationMs: turn.startedAt && turn.endedAt
+      ? Math.max(0, new Date(turn.endedAt).getTime() - new Date(turn.startedAt).getTime())
+      : null,
+  }));
+}
+
+/** stats.tokens → 只保留可用的数字字段（缺失为 null，不用 0 冒充）。 */
+function normalizeTurnTokens(input) {
+  if (!input || typeof input !== "object") return null;
+  const pick = (...keys) => {
+    for (const key of keys) {
+      const value = Number(input[key]);
+      if (Number.isFinite(value)) return value;
+    }
+    return null;
+  };
+  const tokens = {
+    input: pick("inputTokens", "input"),
+    output: pick("outputTokens", "output"),
+    cacheRead: pick("cacheReadTokens", "cacheRead"),
+    cacheWrite: pick("cacheWriteTokens", "cacheWrite"),
+    context: pick("context", "contextTokens"),
+    total: pick("totalTokens", "total"),
+  };
+  return Object.values(tokens).some((value) => value !== null) ? tokens : null;
+}
+
+/** 回合指标合计：轮数、用时、输入/输出/缓存/上下文（只累加真实存在的值）。 */
+export function summarizeTurnMetrics(turns = []) {
+  const list = Array.isArray(turns) ? turns : [];
+  const sum = (key) => {
+    const values = list.map((turn) => turn?.tokens?.[key]).filter((value) => Number.isFinite(value));
+    return values.length ? values.reduce((total, value) => total + value, 0) : null;
+  };
+  const durations = list.map((turn) => turn?.durationMs).filter((value) => Number.isFinite(value));
+  return {
+    turnCount: list.length,
+    durationMs: durations.length ? durations.reduce((total, value) => total + value, 0) : null,
+    input: sum("input"),
+    output: sum("output"),
+    cacheRead: sum("cacheRead"),
+    cacheWrite: sum("cacheWrite"),
+    // 上下文是"每回合结束时的规模"，合计没有意义，取最后一轮的实测值。
+    context: [...list].reverse().map((turn) => turn?.tokens?.context).find((value) => Number.isFinite(value)) ?? null,
+    measuredTurns: list.filter((turn) => turn?.tokens).length,
+  };
+}
+
+/** token 数文案：292 / 1.2k / 184.2k（超过 100 万才用 M）；未知值返回空串。 */
+export function formatTokenCount(value) {
+  if (value === null || value === undefined || value === "") return "";
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return "";
+  if (number < 1000) return String(Math.round(number));
+  if (number < 1000000) {
+    const k = number / 1000;
+    return `${k < 10 ? k.toFixed(1).replace(/\.0$/, "") : Math.round(k)}k`;
+  }
+  const m = number / 1000000;
+  return `${m < 10 ? m.toFixed(1).replace(/\.0$/, "") : Math.round(m)}M`;
+}
+
+/** 本轮指标文案：用时 3 分 12 秒 · 13 轮 · 输入 26.2k tokens · 输出 1.4k tokens */
+export function turnMetricsText(totals, { durationMs = null } = {}) {
+  if (!totals) return "";
+  const parts = [];
+  const elapsed = Number(durationMs ?? totals.durationMs);
+  if (Number.isFinite(elapsed) && elapsed > 0) parts.push(`用时 ${formatDuration(elapsed)}`);
+  if (totals.turnCount) parts.push(`${totals.turnCount} 轮`);
+  if (Number.isFinite(totals.input)) parts.push(`输入 ${formatTokenCount(totals.input)} tokens`);
+  if (Number.isFinite(totals.output)) parts.push(`输出 ${formatTokenCount(totals.output)} tokens`);
+  if (Number.isFinite(totals.cacheRead) && totals.cacheRead > 0) parts.push(`缓存读 ${formatTokenCount(totals.cacheRead)} tokens`);
+  return parts.join(" · ");
+}
+
 /** 耗时文案：45 秒 / 3 分 12 秒 / 1 小时 2 分 */
 export function formatDuration(ms) {
   const total = Math.max(0, Math.round(Number(ms || 0) / 1000));
@@ -333,14 +457,10 @@ export function formatDuration(ms) {
   return `${hours} 小时 ${minutes % 60} 分`;
 }
 
-/**
- * 运行中进度行：阶段 · 第 N 轮 · 工具 M · 待办 x/y · 用时。
- * 与折叠摘要互补——摘要讲"做了什么"，进度行讲"现在到哪一步"。
- */
+/** 运行中进度行只保留用户可行动的工具、待办与耗时，不暴露 harness 轮次计数。 */
 export function runTraceProgressText(trace, { now = Date.now(), running = false } = {}) {
   const stats = summarizeRunTrace(trace);
   const parts = [];
-  if (stats.turns) parts.push(`第 ${stats.turns} 轮`);
   if (stats.toolTotal) parts.push(`工具 ${stats.toolTotal}`);
   if (stats.todoTotal) parts.push(`待办 ${stats.todoDone}/${stats.todoTotal}`);
   const startedAt = stats.startedAt ? new Date(stats.startedAt).getTime() : 0;
@@ -368,6 +488,22 @@ export function verificationLabel(status) {
     pending: "验证中",
     not_checked: "未验收",
   }[String(status || "not_checked")] || "未验收";
+}
+
+/** 工具时间线的紧凑明细：兼容文本与结构化输入/输出，不出现 [object Object]。 */
+export function runToolDetailText(tool = {}) {
+  for (const value of [tool.output, tool.result, tool.input]) {
+    if (value === undefined || value === null) continue;
+    let text = "";
+    if (typeof value === "string") text = value;
+    else {
+      try { text = JSON.stringify(value, null, 2) ?? String(value); }
+      catch { text = String(value); }
+    }
+    text = text.trim();
+    if (text && text !== "[object Object]") return text;
+  }
+  return "";
 }
 
 /**

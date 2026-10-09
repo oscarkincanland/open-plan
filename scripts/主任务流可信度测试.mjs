@@ -19,6 +19,31 @@ const 图标 = read("../client/src/components/Icon.jsx");
 const 样式 = read("../client/src/styles.css");
 const App = read("../client/src/App.jsx");
 const 侧栏 = read("../client/src/components/SessionSidebar.jsx");
+const 智能体广场 = read("../client/src/components/AgentMarket.jsx");
+const 运行展示投影 = read("../client/src/运行展示投影.js");
+const 智能体管理 = read("../server/智能体管理.mjs");
+const 智能体运行时 = read("../server/agent.mjs");
+const 服务端索引 = read("../server/index.mjs");
+const 运行记录 = read("../server/runs.mjs");
+const 事件注册表 = read("../server/事件注册表.mjs");
+const 事件展示 = read("../client/src/事件展示.js");
+
+// 0. 智能体广场入口语义（P1）：动作名与真实行为一致，且展示所需输入/预计产物/工作区
+assert.match(智能体广场, /带入对话<\/button>/, "入口动作应叫「带入对话」，而不是“调用”");
+assert.doesNotMatch(智能体广场, /> 调用<\/button>/, "不应再把预填草稿称为“调用/启动”");
+assert.match(智能体广场, /只会把角色指令与依赖技能填成草稿，<b>发送后才会开始执行<\/b>/, "入口应说明发送后才执行");
+assert.match(智能体广场, /className="agent-brief"/, "卡片应提供带入前的知情信息");
+assert.match(智能体广场, /所需输入/, "应展示所需输入");
+assert.match(智能体广场, /预计产物/, "应展示预计产物");
+assert.match(智能体广场, /执行工作区/, "应展示执行工作区");
+assert.match(智能体广场, /workspace = ""/, "应接受当前工作区");
+assert.match(App, /workspace=\{currentWorkspace\}/, "App 应把当前工作区传给智能体广场");
+assert.match(智能体广场, /不会自动执行，确认并发送后才开始/, "按钮提示应明确不会自动执行");
+// 内置 Agent 的所需输入/预计产物在服务端与前端默认值里都要有（避免只在前端“装样子”）
+assert.match(智能体管理, /inputs: \["主题\/事由"/, "服务端内置 Agent 应声明所需输入");
+assert.match(智能体管理, /outputs: \["规范 \.docx 公文或报告"\]/, "服务端内置 Agent 应声明预计产物");
+assert.match(智能体广场, /inputs: \["OD\/站点\/客流数据（表格或 GeoJSON）"/, "前端默认 Agent 应同步所需输入");
+assert.match(样式, /\.agent-brief-grid/, "知情信息应有样式");
 
 // 1. 空白态按模式给示例，且 Chat 的示例不含写文件动作
 assert.match(对话面板, /const EMPTY_EXAMPLES = \{/, "应有按模式划分的空白态示例");
@@ -68,15 +93,35 @@ for (const label of ["目标达成", "文件变更", "验证"]) {
 }
 assert.match(对话面板, /未完成：\{completion\.incomplete\.join/, "结果卡应列出未完成项");
 assert.match(对话面板, /受阻：\{completion\.blockers\.join/, "结果卡应列出受阻项");
-assert.match(对话面板, /className="run-result-next"/, "结果卡应给下一步");
+// A02-4（W1）：删除通用“下一步”，改成“仅有真实行动需求时才给行动提示”
+assert.doesNotMatch(对话面板, /className="run-result-next"/, "通用“下一步”应按计划删除");
+assert.match(对话面板, /className=\{`run-result-action \$\{actionNeeded\.kind\}`\}/, "仅有真实行动需求时才给行动提示");
+assert.match(对话面板, /const actionNeeded = view\.lifecycle === "waiting_approval"/, "等待审批应进入行动提示");
+assert.match(对话面板, /completion\?\.status === "partial"/, "部分完成应给出行动提示分支");
+assert.match(对话面板, /view\.lifecycle === "failed"/, "失败应给出行动提示分支");
+// W1：单一份文件集合 + 统一投影（不再同时渲染 m.products 与 m.artifacts 两套清单）
+assert.match(对话面板, /import \{[^}]*projectLegacyRunSummary[^}]*\} from "\.\.\/运行展示投影\.js"/, "结果卡应消费统一展示投影");
+assert.match(对话面板, /const fileChanges = useMemo\(\(\) => changes\.filter\(\(change\) => change\.role !== "internal"\)/, "文件改动应来自投影的单一份集合");
+// 最终答案只在助手正文显示；结果卡只给状态与文件入口。
+assert.match(对话面板, /const finalAnswer = String\(view\.answer\?\.text \|\| m\.authoritativeFinalText/, "结果卡应识别已显示的权威答案");
+assert.match(对话面板, /const fallbackSummary = finalAnswer \? ""/, "有最终答案时不得再显示 completion 摘要");
+assert.doesNotMatch(对话面板, /run-result-conclusion/, "结果卡不能再生成第二份折叠结论");
+assert.match(对话面板, /交付产物 \{deliverables\.length\}/, "交付产物应单独成入口");
+assert.doesNotMatch(对话面板, /m\.products\.map/, "结果卡不应再单独渲染产物标签（与变更重复）");
 assert.match(对话面板, /className="run-result-tech"/, "原始错误应放在技术详情");
 assert.match(对话面板, /errors: \(Array\.isArray\(m\.events\)/, "技术详情应含原始错误事件");
-assert.match(对话面板, /const statusLabel = [^;]*"运行结束"/, "运行结束不应写成已完成");
-assert.match(对话面板, /const showResultCard = m\.runMode !== "chat"/, "纯只读问答不弹结果卡");
+assert.match(对话面板, /className="run-result-fallback"/, "缺少模型终稿时，结果卡应提供有标识的运行摘要兜底");
+assert.doesNotMatch(对话面板, /结论：\{readableProgressText\(completion\.summary\)\}/, "不得再把结论抹平为纯文本");
+assert.match(运行展示投影, /data\.summary \|\| data\.completion\?\.summary/, "run_finished 缺 summary 时应回退到 completion.summary（统一投影层）");
+assert.match(运行展示投影, /completed: "运行结束"/, "运行结束不应写成已完成（文案单一来源：运行展示投影）");
+assert.match(对话面板, /const statusLabel = view\.lifecycleLabel/, "结果卡状态应来自统一投影");
+assert.match(对话面板, /const showResultCard = fileChanges\.length > 0/, "结果卡由真实文件、审查依据或待处理事项决定");
+// 纯只读问答不弹空结果卡（目标达成/文件变更/验证网格），但保留一行实测的用时与 token 记录。
+assert.match(对话面板, /if \(!showResultCard && !hasTurnMetrics\) return null/, "纯只读问答不弹空结果卡，仅保留每轮用时与 token 指标");
 
 // 7. 发送失败恢复草稿
 assert.match(对话面板, /const restoreDraft = \(\) => \{/, "应有失败恢复草稿逻辑");
-assert.match(对话面板, /setInput\(\(value\) => \(value \? value : rawText\)\)/, "失败应把草稿放回输入框");
+assert.match(对话面板, /updateInput\(\(value\) => \(value \? value : rawText\)\)/, "失败应把草稿放回输入框（并写回会话草稿存储）");
 
 // 6. 命令面板：语义控件 + 焦点归还 + 滚动进视区
 assert.match(命令面板, /role="combobox"/, "输入应为 combobox");
@@ -109,5 +154,26 @@ assert.match(侧栏, /changedFiles = NO_CHANGED_FILES/, "侧栏应接收被改�
 assert.match(侧栏, /const isChanged = !f\.isDir && changedFiles\.has\(f\.name\)/, "文件行应按被改文件打标");
 assert.match(侧栏, /\$\{isChanged \? "changed" : ""\}/, "文件行应带 changed 类");
 assert.match(样式, /\.file-item\.changed \{ animation: oaw-file-flash/, "文件树高亮复用一次性 oaw-file-flash");
+
+// 9. 模型切换（工程化）：运行中排队到本轮结束、每轮记录模型、界面显示切换分割线
+assert.match(智能体运行时, /entry\.pendingModelSpec = nextSpec/, "运行中切换模型应排队到本轮结束，而不是用 busy 直接失败");
+assert.match(智能体运行时, /async applyModelSpec\(entry, spec\)/, "模型应用逻辑应抽成可复用方法（排队生效与直接切换共用）");
+assert.match(智能体运行时, /emitChannelSafe\(entry, "model_switched", \{[\s\S]{0,120}?reason: "queued"/, "排队切换应广播 model_switched(queued)");
+assert.match(智能体运行时, /if \(entry\.pendingModelSpec\) \{[\s\S]{0,320}?applyModelSpec\(entry, pendingSpec\)/, "本轮结束后应真正应用排队的模型");
+assert.match(智能体运行时, /function currentModelSpec\(entry\)/, "应能读出当前会话实际在用的模型标识");
+assert.match(事件注册表, /\{ type: "model_switched", lifecycle: true, persist: true/, "model_switched 必须登记进事件注册表");
+assert.match(事件展示, /case "model_switched": \{/, "前端事件展示应有 model_switched 文案");
+assert.match(事件展示, /模型切换已排队：本轮结束后切到/, "排队文案应说明「本轮结束后生效」");
+assert.match(服务端索引, /model: effectiveModel \|\| null/, "beginRun 应记录本轮实际生效的模型");
+assert.match(运行记录, /model: model \? String\(model\) : null/, "Run 记录应保存本轮模型");
+assert.match(运行展示投影, /model: String\(data\.model \|\| previous\?\.model \|\| ""\)/, "每轮摘要应携带本轮模型");
+assert.match(对话面板, /case "model_switched": \{/, "前端应消费 model_switched 事件");
+assert.match(对话面板, /if \(result\?\.pending\) \{[\s\S]{0,220}?本轮仍由 \$\{result\.current \|\| "当前模型"\} 执行；已排队/, "运行中切换应提示本轮仍用旧模型、稍后生效");
+assert.match(对话面板, /const \[pendingModel, setPendingModel\] = useState\(""\)/, "应有待切换状态（提示保持可见）");
+assert.match(对话面板, /className="model-switch-divider"/, "相邻两轮模型不同应显示切换分割线");
+assert.match(对话面板, /const roundModel = m\?\.role === "assistant" \? String\(m\.model \|\| runSummary\?\.model \|\| ""\)/, "消息应按轮取真实模型，而不是当前选择");
+assert.match(对话面板, /const modelDisplayName = useCallback/, "分割线应把模型标识映射成展示名");
+assert.match(样式, /\.model-switch-divider \{/, "切换分割线应有样式");
+assert.match(样式, /\.model-msg\.pending \{ color: var\(--warning\); \}/, "待切换提示应有独立样式");
 
 console.log("主任务流可信度回归：通过");

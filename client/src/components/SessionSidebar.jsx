@@ -1,7 +1,8 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { Document, Packer, Paragraph } from "docx";
-import { uploadFile, deleteFile, fileToBase64, searchFiles, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, pickWorkspace, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace } from "../api.js";
+import { uploadFile, deleteFile, fileToBase64, searchFiles, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, pickWorkspace, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace, pickNativeFiles, openInSystem, revealInSystem } from "../api.js";
 import { sortFiles } from "./文件排序.js";
+import { artifactTypeInfo } from "../产物类型.js";
 import ContextMenu from "./ContextMenu.jsx";
 import Icon from "./Icon.jsx";
 import Logo from "./Logo.jsx";
@@ -12,24 +13,25 @@ import 跑马灯文本 from "./跑马灯文本.jsx";
 // 运行中的状态集合：这些会话的名字用跑马灯 + 灯效展示，一眼看出"还在跑"
 const RUNNING_SESSION_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
 
-const FILE_TYPE_META = {
-  docx: { label: "W", className: "word", title: "Word 文档" },
-  xlsx: { label: "X", className: "excel", title: "Excel 工作簿" },
-  pptx: { label: "P", className: "powerpoint", title: "PowerPoint 演示文稿" },
-  pdf: { label: "PDF", className: "pdf", title: "PDF 文档" },
-  md: { label: "M", className: "markdown", title: "Markdown 文档" },
-  markdown: { label: "M", className: "markdown", title: "Markdown 文档" },
-  csv: { label: "CSV", className: "csv", title: "CSV 数据" },
-  json: { label: "{}", className: "json", title: "JSON 数据" },
-  html: { label: "<>" , className: "html", title: "HTML 页面" },
-  htm: { label: "<>" , className: "html", title: "HTML 页面" },
-  txt: { label: "TXT", className: "text", title: "文本文件" },
-};
+// 工作区身份比较：服务端返回 realpath，客户端保存的也是 realpath，但 Windows 的
+// 大小写与分隔符差异会让严格比较误报"来源不一致"。统一归一化后再比。
+function sameWorkspacePath(a, b) {
+  if (!a || !b) return false;
+  const normalize = (value) => String(value).replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase();
+  return normalize(a) === normalize(b);
+}
 
+// 问题 6：文件类型表达统一到 产物类型.js 的单一映射（图标名 + 类型文案），
+// 文件树、预览标签、产物卡片、命令面板因此对同一文件给出同一种图形与说法；
+// 此前这里另写了一份「彩色字母徽章」，与产物/预览的线性图标互相漂移。
 function FileTypeIcon({ file, size = "normal" }) {
-  if (file?.isDir) return <span className="file-type-icon dir" title="文件夹"><Icon name="folder" size={12} /></span>;
-  const meta = FILE_TYPE_META[String(file?.ext || "").toLowerCase()] || { label: "•", className: "other", title: "其他文件" };
-  return <span className={`file-type-icon ${meta.className} ${size}`} title={meta.title}>{meta.label}</span>;
+  if (file?.isDir) return <span className="file-type-icon dir" title="文件夹"><Icon name="folder" size={size === "small" ? 11 : 12} /></span>;
+  const info = artifactTypeInfo(file?.name || "");
+  return (
+    <span className={`file-type-icon ${size}`} title={`${info.label}${info.ext ? ` · ${info.ext.toUpperCase()}` : ""}`}>
+      <Icon name={info.icon} size={size === "small" ? 11 : 12} />
+    </span>
+  );
 }
 // 启动未就绪区域的稳定骨架：静态占位、可被读屏播报，不把"加载中"显示成"空结果"
 const NO_CHANGED_FILES = new Set();
@@ -298,7 +300,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   );
 }
 
-export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onAtMention, onNewSession, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onBatchDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, theme = "dark", loadStatus = {}, changedFiles = NO_CHANGED_FILES }) {
+export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onAtMention, onNewSession, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onBatchDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenMcp, onOpenPiPlugins, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, theme = "dark", loadStatus = {}, changedFiles = NO_CHANGED_FILES }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
@@ -309,6 +311,8 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
   }); // 文件树排序：time=按修改时间，type=按文件类型分组
   const [fileSearchResults, setFileSearchResults] = useState(null);
   const [fileSearchLoading, setFileSearchLoading] = useState(false);
+  // 搜索失败/身份不一致要能说清原因，不能退化成"没有找到匹配的文件或目录"。
+  const [searchError, setSearchError] = useState("");
   const fileSearchSeqRef = useRef(0);
   const fileSearchTimerRef = useRef(null);
   const [customMode, setCustomMode] = useState(false);
@@ -346,10 +350,21 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
     fileSearchTimerRef.current = window.setTimeout(async () => {
       setFileSearchLoading(true);
       try {
-        const result = await searchFiles(query, 200);
-        if (requestSeq === fileSearchSeqRef.current) setFileSearchResults(result.files || []);
-      } catch {
-        if (requestSeq === fileSearchSeqRef.current) setFileSearchResults([]);
+        // 搜索也必须带上当前工作区：否则结果可能来自其他页面切换后的工作区。
+        const result = await searchFiles(query, 200, currentWorkspace);
+        if (requestSeq !== fileSearchSeqRef.current) return;
+        if (result.workspace && currentWorkspace && !sameWorkspacePath(result.workspace, currentWorkspace)) {
+          setSearchError(`搜索来源与当前工作区不一致（${result.workspace}）`);
+          setFileSearchResults([]);
+          return;
+        }
+        setSearchError("");
+        setFileSearchResults(result.files || []);
+      } catch (err) {
+        if (requestSeq === fileSearchSeqRef.current) {
+          setSearchError(err?.message || "搜索失败");
+          setFileSearchResults([]);
+        }
       } finally {
         if (requestSeq === fileSearchSeqRef.current) setFileSearchLoading(false);
       }
@@ -456,7 +471,10 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
     if (!f) return;
     try {
       const { data } = await fileToBase64(f);
-      await uploadFile(f.name, data);
+      const result = await uploadFile(f.name, data, currentWorkspace);
+      if (result?.workspace && currentWorkspace && !sameWorkspacePath(result.workspace, currentWorkspace)) {
+        throw new Error(`上传落点与当前工作区不一致（${result.workspace}）`);
+      }
       onUploaded();
     } catch (err) { alert("上传失败: " + err.message); }
     e.target.value = "";
@@ -483,7 +501,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       let name = "新建文档.docx";
       let i = 2;
       while (names.has(name)) name = `新建文档 ${i++}.docx`;
-      await uploadFile(name, data);
+      await uploadFile(name, data, currentWorkspace);
       onUploaded();
     } catch (err) { alert("新建失败: " + err.message); }
     setCreatingWord(false);
@@ -491,20 +509,55 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
 
   const handleDeleteFile = async (name) => {
     if (!confirm(`删除 ${name} ?`)) return;
-    try { await deleteFile(name); onRefreshFiles(); } catch (err) { alert("删除失败: " + err.message); }
+        try { await deleteFile(name, currentWorkspace); onRefreshFiles(); } catch (err) { alert("删除失败: " + err.message); }
   };
 
-  // 在文件管理器中打开
-  const handleOpenInExplorer = (filePath) => {
-    fetch("/api/open-in-explorer", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: filePath })
-    }).catch(() => {
-      navigator.clipboard.writeText(filePath).then(() => {
-        alert("路径已复制到剪贴板: " + filePath);
-      });
-    });
+  // 在文件管理器中显示（macOS 为 Finder 中选中该文件）
+  const handleRevealInFileManager = async (filePath) => {
+    try {
+      await revealInSystem(filePath);
+    } catch (error) {
+      try {
+        await navigator.clipboard.writeText(filePath);
+        alert(`无法打开文件管理器（${error.message}），路径已复制到剪贴板：${filePath}`);
+      } catch {
+        alert(`无法打开文件管理器：${error.message}`);
+      }
+    }
+  };
+
+  // 用系统默认应用打开（不做 shell 拼接，服务端只接受工作区内/刚选中的路径）
+  const handleOpenWithDefaultApp = async (filePath) => {
+    try {
+      const result = await openInSystem(filePath);
+      if (result?.opened === "reveal") onRefreshFiles?.();
+    } catch (error) {
+      alert(`用系统应用打开失败：${error.message}`);
+    }
+  };
+
+  // 原生文件选择器：工作区内 → 应用内打开；工作区外 → 用系统默认应用打开
+  const handlePickNativeFiles = async () => {
+    try {
+      const result = await pickNativeFiles({ multiple: true, prompt: "选择要打开的文件" });
+      if (!result?.ok) {
+        if (!result?.canceled) alert("选择文件失败");
+        return;
+      }
+      const files = Array.isArray(result.files) ? result.files : [];
+      if (!files.length) return;
+      const first = files[0];
+      if (first.insideWorkspace && first.name) {
+        onOpenFile?.(first.name);
+      } else {
+        await openInSystem(first.path);
+      }
+      if (files.length > 1) {
+        alert(`已选中 ${files.length} 个文件，先处理了第 1 个：${first.name || first.path}`);
+      }
+    } catch (error) {
+      alert(`原生文件选择器不可用：${error.message}`);
+    }
   };
 
   // 存入知识库：docx → 服务端转 md 并注册为 kb 根
@@ -530,10 +583,15 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
     e.stopPropagation();
     const filePath = currentDir ? `${currentDir}/${file.name}` : file.name;
     const menuItems = [
+      ...(file.isDir ? [] : [{
+        icon: "externalLink",
+        label: "用系统默认应用打开",
+        onClick: () => handleOpenWithDefaultApp(filePath)
+      }]),
       {
         icon: "folderOpen",
-        label: "在文件管理器中打开",
-        onClick: () => handleOpenInExplorer(filePath)
+        label: "在文件管理器中显示",
+        onClick: () => handleRevealInFileManager(filePath)
       },
       {
         icon: "copy",
@@ -635,7 +693,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           {workspaces.map((w) => (
             <option key={w.path} value={w.path}>{w.name}</option>
           ))}
-          <option value="__custom__">📂 自定义路径...</option>
+          <option value="__custom__">自定义路径…</option>
         </select>
          <button className="btn-sm sidebar-new-session" onClick={() => onNewSession && onNewSession()} title="新建会话">
            <Icon name="plus" size={13} />
@@ -649,7 +707,8 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                  try { await deleteWorkspace(currentWorkspace); onWorkspaceRemove && onWorkspaceRemove(currentWorkspace); } catch (e) { alert("移除失败: " + e.message); }
                }
              }}
-           >×</button>
+             aria-label="从列表移除该工作区"
+           ><Icon name="close" size={11} /></button>
          )}
          {primaryTab === "file" && <button className={`btn-sm sidebar-root-btn ${rootOpen ? "active" : ""}`} onClick={() => setRootOpen((v) => !v)} title="登记工作区外的本地目录">外部目录</button>}
       </div>
@@ -662,7 +721,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           {fileRoots.map((root) => (
             <div className="external-root-item" key={root.id} title={root.path}>
               <span>{root.label || root.path}</span>
-              <button className="btn-icon danger" onClick={async () => { await removeFileRoot(root.id); refreshFileRoots(); }} title="移除目录">×</button>
+              <button className="btn-icon danger" onClick={async () => { await removeFileRoot(root.id); refreshFileRoots(); }} title="移除目录" aria-label="移除目录"><Icon name="close" size={11} /></button>
             </div>
           ))}
           {!fileRoots.length && <div className="external-root-empty">尚未登记外部目录</div>}
@@ -808,6 +867,8 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           <button onClick={onOpenMap}><Icon name="map" size={16} /><span><strong>地图</strong><small>GIS 分析</small></span></button>
           <button onClick={onOpenAgents}><Icon name="robot" size={16} /><span><strong>智能体广场</strong><small>预置 Agent</small></span></button>
           <button onClick={onOpenTasks}><Icon name="list" size={16} /><span><strong>任务中心</strong><small>并行任务与历史</small></span></button>
+          <button onClick={onOpenMcp}><Icon name="plug" size={16} /><span><strong>MCP</strong><small>外部工具与服务</small></span></button>
+          <button onClick={onOpenPiPlugins}><Icon name="package" size={16} /><span><strong>Pi 插件</strong><small>官方目录与扩展</small></span></button>
         </div>
       )}
 
@@ -831,7 +892,10 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
         <button className="btn-xs section-new" onClick={handleNewWord} disabled={creatingWord} title="新建空白 Word 文档">
           <Icon name="plus" size={11} />
         </button>
-        <button className="btn-xs section-upload" onClick={() => fileRef.current?.click()} title="上传文件">
+        <button className="btn-xs section-pick-native" onClick={handlePickNativeFiles} title="用系统原生选择器打开本机文件（macOS Finder / Windows 资源管理器）">
+          <Icon name="folderOpen" size={11} />
+        </button>
+        <button className="btn-xs section-upload" onClick={() => fileRef.current?.click()} title="上传文件（复制进当前工作区）">
           <Icon name="upload" size={11} />
         </button>
         <input ref={fileRef} type="file" accept=".docx,.xlsx,.pptx,.pdf,.csv,.json,.md,.markdown,.txt,.html,.htm" hidden onChange={handleUpload} />
@@ -854,11 +918,12 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
             value={fileQ}
             onChange={(e) => setFileQ(e.target.value)}
           />
-          {fileQ && <button className="file-search-clear" onClick={() => setFileQ("")} title="清除">×</button>}
+          {fileQ && <button className="file-search-clear" onClick={() => setFileQ("")} title="清除" aria-label="清除搜索"><Icon name="close" size={11} /></button>}
         </div>
         <div className="file-list">
           {fileSearchLoading && <div className="file-search-status">正在搜索整个工作区…</div>}
-          {!fileSearchLoading && fileQ.trim() && fileSearchResults?.length === 0 && <div className="file-search-status">没有找到匹配的文件或目录</div>}
+          {!fileSearchLoading && searchError && <div className="file-search-status error" role="alert">{searchError}</div>}
+          {!fileSearchLoading && !searchError && fileQ.trim() && fileSearchResults?.length === 0 && <div className="file-search-status">没有找到匹配的文件或目录</div>}
           {sortFileList(fileQ.trim() ? (fileSearchResults || []) : files).map((f) => {
             const filePath = f.relPath || (currentDir ? `${currentDir}/${f.name}` : f.name);
             const isNew = newFiles.has(filePath);
@@ -880,7 +945,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                 <FileTypeIcon file={f} />
                 <span className="file-name" title={f.name}>{f.isDir ? f.name : f.name}</span>
                 <span className="file-meta">
-                  {fileQ.trim() ? <span className="file-path-hint" title={filePath}>{filePath}</span> : (f.isDir ? "▶" : formatSize(f.size))}
+                  {fileQ.trim() ? <span className="file-path-hint" title={filePath}>{filePath}</span> : (f.isDir ? <Icon name="chevronRight" size={11} className="file-dir-chevron" /> : formatSize(f.size))}
                   {!f.isDir && <span className="file-mtime">{formatTime(new Date(f.mtime).toISOString())}</span>}
                 </span>
                 <span
@@ -890,9 +955,11 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                     onAtMention && onAtMention(filePath, f.isDir);
                   }}
                   title="@ 到对话中作为参考"
+                  role="button"
+                  aria-label={`引用 ${f.name}`}
                 >@</span>
                 {!f.isDir && (
-                  <span className="file-del" onClick={(e) => { e.stopPropagation(); handleDeleteFile(filePath); }}>x</span>
+                  <span className="file-del" onClick={(e) => { e.stopPropagation(); handleDeleteFile(filePath); }} role="button" aria-label={`删除 ${f.name}`} title={`删除 ${f.name}`}><Icon name="close" size={10} /></span>
                 )}
               </div>
             );

@@ -1,4 +1,5 @@
-﻿import React, { useEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
+import { createPortal } from "react-dom";
 import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon, { ProviderIcon } from "./Icon.jsx";
@@ -7,12 +8,15 @@ import Logo from "./Logo.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
 import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
-import { completionLabel, reduceRunTrace, runTraceElapsedText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, verificationLabel } from "../运行轨迹.js";
-import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, phaseForEvent } from "../事件展示.js";
+import { completionLabel, formatDuration, formatTokenCount, reduceRunTrace, reduceTurnMetrics, runToolDetailText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, summarizeTurnMetrics, turnMetricsText, verificationLabel } from "../运行轨迹.js";
+import { associateRunMessages, projectLegacyRunSummary, upsertRunSummaryMessage } from "../运行展示投影.js";
+import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone } from "../事件展示.js";
+import { buildArtifactIndex } from "../产物类型.js";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
 import { isStaleChunkError, recoverFromStaleChunk } from "../分包恢复.js";
-import { isMotionReduced, motionScrollBehavior } from "../界面外观.js";
+import { isMotionReduced, motionScrollBehavior, useAppearance, useAppearanceSetter } from "../界面外观.js";
+import { startLatencyProbe, markLatency, patchLatencyMeta, markFirstDomText, finalizeLatencyProbe } from "../首字延迟埋点.js";
 
 // 错误边界包装器
 class ErrorBoundary extends React.Component {
@@ -55,7 +59,6 @@ const MODEL_KEY = "oaw_model";
 const MODE_KEY = "oaw_chat_mode";
 const THINKING_KEY = "oaw_thinking_level";
 const APPROVAL_MODE_KEY = "oaw_approval_mode";
-const EXECUTION_FLOW_HIDDEN_KEY = "oaw_execution_flow_hidden";
 const DEFAULT_CONTEXT_WINDOW = 128000;
 // 与服务端 Pi 压缩策略保持一致（server/Pi运行时管理.mjs 的 PI_COMPACTION_POLICY）：
 // 服务端快照没返回时用作展示兜底，不代表新策略。
@@ -91,6 +94,12 @@ const MODEL_PROVIDER_META = {
   alibaba: { label: "Qwen", icon: "qwen" },
   "opencode-go": { label: "OpenCode Go", icon: "opencode" },
   "xiaomi-token-plan-cn": { label: "MiMo", icon: "xiaomi" },
+  "command-code": { label: "Command Code", icon: "commandcode" },
+  "command-code-anthropic": { label: "Command Code", icon: "commandcode" },
+  zhipu: { label: "智谱 GLM", icon: "zhipu" },
+  moonshot: { label: "Moonshot", icon: "moonshot" },
+  kimi: { label: "Kimi", icon: "moonshot" },
+  xai: { label: "xAI", icon: "xai" },
 };
 
 function modelProvider(model) {
@@ -119,10 +128,39 @@ function eventMessageText(value, fallback = "") {
   return value == null ? fallback : String(value);
 }
 
+/**
+ * 供应商缩写：未知供应商不再显示一个没有信息量的圆点，而是显示可辨认的首字母
+ * （command-code → CC，xiaomi-token-plan-cn → XT），并按名称取稳定色相。
+ */
+function providerInitials(provider) {
+  const parts = String(provider || "").split(/[^a-z0-9]+/i).filter(Boolean);
+  if (!parts.length) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+function providerHue(provider) {
+  const text = String(provider || "");
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) hash = (hash * 31 + text.charCodeAt(i)) % 360;
+  return hash;
+}
+
 function ModelProviderMark({ model, size = 18 }) {
   const provider = modelProvider(model);
   const meta = modelProviderMeta(model);
-  return <span className={`model-provider-mark provider-${provider}`} style={{ width: size, height: size }} aria-hidden="true"><ProviderIcon provider={meta.icon} size={Math.max(11, size - 4)} /></span>;
+  const known = meta.icon !== "custom";
+  const fontSize = Math.max(9, Math.round(size * 0.52));
+  return (
+    <span
+      className={`model-provider-mark provider-${provider}${known ? "" : " provider-initials"}`}
+      style={known ? { width: size, height: size } : { width: size, height: size, fontSize, background: `hsl(${providerHue(provider)} 46% 42%)` }}
+      aria-hidden="true"
+      title={meta.label}
+    >
+      {known ? <ProviderIcon provider={meta.icon} size={Math.max(11, size - 4)} /> : providerInitials(provider)}
+    </span>
+  );
 }
 
 // 模型行：选择区 + 收藏按钮分开，键盘焦点与点击区域互不干扰；
@@ -140,6 +178,7 @@ function ModelOptionRow({ model, current, favorite, onPick, onToggleFavorite }) 
       >
         <ModelProviderMark model={model} size={17} />
         <span><strong>{modelDisplayName(model)}</strong><small>{modelCapabilityLabel(model)} · {model.id}</small></span>
+        {unavailable && <span className="model-unavailable-badge" title="当前不可用：供应商缺少密钥、无模型权限或网络不可达（可在设置里配置后重新扫描）">不可用</span>}
         {current && <Icon name="check" size={12} />}
       </button>
       <button
@@ -226,6 +265,28 @@ const MODEL_RECENT_KEY = "oaw_recent_models";
 const MODEL_FAVORITE_KEY = "oaw_favorite_models";
 const MAX_RECENT_MODELS = 5;
 
+// 未发送草稿按 thread 保存在模块级缓存（交互 3）：进入设置/知识库/成果等模块会
+// 卸载 ChatPanel，输入框是组件内 state，重挂载就丢了。缓存放在模块作用域可跨挂载
+// 存活；按 thread 隔离，切换会话不会把 A 的草稿带到 B，明确发送/新建时才清除。
+const DRAFT_CACHE_LIMIT = 20;
+const draftCache = new Map();
+function readDraft(threadId) {
+  return threadId ? draftCache.get(threadId) || "" : "";
+}
+function writeDraft(threadId, value) {
+  if (!threadId) return;
+  const text = String(value ?? "");
+  if (!text) draftCache.delete(threadId);
+  else {
+    // 重新插入以维持 LRU 顺序，避免长会话把活跃草稿挤出缓存。
+    draftCache.delete(threadId);
+    draftCache.set(threadId, text);
+  }
+  while (draftCache.size > DRAFT_CACHE_LIMIT) {
+    draftCache.delete(draftCache.keys().next().value);
+  }
+}
+
 function readStoredModelList(key) {
   try {
     const value = JSON.parse(localStorage.getItem(key) || "[]");
@@ -282,6 +343,8 @@ export function normalizeHistoryMessages(items) {
   const assistantFingerprints = new Set();
   for (const message of items) {
     if (!message || !message.role) continue;
+    // harness 的轮次/收尾提醒只用于驱动运行边界，不得在恢复会话后显示为“You”消息。
+    if (message.role === "user" && /^\s*(?:\[系统提醒\]|系统提醒[：:])/.test(String(message.text || ""))) continue;
     const blocks = Array.isArray(message.blocks) ? message.blocks : [];
     const meaningful = Boolean(
       String(message.text || "").trim()
@@ -314,7 +377,7 @@ export function normalizeHistoryMessages(items) {
     if (message.role === "user") assistantFingerprints.clear();
     if (message.role === "assistant") assistantFingerprints.add(fingerprint);
   }
-  return result;
+  return associateRunMessages(result);
 }
 
 // 事件文案 / 语气 / 阶段统一来自 ../事件展示.js（事件展示注册表），
@@ -345,10 +408,7 @@ function usageDetails(usage) {
   return { input, output, cacheRead, cacheWrite, context };
 }
 
-function formatTokenCount(value) {
-  const count = Number(value) || 0;
-  return count >= 1000 ? `${(count / 1000).toFixed(count >= 10000 ? 0 : 1)}k` : String(count);
-}
+// token 文案统一走 运行轨迹.js 的 formatTokenCount（导入），不再在组件里维护第二份。
 
 // Office 是历史任务/会话的兼容值；用户入口使用 Chat / Work / Review。
 function normalizeUiMode(mode) {
@@ -393,6 +453,14 @@ function appendTextBlock(blocks, text) {
   arr.push({ type: "text", text });
   return arr;
 }
+function appendAssistantMessageBoundary(blocks, messageId = "") {
+  const arr = [...blocks];
+  const last = arr[arr.length - 1];
+  const id = String(messageId || "");
+  if (!arr.length || (last?.type === "message_boundary" && (!id || last.id === id))) return arr;
+  arr.push({ type: "message_boundary", id: id || newId(), at: Date.now() });
+  return arr;
+}
 function appendThinkingBlock(blocks, text) {
   const arr = [...blocks];
   const last = arr[arr.length - 1];
@@ -435,10 +503,24 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, historyMessages, historyThreadId = null, historyWindow = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
-  const [input, setInput] = useState("");
+  // 草稿按 thread 恢复（交互 3）：模块导航会卸载本组件，重挂载时从缓存取回未发送内容。
+  const [input, setInput] = useState(() => readDraft(threadId));
+  // 输入变化即写回草稿缓存：模块导航导致的卸载不会丢掉未发送内容。
+  const updateInput = useCallback((value) => {
+    setInput((previous) => {
+      const next = typeof value === "function" ? value(previous) : value;
+      writeDraft(threadId, next);
+      return next;
+    });
+  }, [threadId]);
+  // 发送成功、切换/新建会话、执行斜杠命令时才清空草稿。
+  const clearInput = useCallback(() => {
+    writeDraft(threadId, "");
+    setInput("");
+  }, [threadId]);
   const [references, setReferences] = useState([]);
   const [histOpen, setHistOpen] = useState(false); // 会话历史抽屉（默认隐藏，点击展开）
   const [images, setImages] = useState([]);
@@ -450,6 +532,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [model, setModel] = useState("");
   const [modelVision, setModelVision] = useState(false);
   const [modelMsg, setModelMsg] = useState("");
+  // 运行中切换模型会排队到本轮结束（Pi 会话不支持中途换模型）：这里记住"待切换"的目标，
+  // 收到 model_switched(effective=now) 后再清掉。
+  const [pendingModel, setPendingModel] = useState("");
   const [modelCounts, setModelCounts] = useState({ available: 0, configured: 0 });
   const [compacting, setCompacting] = useState(false);
   const [approvalMode, setApprovalModeState] = useState(() => localStorage.getItem(APPROVAL_MODE_KEY) === "auto" ? "auto" : "ask");
@@ -464,6 +549,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     return THINKING_OPTIONS.some((item) => item.id === saved) ? saved : "low";
   }); // Pi 标准推理档位：low/medium/high/max
   const [modelOpen, setModelOpen] = useState(false); // 模型选择浮层
+  // 模型弹层曾用 right:0 贴着窄触发器向左伸，在 1440px 三栏布局下被
+  // .center-chat-slot 的 overflow:hidden 裁掉左侧（交接文档问题 2）。改为
+  // Portal 到 body + 视口定位：先按触发器算位置，再按可用空间夹取边界。
+  const modelTriggerRef = useRef(null);
+  const modelPopRef = useRef(null);
+  const [modelPopRect, setModelPopRect] = useState(null);
   const [modelQ, setModelQ] = useState(""); // 模型搜索
   // 模型选择收敛为“当前 / 最近 / 收藏 / 全部搜索”：最近与收藏只存本地轻量偏好，
   // 不复制密钥或凭据；完整列表仍保留为可展开的高级入口。
@@ -482,13 +573,69 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setAgentPhaseState(value);
   }, []);
   const [historyLoading, setHistoryLoading] = useState(false);
-  // 执行流隐藏状态上提到这里：隐藏时状态栏要回到上方，避免状态信息整体消失
-  const [flowHidden, setFlowHiddenRaw] = useState(() => {
-    try { return localStorage.getItem(EXECUTION_FLOW_HIDDEN_KEY) === "true"; } catch { return false; }
-  });
+  // B02：执行过程显示由外观设置驱动（compact | expanded | hidden），走共享订阅立即生效；
+  // 旧版独立的 oaw_execution_flow_hidden 已由 界面外观.js 一次性迁移。
+  const appearance = useAppearance();
+  const setAppearance = useAppearanceSetter();
+  const flowHidden = appearance.activityDisplay === "hidden";
   const setFlowHidden = useCallback((next) => {
-    setFlowHiddenRaw(Boolean(next));
-    try { localStorage.setItem(EXECUTION_FLOW_HIDDEN_KEY, next ? "true" : "false"); } catch {}
+    setAppearance({ activityDisplay: next ? "hidden" : "compact" });
+  }, [setAppearance]);
+  const flowDefaultExpanded = appearance.activityDisplay === "expanded";
+  // 弹层定位：以触发器为锚点向上展开（原本 bottom:34px 的语义），
+  // 再按视口与安全边距夹取，保证任何一栏布局下四边都在可视范围内。
+  const positionModelPop = useCallback(() => {
+    const trigger = modelTriggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const margin = 8;
+    const width = Math.min(360, Math.max(280, window.innerWidth - margin * 2));
+    // 高度必须真正夹住：展开「全部模型」（100+ 行）时弹层会长到数千像素，
+    // 外层没有高度上限就会被撑开、顶出屏幕（列表自身的 max-height 挡不住）。
+    const spaceAbove = rect.top - margin - 6;
+    const spaceBelow = window.innerHeight - rect.bottom - margin - 6;
+    const flip = spaceAbove < 200 && spaceBelow > spaceAbove;
+    const maxHeight = Math.max(180, Math.min(flip ? spaceBelow : spaceAbove, window.innerHeight - margin * 2));
+    const left = Math.max(margin, Math.min(rect.right - width, window.innerWidth - width - margin));
+    setModelPopRect({
+      left,
+      width,
+      maxHeight,
+      // 默认向上展开；上方空间不够（触发器贴顶）时改为向下展开。
+      bottom: flip ? undefined : Math.max(margin, window.innerHeight - rect.top + 6),
+      top: flip ? Math.round(rect.bottom + 6) : undefined,
+    });
+  }, []);
+  // 交互 7：模型菜单此前只能靠再次点触发器关闭，Escape 与外部点击都无效。
+  // 统一为：Escape 关闭并把焦点还给触发器；指针落在弹层/触发器之外时关闭。
+  useEffect(() => {
+    if (!modelOpen) return undefined;
+    positionModelPop();
+    const onKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      setModelOpen(false);
+      requestAnimationFrame(() => modelTriggerRef.current?.focus());
+    };
+    const onPointerDown = (event) => {
+      const target = event.target;
+      if (modelPopRef.current?.contains(target) || modelTriggerRef.current?.contains(target)) return;
+      setModelOpen(false);
+    };
+    const onReflow = () => positionModelPop();
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("resize", onReflow);
+    window.addEventListener("scroll", onReflow, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("resize", onReflow);
+      window.removeEventListener("scroll", onReflow, true);
+    };
+  }, [modelOpen, positionModelPop]);
+  const closeModelPop = useCallback(({ returnFocus = true } = {}) => {
+    setModelOpen(false);
+    if (returnFocus) requestAnimationFrame(() => modelTriggerRef.current?.focus());
   }, []);
   const [runState, setRunState] = useState({ status: "idle", runId: null, artifacts: [], references: [], task: null, mode: "chat" });
   const [todoItems, setTodoItems] = useState([]);
@@ -536,6 +683,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const clearSystemNotes = useCallback(() => setSystemNotes([]), []);
   const [queuedMessages, setQueuedMessages] = useState([]); // 当前任务完成后顺序执行
   const [injectedContext, setInjectedContext] = useState([]); // 等待下一轮发送的上下文片段
+  // 模型连接状态：重试中/已恢复（输入框旁小状态点；过程区不再堆这类提示）
+  const [connectionNotice, setConnectionNotice] = useState(null);
+  const connectionTimerRef = useRef(null);
   const [busyInputMode, setBusyInputMode] = useState("queue"); // "queue" | "context"
   const [composerMenu, setComposerMenu] = useState(null);
   const [composerIndex, setComposerIndex] = useState(0);
@@ -634,6 +784,19 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     });
   }, []);
 
+  // 模型标识 → 展示名（能查到目录就用名称，否则原样显示 provider/model）。
+  const modelDisplayName = useCallback((spec) => {
+    // 兼容两种调用方：模型对象（输入栏触发器、弹层）与模型 id 字符串（模型切换提示）。
+    // 本函数在组件内遮蔽了模块级同名函数，若只接受字符串，传对象会显示成 "[object Object]"。
+    if (spec && typeof spec === "object") {
+      return spec.name || String(spec.id || "").split("/").slice(1).join("/") || String(spec.id || "").trim();
+    }
+    const value = String(spec || "").trim();
+    if (!value) return "";
+    const found = (models || []).find((item) => item.id === value);
+    return found?.name || value;
+  }, [models]);
+
   const toggleFavoriteModel = useCallback((id) => {
     if (!id) return;
     setFavoriteModels((list) => {
@@ -695,7 +858,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
 
   const insertComposerItem = (item) => {
     if (!composerMenu || !item) return;
-    setInput((value) => value.slice(0, composerMenu.start) + item.insert + " " + value.slice(value.length));
+    updateInput((value) => value.slice(0, composerMenu.start) + item.insert + " " + value.slice(value.length));
     setComposerMenu(null);
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
@@ -783,6 +946,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       if (toolOutputRafRef.current) {
         cancelAnimationFrame(toolOutputRafRef.current);
         toolOutputRafRef.current = null;
+      }
+      if (connectionTimerRef.current) {
+        window.clearTimeout(connectionTimerRef.current);
+        connectionTimerRef.current = null;
       }
       toolOutputQueueRef.current.clear();
       textRevealRef.current = null;
@@ -900,7 +1067,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setReferences([]);
     setImages([]);
     setAttachments([]);
-    setInput("");
+    // 交互 3：切会话时先把 A 的未发送内容存进 A 的草稿位，再取回 B 自己的草稿；
+    // 这样既不丢草稿，也不会把 A 的内容带到 B。
+    if (input) writeDraft(previous, input);
+    setInput(readDraft(threadId));
     if (!hydratingHistory) {
       setLastPrompt(null);
       setAgentPhase("");
@@ -926,6 +1096,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     textRevealRafRef.current = null;
     textRevealRef.current = null;
     setInput("");
+    writeDraft(threadId, "");
     setLastPrompt(null);
     setAgentPhase("");
     agentEventAtRef.current = 0;
@@ -943,7 +1114,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     runInProgressRef.current = false;
     systemEventKeysRef.current.clear();
     if (onNewSession) onNewSession();
-  }, [onNewSession, replaceExecutionEvents]);
+  }, [onNewSession, replaceExecutionEvents, threadId]);
 
   // 暴露插入文本方法（供 @ 按钮调用）
   useImperativeHandle(ref, () => ({
@@ -957,7 +1128,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     insertText(text) {
       const found = parseReferenceMarkers(text);
       if (found.length) setReferences((prev) => [...prev, ...found.filter((r) => !prev.some((p) => p.id === r.id))]);
-      setInput((v) => {
+      updateInput((v) => {
         const sep = v && !v.endsWith(" ") ? " " : "";
         return v + sep + text;
       });
@@ -965,7 +1136,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     insertContext(text) {
       const value = String(text || "").trim();
       if (!value) return;
-      setInput((v) => {
+      updateInput((v) => {
         const prefix = v && !v.endsWith("\n") ? "\n\n" : "";
         return `${v}${prefix}[选区上下文]\n${value}\n[/选区上下文]`;
       });
@@ -983,7 +1154,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       setEditMode("agent");
       setReferences(nextReferences);
       setInjectedContext(payload.contextText ? [{ text: String(payload.contextText) }] : []);
-      setInput(prompt);
+      updateInput(prompt);
       setRunState((state) => ({ ...state, mode: "agent" }));
       setModelMsg("已转为 Agent 任务，请确认后发送");
       window.setTimeout(() => setModelMsg(""), 3200);
@@ -1256,6 +1427,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setModelMsg("切换中...");
     try {
       const result = await setAgentModel(clientId, id, threadId);
+      // 运行中切换：服务端把切换排队到本轮结束（本轮仍由旧模型跑完），
+      // 这里保持提示可见，等 model_switched(effective=now) 再收尾。
+      if (result?.pending) {
+        setPendingModel(result.model || id);
+        setModelMsg(`本轮仍由 ${result.current || "当前模型"} 执行；已排队，本轮结束后切换为 ${result.model || id}`);
+        return;
+      }
+      setPendingModel("");
       if (result?.model && result.model !== id) {
         setModel(result.model);
         applyModel(result.model);
@@ -1553,6 +1732,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       activeRunIdRef.current = eventRunId;
     }
     if (type !== "connected") agentEventAtRef.current = Date.now();
+    // 首字延迟：首个 SSE 事件、首个正文增量分别打点（方案 §3.5）。
+    // 这两个时刻与服务端的 provider 事件成对，可以把“服务端慢”和“前端渲染慢”分开。
+    if (type !== "connected") markLatency("firstEventAt");
+    if (type === "run_admitted" && data?.runId) patchLatencyMeta({ runId: data.runId });
     if (FLOW_EVENT_TYPES.has(type) && (runInProgress || eventRunId === activeRunIdRef.current)) {
       const sequence = Number(envelope.id || envelope.seq || 0);
       const eventKey = sequence ? `seq:${sequence}` : `${type}:${eventRunId || "current"}:${envelope.at || Date.now()}`;
@@ -1662,6 +1845,7 @@ case "runtime_connecting":
         setAgentPhase("生成回复");
         if (!aid) aid = ensureAssistant();
         if (aid) enqueueTextReveal(aid, data.text);
+        markLatency("firstTextDeltaAt");
         break;
       // 思考过程：节流合并到 blocks
       case "thinking":
@@ -1669,8 +1853,54 @@ case "runtime_connecting":
         if (!aid) aid = ensureAssistant();
         if (aid) scheduleFlush("thinking", data);
         break;
+      case "subagent_start":
+        flushToolOutput();
+        setAgentPhase("子 Agent 正在处理只读子任务");
+        if (!aid) aid = ensureAssistant();
+        if (aid) {
+          if (streamBufRef.current) flushNow(aid);
+          const childId = data.childId || data.toolCallId || newId();
+          patch(aid, (m) => m.blocks?.some((block) => block.type === "subagent" && block.id === childId)
+            ? m
+            : ({ ...m, blocks: [...(m.blocks || []), { type: "subagent", id: childId, role: data.role || "scout", task: data.task || "", status: "running", activity: "正在准备隔离的只读会话", preview: "", summary: "", error: "" }] }));
+        }
+        break;
+      case "subagent_update":
+        if (!aid) aid = ensureAssistant();
+        if (aid) {
+          const childId = data.childId || data.toolCallId;
+          patch(aid, (m) => {
+            const blocks = [...(m.blocks || [])];
+            let block = blocks.find((item) => item.type === "subagent" && item.id === childId);
+            if (!block) {
+              block = { type: "subagent", id: childId || newId(), role: data.role || "scout", task: data.task || "", status: "running", preview: "", summary: "", error: "" };
+              blocks.push(block);
+            }
+            Object.assign(block, { status: data.status || block.status, activity: data.activity || block.activity, preview: data.preview ?? block.preview });
+            return { ...m, blocks };
+          });
+        }
+        break;
+      case "subagent_end":
+        flushToolOutput();
+        if (!aid) aid = ensureAssistant();
+        if (aid) {
+          const childId = data.childId || data.toolCallId;
+          patch(aid, (m) => {
+            const blocks = [...(m.blocks || [])];
+            let block = blocks.find((item) => item.type === "subagent" && item.id === childId);
+            if (!block) {
+              block = { type: "subagent", id: childId || newId(), role: data.role || "scout", task: data.task || "", status: "running" };
+              blocks.push(block);
+            }
+            Object.assign(block, { status: data.status || "completed", activity: data.status === "completed" ? "子任务已完成" : "子任务已结束", summary: data.summary || "", error: data.error || "" });
+            return { ...m, blocks };
+          });
+        }
+        break;
       // 工具调用开始：推入新 tool block（按 toolCallId 去重，重放不产生重复卡片）
       case "tool_start":
+        if (data.name === "run_subagent") break;
         flushToolOutput();
         setAgentPhase(`调用工具：${data.name || "处理中"}`);
         if (!aid) aid = ensureAssistant();
@@ -1702,11 +1932,13 @@ case "runtime_connecting":
         break;
       // 工具输出流：更新最后一个 tool block
       case "tool_output":
+        if (data.name === "run_subagent") break;
         if (!aid) aid = ensureAssistant();
         if (aid) queueToolOutput(aid, data);
         break;
       // 工具结束：标记完成；找不到对应 start（历史被截断/重连丢失）时创建恢复卡片
       case "tool_end":
+        if (data.name === "run_subagent") break;
         flushToolOutput();
         if (!aid) aid = ensureAssistant();
         if (aid) patch(aid, (m) => {
@@ -1802,8 +2034,14 @@ case "runtime_connecting":
         break;
       // 消息开始/结束
       case "message_start":
-        if (data.role === "assistant") setAgentPhase("模型已开始生成");
-        if (data.role === "assistant") aid = ensureAssistant();
+        if (data.role === "assistant") {
+          setAgentPhase("模型已开始生成");
+          aid = ensureAssistant();
+          if (aid) {
+            if (streamBufRef.current) flushNow(aid);
+            patch(aid, (m) => ({ ...m, blocks: appendAssistantMessageBoundary(m.blocks || [], data.messageId) }));
+          }
+        }
         break;
       case "message_end":
         break;
@@ -1841,6 +2079,8 @@ case "runtime_connecting":
         // Pi 结算失败后，工作台可能会在同一请求内重放一次。失败回合
         // 已经发出 agent_end 并清空了 assistant 引用，这里重新建立一个
         // 流式气泡，避免恢复后的 token 被丢弃。
+        if (connectionTimerRef.current) { window.clearTimeout(connectionTimerRef.current); connectionTimerRef.current = null; }
+        setConnectionNotice({ state: "retrying" });
         agentErrorRef.current = false;
         cancelTextReveal();
         stoppingRef.current = false;
@@ -1861,12 +2101,28 @@ case "runtime_connecting":
           patch(assistantIdRef.current, (m) => ({ ...m, status: "streaming", errorText: "" }));
         }
         setAgentPhase(`模型连接重试${data.attempt && data.maxAttempts ? `（${data.attempt}/${data.maxAttempts}）` : ""}`);
-        pushSystem(`模型连接异常，正在重试${data.attempt && data.maxAttempts ? `（${data.attempt}/${data.maxAttempts}）` : ""}：${data.message || "请稍候"}`, `agent_retry:${data.source || "agent"}:${data.attempt || "retry"}:${data.message || "retry"}`);
+        const retryLabels = {
+          network: "网络波动，正在重试…",
+          timeout: "模型响应超时，正在重试…",
+          rate_limit: "模型服务繁忙，正在重试…",
+          auth: "模型授权校验失败，重试中…",
+          quota: "模型额度不足，重试中…",
+          configuration: "模型供应商未配置，当前重试可能仍会失败",
+          request: "模型请求配置有误，重试中…",
+        };
+        setConnectionNotice({ state: "retrying", message: retryLabels[data.category] || "模型暂时没有响应，正在重试…" });
         break;
       case "agent_retry_end":
         if (data.success) {
           setAgentPhase("模型连接已恢复");
-          pushSystem("模型连接已恢复，继续执行当前任务。", `agent_retry_end:${data.attempt || "ok"}`);
+          // A+B：恢复不再作为系统消息堆在对话里；改为输入框旁状态点，3.5s 后自动消失
+          if (connectionTimerRef.current) window.clearTimeout(connectionTimerRef.current);
+          setConnectionNotice({ state: "recovered" });
+          connectionTimerRef.current = window.setTimeout(() => setConnectionNotice(null), 3500);
+        } else {
+          if (connectionTimerRef.current) window.clearTimeout(connectionTimerRef.current);
+          connectionTimerRef.current = null;
+          setConnectionNotice(null);
         }
         break;
       case "agent_model_fallback":
@@ -1880,6 +2136,31 @@ case "runtime_connecting":
       case "agent_model_fallback_failed":
         pushSystem(`备用模型切换失败：${data.message || "请在设置中检查模型授权"}`, `agent_model_fallback_failed:${data.from || "unknown"}`);
         break;
+      case "model_switched": {
+        // 模型切换的统一事实来源：排队（本轮结束前不生效）/ 生效 / 通道回退 / 失败。
+        const to = String(data.to || "").trim();
+        if (data.effective === "after-run") {
+          setPendingModel(to);
+          setModelMsg(`本轮仍由 ${data.from || model || "当前模型"} 执行；已排队，本轮结束后切换为 ${to}`);
+          break;
+        }
+        if (data.effective === "failed") {
+          setPendingModel("");
+          setModelMsg(`模型切换失败：${data.message || to || "未知原因"}`);
+          setTimeout(() => setModelMsg(""), 6000);
+          break;
+        }
+        if (to) {
+          setModel(to);
+          applyModel(to);
+          rememberModel(to);
+          onModelChange?.(to);
+        }
+        setPendingModel("");
+        setModelMsg(data.reason === "fallback" ? `通道回退为 ${to}` : `已切换为 ${to}`);
+        setTimeout(() => setModelMsg(""), 4000);
+        break;
+      }
       case "todo_updated":
         setTodoItems(Array.isArray(data.todos) ? data.todos : []);
         setRunState((s) => ({
@@ -1912,7 +2193,10 @@ case "runtime_connecting":
         break;
       case "assistant_final":
         if (!aid) aid = ensureAssistant();
-        if (aid && data.text) enqueueTextReveal(aid, data.text, { authoritative: true });
+        if (aid && data.text) {
+          patch(aid, (m) => ({ ...m, authoritativeFinalText: String(data.text) }));
+          enqueueTextReveal(aid, data.text, { authoritative: true });
+        }
         break;
       case "context_compacted":
         setRunState((s) => {
@@ -1970,15 +2254,35 @@ case "runtime_connecting":
         break;
       }
       case "agent_error":
+        if (connectionTimerRef.current) window.clearTimeout(connectionTimerRef.current);
+        connectionTimerRef.current = null;
+        setConnectionNotice(null);
         flushToolOutput();
         agentErrorRef.current = true;
         cancelTextReveal({ preserveText: true });
         const errorMessage = eventMessageText(data.message, data.category === "quota" ? "当前模型额度不足" : "模型调用失败");
-        const errorText = data.category === "quota"
-          ? `模型额度不足：${errorMessage}`
-          : data.retryable === false
-            ? `模型调用失败：${errorMessage}`
-            : `模型调用失败：${errorMessage}。可检查模型配置或网络后重试`;
+        const errorLabels = {
+          quota: "模型额度不足",
+          auth: "模型授权失败",
+          configuration: "模型供应商未配置",
+          timeout: "模型响应超时",
+          rate_limit: "模型服务繁忙",
+          network: "模型网络连接失败",
+          request: "模型请求无效",
+        };
+        const errorActions = {
+          quota: "请检查模型额度或切换供应商",
+          auth: "请检查供应商密钥和授权",
+          configuration: "请在模型设置中配置该供应商",
+          timeout: "可稍后重试或切换响应更快的模型",
+          rate_limit: "请稍后重试，或降低并发",
+          network: "请检查本机网络、代理和供应商服务状态",
+          request: "请检查模型 ID 和请求参数",
+        };
+        const errorCategory = String(data.category || "unknown");
+        const errorLabel = errorLabels[errorCategory] || "模型调用失败";
+        const errorAction = errorActions[errorCategory] || (data.retryable === false ? "" : "请检查模型配置与网络后重试");
+        const errorText = `${errorLabel}：${errorMessage}${errorAction ? `。${errorAction}` : ""}`;
         if (aid) patch(aid, (m) => ({ ...m, status: "error", errorText }));
         assistantIdRef.current = null;
         streamBufRef.current = null;
@@ -1990,27 +2294,24 @@ case "runtime_connecting":
         runInProgressRef.current = Boolean(errorRunId);
         stoppingRef.current = false;
         setStopping(false);
-        setAgentPhase(data.category === "quota" ? "模型额度不足" : "模型调用失败");
+        setAgentPhase(errorLabels[errorCategory] || "模型调用失败");
         setRunState((s) => ({ ...s, status: "failed", runId: data.runId || s.runId || null }));
         break;
       case "steer": {
         const source = String(data.source || "user");
         const message = String(data.message || data.text || "").trim();
         if (source === "turn-progress" || source.startsWith("turn-budget")) {
-          // 进度播报提醒：只在顶部进度行留痕（事件列表 + 进度小结计数），
-          // 不再插一条转瞬即逝又永不清理的气泡；模型的小结本体在正文里。
-          pushSystemNote({
-            key: source,
-            kind: "progress",
-            text: message,
-            turnCount: Number(data.turnCount || 0),
-          });
+          // 轮次/预算提示是 harness 内部控制事件，不把原始提示词或轮次计数展示给用户。
+          // 模型生成的进度小结仍作为普通过程播报，进入消息级折叠。
         } else if (message) {
           pushSystem(`⟳ 插入新指令：${message.slice(0, 60)}${message.length > 60 ? "…" : ""}`, `steer:${message.slice(0, 40)}`);
         }
         break;
       }
       case "aborted":
+        if (connectionTimerRef.current) window.clearTimeout(connectionTimerRef.current);
+        connectionTimerRef.current = null;
+        setConnectionNotice(null);
         flushToolOutput();
         finalizeStopped();
         break;
@@ -2038,15 +2339,20 @@ case "runtime_connecting":
         }
         break;
       case "agent_summary":
-        // 对话结束总结条
+        // 对话结束总结条。
+        // R04：agent_summary 在权威终态之前发出且可能不带 status，绝不能据此宣告完成——
+        // 状态缺失时由 upsertRunSummary 显示“状态待同步”，等 run_finished 再定终态。
         {
           const key = `agent_summary:${data.runId || "unknown"}:${(data.products || []).join("|")}:${data.summary || ""}`;
           if (!acceptSystemEvent(key)) break;
         }
-        upsertRunSummary({ ...data, status: data.status || "completed" });
+        upsertRunSummary({ ...data });
         break;
       case "run_finished":
         flushToolOutput();
+        // 首字延迟结算：run_finished 是本轮唯一的终态信号，
+        // 成功后上报一次（sendBeacon，刷新/关闭页面也不丢）。
+        finalizeLatencyProbe({ runId: data?.runId || activeRunIdRef.current || runState.runId || null, finalStatus: data?.status || null });
         // SSE 可能只保留了终结事件，或 agent_end 先清理了本地气泡。
         // 服务端从 Pi 的 assistant_final 事件带回权威全文，在这里补齐回复。
         // 断线重连回放时旧 run 的 run_finished 会穿透 runId 过滤：只允许把
@@ -2058,11 +2364,16 @@ case "runtime_connecting":
           : (!data.runId && !runInProgressRef.current && !busy);
         if (data.finalText && finalTextAllowed) {
           if (!aid) aid = assistantIdRef.current || lastAssistantIdRef.current || ensureAssistant(true);
-          if (aid) enqueueTextReveal(aid, data.finalText, { authoritative: true });
+          if (aid) {
+            patch(aid, (m) => ({ ...m, authoritativeFinalText: String(data.finalText) }));
+            enqueueTextReveal(aid, data.finalText, { authoritative: true });
+          }
         }
         if (data.runId && activeRunIdRef.current === data.runId) activeRunIdRef.current = null;
         {
-          const finalStatus = data.status || "completed";
+          // R04：run_finished 是终态信号，但缺失 status 时不得谎报“完成”——显示“状态待同步”，
+          // 同时照常释放 busy（运行确实已结束，不能永久卡在运行态）。
+          const finalStatus = data.status || "unknown";
           setRunState((s) => ({
             ...s,
             status: finalStatus,
@@ -2072,6 +2383,9 @@ case "runtime_connecting":
             verificationStatus: data.verificationStatus || s.verificationStatus || "not_checked",
           }));
           if (!["running", "queued", "waiting_user", "recovering", "cancel_requested"].includes(finalStatus)) {
+            if (connectionTimerRef.current) window.clearTimeout(connectionTimerRef.current);
+            connectionTimerRef.current = null;
+            setConnectionNotice(null);
             setBusy(false);
             runInProgressRef.current = false;
             setStopping(false);
@@ -2085,14 +2399,36 @@ case "runtime_connecting":
         onRunFinished?.(data);
         if (data.runId && !["cancelled", "aborted"].includes(data.status)) flushQueued(true);
         break;
-      case "memory_proposal":
-        if (data.proposal && acceptSystemEvent(`memory_proposal:${data.proposal.id || JSON.stringify(data.proposal)}`)) {
-          setMessages((ms) => [...ms, { id: newId(), role: "system", text: "Agent 提出了一条长期记忆建议，请确认后写入。", memoryProposal: data.proposal, status: "done", createdAt: Date.now() }]);
+      case "memory_proposal": {
+        // A03：记忆建议不再插入主消息流（会与任务结论争注意力），只挂到本轮结果卡的待审核入口；
+        // 审核与状态在「设置 → 记忆」的待审核列表里进行。
+        const proposalId = String(data.proposal?.id || "");
+        if (proposalId && acceptSystemEvent(`memory_proposal:${proposalId}`)) {
+          const targetRunId = activeRunIdRef.current || runState.runId || null;
+          setMessages((ms) => {
+            for (let i = ms.length - 1; i >= 0; i -= 1) {
+              const item = ms[i];
+              if (!item?.summary) continue;
+              if (targetRunId && item.runId !== targetRunId) continue;
+              const next = [...ms];
+              next[i] = { ...item, memoryProposalIds: [...new Set([...(item.memoryProposalIds || []), proposalId])] };
+              return next;
+            }
+            return ms;
+          });
         }
         break;
-      case "memory_proposal_resolved":
-        setMessages((ms) => ms.map((m) => m.memoryProposal?.id === data.proposal?.id ? { ...m, memoryProposal: data.proposal, text: "长期记忆建议已写入。" } : m));
+      }
+      case "memory_proposal_resolved": {
+        // 审核完成后从结果卡入口移除，不再追加“第二篇任务总结”
+        const resolvedId = String(data.proposal?.id || "");
+        if (resolvedId) {
+          setMessages((ms) => ms.map((m) => Array.isArray(m.memoryProposalIds) && m.memoryProposalIds.includes(resolvedId)
+            ? { ...m, memoryProposalIds: m.memoryProposalIds.filter((id) => id !== resolvedId) }
+            : m));
+        }
         break;
+      }
       default:
         break;
     }
@@ -2127,48 +2463,17 @@ case "runtime_connecting":
   const upsertRunSummary = useCallback((data = {}) => {
     const runId = data.runId || null;
     if (!runId) return;
-    const status = data.status || "completed";
-    const statusText = status === "failed" ? "失败" : status === "cancelled" ? "已取消" : status === "aborted" ? "已中断" : status === "running" ? "执行中" : "完成";
-    const summaryText = String(data.summary || `本轮任务${statusText}`).trim();
-    const incomingArtifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
-    const incomingProducts = Array.isArray(data.products) ? data.products : [];
-    const artifacts = incomingArtifacts.length ? incomingArtifacts : null;
-    const products = incomingProducts.length
-      ? data.products
-      : (artifacts || []).map((item) => item?.path).filter(Boolean);
+    const id = newId();
+    const createdAt = Date.now();
     setMessages((messages) => {
-      const index = messages.findIndex((item) => item.summary && item.runId === runId);
-      const previous = index >= 0 ? messages[index] : null;
-      const nextArtifacts = artifacts || previous?.artifacts || [];
-      const nextProducts = products.length ? products : (previous?.products || []);
-      const next = {
-        ...(previous || {}),
-        id: previous?.id || newId(),
-        role: "system",
-        text: summaryText,
-        products: nextProducts,
-        artifacts: nextArtifacts,
-        runId,
-        runStatus: status,
-        references: data.references || previous?.references || [],
-        task: data.task || previous?.task || null,
-        workspace: data.workspace || previous?.workspace || workspace || "",
-        runMode: data.task?.mode || previous?.runMode || runState.mode || "agent",
-        eventCount: Number(data.eventCount || previous?.eventCount || 0),
-        // 完成语义：显式 complete_task 或服务端推断结果，随 run_finished 一起到达
-        completion: data.completion || previous?.completion || null,
-        reviewSources: Array.isArray(data.reviewSources) ? data.reviewSources : (previous?.reviewSources || []),
-        status: "done",
-        summary: true,
-        createdAt: previous?.createdAt || Date.now(),
-        expanded: true,
-        // 只有"本轮刚刚结束"才做文件改动高亮；历史回放与重连补齐不重播动画
-        flashFiles: data.fresh === true || previous?.flashFiles === true,
-      };
-      if (index < 0) return [...messages, next];
-      return messages.map((item, itemIndex) => itemIndex === index ? next : item);
+      return upsertRunSummaryMessage(messages, data, {
+        id,
+        createdAt,
+        workspace: workspace || "",
+        runMode: runState.mode || "agent",
+      });
     });
-  }, [runState.mode]);
+  }, [runState.mode, workspace]);
 
   // 脑图点击工具节点：在消息流中展开对应工具卡（工具卡默认折叠）
   const focusTool = useCallback((toolId) => {
@@ -2219,7 +2524,7 @@ case "runtime_connecting":
     if (!rawText && sourceImages.length === 0 && sourceAttachments.length === 0) return;
     if (!options.payload && /^\/(?:compact|new|chat|agent|review|help)$/i.test(rawText)) {
       const command = rawText.toLowerCase();
-      setInput("");
+      clearInput();
       setComposerMenu(null);
       if (command === "/compact") return compactContext();
       if (command === "/new") { onNewSession?.(workspace); return; }
@@ -2247,7 +2552,7 @@ case "runtime_connecting":
     if (busy && !options.force) {
       if (busyInputMode === "context") {
         setInjectedContext((prev) => [...prev, { text, images: sourceImages, attachments: sourceAttachments }]);
-        setInput("");
+        clearInput();
         setImages([]);
         setAttachments([]);
         pushSystem("已加入待注入上下文，不会打断当前任务。", `context:${Date.now()}:${text.slice(0, 40)}`);
@@ -2277,7 +2582,7 @@ case "runtime_connecting":
           status: "queued", queued: true, currentDoc,
           createdAt: Date.now(),
         }]);
-        setInput("");
+        clearInput();
         setImages([]);
         setAttachments([]);
         setInjectedContext([]);
@@ -2342,10 +2647,12 @@ case "runtime_connecting":
     streamBufRef.current = { text: "", thinking: "" };
     setMessages((ms) => [...ms, {
       id: aid, role: "assistant", blocks: [],
+      // 记下本轮实际发出的模型：流式期间就能按轮显示"由谁执行"，也是切换分割线的依据。
+      model: model || "",
       status: "streaming", images: [],
       createdAt: Date.now(),
     }]);
-    setInput("");
+    clearInput();
     setImages([]);
     setAttachments([]);
     setInjectedContext([]);
@@ -2362,23 +2669,29 @@ case "runtime_connecting":
     // 不用重新打一遍；队列来源的 payload 不属于草稿，不重复回填。
     const restoreDraft = () => {
       if (options.payload) return;
-      setInput((value) => (value ? value : rawText));
+      updateInput((value) => (value ? value : rawText));
       if (mountedRef.current) requestAnimationFrame(() => textareaRef.current?.focus());
     };
     try {
-      // prompt 是异步 admission；确保本轮 run_admitting/capability_plan/首个 token 不会在
-      // EventSource 尚未完成握手时丢失。服务端 channel.history 会按游标回放，
-      // 等待只是给握手一个短窗口；SSE 断线时 3 秒后照常发送，事件由重连回放补齐。
+      // 首字延迟分项（方案 §3.5）：提交即开始计时。
+      startLatencyProbe({ model: model || null, mode: selectedEditMode || null, reducedMotion: isMotionReduced() });
+      // prompt 是异步 admission；SSE 未完成握手时，本轮最早的 run_admitting/首个 token
+      // 可能先于 EventSource 到达。但已经建立的连接没有任何理由再等——
+      // 新连接的事件由服务端 channel.history 按游标回放补齐，不必用固定 3 秒门槛拦住发送。
       const currentStreamKey = `${clientId}::${threadId || ""}`;
       const streamReady = streamReadyRef.current?.streamKey === currentStreamKey
         ? streamReadyRef.current.promise
         : null;
-      if (streamReady) {
+      let handshakeWaitMs = 0;
+      if (streamReady && !connected) {
+        const waitStartedAt = Date.now();
         await Promise.race([
           streamReady,
           new Promise((resolve) => window.setTimeout(resolve, 3000)),
         ]);
+        handshakeWaitMs = Date.now() - waitStartedAt;
       }
+      patchLatencyMeta({ handshakeWaitMs, streamReadyAtSend: Boolean(connected) });
       const res = await fetch("/api/agent/prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2655,6 +2968,16 @@ case "runtime_connecting":
     }
     return null;
   }, [messages]);
+  // 输入栏常驻入口：折叠过程收起时也要能直接处理待审批/待回答（计划 B01）。
+  const pendingAsk = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const blocks = messages[index]?.blocks;
+      if (!Array.isArray(blocks)) continue;
+      const found = blocks.find((block) => block?.type === "ask" && !block.answer);
+      if (found) return { ...found, messageId: messages[index].id };
+    }
+    return null;
+  }, [messages]);
   const locateApproval = useCallback(() => {
     const container = bodyRef.current;
     if (!container) return;
@@ -2662,6 +2985,14 @@ case "runtime_connecting":
     if (!pending) return;
     pending.scrollIntoView({ behavior: motionScrollBehavior(), block: "center" });
     requestAnimationFrame(() => pending.querySelector(".approval-allow")?.focus?.());
+  }, []);
+  const locateAsk = useCallback(() => {
+    const container = bodyRef.current;
+    if (!container) return;
+    const pending = container.querySelector(".ask-block:not(.answered)");
+    if (!pending) return;
+    pending.scrollIntoView({ behavior: motionScrollBehavior(), block: "center" });
+    requestAnimationFrame(() => pending.querySelector(".ask-input")?.focus?.());
   }, []);
   // 新审批到达时只在用户本来就跟在底部时自动定位，避免把正在回看历史的用户拽走。
   const locatedApprovalRef = useRef("");
@@ -2681,59 +3012,47 @@ case "runtime_connecting":
   }, [pendingApproval, runState.status, todoItems]);
   const hasDraft = Boolean(input.trim() || images.length || attachments.length);
   const visibleStart = Math.max(0, messages.length - messageWindowSize);
-  const visibleMessages = messages.slice(visibleStart);
+  const visibleMessages = useMemo(
+    () => associateRunMessages(messages.slice(visibleStart)),
+    [messages, visibleStart],
+  );
   const hiddenMessageCount = visibleStart;
-  const showExecutionFlow = executionEvents.length > 0 || busy;
-  // 执行流可见时，状态栏内容并入执行流头行——避免"状态栏 + 执行过程"两条横栏上下重复
-  const flowVisible = showExecutionFlow && !flowHidden;
-  const statusText = frozen
-    ? "会话已冻结"
-    : runState.status === "running" ? (agentPhase || "任务执行中")
-      : runState.status === "finishing" ? "整理产物"
-        : runState.status === "recovering" ? "等待恢复"
-          : runState.status === "cancel_requested" ? "正在取消"
-            : runState.status === "cancelled" ? "任务已取消"
-              : runState.status === "aborted" ? "任务已中断"
-                : runState.status === "failed" ? "任务失败"
-                  : runState.status === "completed" ? "任务已完成"
-                    : "待命";
-  // 单行状态栏只保留收尾结论（产物 / 校验）；模式、上下文、引用、推理
-  // 都改成悬停提示，避免一行里堆满标签。
-  const statusChips = [
-    runState.artifacts?.length > 0 ? { key: "artifacts", label: `产物 ${runState.artifacts.length}`, title: "本轮文件变更数量" } : null,
-    runState.verificationStatus && runState.verificationStatus !== "not_checked"
-      ? { key: "verification", label: `产物校验 ${runState.verificationStatus === "passed" ? "通过" : runState.verificationStatus === "warning" ? "有提示" : "失败"}` }
-      : null,
-  ].filter(Boolean);
-  // 执行流头行的悬停说明：模式/上下文/推理等信息只有父组件持有，因此在父层拼好后传入，
-  // 子组件不再引用父作用域变量（此前直接引用导致 ReferenceError → 错误边界报"组件出错"）。
-  const flowStatusTitle = [
-    agentPhase ? `当前阶段：${agentPhase}` : "",
-    !busy && statusText ? `状态：${statusText}` : "",
-    `${executionEvents.length} 个事件`,
-    `模式 ${MODE_META[normalizeUiMode(runState.mode || editMode)]?.label || currentMode.label}`,
-    runState.thinkingLevel ? `推理 ${runState.thinkingLevel === "low" ? "快速" : runState.thinkingLevel === "high" ? "深度" : runState.thinkingLevel}` : "",
-    selectedUsage.context > 0 ? `上下文约 ${Number(selectedUsage.context).toLocaleString()} tokens` : "",
-    runState.references?.length ? `引用 ${runState.references.length} 个文件` : "",
-  ].filter(Boolean).join(" · ");
+  const runSummaryById = new Map(visibleMessages
+    .filter((message) => message?.role === "system" && message.summary && message.runId)
+    .map((message) => [message.runId, message]));
+  const assistantRunIds = new Set(visibleMessages
+    .filter((message) => message?.role === "assistant" && message.runId)
+    .map((message) => message.runId));
+  const runActivityMessagesById = new Map();
+  visibleMessages.forEach((message, index) => {
+    if (!message?.runId || (message.role !== "assistant" && !message.internalProcess)) return;
+    const items = runActivityMessagesById.get(message.runId) || [];
+    items.push({ message, index });
+    runActivityMessagesById.set(message.runId, items);
+  });
+  const executionAnchorId = streamingMsgIdRef.current
+    || lastAssistantIdRef.current
+    || [...visibleMessages].reverse().find((message) => message?.role === "assistant")?.id
+    || "";
+  // 实时事件属于当前消息流，不做固定在对话上方的第二条状态栏；终态轨迹由 RunSummary 收纳。
+  const showExecutionFlow = busy && (executionEvents.length > 0 || runInProgressRef.current);
   // 最近一段"像进度小结"的模型正文：进度行右侧展示"最近小结"，
   // 只在正文出现进度关键词时摘取首行，避免把普通正文误当小结。
+  // E03：进度文本只来自结构化事件（待办 / 工具边界 / 阶段），
+  // 不再用正则从模型正文里猜“进度句”，避免把结论误当进度、也避免每轮重复叙述。
   const recentNarration = useMemo(() => {
-    const PROGRESS_WORDS = /(已完成|已更新|下一步|接下来|当前|正在|进度|阶段|首先|然后)/;
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (message?.role !== "assistant") continue;
-      const blocks = Array.isArray(message.blocks) ? message.blocks : [];
-      const text = (blocks.filter((block) => block?.type === "text").map((block) => String(block.text || "")).join("\n") || String(message.text || "")).trim();
-      if (!text) continue;
-      const firstLine = text.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "";
-      if (!firstLine) continue;
-      const normalized = firstLine.replace(/^[#>*\-\s]+/, "").trim();
-      if (!PROGRESS_WORDS.test(normalized)) continue;
-      return normalized.length > 68 ? `${normalized.slice(0, 68)}…` : normalized;
+    const active = (Array.isArray(todoItems) ? todoItems : [])
+      .find((item) => ["in_progress", "running"].includes(String(item?.status || "")));
+    if (active?.title) return String(active.title).slice(0, 68);
+    for (let index = executionEvents.length - 1; index >= 0; index -= 1) {
+      const event = executionEvents[index];
+      const type = String(event?.type || "");
+      if (!type || STAGE_ONLY_EVENTS.has(type) || type === "stats" || type === "token") continue;
+      const label = String(flowEventLabel(event) || "").trim();
+      if (label) return label.length > 68 ? `${label.slice(0, 68)}…` : label;
     }
     return "";
-  }, [messages]);
+  }, [executionEvents, todoItems]);
 
   return (
     <ErrorBoundary>
@@ -2790,16 +3109,6 @@ case "runtime_connecting":
           <span className={`conn ${connected ? "on" : ""}`}>{connected ? "已连接" : "连接中..."}</span>
           <span className="doc-hint" title={hint}>{hint}</span>
         </div>
-        {!flowVisible && (
-          <div className="task-status-bar" role="status" aria-live="polite">
-            <span className={`task-status-dot ${runState.status}`} />
-            <span>{statusText}</span>
-            {statusChips.map((chip) => (
-              <span className={`task-status-meta${chip.key === "mode" ? " task-mode-meta" : ""}${chip.key === "verification" ? ` verification-${runState.verificationStatus}` : ""}`} key={chip.key} title={chip.title || ""}>{chip.label}</span>
-            ))}
-            {runState.runId && <code title={runState.runId}>{runState.runId.slice(0, 18)}</code>}
-          </div>
-        )}
         {!compact && (editMode === "agent" || editMode === "review") && (
           <details className="agent-capability-preview" title="本轮 Agent 启动前能力预览">
             <summary><span>{editMode === "review" ? "Review" : "Work"}</span><span>能力已就绪 · 点击查看配置</span></summary>
@@ -2815,25 +3124,6 @@ case "runtime_connecting":
 
         <div className="chat-stream-shell">
           <div className="chat-topbar">
-            {showExecutionFlow && (
-              <ExecutionFlow
-                events={executionEvents}
-                running={busy}
-                onFocusTool={focusTool}
-                notes={systemNotes}
-                note={recentNarration}
-                compaction={runState.compaction || null}
-                hidden={flowHidden}
-                onHiddenChange={setFlowHidden}
-                statusText={statusText}
-                statusChips={statusChips}
-                statusDotClass={runState.status}
-                statusTitle={flowStatusTitle}
-                nextStep={nextStepText}
-                pendingApproval={pendingApproval}
-                onLocateApproval={locateApproval}
-              />
-            )}
             <div className="chat-top-controls" aria-label="会话控制">
               <ContextUsageRing
                 usage={runState.usage}
@@ -2866,7 +3156,7 @@ case "runtime_connecting":
                     type="button"
                     className="chat-empty-example"
                     title="点一下填入输入框，可再修改"
-                    onClick={() => { setInput(example); setComposerMenu(null); textareaRef.current?.focus(); }}
+                    onClick={() => { updateInput(example); setComposerMenu(null); textareaRef.current?.focus(); }}
                   >
                     {example}
                   </button>
@@ -2893,11 +3183,66 @@ case "runtime_connecting":
               历史较长，当前先加载最近 {historyWindow.end - historyWindow.start} 条以保持切换流畅；模型仍使用完整 Pi 会话上下文。
             </div>
           )}
-           {visibleMessages.map((m, i) => (
-            <React.Fragment key={m.id}>
-              <MemoMessage m={m} index={visibleStart + i} prevRole={visibleMessages[i - 1]?.role} model={model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onAskAnswered={handleMessageAskAnswered} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} />
-            </React.Fragment>
-           ))}
+           {(() => { let previousRoundModel = ""; return visibleMessages.map((originalMessage, i) => {
+            if (originalMessage?.role === "system" && originalMessage.summary && originalMessage.runId && assistantRunIds.has(originalMessage.runId)) return null;
+            let m = originalMessage;
+            let firstIndex = i;
+            if (m?.runId && (m.role === "assistant" || m.internalProcess)) {
+              const runItems = runActivityMessagesById.get(m.runId) || [];
+              if (!runItems.length || runItems[0].index !== i) return null;
+              firstIndex = runItems[0].index;
+              const assistantMessages = runItems.filter(({ message }) => message.role === "assistant").map(({ message }) => message);
+              const runSummaryForGroup = runSummaryById.get(m.runId) || null;
+              // 系统轮次/收尾提醒只是 harness 指令：用它们识别 Run 边界，但不暴露原始提示词。
+              const blocks = runItems.flatMap(({ message }) => message.role === "assistant"
+                ? (Array.isArray(message.blocks) ? message.blocks : [])
+                : []);
+              const eventFinalText = [...(Array.isArray(runSummaryForGroup?.events) ? runSummaryForGroup.events : [])]
+                .reverse().find((event) => event?.type === "assistant_final" && String(event?.data?.text || "").trim())?.data?.text || "";
+              const latestAssistant = assistantMessages[assistantMessages.length - 1] || m;
+              const authoritativeFinalText = [...assistantMessages].reverse().find((message) => String(message.authoritativeFinalText || "").trim())?.authoritativeFinalText
+                || runSummaryForGroup?.finalText
+                || eventFinalText;
+              m = { ...latestAssistant, runId: originalMessage.runId, blocks, authoritativeFinalText };
+            }
+            // 兜底：没有 runId/未被分组消费的提醒消息同样不渲染（例如终态后才到达的收尾提醒）。
+            if (m?.role === "user" && /^\s*(?:\[系统提醒\]|系统提醒[：:])/.test(String(m.text || ""))) return null;
+            const runSummary = m?.role === "assistant" && m.runId ? runSummaryById.get(m.runId) || null : null;
+            // 本轮实际使用的模型（服务端 run.model 优先，其次消息自带），用于按轮显示"由谁执行"。
+            const roundModel = m?.role === "assistant" ? String(m.model || runSummary?.model || "") : "";
+            // 相邻两轮的模型不同 → 中间插一条分割线，明确"从这里开始换了模型"。
+            const showModelDivider = Boolean(roundModel) && Boolean(previousRoundModel) && roundModel !== previousRoundModel;
+            previousRoundModel = roundModel || previousRoundModel;
+            const summaryEvents = Array.isArray(runSummary?.events) ? runSummary.events : [];
+            const isExecutionAnchor = m.id === executionAnchorId || runActivityMessagesById.get(m.runId)?.some(({ message }) => message.id === executionAnchorId);
+            const eventsForMessage = isExecutionAnchor && showExecutionFlow ? executionEvents : summaryEvents;
+            const attachExecutionFlow = isExecutionAnchor && showExecutionFlow || summaryEvents.length > 0;
+            const executionFlow = attachExecutionFlow ? {
+              events: eventsForMessage,
+              running: isExecutionAnchor && showExecutionFlow ? busy : false,
+              onFocusTool: focusTool,
+              notes: isExecutionAnchor ? systemNotes : [],
+              note: isExecutionAnchor ? recentNarration : "",
+              compaction: isExecutionAnchor ? runState.compaction || null : null,
+              hidden: isExecutionAnchor ? flowHidden : false,
+              defaultExpanded: isExecutionAnchor && flowDefaultExpanded,
+              onHiddenChange: setFlowHidden,
+              statusText: frozen ? "会话已冻结" : agentPhase || "任务执行中",
+              nextStep: nextStepText,
+              pendingApproval: isExecutionAnchor ? pendingApproval : null,
+              onLocateApproval: locateApproval,
+            } : null;
+            return (
+              <React.Fragment key={m.id}>
+                {showModelDivider && (
+                  <div className="model-switch-divider" role="separator" aria-label={`模型切换为 ${roundModel}`}>
+                    <span>模型切换为 <b>{modelDisplayName(roundModel)}</b></span>
+                  </div>
+                )}
+                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onAskAnswered={handleMessageAskAnswered} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} runSummary={runSummary} executionFlow={executionFlow} />
+              </React.Fragment>
+            );
+           }); })()}
           </div>
           {showScrollToBottom && (
             <button type="button" className="chat-scroll-latest" onClick={scrollToLatest} title="回到底部" aria-label="回到底部">
@@ -2991,14 +3336,21 @@ case "runtime_connecting":
                 <Icon name="link" size={11} /> 参考文件 {targetReferenceCount}
               </span>
             )}
-            <span className={`chat-target-write ${editMode === "chat" ? "readonly" : approvalMode === "auto" ? "auto" : "ask"}`}>
-              {editMode === "chat"
-                ? "只读：本轮不改文件"
-                : approvalMode === "auto"
-                  ? "可写：工作区内 · 自动批准已开启（deny 规则仍生效）"
-                  : "可写：工作区内 · 写入需逐次审批"}
-            </span>
           </div>
+          {connectionNotice && (
+            <div className={`conn-status ${connectionNotice.state}`} role="status" aria-live="polite">
+              <i /> {connectionNotice.message || (connectionNotice.state === "retrying" ? "模型正在重试…" : "连接已恢复")}
+            </div>
+          )}
+          <PendingActionBar
+            approval={pendingApproval}
+            ask={pendingAsk}
+            onLocateApproval={locateApproval}
+            onLocateAsk={locateAsk}
+            clientId={clientId}
+            threadId={threadId}
+            onAnswered={(blockId, answer) => handleMessageAskAnswered(pendingAsk?.messageId, blockId, answer)}
+          />
           <div className="chat-input-row">
             {composerMenu && composerItems.length > 0 && (
               <div className="composer-suggestions" role="listbox" aria-label="输入建议">
@@ -3022,7 +3374,7 @@ case "runtime_connecting":
               ref={textareaRef}
               value={input}
               disabled={frozen}
-              placeholder={frozen ? "会话已冻结，可新建分支继续分析" : busy ? "输入后可排队执行，或仅注入下一轮上下文…" : "输入消息…  @ 引用文件，/ 调用 Skill，# 使用能力，& 引用会话"}
+              placeholder={frozen ? "会话已冻结，可新建分支继续分析" : busy ? "输入后可排队执行，或仅注入下一轮上下文…" : "输入消息…"}
               onKeyDown={(e) => {
                 if (composerMenu && composerItems.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
                   e.preventDefault();
@@ -3052,7 +3404,7 @@ case "runtime_connecting":
               onDrop={(e) => { e.preventDefault(); handleFiles(e.dataTransfer?.files || []); }}
               onChange={(e) => {
                 const value = e.target.value;
-                setInput(value);
+                updateInput(value);
                 setComposerMenu(composerTrigger(value));
               }}
             />
@@ -3098,7 +3450,14 @@ case "runtime_connecting":
             <div className="chat-toolbar-group toolbar-agent-group" title="Agent 设置：模型与思考程度">
               <span className="chat-toolbar-label">Agent</span>
               <div className="ct-popwrap model-control-wrap">
-                <button className={`model-control-trigger ${modelOpen ? "active" : ""}`} onClick={() => setModelOpen((value) => !value)} title={model ? `模型：${modelDisplayName(selectedModelInfo)}，思考：${selectedEffort.shortLabel}` : "选择模型与思考程度"}>
+                <button
+                  ref={modelTriggerRef}
+                  className={`model-control-trigger ${modelOpen ? "active" : ""}`}
+                  onClick={() => setModelOpen((value) => !value)}
+                  aria-haspopup="dialog"
+                  aria-expanded={modelOpen}
+                  title={model ? `模型：${modelDisplayName(selectedModelInfo)}，思考：${selectedEffort.shortLabel}` : "选择模型与思考程度"}
+                >
                   <ModelProviderMark model={selectedModelInfo} size={18} />
                   <span className="model-control-current">
                     <strong>{modelDisplayName(selectedModelInfo)}</strong>
@@ -3106,8 +3465,14 @@ case "runtime_connecting":
                   </span>
                   <Icon name="chevronDown" size={11} />
                 </button>
-                {modelOpen && (
-                  <div className="ct-pop model-control-pop">
+                {modelOpen && createPortal(
+                  <div
+                    className="ct-pop model-control-pop"
+                    ref={modelPopRef}
+                    role="dialog"
+                    aria-label="选择模型与思考程度"
+                    style={modelPopRect ? { position: "fixed", left: modelPopRect.left, ...(modelPopRect.top != null ? { top: modelPopRect.top } : { bottom: modelPopRect.bottom }), width: modelPopRect.width, maxWidth: "calc(100vw - 16px)", maxHeight: modelPopRect.maxHeight, right: "auto", zIndex: 400 } : { visibility: "hidden" }}
+                  >
                     <div className="model-control-head">
                       <div><ModelProviderMark model={selectedModelInfo} size={22} /><span><strong>{selectedProviderMeta.label}</strong><small>{model || "按 Pi 配置"}</small></span></div>
                       <span className="model-control-status">{selectedModelInfo?.available === false ? "不可用" : "可用"}</span>
@@ -3189,7 +3554,8 @@ case "runtime_connecting":
                       <small className="model-thinking-desc">{selectedEffort.desc}</small>
                       <small className="model-thinking-hint">高/最大档位会让模型首响应明显变慢，适合复杂任务；简单问答建议用低/标准</small>
                     </div>
-                  </div>
+                  </div>,
+                  document.body,
                 )}
               </div>
             </div>
@@ -3199,7 +3565,7 @@ case "runtime_connecting":
                 <Icon name="plus" size={14} />
               </button>
             </div>
-            {modelMsg && <span className="model-msg">{modelMsg}</span>}
+            {modelMsg && <span className={`model-msg${pendingModel ? " pending" : ""}`} title={pendingModel ? `已排队：本轮结束后切换为 ${pendingModel}` : undefined}>{modelMsg}</span>}
           </div>
         </div>
       </div>
@@ -3210,10 +3576,31 @@ case "runtime_connecting":
 // ========== 超大消息保护：>100KB 转点击展开，避免 markdown 渲染卡死 ==========
 const MAX_MARKDOWN_CHARS = 100000;
 
-function SafeMarkdown({ text }) {
+// 流式输出尚未闭合的 Markdown 可能暂时暴露 `##`、`**` 等标记；
+// 进行中先用轻量清理显示可读文本，结束后仍由 SafeMarkdown 完整排版。
+function readableProgressText(value) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((line) => line
+      .replace(/^\s{0,3}#{1,6}\s+/, "")
+      .replace(/^\s*>+\s?/, "")
+      .replace(/^\s*(?:[-+*]|\d+[.)])\s+/, "")
+      .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/\*\*|__|~~/g, "")
+      .replace(/(^|[\s\p{P}])\*(?=\S)|(?<=\S)\*(?=$|[\s\p{P}])/gu, "$1")
+      .replace(/(^|[\s\p{P}])_(?=\S)|(?<=\S)_(?=$|[\s\p{P}])/gu, "$1")
+      .replace(/`{1,3}/g, "")
+      .replace(/^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/, "")
+      .replace(/\s*\|\s*/g, " · ")
+      .trimEnd())
+    .join("\n");
+}
+
+function SafeMarkdown({ text, onOpenFile, artifacts }) {
   const [showRaw, setShowRaw] = useState(false);
   if (!text) return null;
-  if (text.length <= MAX_MARKDOWN_CHARS) return <MarkdownBody>{text}</MarkdownBody>;
+  if (text.length <= MAX_MARKDOWN_CHARS) return <MarkdownBody onOpenFile={onOpenFile} artifacts={artifacts}>{text}</MarkdownBody>;
   if (!showRaw) {
     return (
       <button className="large-msg-reveal" onClick={() => setShowRaw(true)}>
@@ -3224,20 +3611,79 @@ function SafeMarkdown({ text }) {
   return <pre className="large-msg-raw">{text}</pre>;
 }
 
-function RunSummary({ m, onOpenFile, onRollbackRun }) {
-  const statusLabel = m.runStatus === "failed" ? "失败" : m.runStatus === "cancelled" ? "已取消" : m.runStatus === "aborted" ? "已中断" : m.runStatus === "running" ? "执行中" : "运行结束";
-  const modeLabel = m.runMode === "chat" ? "Chat" : m.runMode === "review" ? "Review" : m.runMode === "office" ? "Office" : "Work";
-  const time = m.createdAt ? formatMsgTime(m.createdAt) : "";
-  const title = String(m.conclusion || m.text || m.task?.text || m.task?.goal || "本轮任务")
+/**
+ * 结论内嵌产物 / 产物卡片的共同数据源：本轮投影 → 可点击产物清单。
+ * 交付物在前、其余文件改动跟随，同一路径只保留一条；内部文件不进入结论。
+ * `confirmed` 只认写入台账（write-ledger）或已验收/已固定的文件——共享工作区里
+ * 快照 diff 也会包含并行 Run 的产出，那些只能算"未归属线索"，不能当成本轮产物。
+ */
+function artifactsFromView(view) {
+  if (!view) return null;
+  const byPath = new Map();
+  const pick = (change) => String(change?.relativePath || change?.path || change?.name || "").replace(/\\/g, "/").trim();
+  const confirmedOf = (change) => change?.source === "write-ledger" || change?.role === "deliverable";
+  for (const change of view.deliverables || []) {
+    if (change?.role === "internal") continue;
+    const path = pick(change);
+    if (path) byPath.set(path, { path, deliverable: true, size: change.after?.size ?? null, confirmed: confirmedOf(change) });
+  }
+  for (const change of view.changes || []) {
+    if (change?.role === "internal") continue;
+    const path = pick(change);
+    if (path && !byPath.has(path)) byPath.set(path, { path, deliverable: false, size: change.after?.size ?? null, confirmed: confirmedOf(change) });
+  }
+  return byPath.size ? [...byPath.values()] : null;
+}
+
+function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifacts, view: viewOverride = null, embedded = false }) {
+  // W1/A01：结果卡只消费「统一展示投影」，实时构建的消息与旧历史走同一条路径，
+  // 不再各自拼装状态 / 产物 / 文件清单（R01/R02 的重复展示即源于此）。
+  // 消息层已算过的投影直接复用（viewOverride），避免同一条消息归约两遍事件流。
+  const view = useMemo(
+    () => viewOverride || projectLegacyRunSummary(m, Array.isArray(m.events) ? m.events : []),
+    [viewOverride, m],
+  );
+  const statusLabel = view.lifecycleLabel; // R04：状态缺失显示“状态待同步”，不默认“运行结束”
+  const completion = view.outcome || m.completion || null;
+  const finalAnswer = String(view.answer?.text || m.authoritativeFinalText || "").trim();
+  const fallbackSummary = finalAnswer ? "" : String(completion?.summary || "").trim();
+  // 标题只用于非嵌入的历史摘要，优先取权威最终答复；收尾摘要只作为兼容标题。
+  const conclusionSource = String(view.answer?.text || m.authoritativeFinalText || completion?.summary || m.text || m.task?.text || m.task?.goal || "").trim();
+  const titleLine = conclusionSource.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0] || "";
+  const title = String(m.conclusion || titleLine || "本轮任务")
     .replace(/^\s*#{1,6}\s*/, "")
+    .replace(/^[>*\-+\s]+/, "")
+    .replace(/[*`_]/g, "")
+    .slice(0, 140)
     .trim() || "本轮任务";
-  // 每一轮结束后直接展示结论和产物；用户仍可点击标题收起，
-  // 但恢复历史时不再把所有轮次默认藏在“查看本轮”里。
-  const [open, setOpen] = useState(m.expanded !== false);
-  // 历史 Run 的工具聚合：从 run.events 归约，不必依赖实时事件流
+  // 工具明细与折叠摘要：沿用轨迹归约与统一投影，避免直接统计重复事件。
   const trace = useMemo(() => (Array.isArray(m.events) && m.events.length ? reduceRunTrace(m.events, m.runId) : null), [m.events, m.runId]);
-  const traceSummary = trace ? runTraceSummaryText(trace, { includeCompletion: false }) : "";
-  const completion = m.completion || trace?.completion || null;
+  // 每轮用时与 token：来自持久化的 turn_started/turn_ended 与 stats 事件，实时与历史一致。
+  const turnMetrics = useMemo(() => (Array.isArray(m.events) && m.events.length ? reduceTurnMetrics(m.events) : []), [m.events]);
+  const turnTotals = useMemo(() => summarizeTurnMetrics(turnMetrics), [turnMetrics]);
+  const metricsText = useMemo(() => turnMetricsText(turnTotals, { durationMs: trace?.durationMs }), [turnTotals, trace?.durationMs]);
+  // 单一份文件集合：投影已按 runId 归并、去重并按语义标角色
+  const changes = view.changes || [];
+  const fileChanges = useMemo(() => changes.filter((change) => change.role !== "internal"), [changes]);
+  const deliverables = view.deliverables || [];
+  // A03：待审核记忆建议的入口（实时挂在消息上，历史从事件投影得到）
+  const memoryProposalIds = useMemo(() => [...new Set([
+    ...(view.memoryProposalIds || []),
+    ...(Array.isArray(m.memoryProposalIds) ? m.memoryProposalIds : []),
+  ])], [view.memoryProposalIds, m.memoryProposalIds]);
+  const rollbackableCount = fileChanges.filter((change) => change.before?.reversible).length;
+  // 只有真实需要用户行动时才提示（计划 A02-4：删除通用“下一步”）
+  const actionNeeded = view.lifecycle === "waiting_approval"
+    ? { kind: "approval", text: view.progress.waitingReason || "等待你审批后继续" }
+    : view.lifecycle === "waiting_user"
+      ? { kind: "ask", text: view.progress.waitingReason || "等待你回答后继续" }
+      : completion?.status === "blocked"
+        ? { kind: "blocked", text: "有受阻项需要你先处理" }
+        : completion?.status === "partial"
+          ? { kind: "partial", text: "有未完成项，需要你决定是否继续" }
+          : view.lifecycle === "failed"
+            ? { kind: "failed", text: "本轮失败，可重试或调整要求" }
+            : null;
   const reviewSources = useMemo(() => {
     const sourceMap = new Map((Array.isArray(m.reviewSources) ? m.reviewSources : []).map((item) => [item.sourceId, { ...item }]));
     for (const event of Array.isArray(m.events) ? m.events : []) {
@@ -3249,18 +3695,42 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
     }
     return [...sourceMap.values()].filter((item) => item.sourceId);
   }, [m.events, m.reviewSources]);
-  const [toolsOpen, setToolsOpen] = useState(false);
-  // 结果卡只对"有交付物的任务"或非只读模式展示；纯 Chat 问答不弹一张"文件变更 0 项"的卡。
-  const showResultCard = m.runMode !== "chat" || (m.artifacts?.length || m.products?.length);
+  // 结果卡只在有文件、审查依据或需要用户处理的终态出现。
+  // 单纯存在 completion/summary 不代表用户需要看到一张“0 项”卡。
+  const showResultCard = fileChanges.length > 0
+    || deliverables.length > 0
+    || reviewSources.length > 0
+    || Boolean(actionNeeded)
+    || Boolean(completion?.incomplete?.length || completion?.blockers?.length);
+  // 单一产物集合（交付优先、路径去重）＋ 类型/大小，供「本轮产物」tab 的卡片使用。
+  const products = useMemo(() => artifactsFromView(view) || [], [view]);
+  // 已确认（写入台账/已验收）与未归属线索分开：后者在共享工作区里可能来自其他运行。
+  const confirmedProducts = useMemo(() => products.filter((item) => item.confirmed), [products]);
+  const leadProducts = useMemo(() => products.filter((item) => !item.confirmed), [products]);
+  const confirmedCards = useMemo(() => (confirmedProducts.length ? buildArtifactIndex(confirmedProducts).list : []), [confirmedProducts]);
+  // 结果区页签：本轮产物 / 文件改动 / 依据（依据仅在 Review 轮次有）
+  const [resultTab, setResultTab] = useState("products");
+  useEffect(() => {
+    // 当前页签的数据不存在时（例如历史轮次没有依据）自动回到产物页
+    if (resultTab === "sources" && !reviewSources.length) setResultTab(products.length ? "products" : "changes");
+  }, [resultTab, reviewSources.length, products.length]);
+  const runIsLive = LIVE_RUN_STATUSES.has(String(m.runStatus || ""));
+  const [summaryOpen, setSummaryOpen] = useState(runIsLive);
+  useEffect(() => setSummaryOpen(runIsLive), [runIsLive]);
+  const hasRunDetails = showResultCard;
+  // 单一文件清单的行类名：角色 + 内部弱化 + “本轮刚结束”的短时高亮（历史回放不重播）
+  const changeClass = (change) => `summary-product clickable role-${change.role}${change.role === "internal" ? " internal" : ""}${m.flashFiles ? " fresh" : ""}`;
+  // 每轮用时与 token 是独立于"有没有产物"的记录：纯问答轮也保留一行实测指标，不弹空结果卡。
+  const hasTurnMetrics = turnMetrics.length > 0;
+  if (!showResultCard && !hasTurnMetrics) return null;
   return (
-    <div className="msg system summary-msg">
+    <div className={`msg system summary-msg ${embedded ? "embedded-run-summary" : ""}`}>
       <div className="bubble run-summary-bubble">
-        <div className="run-summary-header">
+        {!embedded && <div className="run-summary-header">
           <span className={`run-summary-dot ${m.runStatus || "done"}`} />
-          <strong>任务轮次 {m.runIndex ? `${m.runIndex}/${m.runCount || m.runIndex}` : ""}</strong>
           <span className="run-summary-title" title={title}>{title}</span>
           <span className="run-summary-meta">
-            {modeLabel} · {statusLabel}
+            {statusLabel}
             {completion && (
               <span
                 className={`flow-completion ${completion.status}`}
@@ -3269,11 +3739,20 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
                 {completionLabel(completion.status)}{completion.source === "inferred" ? "（推断）" : ""}
               </span>
             )}
-            {traceSummary ? ` · ${traceSummary}` : (m.eventCount ? ` · 过程 ${m.eventCount} 事件` : "")}{time ? ` · ${time}` : ""}
           </span>
-        </div>
-        {showResultCard && (
-        <div className="run-result" aria-label="本轮结果摘要">
+        </div>}
+        {hasRunDetails && (
+        <details className={`run-result-fold ${embedded ? "embedded" : ""}`} open={summaryOpen} onToggle={(event) => setSummaryOpen(event.currentTarget.open)}>
+          <summary>
+            <Icon name="flow" size={12} />
+            <span>{embedded ? "本轮状态" : "运行结果"}</span>
+            <span className="run-result-fold-meta">
+              {completion ? completionLabel(completion.status) : statusLabel}
+              {products.length ? ` · ${products.length} 个文件` : ""}
+              {view.progress.toolTotal ? ` · ${view.progress.toolTotal} 次工具调用` : ""}
+            </span>
+          </summary>
+        <div className="run-result" aria-label="本轮结论与执行过程">
           <div className="run-result-grid">
             <div className="run-result-cell">
               <span className="run-result-label">目标达成</span>
@@ -3286,13 +3765,9 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
             </div>
             <div className="run-result-cell">
               <span className="run-result-label">文件变更</span>
-              <b className="run-result-value">
-                {(m.artifacts?.length || m.products?.length || 0)} 项
-              </b>
-              {(m.artifacts?.length || 0) > 0 && (
-                <small className="run-result-flag" title="其中可回滚的变更数量">
-                  可回滚 {m.artifacts.filter((a) => a.before?.reversible).length}
-                </small>
+              <b className="run-result-value">{fileChanges.length} 项</b>
+              {rollbackableCount > 0 && (
+                <small className="run-result-flag" title="其中可回滚的变更数量">可回滚 {rollbackableCount}</small>
               )}
             </div>
             <div className="run-result-cell">
@@ -3303,19 +3778,43 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
               )}
             </div>
           </div>
-          {completion?.summary && <div className="run-result-note">结论：{completion.summary}</div>}
+          {fallbackSummary && (
+            <div className="run-result-fallback">
+              <strong>运行摘要</strong>
+              <SafeMarkdown text={fallbackSummary} onOpenFile={onOpenFile} artifacts={products.length ? products : null} />
+            </div>
+          )}
           {!!completion?.incomplete?.length && <div className="run-result-note warn">未完成：{completion.incomplete.join("；")}</div>}
           {!!completion?.blockers?.length && <div className="run-result-note warn">受阻：{completion.blockers.join("；")}</div>}
-          {completion?.verification && <div className="run-result-note">验证说明：{completion.verification}</div>}
-          <div className="run-result-next">
-            <Icon name="arrowRight" size={11} /> 下一步：
-            {completion?.status === "success"
-              ? "按上方产物验收，或继续追加需求。"
-              : completion?.status === "cancelled"
-                ? "本轮已取消；如需继续请重新发起。"
-                : "先处理未完成/受阻项，再重新发起一轮。"}
-          </div>
-          <details className="run-result-tech">
+          {!embedded && (trace?.tools?.length > 0 || view.progress.toolTotal > 0) && (
+            <section className="run-process-details" aria-label="工具调用明细">
+              <div className="run-process-heading"><Icon name="flow" size={12} /> 执行过程</div>
+              <div className="run-trace-timeline" role="list" aria-label="按顺序排列的工具调用">
+                {(trace?.tools || []).map((tool, index) => {
+                  const detail = runToolDetailText(tool);
+                  const preview = detail.length > 240 ? `${detail.slice(0, 240)}…` : detail;
+                  const state = tool.status !== "done" ? "running" : tool.isError ? "error" : "ok";
+                  const stateLabel = state === "running" ? "进行中" : state === "error" ? "失败" : "完成";
+                  const duration = Number(tool.duration);
+                  return (
+                    <div key={tool.id || `${tool.name}-${index}`} className={`run-trace-step ${state}`} role="listitem">
+                      <span className="run-trace-step-index">{index + 1}</span>
+                      <div className="run-trace-step-content">
+                        <div className="run-trace-step-heading">
+                          <ToolIdentityIcon name={tool.name} size={12} />
+                          <strong>{tool.name}{tool.startMissing ? "（恢复）" : ""}</strong>
+                          <span className={`run-trace-step-status ${state}`}>{stateLabel}</span>
+                          {Number.isFinite(duration) && duration >= 0 && <time>{formatDuration(duration * 1000)}</time>}
+                        </div>
+                        {preview && <p title={detail}>{preview}</p>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+          {!embedded && <details className="run-result-tech">
             <summary>技术详情（运行 ID、事件与原始错误）</summary>
             <pre>{JSON.stringify({
               runId: m.runId || null,
@@ -3329,74 +3828,188 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
                 .slice(-5)
                 .map((event) => ({ type: event.type, at: event.at, data: event.data })),
             }, null, 2)}</pre>
-          </details>
+          </details>}
         </div>
+        </details>
         )}
-        <details className="run-summary-details" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-          <summary>查看本轮对话与产物</summary>
-          {m.text && m.text.trim() !== title && <div className="run-summary-content">{m.text}</div>}
-          {m.products?.length > 0 && (
-            <div className="file-change-summary">
-              <span className="file-change-label"><Icon name="folder" size={11} /> 本轮产物（{m.products.length}）</span>
-              {m.workspace && <small className="summary-workspace" title={m.workspace}>工作区：{m.workspace}</small>}
-              <div className="summary-products">
-                {m.products.map((p) => (
-                  <span key={p} className="summary-product clickable" onClick={() => onOpenFile?.(p)} title={`点击打开 ${p}`}>
-                    <Icon name="file" size={11} /> {p}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-          {m.artifacts?.length > 0 && (
-            <div className="run-artifacts">
-              {m.artifacts.map((a) => <div key={a.path} className={m.flashFiles ? "run-artifact-row fresh" : "run-artifact-row"}><span>{a.status === "added" ? "新增" : a.status === "deleted" ? "删除" : "修改"}</span> <code>{a.path}</code>{a.before?.reversible && <span className="artifact-reversible">可回滚</span>}</div>)}
-              {m.runId && m.artifacts.some((a) => a.before?.reversible) && <button className="btn-xs" onClick={() => onRollbackRun?.(m.runId, m.artifacts.map((a) => a.path))}>回滚本轮</button>}
-            </div>
-          )}
-          {trace?.tools?.length > 0 && (
-            <div className="run-trace-tools">
-              <button type="button" className="run-trace-tools-toggle" onClick={() => setToolsOpen((value) => !value)} aria-expanded={toolsOpen}>
-                <span className="file-change-label"><Icon name="flow" size={11} /> 本轮工具（{trace.tools.length}）</span>
-                <span className="run-trace-tools-chevron">{toolsOpen ? "▾" : "▸"}</span>
-              </button>
-              {toolsOpen && <div className="run-trace-tool-list">
-                {trace.tools.map((tool) => (
-                  <span
-                    key={tool.id}
-                    className={`run-trace-tool ${tool.status !== "done" ? "running" : tool.isError ? "error" : "ok"}`}
-                    title={tool.result || tool.output || tool.input || ""}
-                  >
-                    <ToolIdentityIcon name={tool.name} size={11} /> {tool.name}{tool.startMissing ? "（已恢复）" : ""}
-                  </span>
-                ))}
-              </div>}
-            </div>
-          )}
-          {m.runMode === "review" && reviewSources.length > 0 && (
-            <div className="review-source-summary">
-              <div className="file-change-label"><Icon name="shield" size={11} /> 规范依据（已读取 {reviewSources.length}）</div>
-              <div className="review-source-list">
-                {reviewSources.map((source) => (
-                  <div className="review-source-row" key={source.sourceId}>
-                    <strong>{source.sourceId}</strong>
-                    <span title={`${source.relPath || ""}${source.rootName ? ` @ ${source.rootName}` : ""}`}>{source.title || source.relPath}</span>
-                    <em className={`review-source-status ${source.status || "read"}`}>{source.status === "applied" ? "已采用" : source.status === "read-not-applied" ? "未采用" : source.status === "failed" ? "读取失败" : "已读取"}</em>
+        {actionNeeded && <div className={`run-result-action ${actionNeeded.kind}`}><Icon name="arrowRight" size={11} /> {actionNeeded.text}</div>}
+        {/* 本轮用时与 token：明确到每一轮（回合）——总量常驻可见，逐轮明细一键展开 */}
+        {hasTurnMetrics && (
+          <div className="run-metrics" aria-label="本轮用时与 token">
+            {/* 一行小字：用时 · 轮数 · 输入/输出 token · 上下文；逐轮明细收在后面的小折叠里 */}
+            <span className="run-metrics-text" title={metricsText}>
+              用时 <b>{formatDuration(trace?.durationMs || turnTotals.durationMs || 0)}</b>
+              <i>·</i><b>{turnMetrics.length}</b> 轮
+              {Number.isFinite(turnTotals.input) && <><i>·</i>输入 <b>{formatTokenCount(turnTotals.input)}</b></>}
+              {Number.isFinite(turnTotals.output) && <><i>·</i>输出 <b>{formatTokenCount(turnTotals.output)}</b> tokens</>}
+              {Number.isFinite(turnTotals.context) && <><i>·</i>上下文 {formatTokenCount(turnTotals.context)}</>}
+            </span>
+            <details className="run-turns">
+              <summary title="每轮用时来自回合开始/结束事件，token 来自每回合一次的用量事件（输入不含缓存读；上下文是该回合结束时的规模）">每轮明细</summary>
+              <div className="run-turns-table" role="table" aria-label="每轮用时与 token">
+                <div className="run-turns-row head" role="row">
+                  <span role="columnheader">回合</span>
+                  <span role="columnheader">用时</span>
+                  <span role="columnheader">输出</span>
+                  <span role="columnheader">输入</span>
+                  <span role="columnheader">缓存读</span>
+                  <span role="columnheader">上下文</span>
+                  <span role="columnheader">工具</span>
+                </div>
+                {turnMetrics.map((turn) => (
+                  <div className="run-turns-row" role="row" key={turn.index}>
+                    <span role="cell">#{turn.index}</span>
+                    <span role="cell">{Number.isFinite(turn.durationMs) ? formatDuration(turn.durationMs) : "—"}</span>
+                    <span role="cell">{turn.tokens && Number.isFinite(turn.tokens.output) ? formatTokenCount(turn.tokens.output) : "—"}</span>
+                    <span role="cell">{turn.tokens && Number.isFinite(turn.tokens.input) ? formatTokenCount(turn.tokens.input) : "—"}</span>
+                    <span role="cell">{turn.tokens && Number.isFinite(turn.tokens.cacheRead) ? formatTokenCount(turn.tokens.cacheRead) : "—"}</span>
+                    <span role="cell">{turn.tokens && Number.isFinite(turn.tokens.context) ? formatTokenCount(turn.tokens.context) : "—"}</span>
+                    <span role="cell">{Number.isFinite(turn.toolCount) ? turn.toolCount : "—"}</span>
                   </div>
                 ))}
               </div>
+            </details>
+          </div>
+        )}
+        {/* 本轮产物 tab：产物卡片 / 文件改动 / 依据，同一份投影的单一文件区域 */}
+        {(products.length > 0 || fileChanges.length > 0 || reviewSources.length > 0) && (
+          <div className="result-tabbed" aria-label="本轮结果">
+            <div className="result-tabs" role="tablist" aria-label="本轮结果视图">
+              {products.length > 0 && (
+                <button type="button" role="tab" aria-selected={resultTab === "products"} className={`result-tab ${resultTab === "products" ? "active" : ""}`} onClick={() => setResultTab("products")}>
+                  <Icon name="folder" size={11} /> 本轮产物 <span className="result-tab-count">{confirmedProducts.length}</span>
+                </button>
+              )}
+              {fileChanges.length > 0 && (
+                <button type="button" role="tab" aria-selected={resultTab === "changes"} className={`result-tab ${resultTab === "changes" ? "active" : ""}`} onClick={() => setResultTab("changes")}>
+                  <Icon name="edit" size={11} /> 文件改动 <span className="result-tab-count">{fileChanges.length}</span>
+                </button>
+              )}
+              {reviewSources.length > 0 && (
+                <button type="button" role="tab" aria-selected={resultTab === "sources"} className={`result-tab ${resultTab === "sources" ? "active" : ""}`} onClick={() => setResultTab("sources")}>
+                  <Icon name="shield" size={11} /> 依据 <span className="result-tab-count">{reviewSources.length}</span>
+                </button>
+              )}
             </div>
-          )}
-        </details>
+            {resultTab === "products" && products.length > 0 && (
+              <div className="result-tab-panel" role="tabpanel" aria-label="本轮产物">
+                <div className="product-cards-head">
+                  <span><Icon name="folder" size={11} /> 交付产物 {deliverables.length} · 已确认 {confirmedProducts.length}{leadProducts.length ? ` · 未归属线索 ${leadProducts.length}` : ""}</span>
+                  {onOpenArtifacts && <button type="button" className="product-cards-link" onClick={() => onOpenArtifacts()} title="在右侧“产物”面板查看版本与固定">在产物面板查看</button>}
+                </div>
+                {confirmedCards.length > 0 && (
+                  <div className="product-cards">
+                    {confirmedCards.map((item) => (
+                      <div className={`product-card${item.deliverable ? " deliverable" : ""}`} key={item.path}>
+                        <button type="button" className="product-card-main" onClick={() => onOpenFile?.(item.path)} title={item.path}>
+                          <span className={`product-card-icon artifact-kind-${item.icon}`}><Icon name={item.icon} size={15} /></span>
+                          <span className="product-card-meta">
+                            <strong>{item.name}</strong>
+                            <small>{item.typeLabel}{item.sizeText ? ` · ${item.sizeText}` : ""}</small>
+                          </span>
+                          {item.deliverable && <span className="product-card-badge">交付</span>}
+                        </button>
+                        <button type="button" className="product-card-open" onClick={() => onOpenFile?.(item.path)} title={`打开 ${item.path}`}>打开</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {/* 未归属线索：共享工作区里并行运行/其他轮次的写入也会落在本轮前后快照之间，
+                    这些文件无法证明属于本轮，只作线索列出，不参与"本轮产物"计数。 */}
+                {leadProducts.length > 0 && (
+                  <details className="product-leads">
+                    <summary title="本轮没有写入台账（工具通过命令行写文件）时，快照差异无法证明文件归属；可能是并行运行或其他轮次写入的">
+                      未归属线索 {leadProducts.length} · 可能来自其他运行，需人工确认
+                    </summary>
+                    <div className="product-leads-list">
+                      {leadProducts.map((item) => (
+                        <button type="button" className="product-lead" key={item.path} onClick={() => onOpenFile?.(item.path)} title={`${item.path}（未归属线索）`}>
+                          <Icon name={item.icon || "file"} size={11} />
+                          <span>{item.name}</span>
+                          {item.sizeText && <em>{item.sizeText}</em>}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="product-leads-note">这些文件在本轮前后的工作区快照里有变化，但本轮没有写入台账记录它们；同一工作区并行运行时会互相出现，请以文件树与“文件改动”页签为准。</p>
+                  </details>
+                )}
+              </div>
+            )}
+            {resultTab === "changes" && fileChanges.length > 0 && (
+              <div className="result-tab-panel" role="tabpanel" aria-label="文件改动">
+                <div className="file-change-summary">
+                  <span className="file-change-label">
+                    <Icon name="folder" size={11} /> 本轮文件（{fileChanges.length}）
+                    {deliverables.length ? ` · 交付 ${deliverables.length}` : ""}
+                  </span>
+                  {m.workspace && <small className="summary-workspace" title={m.workspace}>工作区：{m.workspace}</small>}
+                  <div className="summary-products">
+                    {fileChanges.map((change) => (
+                      <span
+                        key={change.relativePath}
+                        className={changeClass(change)}
+                        onClick={() => onOpenFile?.(change.relativePath)}
+                        title={`${change.changeType} · ${change.confidence === "suspected" ? "疑似变更" : "已确认"} · ${change.relativePath}`}
+                      >
+                        <Icon name={change.changeType === "deleted" ? "trash" : "file"} size={11} /> {change.relativePath}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                {/* 单一份文件清单：不再与 m.artifacts 各行重复；只保留“回滚本轮”这个真实动作 */}
+                {(m.runId && rollbackableCount > 0) || onOpenChanges ? (
+                  <div className="run-artifacts">
+                    {m.runId && rollbackableCount > 0 && (
+                      <button className="btn-xs" onClick={() => onRollbackRun?.(m.runId, fileChanges.filter((change) => change.before?.reversible).map((change) => change.relativePath))}>回滚本轮（{rollbackableCount} 项）</button>
+                    )}
+                    {onOpenChanges && <button className="btn-xs" onClick={() => onOpenChanges()} title="在右侧“改动”面板查看内容差异">查看内容差异</button>}
+                  </div>
+                ) : null}
+              </div>
+            )}
+            {resultTab === "sources" && reviewSources.length > 0 && (
+              <div className="result-tab-panel" role="tabpanel" aria-label="规范依据">
+                <div className="review-source-summary">
+                  <div className="file-change-label"><Icon name="shield" size={11} /> 规范依据（已读取 {reviewSources.length}）</div>
+                  <div className="review-source-list">
+                    {reviewSources.map((source) => (
+                      <div className="review-source-row" key={source.sourceId}>
+                        <strong>{source.sourceId}</strong>
+                        <span title={`${source.relPath || ""}${source.rootName ? ` @ ${source.rootName}` : ""}`}>{source.title || source.relPath}</span>
+                        <em className={`review-source-status ${source.status || "read"}`}>{source.status === "applied" ? "已采用" : source.status === "read-not-applied" ? "未采用" : source.status === "failed" ? "读取失败" : "已读取"}</em>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {memoryProposalIds.length > 0 && (
+          <div className="run-result-links">
+            <span className="run-result-chip muted" title={`有 ${memoryProposalIds.length} 条待审核记忆建议，在「设置 → 记忆」中确认或拒绝`}><Icon name="book" size={11} /> 记忆建议 {memoryProposalIds.length}</span>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onAskAnswered, onResend, index, prevRole, clientId, threadId }) {
+function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onAskAnswered, onResend, index, prevRole, clientId, threadId, runSummary = null, executionFlow = null }) {
   if (m.role === "system") {
-    if (m.summary) return <RunSummary m={m} onOpenFile={onOpenFile} onRollbackRun={onRollbackRun} />;
+    if (m.summary) {
+      const runId = m.runId || null;
+      return (
+        <RunSummary
+          m={m}
+          onOpenFile={onOpenFile}
+          onRollbackRun={onRollbackRun}
+          onOpenChanges={onOpenRunChanges ? () => onOpenRunChanges(runId) : undefined}
+          onOpenArtifacts={onOpenRunArtifacts ? () => onOpenRunArtifacts(runId) : undefined}
+        />
+      );
+    }
     return (
       <div className="msg system">
         <div className="bubble">
@@ -3416,11 +4029,228 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
   const isUser = m.role === "user";
   const blocks = m.blocks || [];
   const streaming = m.status === "streaming";
+  const authoritativeFinalText = String(
+    m.authoritativeFinalText
+      || [...(Array.isArray(runSummary?.events) ? runSummary.events : [])].reverse().find((event) => event?.type === "assistant_final" && String(event?.data?.text || "").trim())?.data?.text
+      || "",
+  ).trim();
+  // 本轮展示投影只算一次：结论内嵌产物与结果卡（tab）共用，避免重复归约事件流。
+  const runCardSource = useMemo(
+    () => (runSummary ? { ...runSummary, authoritativeFinalText } : null),
+    [runSummary, authoritativeFinalText],
+  );
+  const runCardView = useMemo(
+    () => (runCardSource ? projectLegacyRunSummary(runCardSource, Array.isArray(runCardSource.events) ? runCardSource.events : []) : null),
+    [runCardSource],
+  );
+  // 结论里可点击的产物：交付物优先，其余文件改动跟随；同一路径只留一条。
+  const answerArtifacts = useMemo(() => artifactsFromView(runCardView), [runCardView]);
+  // 最后一段文本块：无论最终答复是否已单独渲染，都不折进“执行过程”
+  let lastTextBlockIndex = -1;
+  blocks.forEach((block, index) => { if (block?.type === "text") lastTextBlockIndex = index; });
+  let finalTextBlockIndex = -1;
+  if (authoritativeFinalText) {
+    const normalizedFinal = authoritativeFinalText.replace(/\s+/g, " ").trim();
+    for (let i = blocks.length - 1; i >= 0; i -= 1) {
+      const blockText = blocks[i]?.type === "text" ? String(blocks[i].text || "").replace(/\s+/g, " ").trim() : "";
+      if (blockText && (blockText === normalizedFinal || blockText.endsWith(normalizedFinal) || normalizedFinal.endsWith(blockText))) {
+        finalTextBlockIndex = i;
+        break;
+      }
+    }
+  }
+  // 无权威终稿时，最后一个文本块是旧消息的答案候选；有终稿时使用匹配到的文本块。
+  const finalAnswerBlockIndex = finalTextBlockIndex >= 0 ? finalTextBlockIndex : lastTextBlockIndex;
+  const replaceLegacyFinalCandidate = Boolean(authoritativeFinalText && !streaming && finalTextBlockIndex < 0 && lastTextBlockIndex >= 0);
+  // B02 回答详细程度：唯一答案出口在消息气泡，因此收窄只作用于此处，且只在非流式时生效。
+  const answerDetail = useAppearance().answerDetail;
+  const [answerExpanded, setAnswerExpanded] = useState(false);
+  const clampAnswer = (value) => {
+    const lines = String(value || "").split(/\r?\n/).filter((line) => line.trim());
+    return answerDetail === "brief" && !answerExpanded && lines.length > 3 ? `${lines.slice(0, 3).join("\n")}\n\n…` : value;
+  };
+  const answerClamped = answerDetail === "brief" && String(authoritativeFinalText || "").split(/\r?\n/).filter((line) => line.trim()).length > 3;
+  const isTaskActivity = !isUser && Boolean(m.runId || runSummary || executionFlow);
+  const isTaskLive = streaming || Boolean(executionFlow?.running) || LIVE_RUN_STATUSES.has(String(runSummary?.runStatus || ""));
+  const processBlockTypes = new Set(["thinking", "tool", "subagent", "ask", "approval", "process_note"]);
+  // 模型发言（text）不再归入过程区：它是这一小节的结论，必须留在消息正文里。
+  // 过去只有"最后一个文本块"能留在外面，于是每写一段新小结，上一段就被折进
+  // "思考与工具过程"，折叠后整轮只剩最终答复。现在只把思考、工具、审批、
+  // 子代理与系统提醒收进可折叠的过程区。
+  const isProcessBlock = (block) => Boolean(block) && processBlockTypes.has(block.type);
+  const foldedProcessBlocks = blocks.filter(isProcessBlock);
+  const lastThinkingBlockIndex = foldedProcessBlocks.reduce((last, block, blockIndex) => block.type === "thinking" ? blockIndex : last, -1);
+  // 工具既有富交互 block，也会出现在 SSE 轨迹中；保留工具卡，只让轨迹补充缺少卡片的调用。
+  const processToolIds = new Set(foldedProcessBlocks
+    .filter((block) => block.type === "tool")
+    .map((block) => String(block.toolCallId || block.id || "").trim())
+    .filter(Boolean));
+  const processToolNames = new Set();
+  foldedProcessBlocks.filter((block) => block.type === "tool").forEach((block) => {
+    const name = String(block.name || "").trim();
+    if (name) processToolNames.add(name);
+  });
+  const processAskIds = new Set(foldedProcessBlocks
+    .filter((block) => block.type === "ask")
+    .map((block) => String(block.id || "").trim())
+    .filter(Boolean));
+  const processApprovalIds = new Set(foldedProcessBlocks
+    .filter((block) => block.type === "approval")
+    .map((block) => String(block.id || "").trim())
+    .filter(Boolean));
+  const processSubagentIds = new Set(foldedProcessBlocks
+    .filter((block) => block.type === "subagent")
+    .map((block) => String(block.id || "").trim())
+    .filter(Boolean));
+  const toolEventTypes = new Set(["tool_start", "tool_end"]);
+  const visibleExecutionEvents = (executionFlow?.events || []).filter((event) => {
+    const data = event?.data || {};
+    if (toolEventTypes.has(event?.type)) {
+      const id = String(data.toolCallId || "").trim();
+      if (id) return !processToolIds.has(id);
+      const name = String(data.name || "").trim();
+      return !(name && processToolNames.has(name));
+    }
+    if (event?.type === "ask_user") {
+      const id = String(data.askId || `${data.runId || "ask"}:${data.question || ""}`).trim();
+      return !processAskIds.has(id);
+    }
+    if (["tool_approval_request", "tool_approval_resolved"].includes(event?.type)) {
+      const id = String(data.id || `${data.runId || "approval"}:${data.tool || ""}:${data.input || ""}`).trim();
+      return !processApprovalIds.has(id);
+    }
+    if (["subagent_start", "subagent_update", "subagent_end"].includes(event?.type)) {
+      const id = String(data.childId || data.toolCallId || "").trim();
+      return !processSubagentIds.has(id);
+    }
+    return true;
+  });
+  const messageExecutionFlow = executionFlow ? { ...executionFlow, events: visibleExecutionEvents } : null;
+  // 权威终稿若与某个文本块对应，该块由"最终答复"通道单独渲染，避免重复一份。
+  const hiddenFinalTextIndex = authoritativeFinalText && !streaming && finalTextBlockIndex >= 0 ? finalTextBlockIndex : -1;
+  const visibleBlocks = blocks.filter((block, blockIndex) => {
+    if (block?.type === "message_boundary" || isProcessBlock(block)) return false;
+    return blockIndex !== hiddenFinalTextIndex;
+  });
+  // 有序片段：连续的过程块合成一个可折叠区，模型发言（小节结论）留在原位置可见。
+  // 于是渲染顺序就是模型真实的输出顺序——过程区 → 小节结论 → 新的过程区 → ……
+  // 折叠只收起思考与工具，小节结论不会被后面的小节吞掉。
+  const renderSegments = [];
+  let processOrder = -1;
+  blocks.forEach((block, blockIndex) => {
+    if (block?.type === "message_boundary" || blockIndex === hiddenFinalTextIndex) return;
+    if (isProcessBlock(block)) {
+      processOrder += 1;
+      const item = { block, blockIndex, processOrder };
+      const tail = renderSegments[renderSegments.length - 1];
+      if (tail?.kind === "process") tail.items.push(item);
+      else renderSegments.push({ kind: "process", items: [item] });
+      return;
+    }
+    renderSegments.push({ kind: "block", block, blockIndex });
+  });
+  // SSE 轨迹（事件流）挂在最后一个过程区里；没有过程块时单独补一个，保证轨迹仍可回看。
+  if (messageExecutionFlow && !renderSegments.some((segment) => segment.kind === "process")) {
+    renderSegments.push({ kind: "process", items: [], flowOnly: true });
+  }
+  const lastProcessSegmentIndex = renderSegments.reduce((last, segment, segmentIndex) => (segment.kind === "process" ? segmentIndex : last), -1);
+  const renderProcessBlock = ({ block, blockIndex, processOrder }) => {
+    const key = block.id || `block-${blockIndex}`;
+    if (block.type === "thinking") return <ThinkingBlock key={key} text={block.text} startTime={block.startTime} streaming={streaming && processOrder === lastThinkingBlockIndex} embedded />;
+    if (block.type === "tool") return <ToolCard key={key} tool={block} onToggle={() => onToggleTool?.(m.id, block.id || blockIndex)} />;
+    if (block.type === "subagent") return <SubagentCard key={key} block={block} />;
+    if (block.type === "ask") return <AskBlock key={key} block={block} clientId={clientId} threadId={threadId} onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)} />;
+    if (block.type === "approval") return <ApprovalBlock key={key} block={block} />;
+    if (block.type === "process_note") return (
+      <div className="flow-markdown process-narration process-note" key={key}>
+        <SafeMarkdown text={String(block.text || "").replace(/^\s*\[系统提醒\]\s*/, "")} />
+      </div>
+    );
+    return null;
+  };
+  // 渲染时才读取 processOpenMap（状态声明在后面），因此这里是函数而不是常量数组。
+  const renderMessageBlocks = () => renderSegments.map((segment, segmentIndex) => {
+    if (segment.kind === "block") {
+      const block = segment.block;
+      if (block?.type !== "text") return null;
+      // 旧消息没有权威终稿时，最后一个文本块承担最终答复，按回答详细程度收窄。
+      const isFinalAnswerBlock = replaceLegacyFinalCandidate && block === blocks[lastTextBlockIndex];
+      const shown = isFinalAnswerBlock ? clampAnswer(authoritativeFinalText) : block.text;
+      return (
+        <div className="flow-markdown" key={block.id || `text-${segment.blockIndex}`}>
+          {streaming
+            ? <div className="flow-stream-text" aria-live="polite">{readableProgressText(block.text)}</div>
+            : <SafeMarkdown text={shown} onOpenFile={onOpenFile} artifacts={answerArtifacts} />}
+        </div>
+      );
+    }
+    const isLastProcess = segmentIndex === lastProcessSegmentIndex;
+    const isLiveFold = isTaskLive && isLastProcess;
+    const foldKey = `process-${segment.items[0]?.blockIndex ?? "flow"}`;
+    const override = processOpenMap[foldKey];
+    const open = typeof override === "boolean" ? override : isLiveFold;
+    return (
+      <details
+        className={`message-process-fold ${isTaskActivity ? "run-activity-fold" : ""} ${isLiveFold ? "is-live" : ""}`}
+        key={foldKey}
+        open={open}
+        onToggle={(event) => {
+          const next = event.currentTarget.open;
+          // <details> 的 toggle 对"用户点击"和"React 改 open 属性"都会触发。
+          // 只把与本次渲染值不同的变化记为用户偏好，否则运行中自动展开的
+          // 过程区会被记成"用户要它开着"，小节结束后再也收不回去。
+          if (next === open) return;
+          setProcessOpenMap((state) => (state[foldKey] === next ? state : { ...state, [foldKey]: next }));
+          if (next && isLiveFold) followProcessTailRef.current = true;
+        }}
+      >
+        <summary>
+          <Icon name="flow" size={11} />
+          {isTaskActivity ? "执行过程" : foldedProcessBlocks.some((block) => block.type === "tool") ? "思考与工具过程" : "思考记录"}
+          {isLiveFold && <span>实时</span>}
+        </summary>
+        <div className="message-process-fold-body">
+          <div className="message-process-scroll" ref={isLastProcess ? processScrollRef : undefined} onScroll={isLastProcess ? handleProcessScroll : undefined}>
+            {segment.items.map(renderProcessBlock)}
+            {isLastProcess && messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
+          </div>
+        </div>
+      </details>
+    );
+  });
   // 相邻同角色消息精简头部（连续 AI 回复/连续用户消息不再重复显示作者与时间）
   const hideHeader = prevRole === m.role;
   const hasContent = blocks.length > 0 || m.images?.length > 0;
   const [copied, setCopied] = useState(false);
   const [waitSec, setWaitSec] = useState(0);
+  // 每个过程区各自开合：默认只有"最新（运行中）"的那一个展开，其余收成一行摘要，
+  // 用户点过的过程区按用户选择保持（与事件流阶段分组同一套约定）。
+  const [processOpenMap, setProcessOpenMap] = useState({});
+  const processWasLiveRef = useRef(isTaskLive);
+  const processScrollRef = useRef(null);
+  const followProcessTailRef = useRef(true);
+
+  useEffect(() => {
+    if (isTaskLive && !processWasLiveRef.current) {
+      followProcessTailRef.current = true;
+      setProcessOpenMap({});
+    } else if (!isTaskLive && processWasLiveRef.current) {
+      // 运行结束：全部过程区收回一行摘要，只留小节结论与最终答复。
+      setProcessOpenMap({});
+    }
+    processWasLiveRef.current = isTaskLive;
+  }, [isTaskLive]);
+
+  useLayoutEffect(() => {
+    const list = processScrollRef.current;
+    if (!isTaskLive || !list || !followProcessTailRef.current) return;
+    list.scrollTop = list.scrollHeight;
+  }, [blocks, messageExecutionFlow?.events, runSummary, isTaskLive, processOpenMap]);
+
+  const handleProcessScroll = (event) => {
+    const list = event.currentTarget;
+    followProcessTailRef.current = list.scrollHeight - list.scrollTop - list.clientHeight <= 28;
+  };
 
   // 等待首个内容块：显示"正在思考..." + 耗时计时
   useEffect(() => {
@@ -3440,7 +4270,13 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
   };
 
   const actionsVisible = (hasContent || m.errorText || m.stopped) && !streaming;
-
+  // 首字延迟的最后一跳：正文真的出现在 DOM 里（方案 §3.5 预算：token→DOM P95 <100ms）。
+  // 用 commit 后的 effect 打点，量到的是“用户能看见”，而不是“token 到了内存”。
+  useEffect(() => {
+    if (!streaming) return;
+    const hasVisibleAnswer = visibleBlocks.some((block) => block?.type === "text" && String(block.text || "").trim());
+    if (hasVisibleAnswer) markFirstDomText();
+  }, [streaming, visibleBlocks]);
   return (
     <div className={`msg ${isUser ? "user" : "assistant"} ${m.status || ""}`} data-msg-index={index}>
       <div className={`avatar ${isUser ? "user-avatar" : "agent-avatar"}`}>
@@ -3471,27 +4307,42 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
             {m.images?.length > 0 && (
               <div className="msg-images assistant-images">{m.images.map((src, i) => <img key={i} src={src} alt="Agent 附图" />)}</div>
             )}
-            {/* 独立条目流（pi-web BlockView 模型）：思考/工具调用/文本按原始顺序各自成条目，不包裹分组框 */}
+            {/* 顺序即模型真实输出顺序：过程区（思考/工具）→ 小节结论（模型发言）→ 新的过程区。
+                折叠只收起思考与工具，小节结论始终可见，不会被后面的小节替代。 */}
             <div className="msg-blocks">
-              {blocks.map((b, i) => {
-                if (b.type === "thinking") return <ThinkingBlock key={i} text={b.text} startTime={b.startTime} streaming={streaming} />;
-                if (b.type === "tool") return <ToolCard key={b.id || i} tool={b} onToggle={() => onToggleTool?.(m.id, b.id || i)} />;
-                if (b.type === "ask") return <AskBlock key={b.id || i} block={b} clientId={clientId} threadId={threadId} onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)} />;
-                if (b.type === "approval") return <ApprovalBlock key={b.id || i} block={b} />;
-                if (b.type === "text") return (
-                  <div className="flow-markdown" key={i}>
-                    {streaming
-                      ? <div className="flow-stream-text" aria-live="polite">{b.text}</div>
-                      : <SafeMarkdown text={b.text} />}
-                  </div>
-                );
-                return null;
-              })}
+              {renderMessageBlocks()}
+              {answerClamped && (
+                <button type="button" className="answer-detail-toggle" onClick={() => setAnswerExpanded((value) => !value)} aria-expanded={answerExpanded}>
+                  {answerExpanded ? "收起完整答案" : "展开完整答案"}
+                </button>
+              )}
             </div>
+            {!streaming && authoritativeFinalText && !replaceLegacyFinalCandidate && (
+              <>
+                <div className="flow-markdown assistant-final-answer"><SafeMarkdown text={clampAnswer(authoritativeFinalText)} onOpenFile={onOpenFile} artifacts={answerArtifacts} /></div>
+                {answerClamped && (
+                  <button type="button" className="answer-detail-toggle" onClick={() => setAnswerExpanded((value) => !value)} aria-expanded={answerExpanded}>
+                    {answerExpanded ? "收起完整答案" : "展开完整答案"}
+                  </button>
+                )}
+              </>
+            )}
+            {/* 规范顺序：执行过程（可折叠）在上，结论与产物在下，且不随过程折叠隐藏 */}
+            {runSummary && (
+              <RunSummary
+                m={runCardSource || runSummary}
+                view={runCardView}
+                embedded
+                onOpenFile={onOpenFile}
+                onRollbackRun={onRollbackRun}
+                onOpenChanges={onOpenRunChanges ? () => onOpenRunChanges(runSummary.runId || m.runId) : undefined}
+                onOpenArtifacts={onOpenRunArtifacts ? () => onOpenRunArtifacts(runSummary.runId || m.runId) : undefined}
+              />
+            )}
             {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
             {/* 流式等待首块：思考中 + 耗时 */}
             {streaming && !hasContent && (
-              <div className="bubble loading-bubble">
+              <div className="loading-inline">
                 <LoadingDots label={agentPhase || "正在思考"} seconds={waitSec} />
               </div>
             )}
@@ -3572,7 +4423,7 @@ function LoadingDots({ label, seconds }) {
 }
 
 // ========== 思考过程块（证据层，默认收起；真按钮 + ARIA，键盘可展开） ==========
-function ThinkingBlock({ text, startTime, streaming }) {
+function ThinkingBlock({ text, startTime, streaming, embedded = false }) {
   // 结论优先：思考属于可展开的证据层，默认收起；默认值尊重设置面板的 thinkingDefaultOpen。
   const [expanded, setExpanded] = useState(() => loadSettings().thinkingDefaultOpen === true);
   const [duration, setDuration] = useState(null);
@@ -3584,6 +4435,19 @@ function ThinkingBlock({ text, startTime, streaming }) {
     if (streaming) return;
     if (startTime) setDuration(((Date.now() - startTime) / 1000).toFixed(1));
   }, [streaming, startTime]);
+
+  if (embedded) {
+    return (
+      <section className={`thinking-process-inline ${streaming ? "is-streaming" : ""}`}>
+        <div className="thinking-process-heading">
+          <ToolIdentityIcon name="__thinking__" size={11} />
+          <span>思考</span>
+          {streaming ? <span>思考中…</span> : duration ? <span>思考了 {duration}s</span> : <span>{String(text || "").length} 字</span>}
+        </div>
+        <div className="thinking-text">{text}</div>
+      </section>
+    );
+  }
 
   return (
     <div className={`thinking-block ${expanded ? "expanded" : ""}`}>
@@ -3605,7 +4469,114 @@ function ThinkingBlock({ text, startTime, streaming }) {
   );
 }
 
+function SubagentCard({ block }) {
+  const [expanded, setExpanded] = useState(block.status === "running");
+  const statusText = block.status === "completed" ? "已完成" : block.status === "failed" ? "失败" : block.status === "cancelled" ? "已取消" : "执行中";
+  const roleText = { scout: "资料探索", reviewer: "审阅", planner: "方案拆解" }[block.role] || "只读任务";
+  const content = block.summary || block.preview || "";
+  return (
+    <section className={`subagent-card ${block.status || "running"}`} aria-label={`子 Agent：${roleText}`}>
+      <button type="button" className="subagent-card-head" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+        <span className="subagent-card-icon"><Icon name={block.status === "completed" ? "check" : block.status === "failed" ? "x" : "robot"} size={13} /></span>
+        <span className="subagent-card-title"><strong>子 Agent · {roleText}</strong><small>{block.activity || "隔离上下文 · 只读文件"}</small></span>
+        <span className="subagent-card-status">{block.status === "running" && <i />} {statusText}</span>
+        <span className={`subagent-card-chevron ${expanded ? "open" : ""}`}>▸</span>
+      </button>
+      {expanded && <div className="subagent-card-body">
+        {block.task && <div className="subagent-task"><b>子任务</b><span>{block.task}</span></div>}
+        {block.error && <div className="subagent-error" role="alert">{block.error}</div>}
+        {content && <div className={`subagent-result ${block.status === "running" ? "preview" : ""}`}>{block.status === "running" ? readableProgressText(content) : <SafeMarkdown text={content} />}</div>}
+        {!content && !block.error && <div className="subagent-placeholder">子任务只使用当前 Run 授权的文件读取能力，不继承主对话上下文。</div>}
+      </div>}
+    </section>
+  );
+}
+
 // ========== 主动提问卡片（ask_user：agent 遇不明确处询问用户） ==========
+/**
+ * 输入栏常驻的待处理条：待审批可直接允许/拒绝，待回答可直接提交；
+ * 折叠过程收起或正在回看历史时，不必先找到卡片再操作。
+ */
+function PendingActionBar({ approval, ask, onLocateApproval, onLocateAsk, clientId, threadId, onAnswered }) {
+  const [sending, setSending] = useState("");
+  const [error, setError] = useState("");
+  const [answer, setAnswer] = useState("");
+  if (!approval && !ask) return null;
+  const toolNames = { officecli: "Office CLI", bash: "命令", write: "写入文件", map_edit: "地图样式编辑", map_import: "地图数据导入" };
+  const approvalLabel = toolNames[String(approval?.tool || "").toLowerCase()] || approval?.tool || "工具";
+
+  const decide = async (decision) => {
+    if (sending || !approval?.id) return;
+    setSending("approval");
+    setError("");
+    try {
+      const res = await fetch("/api/agent/approval", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: approval.id, decision }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.error || `审批提交失败（${res.status}）`);
+    } catch (e) { setError(e.message || "审批提交失败，请重试"); }
+    setSending("");
+  };
+
+  const submitAnswer = async (text) => {
+    const value = String(text ?? answer).trim();
+    if (!value || sending) return;
+    setSending("ask");
+    setError("");
+    try {
+      const res = await fetch("/api/agent/answer", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client: clientId, thread: threadId, answer: value }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.error || `回答失败（${res.status}）`);
+      onAnswered?.(ask?.id, value);
+      setAnswer("");
+    } catch (e) { setError(e.message || "回答失败，请重试"); }
+    setSending("");
+  };
+
+  return (
+    <div className="pending-action-bar" role="status" aria-live="polite">
+      {approval && (
+        <>
+          <span className="pending-action-label"><Icon name="shield" size={12} /> 待审批：{approvalLabel}</span>
+          <span className="pending-action-command" title={String(approval.input || "")}>{String(approval.input || "").slice(0, 80)}</span>
+          <span className="pending-action-buttons">
+            <button className="btn primary" onClick={() => decide("allow")} disabled={Boolean(sending)}>允许一次</button>
+            <button className="btn" onClick={() => decide("deny")} disabled={Boolean(sending)}>拒绝</button>
+            <button className="btn-xs" onClick={onLocateApproval} title="滚动到审批卡片">定位</button>
+          </span>
+        </>
+      )}
+      {ask && (
+        <>
+          <span className="pending-action-label"><Icon name="comment" size={12} /> 待回答：{String(ask.question || "").slice(0, 120)}</span>
+          {ask.options?.length > 0 && (
+            <span className="pending-action-buttons">
+              {ask.options.map((opt, i) => <button key={i} className="btn-xs" onClick={() => submitAnswer(opt)} disabled={Boolean(sending)}>{opt}</button>)}
+            </span>
+          )}
+          <input
+            className="pending-action-input"
+            placeholder="输入你的回答…"
+            value={answer}
+            onChange={(e) => setAnswer(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submitAnswer(); } }}
+          />
+          <span className="pending-action-buttons">
+            <button className="btn primary" onClick={() => submitAnswer()} disabled={Boolean(sending) || !answer.trim()}>{sending === "ask" ? "…" : "发送"}</button>
+            <button className="btn-xs" onClick={onLocateAsk} title="滚动到提问卡片">定位</button>
+          </span>
+        </>
+      )}
+      {error && <span className="pending-action-error" role="alert">{error}</span>}
+    </div>
+  );
+}
+
 function AskBlock({ block, clientId, threadId, onAnswered }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -3656,7 +4627,7 @@ function AskBlock({ block, clientId, threadId, onAnswered }) {
               className="ask-input"
               placeholder="输入你的回答…"
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => updateInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(input); } }}
             />
             <button className="btn primary ask-submit" onClick={() => submit(input)} disabled={sending}>
@@ -3850,11 +4821,21 @@ function ApprovalModeControl({ mode, saving, onChange }) {
   );
 }
 
-// ========== SSE 执行流（顶部可折叠/隐藏，独立于消息气泡） ==========
-function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], note = "", compaction = null, hidden = false, onHiddenChange, statusText = "", statusChips = [], statusDotClass = "", statusTitle = "", nextStep = "", pendingApproval = null, onLocateApproval }) {
-  // 默认折叠，避免几十条启动/工具事件把正文和输入框顶出视口
-  const [expanded, setExpanded] = useState(false);
+// ========== SSE 执行流（运行时跟随消息流，完成后可折叠回看） ==========
+function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], note = "", compaction = null, hidden = false, defaultExpanded = false, onHiddenChange, statusText = "", statusChips = [], statusDotClass = "", nextStep = "", pendingApproval = null, onLocateApproval, embedded = false }) {
+  // 运行时自动展开并跟随最新事件；结束后收束为一行，可随时展开回看。
+  // 隐藏状态仍由用户设置控制；折叠/展开偏好只影响空闲时和下一轮启动前。
+  const [expanded, setExpanded] = useState(Boolean(defaultExpanded || running));
+  const defaultExpandedRef = useRef(Boolean(defaultExpanded));
+  useEffect(() => {
+    if (defaultExpandedRef.current === Boolean(defaultExpanded)) return;
+    defaultExpandedRef.current = Boolean(defaultExpanded);
+    setExpanded(Boolean(defaultExpanded));
+  }, [defaultExpanded]);
   const [notesOpen, setNotesOpen] = useState(false);
+  // 事件明细列表默认折叠（只保留一行摘要）；运行中的过程内容由消息级区域平铺展示
+  const executionListRef = useRef(null);
+  const followExecutionTailRef = useRef(true);
   const wasRunningRef = useRef(running);
   // 纯阶段状态事件（准备/受理/请求模型/回合切换等）合并为一行，不逐条刷屏；清单来自事件展示注册表
   const contentEvents = events.filter((event) => !STAGE_ONLY_EVENTS.has(event.type));
@@ -3868,6 +4849,32 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
   // 完成语义由状态位承载，摘要不再重复"已完成"
   const traceSummary = runTraceSummaryText(runTrace, { includeCompletion: false });
   const completion = traceStats.completion;
+  const handleExecutionScroll = (event) => {
+    const list = event.currentTarget;
+    followExecutionTailRef.current = list.scrollHeight - list.scrollTop - list.clientHeight <= 28;
+  };
+  const toggleExpanded = () => {
+    setExpanded((value) => {
+      const next = !value;
+      if (next && running) followExecutionTailRef.current = true;
+      return next;
+    });
+  };
+  useEffect(() => {
+    const wasRunning = wasRunningRef.current;
+    if (running && !wasRunning) {
+      followExecutionTailRef.current = true;
+      setExpanded(true);
+    } else if (!running && wasRunning) {
+      setExpanded(false);
+    }
+    wasRunningRef.current = running;
+  }, [running]);
+  useEffect(() => {
+    const list = executionListRef.current;
+    if (!expanded || !running || !list || !followExecutionTailRef.current) return;
+    list.scrollTop = list.scrollHeight;
+  }, [visibleEvents, expanded, running]);
   // 运行中的进度行：秒级刷新"用时"，让长任务一眼看出进行到哪一步
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -3875,12 +4882,40 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [running]);
-  const elapsedText = runTraceElapsedText(runTrace, { now, running });
-  useEffect(() => {
-    // 收到终结事件后自动回到一行摘要
-    if (wasRunningRef.current && !running) setExpanded(false);
-    wasRunningRef.current = running;
-  }, [running]);
+  const progressText = runTraceProgressText(runTrace, { now, running });
+  // 去重：同一工具的“调用/完成”只保留一行（完成行），避免同一动作刷三条。
+  const endedToolCalls = new Set(contentEvents.filter((event) => event.type === "tool_end")
+    .map((event) => String(event.data?.toolCallId || "")).filter(Boolean));
+  const endedToolNames = new Set(contentEvents.filter((event) => event.type === "tool_end")
+    .map((event) => String(event.data?.name || "")).filter(Boolean));
+  const dedupedEvents = visibleEvents.filter((event, index, list) => {
+    // 连接重试：连续重试只保留最后一条；“已恢复”不再单独成行（由输入框旁状态点承担）
+    if (event.type === "agent_retry_end") return false;
+    if (event.type === "agent_retry") return !(list[index + 1]?.type === "agent_retry");
+    if (event.type !== "tool_start") return true;
+    const id = String(event.data?.toolCallId || "");
+    if (id) return !endedToolCalls.has(id);
+    const name = String(event.data?.name || "");
+    return !(name && endedToolNames.has(name));
+  });
+  // 事件行：文案/明细/语气/时间（只服务非嵌入的独立执行流；消息流不再摊开事件时间线）。
+  const eventRow = (event, index) => {
+    const data = event.data || {};
+    const internalProgressSignal = event.type === "steer" && /^(turn-progress|turn-budget)/.test(String(data.source || ""));
+    const detail = internalProgressSignal ? "" : data.message || (event.type === "tool_start" ? "" : event.type === "file_changed" ? (data.files || []).join(", ") : "");
+    const label = flowEventLabel(event);
+    const showDetail = detail && String(detail).trim() !== String(label).trim();
+    return (
+      <div className={`execution-flow-item ${flowEventTone(event)}`} key={event.key || `${event.seq || event.id || index}:${event.type}`}>
+        <span className="execution-flow-dot" />
+        {(event.type === "tool_start" || event.type === "tool_end") && data.name && <ToolIdentityIcon name={data.name} size={11} className="tool-identity-inline" />}
+        <span className="execution-flow-label">{label}</span>
+        {showDetail && <span className="execution-flow-detail" title={detail}>{String(detail).slice(0, 100)}</span>}
+        <time>{event.at ? new Date(event.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : ""}</time>
+      </div>
+    );
+  };
+  const eventRows = dedupedEvents.map((event, index) => eventRow(event, index));
   if (!visibleEvents.length) return null;
   if (hidden) {
     return (
@@ -3891,28 +4926,50 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
       </div>
     );
   }
+  if (embedded) {
+    // 消息流里不再摊开 SSE 事件时间线（计划/执行/验证/交付 逐条事件属于诊断信息，
+    // 右栏「事件」页签与任务中心保留完整轨迹）。这里只留需要用户知道的系统提示；
+    // 每轮用时与 token 由结果卡的「每轮明细」承担。
+    if (!notes.length) return null;
+    return (
+      <div className="execution-flow-embedded" aria-label="系统提示">
+        <div className="execution-flow-embedded-notes">
+          {notes.map((item) => <div key={item.key} className={`efn-item kind-${item.kind || "info"}`}><span className="efn-text">{item.text}</span>{Number(item.count) > 1 && <span className="efn-count">×{item.count}</span>}</div>)}
+        </div>
+      </div>
+    );
+  }
   const phaseLabel = PHASE_LABELS[runTrace.phase] || "执行";
   // 单行执行流：状态/阶段 · 工具统计 · 用时 · 产物/校验 · 实时。
   // 事件数、模式、上下文、引用、精细阶段来自父层拼好的悬停说明（statusTitle）。
   return (
     <div className={`execution-flow ${expanded ? "expanded" : ""} ${running ? "live" : ""}`}>
       <div className="execution-flow-head">
-        <button type="button" className="execution-flow-toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} title={statusTitle}>
+        <button type="button" className="execution-flow-toggle" onClick={toggleExpanded} aria-expanded={expanded}>
           <span className="execution-flow-chevron">{expanded ? "▾" : "▸"}</span>
           <Icon name="flow" size={12} />
           <strong>执行过程</strong>
-          {/* 状态位：运行中显示阶段（脉冲点），结束后显示任务状态（圆点）。
-              完成语义（显式声明/推断）收进 title，正文里不再重复"已完成"。
-              类名与 role/aria 保持上游可访问性契约（.execution-flow-status + role=status）。 */}
-          <span className="execution-flow-status" role="status" aria-live="polite" data-live={running ? "1" : "0"} title={completion ? (completion.source === "inferred" ? "完成状态由回合结束推断（模型未显式声明）" : `模型显式声明完成${completion.summary ? `：${completion.summary}` : ""}`) : ""}>
-            {running && <span className="efp-pulse" aria-hidden="true" />}
-            {running ? phaseLabel : statusText}
-          </span>
-          {!running && <span className={`task-status-dot ${statusDotClass}`} />}
-          {traceSummary && <span className="execution-flow-stats">{traceSummary}</span>}
-          {running && elapsedText && <span className="execution-flow-elapsed">{elapsedText}</span>}
-          {!running && statusChips.map((chip) => (
-            <span className="execution-flow-chip" key={chip.key} title={chip.title || ""}>{chip.label}</span>
+          <span className="execution-flow-count">{contentEvents.length ? `${contentEvents.length} 个事件` : "等待首个事件"}</span>
+          <span className="execution-flow-current">{traceSummary || flowEventLabel(latest || visibleEvents[0])}</span>
+          {completion && (
+            <span
+              className={`flow-completion ${completion.status}`}
+              title={completion.source === "inferred" ? "由回合结束推断（模型未显式声明完成状态）" : `模型显式声明${completion.summary ? `：${completion.summary}` : ""}`}
+            >
+              {completionLabel(completion.status)}
+            </span>
+          )}
+          {running && <span className="execution-flow-live"><i /> 实时</span>}
+        </button>
+        <button type="button" className="execution-flow-hide" onClick={() => onHiddenChange?.(true)} title="隐藏当前执行过程" aria-label="隐藏执行流"><Icon name="eyeOff" size={12} /></button>
+      </div>
+      {/* 运行状态行：并入原独立状态栏，只占一条，避免上下两条横栏重复 */}
+      {(statusText || statusChips.length > 0 || pendingApproval) && (
+        <div className="execution-flow-status" role="status" aria-live="polite">
+          <span className={`task-status-dot ${statusDotClass}`} />
+          <span className="efs-text">{statusText}</span>
+          {statusChips.map((chip) => (
+            <span className="efs-chip" key={chip.key} title={chip.title || ""}>{chip.label}</span>
           ))}
           {/* 上游新增： 待审批一键定位 + 当前下一步（并入单行，不再单独占行） */}
           {pendingApproval && (
@@ -3931,10 +4988,8 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
               <span className="efn-next">{nextStep}</span>
             </span>
           )}
-          {running && <span className="execution-flow-live"><i /> 实时</span>}
-        </button>
-        <button type="button" className="execution-flow-hide" onClick={() => onHiddenChange?.(true)} title="隐藏执行流（状态栏会回到上方）" aria-label="隐藏执行流"><Icon name="eyeOff" size={12} /></button>
-      </div>
+        </div>
+      )}
       {/* 上游的“运行状态行 / 下一步 / 进度行”三行已并入上方单行状态栏（待审批与下一步在上面） */}
       {/* 系统提示聚合：压缩 / 文件变更等只留一条可展开摘要，不再逐条堆气泡 */}
       {notes.length > 0 && (
@@ -3963,31 +5018,8 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
         <>
           {/* 脑回路执行图：工具按类别聚合，点击可在消息流中定位工具卡 */}
           <AgentBrainGraph trace={runTrace} running={running} onFocusTool={onFocusTool} />
-          <div className="execution-flow-list">
-          {visibleEvents.map((event, index) => {
-            const data = event.data || {};
-            const detail = data.message || (event.type === "tool_start" ? data.name : event.type === "file_changed" ? (data.files || []).join(", ") : "");
-            const label = flowEventLabel(event);
-            const showDetail = detail && String(detail).trim() !== String(label).trim();
-            // 阶段推进：计划 → 执行 → 验证 → 交付，阶段变化时插入分组标题
-            const phase = phaseForEvent(event);
-            const previousPhase = index > 0 ? phaseForEvent(visibleEvents[index - 1]) : null;
-            const showPhase = phase && phase !== previousPhase && phase !== "done";
-            return (
-              <div key={event.key}>
-                {showPhase && (
-                  <div className={`execution-flow-phase phase-${phase}`}>{PHASE_LABELS[phase] || phase}</div>
-                )}
-                <div className={`execution-flow-item ${flowEventTone(event)}`}>
-                  <span className="execution-flow-dot" />
-                  {(event.type === "tool_start" || event.type === "tool_end") && data.name && <ToolIdentityIcon name={data.name} size={11} className="tool-identity-inline" />}
-                  <span className="execution-flow-label">{label}</span>
-                  {showDetail && <span className="execution-flow-detail" title={detail}>{String(detail).slice(0, 100)}</span>}
-                  <time>{new Date(event.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time>
-                </div>
-              </div>
-            );
-          })}
+          <div className="execution-flow-list" ref={executionListRef} onScroll={handleExecutionScroll}>
+          {eventRows}
           </div>
         </>
       )}

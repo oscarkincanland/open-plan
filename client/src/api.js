@@ -1,3 +1,19 @@
+// 统一文件身份与预览地址（D01）：预览相关调用从 api.js 统一出口取用，
+// 便于后续把 comments/annotations/outline/watch 全部收敛到同一契约。
+export {
+  PREVIEW_STATE,
+  PREVIEW_STATE_LABEL,
+  buildDocUrls,
+  makeFileIdentity,
+  mergeFileIdentity,
+  fileIdentityKey,
+  identityMatches,
+  readIdentityHeader,
+  withRevision,
+  looksUnsupported,
+  previewStateFromError,
+} from "./文件地址.js";
+
 export async function api(path, opts = {}) {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -8,10 +24,22 @@ export async function api(path, opts = {}) {
   return data;
 }
 
-export const listFiles = (dir) => api(`/api/files${dir ? `?dir=${encodeURIComponent(dir)}` : ""}`);
-export const searchFiles = (query, limit = 200) => api(`/api/files/search?q=${encodeURIComponent(query)}&limit=${limit}`);
-export const uploadFile = (name, base64) => api("/api/files/upload", { method: "POST", body: JSON.stringify({ name, base64 }) });
-export const deleteFile = (name) => api("/api/files/delete", { method: "POST", body: JSON.stringify({ name }) });
+// 文件身份必须随请求显式携带：服务端 getWorkspace 是全局可变值，会被其他页面
+// 或后台任务改写，只传 dir 会出现“页面显示 A 工作区、列表来自 B”（交接文档交互 1）。
+export const listFiles = (dir, workspace = "") => {
+  const params = new URLSearchParams();
+  if (dir) params.set("dir", dir);
+  if (workspace) params.set("workspace", workspace);
+  const qs = params.toString();
+  return api(`/api/files${qs ? `?${qs}` : ""}`);
+};
+export const searchFiles = (query, limit = 200, workspace = "") => {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  if (workspace) params.set("workspace", workspace);
+  return api(`/api/files/search?${params.toString()}`);
+};
+export const uploadFile = (name, base64, workspace = "") => api("/api/files/upload", { method: "POST", body: JSON.stringify(workspace ? { name, base64, workspace } : { name, base64 }) });
+export const deleteFile = (name, workspace = "") => api("/api/files/delete", { method: "POST", body: JSON.stringify(workspace ? { name, workspace } : { name }) });
 export const openDoc = (name) => api(`/api/doc/${encodeURIComponent(name)}`);
 export const saveCells = (name, sheet, cells) =>
   api(`/api/doc/${encodeURIComponent(name)}/cells`, { method: "POST", body: JSON.stringify({ sheet, cells }) });
@@ -42,8 +70,8 @@ export const agentNetworkSettingsSave = (settings = {}) =>
 export const searchSettings = () => api("/api/search/settings");
 export const searchSettingsSave = (settings = {}) =>
   api("/api/search/settings", { method: "POST", body: JSON.stringify(settings) });
-export const searchSettingsTest = (backend = "") =>
-  api("/api/search/test", { method: "POST", body: JSON.stringify({ backend }) });
+export const searchSettingsTest = (backend = "", draft = null) =>
+  api("/api/search/test", { method: "POST", body: JSON.stringify(draft ? { backend, draft } : { backend }) });
 
 // ---------- 内置浏览器 ----------
 export const browserState = (client, thread) =>
@@ -113,6 +141,18 @@ export const validateWorkspace = (path) =>
   api("/api/workspace/validate", { method: "POST", body: JSON.stringify({ path }) });
 export const pickWorkspace = () =>
   api("/api/workspace/pick", { method: "POST", body: JSON.stringify({}) });
+
+// 本机原生能力（macOS Finder / Windows 资源管理器）
+export const pickNativeFiles = (options = {}) =>
+  api("/api/system/pick-files", { method: "POST", body: JSON.stringify(options) });
+export const openInSystem = (path) =>
+  api("/api/system/open", { method: "POST", body: JSON.stringify({ path }) });
+export const revealInSystem = (path) =>
+  api("/api/system/reveal", { method: "POST", body: JSON.stringify({ path }) });
+
+// 本轮文件改动的内容差异（W3/C02，只读；changeId 由服务端 Run 记录解析）
+export const getRunChangeDiff = (runId, changeId, page = 0) =>
+  api(`/api/runs/${encodeURIComponent(runId)}/changes/${encodeURIComponent(changeId)}/diff${page ? `?page=${page}` : ""}`);
 export const deleteWorkspace = (path) =>
   api("/api/workspace/delete", { method: "POST", body: JSON.stringify({ path }) });
 export const listFileRoots = () => api("/api/file-roots");
@@ -163,10 +203,12 @@ export const listRuns = (thread = "", limit = 50, options = {}) => {
   if (options.status && options.status !== "all") params.set("status", options.status);
   if (options.mode && options.mode !== "all") params.set("mode", options.mode);
   if (options.query) params.set("query", options.query);
+  if (options.includeEvents) params.set("includeEvents", options.includeEvents);
+  if (options.fields) params.set("fields", options.fields);
   params.set("limit", String(limit));
-  return api(`/api/runs?${params.toString()}`);
+  return api(`/api/runs?${params.toString()}`, options.signal ? { signal: options.signal } : {});
 };
-export const getRun = (id) => api(`/api/runs/${encodeURIComponent(id)}`);
+export const getRun = (id, options = {}) => api(`/api/runs/${encodeURIComponent(id)}`, options.signal ? { signal: options.signal } : {});
 export const cancelRun = (id, reason = "用户请求取消") => api(`/api/runs/${encodeURIComponent(id)}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
 export const resumeRun = (id) => api(`/api/runs/${encodeURIComponent(id)}/resume`, { method: "POST", body: JSON.stringify({}) });
 export const retryRun = (id) => api(`/api/runs/${encodeURIComponent(id)}/retry`, { method: "POST", body: JSON.stringify({}) });
@@ -185,6 +227,18 @@ export const rollbackRun = (id, paths) => api(`/api/runs/${encodeURIComponent(id
 export const updateRunStep = (id, stepId, patch) => api(`/api/runs/${encodeURIComponent(id)}/steps/${encodeURIComponent(stepId)}`, { method: "POST", body: JSON.stringify(patch || {}) });
 export const listConnectors = () => api("/api/connectors");
 export const beginConnectorAuth = (id, redirectUri) => api(`/api/connectors/${encodeURIComponent(id)}/auth/start`, { method: "POST", body: JSON.stringify({ redirectUri }) });
+export const listMcpServers = () => api("/api/integrations/mcp/servers");
+export const saveMcpServer = (payload) => api("/api/integrations/mcp/servers", { method: "POST", body: JSON.stringify(payload || {}) });
+export const updateMcpServer = (id, payload) => api(`/api/integrations/mcp/servers/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload || {}) });
+export const deleteMcpServer = (id) => api(`/api/integrations/mcp/servers/${encodeURIComponent(id)}`, { method: "DELETE" });
+export const testMcpServer = (id) => api(`/api/integrations/mcp/servers/${encodeURIComponent(id)}/test`, { method: "POST", body: JSON.stringify({}) });
+export const listPiExtensions = () => api("/api/integrations/pi/extensions");
+export const searchPiPackageCatalog = (query = "", page = 0) => api(`/api/integrations/pi/catalog?q=${encodeURIComponent(query)}&page=${encodeURIComponent(page)}`);
+export const registerInstalledPiPackage = (name) => api("/api/integrations/pi/extensions/from-package", { method: "POST", body: JSON.stringify({ name }) });
+export const addPiExtension = (payload) => api("/api/integrations/pi/extensions", { method: "POST", body: JSON.stringify(payload || {}) });
+export const updatePiExtension = (id, payload) => api(`/api/integrations/pi/extensions/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload || {}) });
+export const checkPiExtension = (id) => api(`/api/integrations/pi/extensions/${encodeURIComponent(id)}/check`, { method: "POST", body: JSON.stringify({}) });
+export const deletePiExtension = (id) => api(`/api/integrations/pi/extensions/${encodeURIComponent(id)}`, { method: "DELETE" });
 export const approveMemoryProposal = (id, payload = {}) => api(`/api/memory/proposals/${encodeURIComponent(id)}/approve`, { method: "POST", body: JSON.stringify(payload || {}) });
 export const editMemoryProposal = (id, payload = {}) => api(`/api/memory/proposals/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload || {}) });
 export const rejectMemoryProposal = (id, reason = "用户拒绝该记忆建议") => api(`/api/memory/proposals/${encodeURIComponent(id)}/reject`, { method: "POST", body: JSON.stringify({ reason }) });

@@ -9,9 +9,14 @@ import assert from "node:assert/strict";
 import {
   completionLabel,
   createRunTrace,
+  formatTokenCount,
   reduceRunTrace,
+  reduceTurnMetrics,
+  runToolDetailText,
   runTraceSummaryText,
   summarizeRunTrace,
+  summarizeTurnMetrics,
+  turnMetricsText,
   verificationLabel,
 } from "../client/src/运行轨迹.js";
 import { inferCompletion, normalizeCompletion } from "../server/运行轨迹.mjs";
@@ -52,6 +57,21 @@ test("start/output/end 合成一条工具记录", () => {
   assert.equal(tool.output, "第一段第二段");
   assert.equal(tool.duration, 3);
   assert.equal(tool.startMissing, false);
+});
+
+test("结构化工具输入/输出转为可读 JSON，不泄漏 [object Object]", () => {
+  const trace = reduceRunTrace([
+    ev("tool_start", { toolCallId: "json-1", name: "bash", input: { command: "pwd" } }, 0),
+    ev("tool_output", { toolCallId: "json-1", output: { cwd: "/workspace", ok: true } }, 1),
+    ev("tool_end", { toolCallId: "json-1", result: { exitCode: 0 } }, 2),
+  ]);
+  const tool = trace.tools[0];
+  assert.match(tool.output, /"cwd": "\/workspace"/);
+  assert.match(tool.result, /"exitCode": 0/);
+  assert.match(runToolDetailText(tool), /"cwd": "\/workspace"/);
+  const legacy = runToolDetailText({ output: "[object Object]", input: { path: "报告.docx" } });
+  assert.match(legacy, /"path": "报告\.docx"/, "旧的对象字符串占位应回退到可读输入");
+  assert.doesNotMatch(legacy, /\[object Object\]/);
 });
 
 test("多个工具并行不互相覆盖", () => {
@@ -198,11 +218,79 @@ test("normalizeCompletion 校验状态与摘要", () => {
   assert.equal(value.verification, "read 回读通过");
 });
 
+test("结论可承载详细 Markdown（上限放宽，不再截到 600 字）", () => {
+  const long = "## 成果\n" + "- 要点一\n".repeat(200); // 约 1000+ 字
+  const value = normalizeCompletion({ status: "success", summary: long, incomplete: Array.from({ length: 15 }, (_, i) => `未完成项 ${i + 1}`) });
+  assert.ok(value, "长结论应被接受");
+  assert.ok(value.summary.length > 600, `长结论不应被截到 600 字，实际 ${value.summary.length}`);
+  assert.match(value.summary, /## 成果/, "Markdown 结构应保留");
+  assert.equal(value.incomplete.length, 15, "未完成项上限应放宽到 20");
+});
+
 test("inferCompletion 区分失败/取消/部分完成", () => {
   assert.equal(inferCompletion({ runStatus: "completed" }).status, "success");
   assert.equal(inferCompletion({ runStatus: "failed" }).status, "failed");
   assert.equal(inferCompletion({ runStatus: "cancelled" }).status, "cancelled");
   assert.equal(inferCompletion({ runStatus: "completed", validations: [{ status: "failed" }] }).status, "partial");
+});
+
+// ---------- 每轮用时与 token（用户要求：计划/执行事件表隐藏，改成逐轮指标）----------
+console.log("\n▶ 每轮用时与 token");
+
+test("reduceTurnMetrics 按回合归约用时、工具数与 token（真实事件形状）", () => {
+  const turns = reduceTurnMetrics([
+    ev("turn_started", { turnIndex: null }, 0),
+    ev("tool_start", { toolCallId: "a", name: "read" }, 5),
+    ev("tool_end", { toolCallId: "a", name: "read" }, 20),
+    ev("stats", { tokens: { inputTokens: 262, outputTokens: 292, cacheReadTokens: 183936, context: 184198, totalTokens: 184490 } }, 30),
+    ev("turn_ended", { toolCount: 2 }, 47),
+    ev("turn_started", { turnIndex: null }, 48),
+    ev("stats", { tokens: { inputTokens: 120, outputTokens: 980, cacheReadTokens: 184000, context: 185000 } }, 70),
+    ev("turn_ended", { toolCount: 0 }, 90),
+    ev("run_finished", { status: "completed" }, 95),
+  ]);
+  assert.equal(turns.length, 2, "两个回合应各成一条记录");
+  assert.equal(turns[0].durationMs, 47000, "第一轮用时来自 turn_started → turn_ended");
+  assert.equal(turns[0].toolCount, 2);
+  assert.equal(turns[0].tokens.output, 292);
+  assert.equal(turns[0].tokens.cacheRead, 183936);
+  assert.equal(turns[1].durationMs, 42000);
+  assert.equal(turns[1].tokens.output, 980);
+});
+
+test("缺失的回合收尾/用量不编造数字", () => {
+  const turns = reduceTurnMetrics([ev("turn_started", {}, 0), ev("turn_started", {}, 10)]);
+  assert.equal(turns[1].durationMs, null, "没有 turn_ended 时用时保持未知");
+  assert.equal(turns[1].tokens, null, "没有 stats 时 token 保持未知");
+  const partial = reduceTurnMetrics([ev("stats", { tokens: { outputTokens: 42 } }, 0)]);
+  assert.equal(partial.length, 1, "没有 turn_started 也能落一条隐含回合");
+  assert.equal(partial[0].tokens.input, null, "缺失字段为 null 而不是 0");
+});
+
+test("summarizeTurnMetrics / turnMetricsText 给出本轮合计", () => {
+  const turns = reduceTurnMetrics([
+    ev("turn_started", {}, 0),
+    ev("stats", { tokens: { inputTokens: 262, outputTokens: 292, cacheReadTokens: 183936, context: 184198 } }, 10),
+    ev("turn_ended", { toolCount: 1 }, 20),
+    ev("turn_started", {}, 30),
+    ev("stats", { tokens: { inputTokens: 120, outputTokens: 980, cacheReadTokens: 184000, context: 185000 } }, 40),
+    ev("turn_ended", { toolCount: 0 }, 50),
+  ]);
+  const totals = summarizeTurnMetrics(turns);
+  assert.equal(totals.turnCount, 2);
+  assert.equal(totals.input, 382);
+  assert.equal(totals.output, 1272);
+  assert.equal(totals.cacheRead, 367936);
+  assert.equal(totals.context, 185000, "上下文取最后一轮实测值，不做合计");
+  const text = turnMetricsText(totals, { durationMs: 60000 });
+  assert.match(text, /用时 1 分/, "文案应含本轮用时");
+  assert.match(text, /2 轮/);
+  assert.match(text, /输入 382 tokens/);
+  assert.match(text, /输出 1\.3k tokens/);
+  assert.equal(formatTokenCount(292), "292");
+  assert.equal(formatTokenCount(1234), "1.2k");
+  assert.equal(formatTokenCount(184198), "184k");
+  assert.equal(formatTokenCount(null), "", "未知 token 不显示成 0");
 });
 
 console.log(failed ? "\n执行轨迹归约：失败" : "\n执行轨迹归约：通过");

@@ -1,8 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { cancelRun, getRun, getRunAcceptance, listRuns, resumeRun, retryRun } from "../api.js";
 import { verificationLabel } from "../运行轨迹.js";
 import Icon from "./Icon.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
+import MarkdownBody from "./MarkdownBody.jsx";
+import { artifactAcceptanceText, acceptanceSummaryText } from "./验收状态.js";
 
 const ACTIVE = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
 const statusText = {
@@ -20,6 +23,13 @@ const statusText = {
 function modeText(run) {
   const mode = run?.task?.mode;
   return mode === "chat" ? "Chat" : mode === "office" ? "Office" : mode === "agent" ? "Agent" : "未标记";
+}
+
+/** 事件摘要：把 run 级原始事件压成一行可读文本（保留技术细节在 title 里）。 */
+function eventDigest(event) {
+  const data = event?.data || {};
+  const text = data.summary || data.message || data.detail || data.toolName || data.stepName || "";
+  return String(text).replace(/\s+/g, " ").trim().slice(0, 120);
 }
 
 function taskTitle(run) {
@@ -103,6 +113,31 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
   const refreshInFlightRef = useRef(null);
   const refreshQueuedRef = useRef(false);
   const triggerRef = useRef(null);
+  // B04：弹层通过 Portal 挂到应用浮层根（body），固定定位并随触发按钮/视口边缘更新，
+  // 不再受祖先堆叠上下文或 overflow 影响。窄屏（≤560px）仍交给 CSS 的贴边抽屉。
+  const [floatingRect, setFloatingRect] = useState(null);
+
+  const updateFloatingRect = useCallback(() => {
+    if (typeof window === "undefined") return;
+    if (window.innerWidth <= 560) { setFloatingRect(null); return; }
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const width = 344;
+    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+    const top = Math.max(8, Math.min(rect.bottom + 8, window.innerHeight - 160));
+    setFloatingRect({ left, top, width });
+  }, []);
+
+  useEffect(() => {
+    if (!open || fullPage) return undefined;
+    updateFloatingRect();
+    window.addEventListener("resize", updateFloatingRect);
+    window.addEventListener("scroll", updateFloatingRect, true);
+    return () => {
+      window.removeEventListener("resize", updateFloatingRect);
+      window.removeEventListener("scroll", updateFloatingRect, true);
+    };
+  }, [open, fullPage, updateFloatingRect]);
 
   const closePanel = useCallback(({ returnFocus = true } = {}) => {
     setOpen(false);
@@ -137,6 +172,9 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
         status: statusFilter,
         mode: modeFilter,
         query: queryFilter.trim(),
+        // 列表与徽标只读状态摘要（明细点击后由 getRun 单条加载）：
+        // 完整 Run 视图带步骤/待办/事件，50 条即可达 1MB 级。
+        fields: "summary",
       };
       const request = listRuns("", 50, options)
         .then((result) => {
@@ -314,7 +352,7 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
                 <div className="task-center-status-row"><span>步骤进度</span><b>{stepsText(detail) || "无步骤记录"}</b></div>
                 <div className="task-center-status-row"><span>验收结果</span><b>{verificationText(detail) || "未验收"}</b></div>
               </div>
-              {detail.completion?.summary && <div className="task-center-completion-note">完成说明：{detail.completion.summary}</div>}
+              {detail.completion?.summary && <div className="task-center-completion-note task-center-completion-markdown"><div className="task-center-completion-label">完成说明</div><MarkdownBody>{detail.completion.summary}</MarkdownBody></div>}
               {!!detail.completion?.incomplete?.length && <div className="task-center-completion-note warn">未完成项：{detail.completion.incomplete.join("；")}</div>}
               {!!detail.completion?.blockers?.length && <div className="task-center-completion-note warn">受阻项：{detail.completion.blockers.join("；")}</div>}
               {detail.completion?.verification && <div className="task-center-completion-note">验证说明：{detail.completion.verification}</div>}
@@ -349,18 +387,30 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
                 ))}
               </div>
               {!!detail.artifacts?.length && <div className="task-center-artifacts">
-                <div>产物 {detail.artifacts.length} 个 · 成果验收 {detail.acceptanceStatus === "passed" ? "通过" : detail.acceptanceStatus === "manual_review" ? "待人工确认" : detail.acceptanceStatus === "failed" ? "失败" : "未检查"}</div>
-                {detail.acceptance?.artifacts?.map((item) => <div className="task-center-artifact-check" key={item.path}><span>{String(item.path || "").split(/[\\/]/).pop()}</span><small>{item.status === "passed" ? "通过" : item.status === "manual_review" ? "待确认" : item.status === "warning" ? "有提示" : item.status === "failed" ? "失败" : "未检查"}</small></div>)}
+                <div>{acceptanceSummaryText(detail.acceptanceStatus, detail.status)} · 产物 {detail.artifacts.length} 个</div>
+                {detail.acceptance?.artifacts?.map((item) => <div className="task-center-artifact-check" key={item.path}><span>{String(item.path || "").split(/[\\/]/).pop()}</span><small>{artifactAcceptanceText(item.status)}</small></div>)}
               </div>}
               <div className="task-center-events">
-                {(detail.events || []).slice(-8).reverse().map((event, index) => <div key={`${event.seq || "event"}-${index}`}><span>{event.type}</span><small>{event.at ? new Date(event.at).toLocaleTimeString() : ""}</small></div>)}
+                {(detail.events || []).slice(-12).reverse().map((event, index) => (
+                  <div key={`${event.seq || "event"}-${index}`}>
+                    <span>{event.type}</span>
+                    {eventDigest(event) && <small className="task-center-event-digest" title={eventDigest(event)}>{eventDigest(event)}</small>}
+                    <small>{event.at ? new Date(event.at).toLocaleTimeString() : ""}</small>
+                  </div>
+                ))}
               </div>
             </div>
           )}
         </div>
       );
 
-  return fullPage
-    ? <div className="module-view task-center-module">{panel}</div>
-    : <div className="task-center-wrap">{trigger}{panel}</div>;
+  if (fullPage) return <div className="module-view task-center-module">{panel}</div>;
+  // 浮层走 Portal：trigger 留在原位负责定位与焦点归还，面板挂到 body
+  const floatingPanel = floatingRect && open && typeof document !== "undefined"
+    ? createPortal(
+      <div className="task-center-float" style={{ left: floatingRect.left, top: floatingRect.top, width: floatingRect.width }}>{panel}</div>,
+      document.body,
+    )
+    : (open ? panel : null);
+  return <div className="task-center-wrap">{trigger}{floatingPanel}</div>;
 }

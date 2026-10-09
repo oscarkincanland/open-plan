@@ -16,7 +16,13 @@ const 样式 = read("../client/src/styles.css");
 // 1. 触发器与面板的渲染边界
 assert.match(任务中心, /const trigger = !fullPage && \(/, "非整页触发器应独立定义");
 assert.match(任务中心, /const panel = \(fullPage \|\| open\) && \(/, "面板只在打开或整页时渲染");
-assert.match(任务中心, /<div className="task-center-wrap">\{trigger\}\{panel\}<\/div>/, "非整页应把触发器与面板同时挂在 wrap 内");
+// B04：触发按钮留在原位（定位与焦点归还），浮层通过 Portal 挂到 body
+assert.match(任务中心, /<div className="task-center-wrap">\{trigger\}\{floatingPanel\}<\/div>/, "触发器应留在原位，面板不再依赖祖先容器");
+assert.match(任务中心, /import \{ createPortal \} from "react-dom"/, "弹层应使用 Portal");
+assert.match(任务中心, /className="task-center-float"/, "Portal 容器应是固定定位浮层");
+assert.match(任务中心, /window\.innerWidth <= 560/, "窄屏应交回 CSS 贴边抽屉而不是内联定位");
+assert.match(任务中心, /updateFloatingRect/, "浮层应随触发按钮位置与视口边缘更新");
+assert.match(样式, /\.task-center-float \{ position: fixed/, "浮层容器应有固定定位样式");
 assert.doesNotMatch(任务中心, /const panel = open && \(/, "面板不应把未打开的触发器一起隐藏");
 
 // 2. 四种状态语义分开表达
@@ -37,5 +43,13 @@ assert.match(运行轨迹, /pending: "验证中"/, "验收状态应覆盖验证�
 // 4. 状态分区样式
 assert.match(样式, /\.task-center-status \{/, "状态分区应有样式");
 assert.match(样式, /\.task-center-completion-note/, "完成说明应有样式");
+
+// 5. 结论要详细且保格式（任务中心不再只给一行纯文本、事件不再只有类型）
+assert.match(任务中心, /import MarkdownBody from "\.\/MarkdownBody\.jsx"/, "任务中心应能渲染 Markdown 结论");
+assert.match(任务中心, /task-center-completion-markdown[\s\S]{0,200}?<MarkdownBody>\{detail\.completion\.summary\}<\/MarkdownBody>/, "完成说明应按 Markdown 渲染");
+assert.match(任务中心, /function eventDigest\(event\)/, "事件应带一行可读摘要");
+assert.match(任务中心, /\(detail\.events \|\| \[\]\)\.slice\(-12\)/, "事件应展示更多（12 条）");
+assert.match(样式, /\.task-center-completion-markdown \.markdown-body/, "Markdown 结论应有排版样式");
+assert.match(样式, /\.task-center-event-digest/, "事件摘要应有样式");
 
 console.log("任务中心可信度回归：通过");
