@@ -102,6 +102,12 @@ export const agentConfigStatus = () => api("/api/agent/config-status");
 export const agentImportPreview = () => api("/api/agent/import-preview");
 export const agentImportConfig = (options = {}) =>
   api("/api/agent/import-config", { method: "POST", body: JSON.stringify(options) });
+export const agentPlans = () => api("/api/agent/plans");
+export const agentPlanModels = (planId) => api(`/api/agent/plans/models?planId=${encodeURIComponent(planId)}`);
+export const agentPlanApply = (payload = {}) =>
+  api("/api/agent/plans/apply", { method: "POST", body: JSON.stringify(payload) });
+export const agentPlanDisconnect = (planId) =>
+  api("/api/agent/plans/disconnect", { method: "POST", body: JSON.stringify({ planId }) });
 export const agentDiagnostics = (client = "", thread = "", runId = "") => {
   const params = new URLSearchParams();
   if (client) params.set("client", client);

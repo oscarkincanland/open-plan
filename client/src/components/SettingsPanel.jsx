@@ -3,7 +3,7 @@ import Icon from "./Icon.jsx";
 import { useTheme, SKINS } from "../theme.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
 import { ACTIVITY_DISPLAY_OPTIONS, ANSWER_DETAIL_OPTIONS, MARQUEE_COLORS, MARQUEE_SPEEDS, MARQUEE_STYLES, MOTION_LEVELS, PREVIEW_AUTO_OPEN_OPTIONS, useAppearance, useAppearanceSetter } from "../界面外观.js";
-import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentModelConfigs, agentNetworkSettings, agentNetworkSettingsSave, archiveProject, classifyProjects, createProject, deleteAgentModelConfig, fetchAgentModels, getPermissionRules, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, removePermissionRule, saveAgentModelConfig, searchSettings, searchSettingsSave, searchSettingsTest, updateProject, updateProjectSettings } from "../api.js";
+import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentModelConfigs, agentNetworkSettings, agentNetworkSettingsSave, agentPlanApply, agentPlanDisconnect, agentPlanModels, agentPlans, archiveProject, classifyProjects, createProject, deleteAgentModelConfig, fetchAgentModels, getPermissionRules, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, removePermissionRule, saveAgentModelConfig, searchSettings, searchSettingsSave, searchSettingsTest, updateProject, updateProjectSettings } from "../api.js";
 
 /**
  * 设置面板（左侧栏底部 tab）
@@ -276,6 +276,16 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
   const [customProviderSaving, setCustomProviderSaving] = useState(false);
   const [modelConfigs, setModelConfigs] = useState([]);
   const [providerEditorOpen, setProviderEditorOpen] = useState(false);
+  // 模型套餐 Tab 状态
+  const [plans, setPlans] = useState([]);
+  const [plansLoading, setPlansLoading] = useState(false);
+  const [activePlanId, setActivePlanId] = useState("");
+  const [planKeyDraft, setPlanKeyDraft] = useState("");
+  const [planModels, setPlanModels] = useState([]);
+  const [planModelSelection, setPlanModelSelection] = useState({});
+  const [planModelsLoading, setPlanModelsLoading] = useState(false);
+  const [planMsg, setPlanMsg] = useState("");
+  const [planApplying, setPlanApplying] = useState(false);
   const [providerDraft, setProviderDraft] = useState(() => providerDraftFromConfig());
 const [providerConfigMsg, setProviderConfigMsg] = useState("");
   const [providerConfigSaving, setProviderConfigSaving] = useState(false);
@@ -491,6 +501,7 @@ const [providerConfigMsg, setProviderConfigMsg] = useState("");
     loadPiConfiguration().catch(() => {});
     loadModelConfigs().catch(() => {});
     loadDiagnostics().catch(() => {});
+    loadPlans().catch(() => {});
     // 底图服务 Key 状态
     mapSettings()
       .then((r) => {
@@ -552,6 +563,76 @@ await agentAuthRemove(provider).catch(() => {});
     setProviders(r.providers || {});
     setAuthErrors(r.authErrors || {});
     await loadDiagnostics();
+  };
+
+  // ---- 模型套餐 ----
+  const loadPlans = useCallback(async () => {
+    setPlansLoading(true);
+    try {
+      const r = await agentPlans();
+      setPlans(r.plans || []);
+    } catch (e) {
+      setPlanMsg("套餐目录加载失败: " + e.message);
+    } finally {
+      setPlansLoading(false);
+    }
+  }, []);
+
+  const openPlanAccess = async (plan) => {
+    setActivePlanId(plan.planId);
+    setPlanKeyDraft("");
+    setPlanMsg("");
+    setPlanModels([]);
+    setPlanModelSelection({});
+    if (plan.modelsSource === "remote") {
+      setPlanModelsLoading(true);
+      try {
+        const r = await agentPlanModels(plan.planId);
+        setPlanModels(r.models || []);
+        setPlanModelSelection(Object.fromEntries((r.models || []).map((m) => [m.id, true])));
+      } catch (e) {
+        setPlanMsg("模型目录拉取失败: " + e.message);
+      } finally {
+        setPlanModelsLoading(false);
+      }
+    }
+  };
+
+  const togglePlanModel = (id) => setPlanModelSelection((v) => ({ ...v, [id]: !v[id] }));
+
+  const applyPlanAccess = async (plan) => {
+    if (planApplying) return;
+    const modelIds = Object.entries(planModelSelection).filter(([, on]) => on).map(([id]) => id);
+    if (!planKeyDraft.trim()) { setPlanMsg("请先粘贴套餐 API Key"); return; }
+    setPlanApplying(true);
+    setPlanMsg("正在接入套餐…");
+    try {
+      const r = await agentPlanApply({ planId: plan.planId, apiKey: planKeyDraft.trim(), modelIds });
+      if (r.ok) {
+        setPlanMsg(`接入成功 · 已启用 ${r.modelCount} 个模型，在下方「当前 Agent 模型」中选择即可使用`);
+        await loadPlans();
+        await refreshModelCatalog().catch(() => {});
+        await loadDiagnostics().catch(() => {});
+      } else {
+        setPlanMsg(r.error || "接入失败");
+      }
+    } catch (e) {
+      setPlanMsg("接入失败: " + e.message);
+    } finally {
+      setPlanApplying(false);
+    }
+  };
+
+  const disconnectPlanAccess = async (plan) => {
+    if (!confirm(`断开 ${plan.name}？将移除其模型与凭据（不影响其他供应商）。`)) return;
+    try {
+      await agentPlanDisconnect(plan.planId);
+      await loadPlans();
+      await refreshModelCatalog().catch(() => {});
+      if (activePlanId === plan.planId) setActivePlanId("");
+    } catch (e) {
+      setPlanMsg("断开失败: " + e.message);
+    }
   };
 
   const importLocalPi = async () => {
@@ -821,7 +902,8 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
       <nav className="settings-section-nav" aria-label="设置分类">
         {[
           ["appearance", "外观与对话"],
-          ["model", "模型与连接"],
+          ["plans", "模型套餐"],
+          ["model", "自定义供应商 · 网络"],
           ["services", "服务集成"],
           ["project", "项目设置与记忆"],
           ["permission", "审批与权限"],
@@ -830,6 +912,81 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
           <button key={id} className={settingsSection === id ? "active" : ""} onClick={() => setSettingsSection(id)}>{label}</button>
         ))}
       </nav>
+
+      {settingsSection === "plans" && <>
+      <div className="sp-section" id="settings-plans">
+        <div className="sp-section-title"><Icon name="cloud" size={12} /> 模型套餐</div>
+        <p className="sp-hint">订阅制/套餐制供应商一键接入：选套餐 → 贴 Key → 勾模型。自定义网关请到「自定义供应商 · 网络」。</p>
+        <div className="plan-cards">
+          {plansLoading && <div className="sp-note">套餐目录加载中…</div>}
+          {!plansLoading && !plans.length && <div className="sp-note">暂无可用套餐</div>}
+          {plans.map((plan) => (
+            <div key={plan.planId} className={`plan-card ${activePlanId === plan.planId ? "active" : ""}`}>
+              <div className="plan-card-head">
+                <div className="plan-card-title">
+                  <strong>{plan.name}</strong>
+                  <span className={`sp-badge ${plan.connected ? "ok" : "warn"}`}>{plan.connected ? "已接入" : plan.hasKey ? "未启用模型" : "未接入"}</span>
+                </div>
+                <span className="plan-card-vendor">{plan.vendor}</span>
+              </div>
+              <p className="plan-card-desc">{plan.description}</p>
+              {plan.connected && <div className="plan-card-meta">已启用 {plan.modelCount}/{plan.totalModels} 个模型</div>}
+              <div className="plan-card-actions">
+                {plan.connected
+                  ? <>
+                      <button className="btn-sm" onClick={() => openPlanAccess(plan)}>{activePlanId === plan.planId ? "收起" : "管理"}</button>
+                      <a className="btn-sm" href={plan.keyUrl} target="_blank" rel="noreferrer">套餐页</a>
+                      <button className="btn-sm danger" onClick={() => disconnectPlanAccess(plan)}>断开</button>
+                    </>
+                  : <>
+                      <button className="btn-sm primary" onClick={() => openPlanAccess(plan)}>{activePlanId === plan.planId ? "收起" : "接入"}</button>
+                      <a className="btn-sm" href={plan.keyUrl} target="_blank" rel="noreferrer">获取 Key</a>
+                    </>}
+              </div>
+              {activePlanId === plan.planId && (
+                <div className="plan-access">
+                  <div className="sp-row">
+                    <span className="sp-label">API Key</span>
+                    <input className="sp-input" type="password" value={planKeyDraft} onChange={(e) => setPlanKeyDraft(e.target.value)} placeholder="粘贴套餐 API Key（仅存服务端）" autoComplete="off" />
+                  </div>
+                  <div className="sp-row">
+                    <span className="sp-label">模型目录</span>
+                    <div className="plan-models">
+                      {planModelsLoading && <span className="sp-note">正在拉取模型目录…</span>}
+                      {!planModelsLoading && !planModels.length && <span className="sp-note">暂无模型，接入后可手动添加</span>}
+                      {planModels.map((m) => (
+                        <label key={m.id} className="model-provider-check">
+                          <input type="checkbox" checked={planModelSelection[m.id] !== false} onChange={() => togglePlanModel(m.id)} />
+                          {m.name || m.id} <code className="plan-model-id">{m.id}</code>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="plan-access-actions">
+                    <button className="btn-sm primary" onClick={() => applyPlanAccess(plan)} disabled={planApplying}>{planApplying ? "接入中…" : "保存并接入"}</button>
+                    {planMsg && <span className="sp-auth-msg">{planMsg}</span>}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="model-control-grid">
+          <div className="model-control-card">
+            <span className="model-card-label">当前 Agent 模型</span>
+            <select className="sp-select model-select" value={activeModel || ""} onChange={(e) => onModelChange?.(e.target.value)}>
+              {!availableModels.length && <option value="">模型列表加载中…</option>}
+              {availableModels.length > 0 && <option value="">跟随系统默认 · {defaultModel || "未设置"}</option>}
+              {availableModels.map((item) => <option key={`${item.provider || "model"}/${item.id}`} value={item.id} disabled={item.available === false}>{item.provider ? `${PROVIDER_LABELS[item.provider] || item.provider} / ` : ""}{item.name || item.id}{item.authError ? "（凭据失效）" : item.available === false ? "（不可用）" : ""}</option>)}
+            </select>
+            <div className="model-card-meta">
+              <span className={`sp-badge ${selectedModelInfo?.available === false ? "warn" : selectedModelInfo ? "ok" : "warn"}`}>{selectedModelInfo?.available === false ? "不可用" : selectedModelInfo ? "目录可用" : "待配置"}</span>
+              {selectedModelInfo?.contextWindow && <span>上下文 {Number(selectedModelInfo.contextWindow).toLocaleString()} tokens</span>}
+            </div>
+          </div>
+        </div>
+      </div>
+      </>}
 
       {settingsSection === "project" && <ProjectSettingsSection
         project={project}

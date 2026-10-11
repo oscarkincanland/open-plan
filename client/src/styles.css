@@ -10473,3 +10473,18 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
     min-width: 32px;
   }
 }
+
+/* ---------- 模型套餐 Tab（订阅制供应商一键接入） ---------- */
+.plan-cards { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+.plan-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--panel-bg); }
+.plan-card.active { border-color: var(--accent); }
+.plan-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.plan-card-title { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+.plan-card-vendor { color: var(--dim); font-size: 10px; }
+.plan-card-desc { margin: 6px 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.plan-card-meta { color: var(--dim); font-size: 10px; margin-bottom: 6px; }
+.plan-card-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.plan-access { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+.plan-models { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow: auto; }
+.plan-model-id { color: var(--dim); font-size: 10px; margin-left: 4px; }
+.plan-access-actions { display: flex; align-items: center; gap: 8px; }

@@ -54,6 +54,7 @@ import {
   readRuntimeSettings,
   saveNetworkSettings,
 } from "./Pi配置管理.mjs";
+import * as planCatalog from "./套餐目录.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
@@ -2017,6 +2018,46 @@ app.get("/api/agent/import-preview", (_req, res) => {
     res.json(previewLocalPiConfig());
   } catch (error) {
     res.status(500).json({ error: error.message, code: "IMPORT_PREVIEW_FAILED" });
+  }
+});
+
+// ---------- 模型套餐（订阅制供应商一键接入） ----------
+app.get("/api/agent/plans", (_req, res) => {
+  try {
+    res.json({ plans: planCatalog.listPlans() });
+  } catch (error) {
+    res.status(500).json({ error: error.message, code: "PLANS_FAILED" });
+  }
+});
+
+app.get("/api/agent/plans/models", async (req, res) => {
+  try {
+    const models = await planCatalog.fetchPlanModels(String(req.query.planId || ""));
+    res.json({ models });
+  } catch (error) {
+    res.status(502).json({ error: error.message, code: "PLAN_MODELS_FAILED" });
+  }
+});
+
+app.post("/api/agent/plans/apply", async (req, res) => {
+  try {
+    const result = await planCatalog.applyPlan(req.body || {});
+    if (!result.ok) return res.status(400).json(result);
+    piRuntimeManager.resetModelRuntime();
+    res.json({ ...result, status: getConfigStatus() });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message, code: "PLAN_APPLY_FAILED" });
+  }
+});
+
+app.post("/api/agent/plans/disconnect", (req, res) => {
+  try {
+    const result = planCatalog.disconnectPlan(req.body || {});
+    if (!result.ok) return res.status(400).json(result);
+    piRuntimeManager.resetModelRuntime();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message, code: "PLAN_DISCONNECT_FAILED" });
   }
 });
 
