@@ -22,7 +22,17 @@ async function main() {
   const t0 = Date.now();
   console.log(`生成矢量瓦片 → ${TILES_DIR}`);
   fs.mkdirSync(TILES_DIR, { recursive: true });
-  const results = buildProjectTiles(MAP_DIR, { force: FORCE, layerIds, defs: LAYER_DEFS });
+  // 除内置 7 层外，同时覆盖 map.config.json 登记的业务图层（省道/铁路/OD 线等），
+  // 否则克隆或换机后只有内置层有瓦片，其余图层永远 404。
+  let defs = LAYER_DEFS;
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(MAP_DIR, "map.config.json"), "utf8"));
+    const extra = (cfg.layers || [])
+      .filter((l) => l?.id && !LAYER_DEFS.some((d) => d.id === l.id))
+      .map((l) => ({ id: l.id, minzoom: l.minzoom ?? 5, maxzoom: l.maxzoom ?? 13, tolerance: 0.0001, name: l.name || l.id, type: l.type || "road", group: l.group || "其他" }));
+    if (extra.length) defs = [...LAYER_DEFS, ...extra];
+  } catch {}
+  const results = buildProjectTiles(MAP_DIR, { force: FORCE, layerIds, defs });
   let total = 0;
   for (const [id, r] of Object.entries(results)) {
     if (r.skipped) { console.log(`  ⚠ ${id}: 无源文件，跳过`); continue; }

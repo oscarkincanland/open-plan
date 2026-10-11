@@ -6,7 +6,7 @@
     29.2
   ],
   "zoom": 7,
-  "basemap": "maptiler-satellite",
+  "basemap": "gaode-sat",
   "layers": [
     {
       "id": "boundary-city",
@@ -119,6 +119,28 @@
       "maxzoom": 13,
       "origin": "workspace",
       "owner": "F:\\Claude code本地文件\\office-agent-web\\office-workspace"
+    },
+    {
+      "id": "yiwu_od_demo",
+      "name": "yiwu_od_demo",
+      "type": "point",
+      "group": "设施点",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 13,
+      "origin": "workspace",
+      "owner": "G:\\opencode文件夹"
+    },
+    {
+      "id": "yiwu_od_demo-lines",
+      "name": "yiwu_od_demo-lines",
+      "type": "road",
+      "group": "公路网",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 13,
+      "origin": "workspace",
+      "owner": "G:\\opencode文件夹"
     }
   ],
   "groups": [

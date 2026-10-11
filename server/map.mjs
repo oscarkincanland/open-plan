@@ -448,10 +448,39 @@ export function hydrateBasemapSources(style) {
   // 运行时剔除悬空图层，保留其余可用图层正常渲染；真正需要的数据可通过重新导入图层恢复。
   const sourceIds = new Set(Object.keys(out.sources || {}));
   out.layers = (out.layers || []).filter((l) => !l?.source || sourceIds.has(l.source));
+  // 图层 id 必须唯一：重复 id 会让 MapLibre 判定整份样式非法（前端表现为"地图样式加载失败"）。
+  // 历史导入/刷新可能写入重复定义，交给 MapLibre 前按首次出现兜底去重。
+  const seenLayerIds = new Set();
+  out.layers = (out.layers || []).filter((l) => {
+    const id = String(l?.id || "");
+    if (!id || seenLayerIds.has(id)) return false;
+    seenLayerIds.add(id);
+    return true;
+  });
   out.layers = (out.layers || []).map((l) => {
     if (l?.paint?.["line-cap"] === undefined) return l;
     const { ["line-cap"]: cap, ...paint } = l.paint;
     return { ...l, layout: { ...(l.layout || {}), "line-cap": cap }, paint };
+  });
+  // 跨类型 paint 兜底：line-* 误写入 symbol/circle、text-* 误写入 line 等（Agent/用户
+  // 误编辑）会让 MapLibre 校验拒绝整份样式（"unknown property"，表现为整屏加载失败）。
+  // 按属性家族剔除与图层类型不匹配的键，保证交付给前端的样式永远可通过校验。
+  const PAINT_FAMILY = {
+    "line-": ["line"], "text-": ["symbol"], "icon-": ["symbol"], "circle-": ["circle"],
+    "fill-": ["fill"], "raster-": ["raster"], "heatmap-": ["heatmap"], "hillshade-": ["hillshade"],
+    "background-": ["background"],
+  };
+  out.layers = (out.layers || []).map((l) => {
+    if (!l || !l.paint || !l.type) return l;
+    const bad = Object.keys(l.paint).filter((k) => {
+      const dash = k.indexOf("-") + 1;
+      const fam = dash ? PAINT_FAMILY[k.slice(0, dash)] : null;
+      return fam && !fam.includes(l.type);
+    });
+    if (!bad.length) return l;
+    const paint = { ...l.paint };
+    for (const k of bad) delete paint[k];
+    return { ...l, paint };
   });
 
   // 兼容旧的 tracked style.json：新增免 Key 底图无需用户先保存一次设置，
@@ -809,7 +838,17 @@ export function rebuildBasemapStyle(name = DEFAULT_PROJECT) {
     }
   }
   style.sources = sources;
-  style.layers = [...baseLayers, ...keep];
+  // 去重兜底：config 循环与磁盘 style 的判重基准不一致时可能登记同一图层 id，
+  // MapLibre 不接受重复图层 id，写入前按首次出现收敛。
+  const dedupedKeep = [];
+  const keepIds = new Set();
+  for (const l of keep) {
+    const id = String(l?.id || "");
+    if (id && keepIds.has(id)) continue;
+    if (id) keepIds.add(id);
+    dedupedKeep.push(l);
+  }
+  style.layers = [...baseLayers, ...dedupedKeep];
   fs.writeFileSync(stylePath, JSON.stringify(redactBasemapCredentials(style), null, 2));
   return true;
 }

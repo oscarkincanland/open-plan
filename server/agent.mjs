@@ -1900,7 +1900,20 @@ execute: async (_toolCallId, params) => {
               if (params.action === "setVisibility") {
                 l.layout = { ...(l.layout || {}), visibility: params.visible ? "visible" : "none" };
               } else if (params.action === "setPaint") {
-                l.paint = { ...(l.paint || {}), ...paint };
+                // 目标匹配含 `${id}-` 注记层（symbol 类型）。line-* 等 paint 属性与图层类型
+                // 不符时 MapLibre 校验会拒绝整份样式（"unknown property"，地图黑屏）。
+                // 因此按属性家族过滤：注记层只接收 text-*/icon-*，线层只接收 line-* 等。
+                const PAINT_FAMILY = {
+                  "line-": ["line"], "text-": ["symbol"], "icon-": ["symbol"], "circle-": ["circle"],
+                  "fill-": ["fill"], "raster-": ["raster"], "heatmap-": ["heatmap"], "hillshade-": ["hillshade"],
+                  "background-": ["background"],
+                };
+                const fit = Object.fromEntries(Object.entries(paint || {}).filter(([k]) => {
+                  const dash = k.indexOf("-") + 1;
+                  const ok = dash ? PAINT_FAMILY[k.slice(0, dash)] : null;
+                  return !ok || ok.includes(l.type);
+                }));
+                if (Object.keys(fit).length) l.paint = { ...(l.paint || {}), ...fit };
               } else if (params.action === "move") {
                 const idx = style.layers.findIndex((x) => x.id === l.id);
                 const target = params.direction === "up" ? idx + 1 : idx - 1;

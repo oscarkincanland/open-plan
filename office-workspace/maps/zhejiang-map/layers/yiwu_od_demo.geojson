@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"义乌市","role":"origin","value":0},"geometry":{"type":"Point","coordinates":[120.075,29.306]}},{"type":"Feature","properties":{"name":"台州市","role":"destination","value":180},"geometry":{"type":"Point","coordinates":[121.4208,28.6564]}}]}

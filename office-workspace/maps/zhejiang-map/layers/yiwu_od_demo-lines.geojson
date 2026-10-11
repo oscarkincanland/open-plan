@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"origin":"义乌市","destination":"台州市","flow":180,"direction":"outbound"},"geometry":{"type":"LineString","coordinates":[[120.075,29.306],[121.4208,28.6564]]}}]}
