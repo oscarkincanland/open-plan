@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 
 /**
@@ -15,6 +16,44 @@ import path from "node:path";
 
 const PICKER_TIMEOUT_MS = Number(process.env.OAW_NATIVE_PICKER_TIMEOUT_MS) || 10 * 60 * 1000;
 const ACTION_TIMEOUT_MS = 15 * 1000;
+
+/**
+ * Windows 系统二进制按绝对路径解析，不依赖 PATH。
+ *
+ * 为什么不直接 spawn("explorer")：execFile 不经过 shell，Node 只能靠 PATH 找可执行文件。
+ * 而机器级 PATH 一旦缺少 C:\Windows\System32（精简镜像、手工改过、或被工具写坏），
+ * explorer / cmd / powershell 会全部以 ENOENT 失败，表现为「打开本地文件」接口 500。
+ * 注意 explorer.exe 不在 System32，而在 %SystemRoot% 根目录下，所以要单独兜底。
+ */
+const WINDOWS_BINARY_NAMES = {
+  explorer: ["explorer.exe"],
+  cmd: ["cmd.exe"],
+  powershell: ["powershell.exe", "pwsh.exe"],
+};
+
+export function resolveWindowsBinary(file) {
+  if (process.platform !== "win32") return file;
+  const raw = String(file || "");
+  if (!raw || path.isAbsolute(raw)) return raw;
+  const key = raw.toLowerCase().replace(/\.exe$/i, "");
+  const names = WINDOWS_BINARY_NAMES[key] || [`${raw}.exe`];
+  const root = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+  const dirs = [
+    path.join(root, "System32"),
+    path.join(root, "System32", "WindowsPowerShell", "v1.0"),
+    root,
+  ];
+  for (const dir of dirs) {
+    for (const name of names) {
+      const candidate = path.join(dir, name);
+      try {
+        if (fs.existsSync(candidate)) return candidate;
+      } catch {}
+    }
+  }
+  // 找不到就原样返回，保持原有报错路径（PICKER_UNAVAILABLE / REVEAL_FAILED）。
+  return raw;
+}
 
 export function nativePlatform() {
   return process.platform;
@@ -174,7 +213,7 @@ function runPicker(file, args, { timeout = PICKER_TIMEOUT_MS, kind = "" } = {}) 
   cancelActivePicker();
   return new Promise((resolve, reject) => {
     let entry = null;
-    const child = execFile(file, args, { timeout: Math.max(5000, timeout), maxBuffer: 1024 * 1024, encoding: "utf8", windowsHide: false }, (error, stdout, stderr) => {
+    const child = execFile(resolveWindowsBinary(file), args, { timeout: Math.max(5000, timeout), maxBuffer: 1024 * 1024, encoding: "utf8", windowsHide: false }, (error, stdout, stderr) => {
       if (activePicker === entry) activePicker = null;
       if (entry?.cancelled) return reject(nativeError("已取消等待系统选择器", "PICKER_CANCELLED"));
       if (error?.killed) return reject(nativeError("选择器等待超时", "PICKER_TIMEOUT"));
@@ -189,13 +228,23 @@ function runPicker(file, args, { timeout = PICKER_TIMEOUT_MS, kind = "" } = {}) 
   });
 }
 
-function run(file, args, { timeout = ACTION_TIMEOUT_MS } = {}) {
+/** 区分「进程根本没起来」与「起来了但退出码非零」。前者 error.code 是字符串系统错误码，后者是数字退出码。 */
+function isSpawnFailure(error) {
+  if (!error) return false;
+  return typeof error.code === "string" || Boolean(error.syscall);
+}
+
+function run(file, args, { timeout = ACTION_TIMEOUT_MS, tolerateNonZeroExit = false } = {}) {
   return new Promise((resolve, reject) => {
-    execFile(file, args, { timeout, maxBuffer: 1024 * 1024, encoding: "utf8" }, (error, stdout, stderr) => {
+    execFile(resolveWindowsBinary(file), args, { timeout, maxBuffer: 1024 * 1024, encoding: "utf8" }, (error, stdout, stderr) => {
       if (error) {
         error.stderr = stderr;
-        reject(error);
-        return;
+        // tolerateNonZeroExit：explorer 这类 shell 进程成功时也会返回非零退出码，
+        // 只有 ENOENT / EACCES 这类「压根没启动」才算真失败。
+        if (!(tolerateNonZeroExit && !isSpawnFailure(error))) {
+          reject(error);
+          return;
+        }
       }
       resolve({ stdout: String(stdout || ""), stderr: String(stderr || "") });
     });
@@ -263,6 +312,8 @@ export async function openWithDefaultApp(absPath) {
   const target = String(absPath || "");
   if (!path.isAbsolute(target)) throw nativeError("需要绝对路径", "PATH_NOT_ABSOLUTE");
   try {
+    // 放在 try 内，让外层统一包装成「打开失败：…」保持既有错误契约。
+    if (!fs.existsSync(target)) throw new Error("文件不存在");
     if (process.platform === "darwin") await run("open", [target]);
     else if (process.platform === "win32") await run("cmd", ["/c", "start", "", target]);
     else await run("xdg-open", [target]);
@@ -276,9 +327,13 @@ export async function openWithDefaultApp(absPath) {
 export async function revealInFileManager(absPath) {
   const target = String(absPath || "");
   if (!path.isAbsolute(target)) throw nativeError("需要绝对路径", "PATH_NOT_ABSOLUTE");
+  // explorer 成功时也会返回非零退出码，所以「路径不存在」必须在这里显式挡掉，
+  // 不能指望退出码——否则不存在的路径会被当成成功，白白弹一次资源管理器。
+  // 放在 try 内，让外层统一包装成「在文件管理器中显示失败：…」。
   try {
+    if (!fs.existsSync(target)) throw new Error("文件不存在");
     if (process.platform === "darwin") await run("open", ["-R", target]);
-    else if (process.platform === "win32") await run("explorer", [`/select,${target}`]);
+    else if (process.platform === "win32") await run("explorer", [`/select,${target}`], { tolerateNonZeroExit: true });
     else await run("xdg-open", [path.dirname(target)]);
     return { ok: true, path: target };
   } catch (error) {
