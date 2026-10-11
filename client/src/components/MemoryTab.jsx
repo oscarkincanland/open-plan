@@ -43,10 +43,26 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  const loadFile = useCallback(async (rel) => {
+    try {
+      const r = await fetch(`/api/memory/${encodeURIComponent(rel)}`);
+      const d = await r.json();
+      setActive(rel);
+      setContent(d.content || "");
+      setEditing(false);
+      setDirty(false);
+    } catch {}
+  }, []);
+
   // SSE 记忆变更监听。
   // 依赖数组必须为空：早先挂在 [active, dirty] 上，编辑一次文件就会关闭并重建连接，
   // 既造成同源连接槽位抖动，也让"实时"变成"每次编辑重连"。
-  // 回调用 ref 取最新状态，连接本身只在挂载/卸载时建立和释放。
+  //
+  // loadFile 同样不能进依赖数组：它在本段之后才用 const 声明，渲染期求值 [loadFile]
+  // 会踩 TDZ（Cannot access 'loadFile' before initialization），整个「记忆与沉淀」
+  // 模块一挂载就抛错崩溃。改用 ref 取稳定引用，连接只在挂载/卸载时建立和释放。
+  const loadFileRef = useRef(loadFile);
+  loadFileRef.current = loadFile;
   const memoryStateRef = useRef({ active: "", dirty: false });
   memoryStateRef.current = { active, dirty };
   useEffect(() => {
@@ -63,7 +79,7 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
         });
         // 如果正在查看变更的文件，自动刷新
         const { active: currentFile, dirty: currentDirty } = memoryStateRef.current;
-        if (currentFile === data.file && !currentDirty) loadFile(currentFile);
+        if (currentFile === data.file && !currentDirty) loadFileRef.current(currentFile);
       } catch {}
     };
     es.onerror = () => {};
@@ -71,17 +87,6 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
       es.close();
       slot.release();
     };
-  }, [loadFile]);
-
-  const loadFile = useCallback(async (rel) => {
-    try {
-      const r = await fetch(`/api/memory/${encodeURIComponent(rel)}`);
-      const d = await r.json();
-      setActive(rel);
-      setContent(d.content || "");
-      setEditing(false);
-      setDirty(false);
-    } catch {}
   }, []);
 
   const saveFile = useCallback(async () => {
