@@ -16,6 +16,7 @@
  * 退出码: 0 = 全部通过, 1 = 有失败
  */
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
@@ -222,7 +223,16 @@ const list = builtinProviderList();
 // 3. 接口层：临时数据目录里起一个真服务
 // ============================================================
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "规聚供应商目录-"));
-const port = 37_500 + Math.floor(Math.random() * 3_000);
+// 端口用系统分配的空闲端口，而不是固定区间 + 随机：CI 里各测试脚本串行跑，
+// 上一个脚本留下的服务可能正占着随机命中的端口，测试就会偶发失败（实测遇到过一次）。
+const port = await new Promise((resolve, reject) => {
+  const probe = net.createServer();
+  probe.on("error", reject);
+  probe.listen(0, "127.0.0.1", () => {
+    const assigned = probe.address().port;
+    probe.close(() => resolve(assigned));
+  });
+});
 const baseUrl = `http://127.0.0.1:${port}`;
 let child = null;
 
