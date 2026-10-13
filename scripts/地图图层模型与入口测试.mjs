@@ -46,6 +46,16 @@ const cleanupSrc = read("scripts/清理地图残留层.mjs");
 const DEFAULT_WORKSPACE = path.join(ROOT, "office-workspace");
 const OTHER_WORKSPACE = path.join(ROOT, "__probe_other_workspace__");
 
+/**
+ * map.config.json 里的 owner 是运行时记下的**绝对路径**（每台机器不同），
+ * 因此"自有图层可编辑 / 他人不可见"这类断言不能写死成本机路径——
+ * 换台机器或 CI 上（配置里记的是别的机器路径）必然失败。
+ * 这里按配置里真实存在的归属，取一个"确实拥有图层的工作区"作为本人视角。
+ */
+const zhejiangConfig = JSON.parse(read("office-workspace/maps/zhejiang-map/map.config.json"));
+const OWNING_WORKSPACE = (zhejiangConfig.layers || []).find((layer) => layer.origin === "workspace" && layer.owner)?.owner || DEFAULT_WORKSPACE;
+const normalizePath = (value) => String(value || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+
 let failed = 0;
 function test(name, fn) {
   try { fn(); console.log("  ✓ " + name); }
@@ -75,13 +85,13 @@ test("未标注的历史图层默认归当前工作区，不会凭空消失", ()
 });
 
 test("workOnly 隔离：另一个工作区只能看到共享图层", () => {
-  const mine = listLayers("zhejiang-map", { workspace: DEFAULT_WORKSPACE });
+  const mine = listLayers("zhejiang-map", { workspace: OWNING_WORKSPACE });
   const other = listLayers("zhejiang-map", { workspace: OTHER_WORKSPACE });
   const mineWorkspace = mine.filter((l) => l.origin === ORIGIN.WORKSPACE);
-  assert.ok(mineWorkspace.length > 0, "默认工作区应有自有图层（测试前置数据）");
+  assert.ok(mineWorkspace.length > 0, "该工作区应有自有图层（配置里的归属数据）");
   assert.ok(mine.length > other.length, "本人视图应比他人视图多出工作区图层");
-  const otherWorkspaceVisible = other.filter((l) => l.origin === ORIGIN.WORKSPACE);
-  assert.equal(otherWorkspaceVisible.length, 0, "他人的工作区图层不应可见");
+  const leaked = other.filter((l) => l.origin === ORIGIN.WORKSPACE && l.owner && normalizePath(l.owner) === normalizePath(OWNING_WORKSPACE));
+  assert.equal(leaked.length, 0, "他人的工作区图层不应可见");
   // 共享部分两者必须一致（共用语义）
   const mineShared = mine.filter((l) => l.origin === ORIGIN.SHARED).map((l) => l.id).sort();
   const otherShared = other.filter((l) => l.origin === ORIGIN.SHARED).map((l) => l.id).sort();
@@ -90,7 +100,7 @@ test("workOnly 隔离：另一个工作区只能看到共享图层", () => {
 
 test("scope=all 可看到全部（诊断用），且带 visibleToMe 标记", () => {
   const all = listLayers("zhejiang-map", { workspace: OTHER_WORKSPACE, scope: "all" });
-  const mine = listLayers("zhejiang-map", { workspace: DEFAULT_WORKSPACE });
+  const mine = listLayers("zhejiang-map", { workspace: OWNING_WORKSPACE });
   assert.ok(all.length >= mine.length, "scope=all 不应少于本人视图");
   const hidden = all.filter((l) => !l.visibleToMe);
   assert.ok(hidden.length > 0, "他人图层应被标记为 visibleToMe=false");
@@ -98,7 +108,7 @@ test("scope=all 可看到全部（诊断用），且带 visibleToMe 标记", () 
 });
 
 test("共享图层 editable 恒为 false（编辑要授权）", () => {
-  const mine = listLayers("zhejiang-map", { workspace: DEFAULT_WORKSPACE });
+  const mine = listLayers("zhejiang-map", { workspace: OWNING_WORKSPACE });
   const shared = mine.filter((l) => l.origin === ORIGIN.SHARED);
   assert.ok(shared.length > 0, "应有共享图层");
   assert.ok(shared.every((l) => l.editable === false), "共享图层不应标记为可直接编辑");
@@ -125,10 +135,10 @@ test("group: 批量匹配整组（对应验收 B4「隐藏所有公路」）", (
 });
 
 test("origin: 按归属筛选", () => {
-  const shared = resolveLayer("zhejiang-map", "origin:shared", { workspace: DEFAULT_WORKSPACE });
+  const shared = resolveLayer("zhejiang-map", "origin:shared", { workspace: OWNING_WORKSPACE });
   assert.equal(shared.ok, true);
   assert.ok(shared.refs.every((ref) => ref.startsWith("shared/")), "origin:shared 只应返回共享图层");
-  const mine = resolveLayer("zhejiang-map", "origin:workspace", { workspace: DEFAULT_WORKSPACE });
+  const mine = resolveLayer("zhejiang-map", "origin:workspace", { workspace: OWNING_WORKSPACE });
   assert.equal(mine.ok, true);
   assert.ok(mine.refs.every((ref) => ref.startsWith("workspace/")), "origin:workspace 只应返回自有图层");
 });
