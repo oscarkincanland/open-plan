@@ -2,11 +2,11 @@
   "name": "浙江省交通路网与区划图",
   "project": "zhejiang-map",
   "center": [
-    120,
-    29.2
+    120.1,
+    29.15
   ],
-  "zoom": 7,
-  "basemap": "esri-sat",
+  "zoom": 7.2,
+  "basemap": "osm-standard",
   "layers": [
     {
       "id": "boundary-city",
@@ -97,9 +97,19 @@
       "visible": true,
       "minzoom": 5,
       "maxzoom": 13
+    },
+    {
+      "id": "yiwu-od-lines",
+      "name": "OD期望线（市际客流）",
+      "type": "road",
+      "group": "OD分析",
+      "visible": true,
+      "minzoom": 0,
+      "maxzoom": 14
     }
   ],
   "groups": [
-    "测试demo"
+    "测试demo",
+    "OD分析"
   ]
 }

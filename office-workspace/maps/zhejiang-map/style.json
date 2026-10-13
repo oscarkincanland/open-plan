@@ -388,7 +388,7 @@
       "type": "raster",
       "source": "osm-standard",
       "layout": {
-        "visibility": "none"
+        "visibility": "visible"
       },
       "paint": {
         "raster-opacity": 1
@@ -542,7 +542,7 @@
       "type": "raster",
       "source": "maptiler-basic",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "paint": {
         "raster-opacity": 1
@@ -1178,7 +1178,7 @@
       "source": "taizhou_od",
       "source-layer": "taizhou_od",
       "layout": {
-        "visibility": "none"
+        "visibility": "visible"
       },
       "type": "line",
       "paint": {
@@ -1267,7 +1267,7 @@
         ],
         "text-rotation-alignment": "map",
         "text-allow-overlap": false,
-        "visibility": "none"
+        "visibility": "visible"
       },
       "paint": {
         "text-color": "#ffffff",
