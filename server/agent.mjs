@@ -53,12 +53,15 @@ import {
   acquireWriteLockWithRetry,
   ensureStagedDirectory,
   isProtectedMemoryTarget,
+  materializeStagedReferences,
   releaseWriteLock,
   resolveReadablePath,
   stageWrite,
   stagedAccess,
   writeWorkspaceFile,
 } from "./写入协调.mjs";
+// officecli 的参数处理（分词 / 暂存文件引用 / 输出目录）抽成纯函数模块，便于单测。
+import { collectReferencedPaths, ensureOfficeOutputDirs, parseOfficeArgs as parseArgs } from "./office参数.mjs";
 import {
   approveMemoryProposal as approveStoredMemoryProposal,
   createMemoryProposal,
@@ -373,6 +376,15 @@ const MODEL_FIRST_EVENT_TIMEOUT_MS = Math.max(10000, Number.parseInt(process.env
 const MODEL_IDLE_TIMEOUT_MS = Math.max(30000, Number.parseInt(process.env.OAW_MODEL_IDLE_TIMEOUT_MS || "120000", 10) || 120000);
 const TERMINAL_AGENT_ERROR_PATTERN = /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied|model not found|no model selected|insufficient(?:[_\s-]?user)?[_\s-]?quota|quota exceeded|available balance|credit\s+insufficient|balance\s*=\s*0|out of budget|billing|usage limit|monthly usage|invalid request|bad request|context length|content policy|abort(?:ed|ing)?|cancel(?:led|ed)?)/i;
 const TRANSIENT_AGENT_ERROR_PATTERN = /(?:429|408|425|500|501|502|503|504|529|rate.?limit|overloaded|service.?unavailable|internal.?error|provider.?returned.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|timed?.?out|timeout|terminated|websocket.?closed|temporar(?:y|ily)|try again|模型连接超过|模型流式输出超过|没有响应|已自动中止)/i;
+// 供应商流被截断：请求本身没报错，只是流在没有 finish_reason 的情况下结束。
+// 这不是"模型调用失败"的终态错误——重试通常能恢复，而且此时产物往往已经写完，
+// 必须与真实故障分开（否则界面把干完的活报成「本轮失败」）。
+const PROVIDER_TRUNCATION_PATTERN = /(?:stream ended without finish_reason|without finish_reason|unexpected end of (?:stream|response)|stream (?:ended|closed) unexpectedly)/i;
+
+export function isProviderTruncation(value) {
+  const message = typeof value === "string" ? value : rawAgentErrorMessage(value);
+  return PROVIDER_TRUNCATION_PATTERN.test(message);
+}
 
 // 服务重启后 entry.promptChars 会归零，但 Pi 已恢复的 JSONL 会话仍可能很长。
 // 仅在会话创建/恢复时估算一次，避免每次发送都遍历历史消息。
@@ -485,7 +497,7 @@ export function classifyAgentError(error) {
   const rateLimited = [408, 425, 429, 529].includes(status) || /(?:429|rate.?limit|overloaded)/i.test(message);
   const network = /(?:network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|websocket.?closed)/i.test(message);
   const terminal = authFailure || configurationFailure || TERMINAL_AGENT_ERROR_PATTERN.test(message) || ([400, 404].includes(status) && !safeEmpty400);
-  const retryable = !configurationFailure && (safeEmpty400 || (!terminal && Boolean(
+  const retryable = !configurationFailure && (safeEmpty400 || isProviderTruncation(message) || (!terminal && Boolean(
     ["MODEL_TIMEOUT", "MODEL_STREAM_TIMEOUT"].includes(String(error?.code || ""))
       || (status && [408, 425, 429, 500, 501, 502, 503, 504, 529].includes(status))
       || TRANSIENT_AGENT_ERROR_PATTERN.test(message),
@@ -1203,8 +1215,11 @@ exec: async (command, cwd, options) => {
       name: "officecli",
       label: "Office CLI",
       description:
-        "Run officecli commands on Office documents (.docx/.xlsx/.pptx) in the current workspace folder. Pass the FULL command arguments as a single string, e.g. 'view report.docx text', 'get report.docx / --depth 2 --json', 'get report.docx /body/p[3] --json', 'set report.docx /body/p[1] --prop bold=true', 'set report.docx / --find draft --replace final', 'add report.docx /body/p[3] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"请核对这段内容\\\" --json', 'add deck.pptx /slide[1] --type shape --prop text=... --prop size=24pt'. For Word comments, first locate a real paragraph path with get/query, use one get path per command, then verify with query <file> comment --json. " +
-        "STRICT RULES (avoid wasted retries): (1) the file path must be a workspace-relative path such as '报告.docx' or '初稿/报告.docx' — absolute paths and ../ are rejected; (2) 'view' requires a subcommand ('view <file> text', 'view <file> summary'), never call bare 'view'; (3) only these options exist: --json, --find, --compact, --fields, -h/--help — there is NO --limit/--page/--offset, unknown options abort the command; (4) 'query <file> <selector>' takes a CSS-like selector as its own argument ('paragraph', 'paragraph[style=Normal]', 'table', 'run', '*'); do not pass subcommand names or paths as the selector; (5) very large workbooks may return code 'decompression_bomb' (>3,000,000 XML elements): do not retry the same command, tell the user the file must be split, or read the data with a script instead. " +
+        "Run officecli commands on Office documents (.docx/.xlsx/.pptx) in the current workspace folder. Pass the FULL command arguments as a single string, e.g. 'view report.docx text', 'view report.docx stats', 'get report.docx / --depth 2 --json', 'get report.docx /body/p[3] --json', 'set report.docx /body/p[1] --prop bold=true', 'set report.docx / --find draft --replace final', 'add report.docx /body/p[3] --type comment --prop author=规聚Agent --prop initials=OA --prop text=请核对这段内容 --json', 'add deck.pptx /slide[1] --type shape --prop text=标题 --prop size=24pt'. " +
+        "VIEW MODES: 'view <file> <mode>' where mode is exactly one of text, annotated, outline, stats, issues, html, svg, screenshot, forms — there is NO 'summary' mode (calling it aborts with 'Unknown mode'). To write the HTML/SVG export to disk use '-o <workspace-relative path>' (parent folders are created for you). " +
+        "PROP VALUES: write them as key=value tokens; values with spaces are fine as one token (--prop author=规聚 Agent is parsed as one value) — do NOT wrap them in escaped quotes like \\\"...\\\". " +
+        "For Word comments, first locate a real paragraph path with get/query, use one get path per command, then verify with query <file> comment --json. " +
+        "STRICT RULES (avoid wasted retries): (1) the file path must be a workspace-relative path such as '报告.docx' or '初稿/报告.docx' — absolute paths and ../ are rejected; (2) 'view' requires a mode from the list above, never call bare 'view'; (3) only these options exist: --json, --find, --compact, --fields, -o/--output, -h/--help — there is NO --limit/--page/--offset, unknown options abort the command; (4) 'query <file> <selector>' takes a CSS-like selector as its own argument ('paragraph', 'paragraph[style=Normal]', 'table', 'run', '*'); do not pass subcommand names or paths as the selector; (5) 'add <file> / --type markdown --prop src=<file.md>' reads the source from disk: if you just wrote that .md with the write tool it may still be staged, so pass it through this tool's args (it gets materialized) and do not retry more than twice; (6) very large workbooks may return code 'decompression_bomb' (>3,000,000 XML elements): do not retry the same command, tell the user the file must be split, or read the data with a script instead; (7) an internal '.NET' assembly error (e.g. FileNotFoundException: System.Private.Xml) means the officecli installation is mid-update: retry the same command once, and if it fails again tell the user to re-run the officecli installer instead of looping. " +
         "File names are relative to the current workspace folder (may include subfolder paths). The user's CURRENT WORKING FILE is noted in the context file — when the user asks to modify a document, operate on that file unless they say otherwise. If the operating system reports access denied, is denied, EPERM, or EACCES, explain that the service process lacks write access (sandbox, mount, or directory permissions); only report a file lock for a sharing violation or another-process lock error; for a sharing violation tell the user to close WPS/Word/Excel and do not retry more than twice. Use --json for structured output. Prefer this tool over bash for all document operations.",
       parameters: Type.Object({
         args: Type.String({ description: "officecli command arguments (single string)" }),
@@ -1237,9 +1252,28 @@ execute: async (_toolCallId, params) => {
             threadId: ctx.threadId,
             kind: "officecli",
           });
-          writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: entry.currentFile || ".", kind: "officecli", command: String(params.args || "").slice(0, 500) });
-          writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: entry.currentFile || ".", kind: "officecli" });
+          // 记账路径必须用本次命令的真实目标文件：新建/修改文档才能落到 write-ledger（已确认），
+          // 否则只能按工作区级证据判到 run-window（待确认）——实测新建的 docx 就吃了这个亏。
+          const ledgerPath = parsed.file || entry.currentFile || ".";
+          writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ledgerPath, kind: "officecli", command: String(params.args || "").slice(0, 500) });
+          writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ledgerPath, kind: "officecli" });
         }
+        // officecli 是独立进程、只认真实磁盘：Agent 用 write 工具写的文件可能还在暂存覆盖层里。
+        // 调用前把参数里引用到的暂存文件按需物化，否则会出现"文件明明写了，officecli 说找不到"。
+        try {
+          const referenced = collectReferencedPaths(args);
+          const materialized = materializeStagedReferences({ runId: ctx.runId, workspace: ctx.workspace, paths: referenced });
+          if (materialized.length) {
+            writeEvent("artifact_materialized", { runId: ctx.runId, threadId: ctx.threadId, paths: materialized, reason: "officecli_read" });
+          }
+        } catch {}
+        // officecli 不建目录：-o 指向不存在的目录会直接失败（实测 -o .work/review.html）。
+        try {
+          const created = ensureOfficeOutputDirs(args, entry.workspace);
+          if (created.length) {
+            writeEvent("artifact_materialized", { runId: ctx.runId, threadId: ctx.threadId, paths: created, reason: "officecli_output_dir" });
+          }
+        } catch {}
         try {
           let r;
           try {
@@ -1272,6 +1306,18 @@ execute: async (_toolCallId, params) => {
             }
             const error = normalizeOfficeFailure(new Error(`Office CLI 执行失败（退出码 ${r.code}）：${detail}`), args, r);
             error.exitCode = r.code;
+            // 两类高频失败给出可直接照做的指引，别让 Agent 自己猜（实测各浪费好几个回合）：
+            // 1) JSON 输入转义错误；2) 引用的文件其实还在暂存区（外部进程看不到）。
+            const hintParts = [];
+            if (/invalid_json|Expected either .*,.*}|BytePositionInLine/i.test(detail)) {
+              hintParts.push("输入 JSON 语法错误：字符串里的双引号必须用反斜杠转义（一个反斜杠 + 一个引号），不要用两个引号代替；"
+                + "重写这份 JSON 后先用 bash 校验一遍再重试（node -e 读文件并 JSON.parse），不要连续重试同一份内容。");
+            }
+            if (/file_not_found|Input file not found|not found/i.test(detail)) {
+              hintParts.push("引用的文件不在磁盘上：如果你刚用 write 工具写过它，它可能仍在暂存区（外部进程看不到）——"
+                + "请先物化到工作区真实路径后再调用 officecli。");
+            }
+            if (hintParts.length) error.message = `${error.message}\n${hintParts.map((line) => `[修复建议] ${line}`).join("\n")}`;
             writeEvent("officecli_failed", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, command: args.slice(0, 8), code: error.code, exitCode: r.code, message: detail });
             throw error;
           }
@@ -3636,6 +3682,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         "- Word 批注：先 get/query 找真实 `/body/p[...]` 路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"...\\\" --json`，完成后 query comment 校验。仅在 sharing violation 或明确的进程占用错误时关闭 WPS/Word/OfficeCLI 预览；Access denied/is denied/EPERM/EACCES 应说明服务进程写权限受限。",
         "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text.",
         "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区（绝对路径见上），禁止写入项目目录。否则产物不会被前端检测到。",
+        "- **临时文件**: 中间工作文件（脚本、JSON 片段、解包目录、备份等）请集中放在工作区内以点开头的临时目录（如 `.work/`），并在任务收尾时删除；不要把中间文件留在用户的工作区里（用户目录只应留交付产物）。",
         "- **地图（GIS）**: 地图项目位于 `" + ws + "/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图）。用户在地图模式下对话时用 map_read/map_edit/map_import 工具。",
         "",
         "## 当前工作文件（用户正在查看/编辑的文档）",
@@ -4062,14 +4109,6 @@ export async function runAgentOfficeCommand(args, runOfficecli, cwd) {
   };
   const stdout = JSON.stringify(mergedJson, null, 2);
   return { ...outputs[0], command: args, stdout, text: stdout, json: mergedJson, stderr: outputs.map((item) => item.stderr || "").filter(Boolean).join("\n") };
-}
-
-export function parseArgs(input) {
-  const args = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let m;
-  while ((m = re.exec(input))) args.push(m[1] ?? m[2] ?? m[3]);
-  return args;
 }
 
 // 初始化 agent 上下文文件（让 agent 首次能 read 到）

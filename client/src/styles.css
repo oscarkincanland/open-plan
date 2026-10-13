@@ -6669,42 +6669,67 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 /* 当前阅读位置：加长 + 主题色，滚动时不加动效，避免"一直在闪" */
 .timeline-bead.active .bead-dot { width: 20px; background: var(--accent); }
 .timeline-bead.error .bead-dot { background: var(--error); }
-.bead-tip {
+
+/* ---- 会话导航弹层（悬停/点击刻度打开）---- */
+.timeline-bead.anchored .bead-dot { width: 20px; background: var(--accent); }
+.timeline-popup {
   position: absolute;
-  right: 22px;
-  top: 50%;
+  right: 28px;
+  width: 292px;
   transform: translateY(-50%);
-  background: var(--panel-bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 8px;
-  font-size: 11px;
-  color: var(--text);
-  white-space: nowrap;
-  max-width: 280px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
   display: flex;
-  align-items: center;
-  gap: 6px;
-  z-index: 10;
-  pointer-events: none;
+  flex-direction: column;
+  max-height: min(420px, 72vh);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-bg);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.34);
+  pointer-events: auto;
+  z-index: 12;
+  overflow: hidden;
 }
-.bead-tip-role {
-  flex-shrink: 0;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--accent);
-  color: #0e0e1a;
-  font-size: 10px;
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+.timeline-popup-head { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 9.5px; }
+.timeline-popup-count { flex: 1; text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
+.timeline-popup-close { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border: 1px solid var(--border); border-radius: 5px; color: var(--dim); background: transparent; cursor: pointer; }
+.timeline-popup-close:hover { color: var(--text); border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); }
+.timeline-popup-list { display: flex; flex-direction: column; gap: 2px; padding: 5px; overflow-y: auto; }
+.timeline-popup-item { display: flex; align-items: flex-start; gap: 7px; width: 100%; padding: 6px 7px; border: 1px solid transparent; border-radius: 7px; color: var(--text); background: transparent; text-align: left; cursor: pointer; }
+.timeline-popup-item:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.timeline-popup-item.cursor { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); background: color-mix(in srgb, var(--accent) 13%, transparent); }
+.timeline-popup-item.current .timeline-popup-meta { color: var(--accent); }
+.timeline-popup-item.error .timeline-popup-meta { color: var(--error); }
+.timeline-popup-role { flex-shrink: 0; min-width: 26px; margin-top: 1px; padding: 1px 4px; border-radius: 5px; font-size: 8.5px; text-align: center; }
+.timeline-popup-role.user { color: #0e0e1a; background: var(--accent); }
+.timeline-popup-role.assistant { color: var(--muted); background: color-mix(in srgb, var(--text) 12%, transparent); }
+.timeline-popup-body { flex: 1; min-width: 0; }
+.timeline-popup-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 10.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
-.bead-tip-text { overflow: hidden; text-overflow: ellipsis; }
+.timeline-popup-meta { display: block; margin-top: 2px; color: var(--dim); font-size: 8.5px; font-variant-numeric: tabular-nums; }
+.timeline-popup-foot { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--border); }
+.timeline-popup-foot button { padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); background: var(--panel2-bg); font-size: 9px; cursor: pointer; }
+.timeline-popup-foot button:hover { color: var(--text); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.timeline-popup-hint { margin-left: auto; color: var(--dim); font-size: 8.5px; white-space: nowrap; }
+/* 窄屏：弹层改成贴底抽屉，避免挡住正文 */
+@media (max-width: 720px) {
+  .timeline-popup {
+    position: fixed;
+    right: 8px;
+    left: 8px;
+    top: auto !important;
+    bottom: 8px;
+    width: auto;
+    transform: none;
+    max-height: 52vh;
+  }
+  .timeline-popup-hint { display: none; }
+}
 
 /* 图谱密度控制 */
 .kb-density { display: inline-flex; align-items: center; gap: 5px; margin-left: 10px; }
@@ -8398,6 +8423,38 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   background: var(--panel-bg);
   box-shadow: 0 12px 28px color-mix(in srgb, var(--body-bg) 35%, transparent);
 }
+/* 输入区外壳：任务卡在输入框之外（上面），输入框本体在里面。
+   宽度与居中规则只在外壳上写一次，输入框占满外壳。 */
+.center-chat-slot .chat-compose {
+  width: min(760px, calc(100% - 44px));
+  margin: 0 auto 18px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.center-chat-slot .chat-compose .chat-input {
+  width: 100%;
+  margin: 0;
+  box-sizing: border-box;
+}
+.center-chat-slot .chat-compose > .task-card {
+  width: min(380px, 100%);
+  margin: 0 0 6px;
+}
+/* 对话区高度下限：输入框忙时状态有 5 行，矮窗口下不能让它把对话压成一条缝
+   （实测 420px 窗口只剩 95px、360px 只剩 62px）。 */
+.center-chat-slot .chat-body { min-height: 120px; }
+/* 矮窗口：先收掉输入框里的"说明性"行（忙时提示、目标范围），保住输入与对话 */
+@media (max-height: 660px) {
+  .center-chat-slot .busy-input-mode small { display: none; }
+}
+@media (max-height: 560px) {
+  .center-chat-slot .chat-target-bar { display: none; }
+  .center-chat-slot .chat-input textarea { min-height: 56px; height: 56px; }
+}
+@media (max-height: 470px) {
+  .center-chat-slot .busy-input-mode { display: none; }
+}
 .center-chat-slot .chat-input-row { align-items: flex-end; }
 .center-chat-slot .chat-input textarea {
   min-height: 70px;
@@ -8643,6 +8700,72 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .model-provider-models { display: grid; gap: 7px; margin-top: 8px; }
 .model-provider-model-row { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(100px, 1fr) minmax(100px, .8fr) auto auto auto auto; align-items: center; gap: 6px; }
 .model-provider-editor-actions { margin-top: 10px; }
+/* ---- 我的供应商：品牌标记 + 行内动作 ---- */
+.model-provider-head-actions { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
+.model-provider-item { align-items: flex-start; }
+.model-provider-item.is-default { border-color: color-mix(in srgb, var(--success, #4ade80) 40%, var(--border)); }
+.prov-mark { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 26px; height: 26px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: color-mix(in srgb, var(--panel2-bg) 92%, var(--accent)); }
+.prov-mark .provider-icon { display: block; }
+/* ---- Pi 内置供应商库 ---- */
+.prov-library-card { background: color-mix(in srgb, var(--panel2-bg) 94%, var(--accent)); }
+.prov-library-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-top: 4px; }
+.prov-library-head strong { font-size: 11px; }
+.prov-library-head p { margin: 4px 0 0; max-width: 560px; color: var(--muted); font-size: 9.5px; line-height: 1.6; }
+.prov-library-search { display: flex; align-items: center; gap: 6px; flex-shrink: 0; padding: 4px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-bg); color: var(--dim); }
+.prov-library-search .sp-input { width: 210px; border: 0; padding: 2px 0; background: transparent; }
+.prov-library-search .sp-input:focus { outline: none; }
+.prov-library-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.prov-library-filters button { padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); background: var(--panel-bg); font-size: 9.5px; cursor: pointer; }
+.prov-library-filters button.active { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); color: var(--text); background: color-mix(in srgb, var(--accent) 16%, var(--panel-bg)); }
+.prov-library-refreshing { color: var(--dim); font-size: 9.5px; }
+.prov-library-list { display: grid; gap: 6px; margin-top: 10px; max-height: 420px; overflow-y: auto; padding-right: 2px; }
+.prov-library-item { display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel-bg); }
+.prov-library-item.configured { border-color: color-mix(in srgb, var(--success, #4ade80) 34%, var(--border)); }
+.prov-library-main { flex: 1; min-width: 0; }
+.prov-library-title { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.prov-library-title strong { font-size: 10.5px; }
+.prov-library-title code { color: var(--accent); font-size: 9px; }
+.prov-library-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 10px; margin-top: 4px; color: var(--muted); font-size: 9px; }
+.prov-env { padding: 1px 5px; border-radius: 5px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font-size: 8.5px; }
+.prov-library-badges { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.prov-login-badges { display: inline-flex; align-items: center; gap: 5px; }
+.prov-library-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+/* ---- 账号登录（订阅制） ---- */
+.prov-oauth-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px; margin-top: 10px; }
+.prov-oauth-item { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-bg); }
+.prov-oauth-item > div { flex: 1; min-width: 0; }
+.prov-oauth-item strong { display: block; font-size: 10px; }
+.prov-oauth-sub { color: var(--dim); font-size: 8.5px; }
+/* ---- 添加内置供应商对话框 ---- */
+.prov-dialog-backdrop { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(8, 10, 16, 0.55); backdrop-filter: blur(2px); }
+.prov-dialog { display: flex; flex-direction: column; gap: 9px; width: min(680px, 100%); max-height: 84vh; overflow-y: auto; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-bg); box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35); }
+.prov-dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.prov-dialog-title { display: flex; align-items: center; gap: 10px; }
+.prov-dialog-title strong { display: block; font-size: 12px; }
+.prov-dialog-sub { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; }
+.prov-dialog-sub code { color: var(--accent); }
+.prov-dialog-row { display: flex; align-items: baseline; gap: 9px; font-size: 9.5px; }
+.prov-dialog-label { flex-shrink: 0; width: 62px; color: var(--dim); }
+.prov-dialog-value { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+.prov-dialog-models { margin-top: 4px; padding-top: 9px; border-top: 1px solid var(--border); }
+.prov-dialog-models-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.prov-dialog-models-head strong { font-size: 10.5px; }
+.prov-dialog-models-actions { display: flex; align-items: center; gap: 6px; }
+.prov-dialog-model-list { display: grid; gap: 3px; margin-top: 8px; max-height: 260px; overflow-y: auto; }
+.prov-dialog-model { display: flex; align-items: center; gap: 8px; padding: 5px 7px; border: 1px solid transparent; border-radius: 7px; font-size: 9.5px; cursor: pointer; }
+.prov-dialog-model:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.prov-dialog-model.existing { border-color: color-mix(in srgb, var(--success, #4ade80) 28%, transparent); }
+.prov-dialog-model input { accent-color: var(--accent); }
+.prov-dialog-model-id { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prov-dialog-model-id code { margin-left: 6px; color: var(--dim); font-size: 8.5px; }
+.prov-dialog-model-caps { flex-shrink: 0; color: var(--muted); font-size: 8.5px; }
+.prov-dialog-more { margin-top: 6px; justify-self: start; }
+.prov-dialog-form { display: grid; gap: 9px; margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--border); }
+.prov-dialog-field { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 9px; }
+.prov-dialog-checks { display: flex; align-items: center; gap: 16px; color: var(--muted); font-size: 9.5px; }
+.prov-dialog-checks label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.prov-dialog-checks input { accent-color: var(--accent); }
+.prov-dialog-actions { display: flex; align-items: center; gap: 9px; margin-top: 2px; }
 .model-auth-row { margin-top: 12px; }
 .model-auth-list { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border); }
 .model-auth-list .sp-auth-item { display: inline-flex; align-items: center; gap: 5px; }
@@ -8765,16 +8888,18 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   position: relative;
   overflow: visible;
 }
-.chat-input > .task-card {
+/* 任务卡：输入区外壳（.chat-compose）的第一个子元素，位于输入框之上。
+   它保留 380px 的胶囊形态与向上弹出的清单，但不属于输入框本体。 */
+.chat-compose > .task-card {
   z-index: 20;
   width: min(380px, 100%);
   max-width: 100%;
   box-sizing: border-box;
-  margin: 0 0 5px;
+  margin: 0 0 6px;
   border: 0;
   background: transparent;
 }
-.chat-input > .task-card .task-head {
+.chat-compose > .task-card .task-head {
   width: 100%;
   box-sizing: border-box;
   min-height: 25px;
@@ -8785,10 +8910,10 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   color: var(--muted);
   font: inherit;
 }
-.chat-input > .task-card .task-head:hover { color: var(--text); border-color: var(--accent); background: var(--selected); }
-.chat-input > .task-card .task-title { font-size: 10px; }
-.chat-input > .task-card .task-progress { font-size: 9px; }
-.chat-input > .task-card .task-body {
+.chat-compose > .task-card .task-head:hover { color: var(--text); border-color: var(--accent); background: var(--selected); }
+.chat-compose > .task-card .task-title { font-size: 10px; }
+.chat-compose > .task-card .task-progress { font-size: 9px; }
+.chat-compose > .task-card .task-body {
   position: absolute;
   left: 0;
   bottom: calc(100% + 7px);
@@ -8802,16 +8927,16 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   background: var(--panel-bg);
   box-shadow: 0 12px 30px color-mix(in srgb, #000 22%, transparent);
 }
-.chat-input > .task-card .task-item {
+.chat-compose > .task-card .task-item {
   min-width: 0;
   align-items: flex-start;
 }
-.chat-input > .task-card .task-text {
+.chat-compose > .task-card .task-text {
   min-width: 0;
   flex: 1 1 auto;
   overflow-wrap: anywhere;
 }
-.chat-input > .task-card .task-item small {
+.chat-compose > .task-card .task-item small {
   flex: 0 1 38%;
   min-width: 0;
   margin-left: auto;

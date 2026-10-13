@@ -41,6 +41,15 @@ function test(name, fn) {
     fail(`${name}: ${e.message}`);
   }
 }
+// 异步用例单独走这个：必须 await，否则断言失败会被 process.exit 吞掉（假通过）。
+async function testAsync(name, fn) {
+  try {
+    await fn();
+    ok(name);
+  } catch (e) {
+    fail(`${name}: ${e.message}`);
+  }
+}
 
 console.log("客户端长连接预算：");
 test("槽位未满时可申请，连续申请到上限", () => {
@@ -135,19 +144,23 @@ test("waitForStreamSlot 在有槽位时立刻回调，满时等释放后回调",
 });
 
 console.log("\n服务端流登记表：");
-test("同键去重：同 (path, client, thread) 只保留最新一条并收掉旧连接", () => {
+test("同键保留上限：同一 (path, client, thread) 允许一个备用读者，超出才收掉最旧的", () => {
   const closedA = [];
   const first = registerServerStream({ path: "/api/agent/stream", client: "c1", thread: "t1", close: () => closedA.push(first.id) });
   const second = registerServerStream({ path: "/api/agent/stream", client: "c1", thread: "t1", close: () => closedA.push(second.id) });
-  assert.deepEqual(second.replaced.map((item) => item.reason), ["same-key"]);
-  assert.equal(closedA.length, 1, "旧连接必须被收掉");
-  const live = listServerStreams().filter((item) => item.id === first.id);
-  assert.equal(live.length, 0, "旧流不应留在登记表");
-  const keep = listServerStreams().filter((item) => item.id === second.id);
-  assert.equal(keep.length, 1, "新流应登记在册");
-  assert.equal(keep[0].thread, "t1");
+  // 第二个读者不该把第一个踢掉（多标签页/监测工具共存）
+  assert.deepEqual(second.replaced.map((item) => item.reason), [], "第二个同键读者不应触发去重");
+  assert.equal(closedA.length, 0, "第一个读者的连接必须保留");
+  // 第三个才触发上限：收掉最旧的那个
+  const third = registerServerStream({ path: "/api/agent/stream", client: "c1", thread: "t1", close: () => closedA.push(third.id) });
+  assert.deepEqual(third.replaced.map((item) => item.reason), ["same-key"], "超出保留上限应收掉最旧连接");
+  assert.equal(closedA.length, 1, "只应收掉一条（最旧的）");
+  assert.equal(listServerStreams().some((item) => item.id === first.id), false, "最旧的流不应留在登记表");
+  assert.equal(listServerStreams().filter((item) => item.id === second.id).length, 1, "中间那条应保留");
+  assert.equal(listServerStreams().filter((item) => item.id === third.id).length, 1, "最新的流应登记在册");
   releaseServerStream(second.id);
-  assert.equal(listServerStreams().some((item) => item.id === second.id), false);
+  releaseServerStream(third.id);
+  assert.equal(listServerStreams().some((item) => item.id === third.id), false);
 });
 
 test("不同 thread 的对话流可以并存", () => {
@@ -213,6 +226,50 @@ test("清扫不碰没有 probe 的登记项（老调用点不会被误关）", (
   sweepServerStreams();
   assert.equal(listServerStreams().some((item) => item.id === handle.id), true);
   releaseServerStream(handle.id);
+});
+
+console.log("\n暂存写入 ↔ officecli 可见性（按需物化）：");
+test("临时工作文件与备份不参与发布；正常产物照常发布", async () => {
+  const { isTempWorkPath } = await import("../server/写入协调.mjs");
+  for (const rel of [".work/batch.json", ".ch6work/b4.json", ".tmp/x.json", "报告.docx.bak", "草稿.tmp", "a~"]) {
+    assert.equal(isTempWorkPath(rel), true, `${rel} 应判为临时文件（不发布）`);
+  }
+  for (const rel of ["报告.docx", "初稿/表格.xlsx", ".agent-context.md", ".github/workflows/ci.yml", "数据.csv"]) {
+    assert.equal(isTempWorkPath(rel), false, `${rel} 应判为产物（发布）`);
+  }
+  const runs源 = (await import("node:fs")).readFileSync(new URL("../server/runs.mjs", import.meta.url), "utf8");
+  assert.match(runs源, /cleanupRunTempArtifacts\(run, persistWriteEvent\)/, "收尾应清理本轮临时文件");
+  assert.match(runs源, /onEvent\?\.\("write_cleaned", \{ paths: removed \}\)/, "清理要写成 write_cleaned 事件（可追溯）");
+  assert.match(runs源, /if \(before\[normalized\]\) continue;/, "清理只删本轮新建的临时文件，不碰运行前就有的内容");
+});
+
+await testAsync("被引用的暂存文件物化到磁盘，未被引用的保持不可见", async () => {
+  const os = await import("node:os");
+  const fsp = await import("node:fs");
+  const nodePath = await import("node:path");
+  const { stageWrite, materializeStagedReferences, listStagedFiles } = await import("../server/写入协调.mjs");
+  const workspace = fsp.mkdtempSync(nodePath.join(os.default.tmpdir(), "规聚物化测试-"));
+  const runId = `run_probe_${Date.now().toString(36)}`;
+  const rel = ".work/batch.json";
+  const content = JSON.stringify([{ command: "set", target: "a.docx" }], null, 2);
+  try {
+    stageWrite({ runId, workspace, targetPath: nodePath.join(workspace, rel), content: Buffer.from(content, "utf8"), kind: "write" });
+    assert.equal(listStagedFiles(runId).some((f) => f.path === rel), true, "写入应登记到暂存区");
+    assert.equal(fsp.existsSync(nodePath.join(workspace, rel)), false, "暂存文件此时不应出现在磁盘上");
+
+    const materialized = materializeStagedReferences({ runId, workspace, paths: [rel, "不存在的.json"] });
+    assert.deepEqual(materialized, [rel], "只物化被显式引用且暂存区里存在的文件");
+    assert.equal(fsp.readFileSync(nodePath.join(workspace, rel), "utf8"), content, "物化内容必须与暂存内容一致");
+
+    const other = "别的.json";
+    stageWrite({ runId, workspace, targetPath: nodePath.join(workspace, other), content: Buffer.from("[]", "utf8"), kind: "write" });
+    materializeStagedReferences({ runId, workspace, paths: [rel] });
+    assert.equal(fsp.existsSync(nodePath.join(workspace, other)), false, "未被引用的暂存文件不应被物化");
+  } finally {
+    fsp.rmSync(workspace, { recursive: true, force: true });
+    fsp.rmSync(nodePath.join(".oaw", "runs", runId), { recursive: true, force: true });
+    fsp.rmSync(nodePath.join(".oaw", "runs", `${runId}.json`), { force: true });
+  }
 });
 
 console.log(failed ? "\n有失败用例" : "\n全部通过");

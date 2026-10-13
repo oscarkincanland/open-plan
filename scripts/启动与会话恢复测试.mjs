@@ -45,7 +45,11 @@ assert.match(app, /const \[previewOpen, setPreviewOpen\] = useState\(false\)/, "
 assert.doesNotMatch(app, /for \(const t of saved\.tabs/, "刷新不应恢复上次打开的标签/搜索预览");
 assert.doesNotMatch(app, /tabs: tabs\.map/, "不应持久化打开的标签");
 assert.match(app, /刷新后必须进入[\s\S]{0,40}空白新会话/, "应有注释说明刷新进入空白新会话");
-assert.match(app, /browserStateSeenRef/, "刷新后首个浏览器状态不应触发面板自动展开");
+// v0.11.42 起浏览器面板不再靠常驻 /api/browser/stream 的「首个状态」自动展开
+//（那条长连接会占满同源连接槽位）。信号只来自对话流里的工具事件，且被
+// browserAutoOpenBlockedRef 拦住：刷新后不会自动弹开。
+assert.match(app, /browserAutoOpenBlockedRef/, "刷新后不应因浏览器状态自动展开面板");
+assert.doesNotMatch(app, /browserStateSeenRef/, "旧的「首个状态」自动展开机制应已移除");
 assert.match(app, /避免上一个会话的“本轮产物”污染到当前会话/, "会话切换应重置本轮产物范围（防跨会话污染）");
 assert.match(app, /setChangesRunId\(""\);\n    setArtifactScope\("session"\);/, "会话切换应重置 runId 与范围");
 

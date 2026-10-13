@@ -1,6 +1,6 @@
 {
   "name": "open-plan",
-  "version": "0.11.49",
+  "version": "0.11.52",
   "private": true,
   "description": "Open Plan（规聚）— 面向规划工程师的 AI 一体化工作台：Office 文档、知识库、地图可视化与 Agent 协作",
   "keywords": [
@@ -86,7 +86,9 @@
     "test:run-view": "node scripts/运行展示投影测试.mjs",
     "test:preview-identity": "node scripts/预览身份测试.mjs",
     "test:file-diff": "node scripts/文件差异测试.mjs",
-    "test:stream-budget": "node scripts/长连接预算与流去重测试.mjs"
+    "test:stream-budget": "node scripts/长连接预算与流去重测试.mjs",
+    "test:provider-catalog": "node scripts/供应商目录与一键导入测试.mjs",
+    "test:review-fixes": "node scripts/Review报错修复回归测试.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.1.0",

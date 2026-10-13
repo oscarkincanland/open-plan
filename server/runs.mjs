@@ -10,6 +10,7 @@ import { attachRunTimingSpans } from "./首字延迟.mjs";
 import {
   discardStagedRun,
   ensureRunStaging,
+  isTempWorkPath,
   listStagedFilesForValidation,
   publishStagedRun,
   reclaimStaleWriteLocks,
@@ -176,8 +177,48 @@ async function copyBeforeBlobs(runId, snapshot) {
   }
 }
 
-/** 回滚底稿是否已落地（后台复制可能仍在进行，按磁盘实际状态判断）。 */
-function beforeBlobExists(runId, relPath) {
+/**
+ * 收尾清理本轮产生的中间文件（临时目录 / 备份后缀），返回被删除的相对路径。
+ *
+ * 证据链：路径必须 (1) 命中临时目录或备份后缀规则，(2) 不在本轮运行前快照里（= 本轮新建），
+ * (3) 当前确实存在于工作区。三条都满足才删——用户原有的内容一律不碰。
+ */
+function cleanupRunTempArtifacts(run, onEvent) {
+  const root = path.resolve(run.cwd || "");
+  const before = run.before?.files || {};
+  if (!root || !fs.existsSync(root)) return [];
+  const candidates = new Set();
+  for (const item of run.artifacts || []) candidates.add(String(item.path || ""));
+  for (const item of run.staging?.files || []) candidates.add(String(item.path || ""));
+  for (const item of run.touchedPaths || []) candidates.add(String(item || ""));
+  const removed = [];
+  for (const rel of candidates) {
+    const normalized = String(rel || "").replace(/\\/g, "/").replace(/^\.\//, "");
+    if (!normalized || !isTempWorkPath(normalized)) continue;
+    if (before[normalized]) continue;
+    const target = path.resolve(root, normalized);
+    if (target === root || !target.startsWith(root + path.sep)) continue;
+    try {
+      if (!fs.existsSync(target)) continue;
+      fs.rmSync(target, { recursive: true, force: true });
+      removed.push(normalized);
+    } catch {}
+  }
+  // 顺带清掉空掉的临时目录
+  const dirs = new Set(removed.map((rel) => path.dirname(rel)).filter((dir) => dir && dir !== "."));
+  for (const dir of dirs) {
+    try {
+      const abs = path.resolve(root, dir);
+      if (abs.startsWith(root + path.sep) && fs.existsSync(abs) && fs.readdirSync(abs).length === 0) fs.rmdirSync(abs);
+    } catch {}
+  }
+  if (removed.length) {
+    try { onEvent?.("write_cleaned", { paths: removed }); } catch {}
+  }
+  return removed;
+}
+
+/** 回滚底稿是否已落地（后台复制可能仍在进行，按磁盘实际状态判断）。 */function beforeBlobExists(runId, relPath) {
   if (!runId || !relPath) return false;
   try {
     const target = path.resolve(path.join(RUNS_DIR, runId, "before", relPath));
@@ -902,20 +943,33 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
     finalStatus = "failed";
     finalError ||= "产物校验失败，未发布临时产物";
   }
-  if (finalStatus === "completed") {
-    try {
-      const staged = publishStagedRun(run.id, run.cwd, { threadId: run.threadId, onEvent: persistWriteEvent, paths: effectivePublishPaths });
-      run.staging = { ...(run.staging || {}), status: "published", files: staged };
-    } catch (publishError) {
-      finalStatus = "failed";
-      finalError = `临时产物发布失败：${publishError?.message || publishError}`;
-      discardStagedRun(run.id, { reason: "publish_failed", onEvent: persistWriteEvent });
+    if (finalStatus === "completed") {
+      try {
+        const staged = publishStagedRun(run.id, run.cwd, { threadId: run.threadId, onEvent: persistWriteEvent, paths: effectivePublishPaths });
+        run.staging = { ...(run.staging || {}), status: "published", files: staged };
+      } catch (publishError) {
+        const publishMessage = `临时产物发布失败：${publishError?.message || publishError}`;
+        discardStagedRun(run.id, { reason: "publish_failed", onEvent: persistWriteEvent });
+        run.staging = { ...(run.staging || {}), status: "discarded", files: [] };
+        run.publishError = publishMessage;
+        try { persistWriteEvent("write_rejected", { path: ".", kind: "artifact_publish", code: "PUBLISH_FAILED", message: publishMessage }); } catch {}
+        // 交付文件已经落在工作区（officecli/直接写盘）且通过校验时，不要因为"收尾搬移失败"把整轮判成失败——
+        // 如实降为部分完成并把原因写进结论（用户反馈的"干完了却显示失败"就包含这一类）。
+        const deliverablesOnDisk = (run.artifacts || []).length > 0
+          || validationList.some((item) => item?.status === "passed");
+        if (deliverablesOnDisk) finalStatus = "completed";
+        else { finalStatus = "failed"; finalError = publishMessage; }
+      }
+    } else {
+      discardStagedRun(run.id, { reason: finalStatus || "run_not_completed", onEvent: persistWriteEvent });
       run.staging = { ...(run.staging || {}), status: "discarded", files: [] };
     }
-  } else {
-    discardStagedRun(run.id, { reason: finalStatus || "run_not_completed", onEvent: persistWriteEvent });
-    run.staging = { ...(run.staging || {}), status: "discarded", files: [] };
-  }
+    // 收尾清理本轮自己造出来的中间文件：只删"运行前快照里没有 + 落在临时目录/备份后缀"的文件，
+    // 有据可依，不碰用户原有内容。Agent 的自清理经常被别的步骤覆盖（实测：删了又被发布回来）。
+    try {
+      const cleaned = cleanupRunTempArtifacts(run, persistWriteEvent);
+      if (cleaned.length) run.tempCleaned = cleaned;
+    } catch {}
   try {
     const shouldTrackWorkspace = run.snapshotMode !== "none";
     const after = shouldTrackWorkspace
@@ -990,6 +1044,11 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
     // 完成语义：显式声明（complete_task）优先；否则由上层传入的兼容推断结果。
     // 完成声明绑定 runId：跨 Run 的旧声明不可串入本轮。
     if (completion && typeof completion === "object") run.completion = { ...completion, runId: run.id };
+    // 收尾发布失败的警告写进结论卡：状态可以保 completed（交付文件已在盘上），但必须让用户看到原因。
+    if (run.publishError && run.completion && typeof run.completion === "object") {
+      run.completion.summary = `${String(run.completion.summary || "").slice(0, 3600)}\n\n⚠ ${run.publishError}（交付文件已写入工作区并通过校验，仅"收尾搬运"未完成）`;
+      run.completion.status = run.completion.status === "success" ? "partial" : run.completion.status;
+    }
     // 结论优先作为 Run 摘要：历史列表与结果卡标题应展示真实结论，而不是“本轮处理 N 个文件”。
     if (run.completion?.summary) run.summary = String(run.completion.summary).slice(0, 4000);
     // 计划漂移收口：收尾时仍有未完成待办时，写进 completion.incomplete 并如实降级，

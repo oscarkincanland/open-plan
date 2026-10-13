@@ -144,6 +144,12 @@ export const agentModelConfigs = () => api("/api/agent/model-configs");
 export const saveAgentModelConfig = (payload = {}) => api("/api/agent/model-configs", { method: "POST", body: JSON.stringify(payload) });
 export const deleteAgentModelConfig = (provider) => api(`/api/agent/model-configs/${encodeURIComponent(provider)}`, { method: "DELETE" });
 export const fetchAgentModels = (payload = {}) => api("/api/agent/model-configs/fetch-models", { method: "POST", body: JSON.stringify(payload) });
+
+// ---------- Pi 内置供应商目录（一键添加） ----------
+export const agentProviderCatalog = () => api("/api/agent/provider-catalog");
+export const agentProviderDetail = (provider) => api(`/api/agent/provider-catalog/${encodeURIComponent(provider)}`);
+export const agentProviderImport = (payload = {}) => api("/api/agent/provider-catalog/import", { method: "POST", body: JSON.stringify(payload) });
+export const agentSetDefaultModel = (provider, model) => api("/api/agent/default-model", { method: "POST", body: JSON.stringify({ provider, model }) });
 export const setAgentModel = (client, model, thread) =>
   api("/api/agent/model", { method: "POST", body: JSON.stringify({ client, thread, model }) });
 export const setAgentModelForThread = (client, thread, model) =>

@@ -318,7 +318,7 @@ test("发送路由：中断不写 runtime_error，也不发 agent_error", () => 
   assert.match(index源, /if \(entry && userAborted\) \{[\s\S]{0,220}?emitChannel\(entry, "aborted"/, "中断只发 aborted");
   // 两条执行路径（排队执行器 + 直接发送路由）都要守住：runtime_error 一旦写入，
   // Run 会被标成"需要恢复"、Runtime 被标成 failed，用户中断后还要"恢复任务"。
-  const guards = index源.match(/if \(runtimeHealth && !userAborted\) recordRunEvent\(run\.id, "runtime_error"/g) || [];
+  const guards = index源.match(/if \(runtimeHealth && !userAborted(?: && !truncatedRecoverable)?\) recordRunEvent\(run\.id, "runtime_error"/g) || [];
   assert.equal(guards.length, 2, "排队执行器与发送路由都必须跳过 runtime_error");
   assert.match(index源, /const userAborted = cancelRequestedHere && isAbortLikeError\(diagnostic\.message\)/,
     "排队执行器也要做同一套中断判定");
@@ -356,6 +356,47 @@ test("客户端：中断后的 agent_error 按中断处理，且不残留错误�
   assert.match(对话面板, /pushSystem\("已请求中断，但服务端未在 10 秒内确认收尾/, "服务端未确认时要说实话");
   assert.match(对话面板, /pushSystem\("没有找到正在运行的任务，可能这一轮已经结束了。"/, "没有在跑的任务不要谎报已中断");
   assert.match(对话面板, /}, 10000\);\n    try \{\n      const res = await fetch\("\/api\/agent\/abort"/, "确认窗口应为 10 秒而不是 1.2 秒本地收尾");
+});
+
+// ---------- 7. 供应商流截断（不是"模型调用失败"）----------
+console.log("\n▶ 供应商流截断");
+
+test("截断识别只认流截断，不误伤用户中断与普通失败", () => {
+  assert.match(agent源, /export function isProviderTruncation\(value\)/, "应导出截断识别函数");
+  assert.match(agent源, /const PROVIDER_TRUNCATION_PATTERN = \/\(\?:stream ended without finish_reason\|without finish_reason\|unexpected end of \(\?:stream\|response\)\|stream \(\?:ended\|closed\) unexpectedly\)\/i/,
+    "截断模式必须只匹配「流未收尾」这一类");
+  assert.match(agent源, /const retryable = !configurationFailure && \(safeEmpty400 \|\| isProviderTruncation\(message\)/, "流截断必须可重试，不能当成终态错误");
+});
+
+test("流截断但有产物 → 按「部分完成」收尾，而不是「本轮失败」", () => {
+  assert.match(index源, /const truncatedRecoverable = !userAborted[\s\S]{0,200}?isProviderTruncation\(diagnostic\.message\)[\s\S]{0,120}?changed\.length > 0 \|\| stagedValidations\.length > 0\)/,
+    "截断可恢复判定必须同时看「非用户中断 + 形如截断 + 有客观产出」");
+  assert.match(index源, /status: "partial",[\s\S]{0,400}?模型流被供应商截断/, "结论卡要说明是流被截断");
+  assert.match(index源, /status: cancelled \? "cancelled" : \(truncatedRecoverable \? "completed" : "failed"\)/, "有产出的截断必须落 completed（这样才会发布产物）");
+  assert.match(index源, /if \(runtimeHealth && !userAborted && !truncatedRecoverable\) recordRunEvent\(run\.id, "runtime_error"/, "截断可恢复时不写 runtime_error");
+});
+
+// ---------- 8. 写入通道（暂存 ↔ officecli）----------
+console.log("\n▶ 写入通道与台账精度");
+
+test("officecli 调用前把引用到的暂存文件按需物化", () => {
+  assert.match(agent源, /materializeStagedReferences\(\{ runId: ctx\.runId, workspace: ctx\.workspace, paths: referenced \}\)/, "officecli 前必须物化被引用的暂存文件");
+  assert.match(agent源, /export function collectReferencedPaths\(args = \[\]\)/, "应导出参数路径识别（含 --input 后一个）");
+  assert.match(agent源, /reason: "officecli_read"/, "物化要有可追溯事件");
+  const 写入协调源 = read("server/写入协调.mjs");
+  assert.match(写入协调源, /export function materializeStagedReferences/, "写入协调应提供物化能力");
+  assert.match(写入协调源, /只物化被显式引用、且磁盘上没有更新版本的文件/, "物化必须只覆盖磁盘上没有更新版本的文件");
+});
+
+test("officecli 写入台账用真实目标文件（否则新文件只能判到待确认）", () => {
+  assert.match(agent源, /const ledgerPath = parsed\.file \|\| entry\.currentFile \|\| "\.";/, "记账路径应优先用本次命令的目标文件");
+  assert.match(agent源, /path: ledgerPath, kind: "officecli"/, "write_started/write_locked 都要用该路径");
+});
+
+test("officecli 两类高频失败给出可执行指引", () => {
+  assert.match(agent源, /\[修复建议\]/, "失败信息要带修复建议");
+  assert.match(agent源, /输入 JSON 语法错误：字符串里的双引号必须用反斜杠转义/, "JSON 转义错误要给出明确做法");
+  assert.match(agent源, /引用的文件不在磁盘上[\s\S]{0,80}?暂存区/, "文件不存在时要指出可能是暂存区未物化");
 });
 
 console.log(failed ? "\n✗ 任务结论事件流测试未通过\n" : "\n✓ 任务结论事件流测试全部通过\n");

@@ -1,4 +1,5 @@
 import React from "react";
+import 品牌图形 from "./供应商品牌图形.js";
 
 /**
  * 统一图标库（线性 SVG，stroke 风格，统一粗细/尺寸）
@@ -145,21 +146,45 @@ const PROVIDER_GLYPHS = {
   gemini: <path fill="currentColor" d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81" />,
   xiaomi: <path fill="currentColor" d="M3 6.4h6.7c1.55 0 2.5.42 3.1 1.05.6.62.95 1.55.95 2.95v7.2h-2.5v-7c0-.75-.15-1.2-.45-1.5-.3-.3-.78-.45-1.55-.45H5.5v8.95H3Zm15.5 0H21v11.2h-2.5Z" />,
   zhipu: <path fill="currentColor" d="M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Zm3.4 4.1v1.95h5.04L7.05 15.1v1.8h9.55v-1.95h-5.3l5.4-6.05V7.1H7.4Z" />,
-  // Command Code 是通过命令行/网关调用模型的供应商，用「终端提示符 >_」作为标识
-  // （不用臆造的品牌图形；同样以描边渲染，避免实心块）。
+  // Moonshot/Kimi、xAI、OpenCode 的真实品牌矢量来自下面的品牌图形集（simple-icons）；
+  // 这里只留没有公开矢量的占位图形。
   commandcode: (<><rect x="3" y="5" width="18" height="14" rx="2.4" strokeWidth="1.6" /><path d="m7.6 10.4 2.4 2.2-2.4 2.2" strokeWidth="1.6" /><path d="M12.6 15.2h3.6" strokeWidth="1.6" /></>),
-  // Moonshot/Kimi 用月牙，xAI 用 X 标记（几何图形，不冒充官方矢量）。
-  moonshot: <path fill="currentColor" d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79Z" />,
-  xai: <path fill="currentColor" d="M3 3h4.2l5.1 7.1L17.4 3H21l-6.6 8.9L21.4 21h-4.2l-5.3-7.4L6.4 21H3l6.9-9.3Z" />,
-  // OpenCode 没有随仓库提供的品牌矢量，原先用「方形 + 交叉线」描边图形占位；
-  // 但 ProviderIcon 统一 fill=currentColor + stroke=none，方框被填成实心白块、
-  // 交叉线直接消失（交接文档问题 3）。这里改为描边式渲染：方框不填充、交叉线可见。
-  opencode: (<><rect x="5" y="5" width="14" height="14" rx="1.5" strokeWidth="1.7" /><path d="m9 9 6 6M15 9l-6 6" strokeWidth="1.7" /></>),
   custom: <circle cx="12" cy="12" r="5" />,
 };
 
+// 品牌矢量（simple-icons，CC0，见 供应商品牌图形.js）：key 是 ProviderIcon 用的图形名，
+// 值是品牌数据文件里的 slug。同一 key 以品牌矢量为准（覆盖上面的占位图形）。
+const 品牌图形键 = {
+  anthropic: "anthropic",
+  openai: "openai",
+  gemini: "googlegemini",
+  deepseek: "deepseek",
+  xai: "x",
+  mistral: "mistralai",
+  moonshot: "moonshotai",
+  kimi: "kimi",
+  minimax: "minimax",
+  qwen: "qwen",
+  xiaomi: "xiaomi",
+  meta: "meta",
+  cloudflare: "cloudflare",
+  vercel: "vercel",
+  huggingface: "huggingface",
+  nvidia: "nvidia",
+  openrouter: "openrouter",
+  googlecloud: "googlecloud",
+  azure: "microsoftazure",
+  bedrock: "amazonwebservices",
+  ollama: "ollama",
+  alibaba: "alibabacloud",
+  opencode: "opencode",
+};
+for (const [key, slug] of Object.entries(品牌图形键)) {
+  if (品牌图形[slug]) PROVIDER_GLYPHS[key] = <path fill="currentColor" d={品牌图形[slug]} />;
+}
+
 // 需要描边渲染的品牌图形：这些路径不填充，改由 stroke 勾线（fill/stroke 见 ProviderIcon）。
-const STROKED_PROVIDER_GLYPHS = new Set(["opencode", "commandcode"]);
+const STROKED_PROVIDER_GLYPHS = new Set(["commandcode"]);
 
 export function ProviderIcon({ provider = "custom", size = 14, className = "" }) {
   const key = String(provider || "custom").toLowerCase();

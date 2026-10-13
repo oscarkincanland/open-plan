@@ -185,7 +185,11 @@ assert.match(样式, /\.model-control-pop \{\n  display: flex;\n  flex-direction
 assert.match(对话面板, /"command-code": \{ label: "Command Code", icon: "commandcode" \}/, "Command Code 供应商应有自己的品牌图标");
 assert.match(对话面板, /"command-code-anthropic": \{ label: "Command Code", icon: "commandcode" \}/, "command-code-anthropic 走同一品牌图标");
 assert.match(图标, /commandcode: \(/, "应提供 Command Code 的终端提示符图形");
-assert.match(图标, /STROKED_PROVIDER_GLYPHS = new Set\(\["opencode", "commandcode"\]\)/, "描边渲染集合应包含 commandcode（避免实心块）");
+// opencode 改用 simple-icons 的真实品牌矢量（填充渲染，不再需要描边兜底），
+// 所以描边集合只保留 commandcode 这个自绘占位图形。
+assert.match(图标, /STROKED_PROVIDER_GLYPHS = new Set\(\["commandcode"\]\)/, "描边渲染集合应只含自绘占位图形");
+assert.match(图标, /opencode: "opencode"/, "opencode 应改用品牌矢量（simple-icons）");
+assert.match(图标, /PROVIDER_GLYPHS\[key\] = <path fill="currentColor" d=\{品牌图形\[slug\]\} \/>/, "品牌矢量应合并进供应商图形表");
 assert.match(对话面板, /function providerInitials\(provider\)/, "未收录供应商应显示首字母缩写");
 assert.match(对话面板, /function providerHue\(provider\)/, "首字母标记应有稳定配色（同一供应商颜色固定）");
 assert.match(对话面板, /provider-initials/, "未收录供应商应带 provider-initials 类");

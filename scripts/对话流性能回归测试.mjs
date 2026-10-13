@@ -399,7 +399,7 @@ try {
   }
   assert.match(serverSource, /app\.get\("\/api\/diagnostics\/streams"/, "应提供长连接诊断端点");
   const streamModuleSource = fs.readFileSync(new URL("../server/流连接.mjs", import.meta.url), "utf8");
-  assert.match(streamModuleSource, /const MAX_SAME_KEY = 1;/, "同键只允许一条流存活");
+  assert.match(streamModuleSource, /const MAX_SAME_KEY = 2;/, "同键允许一个备用读者（多标签页/监测工具不再互踢）");
   console.log("对话流性能回归：通过");
 } finally {
   if (runId) {

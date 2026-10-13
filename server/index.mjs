@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { listWorkspace, searchWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace, isInside } from "./workspace.mjs";
 import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, queryComments, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
 import { getApprovalMode, listPendingApprovals, listPermissionRules, removeUserRule, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
-import { agentManager, classifyAgentError, getCredentialErrors, isAbortLikeError, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
+import { agentManager, classifyAgentError, getCredentialErrors, isAbortLikeError, isProviderTruncation, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
@@ -53,8 +53,10 @@ import {
   readNetworkSettings,
   readRuntimeSettings,
   saveNetworkSettings,
+  writeDefaultModel,
 } from "./Pi配置管理.mjs";
 import * as planCatalog from "./套餐目录.mjs";
+import { builtinProviderDetail, builtinProviderList, buildBuiltinImport, findBuiltinModel, loadBuiltinCatalog } from "./供应商目录.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
@@ -1363,7 +1365,16 @@ function agentKey(client, thread) {
   return t ? `${c}::${t}` : c;
 }
 
-const MODEL_CONFIG_APIS = new Set(["openai-completions", "anthropic-messages", "openai-codex-responses"]);
+const MODEL_CONFIG_APIS = new Set([
+  "openai-completions",
+  "anthropic-messages",
+  "openai-codex-responses",
+  // Pi 运行时原生支持这三种协议；内置目录里 openai / google / mistral 走的就是它们，
+  // 一键导入后用户再编辑该供应商时不能被协议校验挡住。
+  "openai-responses",
+  "google-generative-ai",
+  "mistral-conversations",
+]);
 
 function validateModelConfigInput(input = {}) {
   const provider = String(input.provider || "").trim();
@@ -1539,11 +1550,169 @@ app.post("/api/agent/model-configs/fetch-models", async (req, res) => {
     }
     const ids = Array.isArray(body?.data) ? body.data.map((item) => String(item?.id || "").trim()).filter(Boolean) : [];
     if (!ids.length) return res.status(422).json({ ok: false, error: "接口未返回模型列表（响应缺少 data[]）", code: "MODELS_FETCH_EMPTY" });
-    res.json({ ok: true, models: [...new Set(ids)], count: [...new Set(ids)].length, fetchedAt: new Date().toISOString() });
+    const unique = [...new Set(ids)];
+    // 拉到的模型 ID 去 Pi 内置目录里对一遍：对上的直接带出上下文窗口 / 图片 / 思考能力，
+    // 前端就不用一个个手填（对不上的仍可手填）。
+    const models = unique.map((id) => {
+      const known = findBuiltinModel(id);
+      return {
+        id,
+        name: known?.name || id,
+        contextWindow: known?.contextWindow || null,
+        vision: known ? known.vision : null,
+        reasoning: known ? known.reasoning : null,
+        matchedProvider: known?.provider || null,
+      };
+    });
+    res.json({ ok: true, models, ids: unique, count: unique.length, matched: models.filter((model) => model.matchedProvider).length, fetchedAt: new Date().toISOString() });
   } catch (error) {
     res.status(500).json({ ok: false, error: String(error?.message || error).slice(0, 300), code: "MODELS_FETCH_UNEXPECTED" });
   } finally {
     adapter.close();
+  }
+});
+
+// ---------- Pi 内置供应商目录（一键添加） ----------
+// 数据由 scripts/提取Pi供应商目录.mjs 从 Pi SDK bundle 固化到 server/Pi内置供应商.json：
+// 供应商、Base URL、协议、登录方式（账号登录 / API Key）、每个模型的上下文窗口与图片能力。
+// 这里只读目录 + 已配置状态，不返回任何凭据明文。
+function providerCatalogPayload() {
+  const list = builtinProviderList();
+  const configs = publicModelConfigs();
+  const configuredMap = new Map(configs.map((item) => [item.provider, item]));
+  const auth = listAuth() || {};
+  const credentialErrors = getCredentialErrors();
+  const defaultModel = String(loadSettingsDefault() || "");
+  const defaultProvider = defaultModel.includes("/") ? defaultModel.split("/")[0] : "";
+  const providers = list.providers.map((provider) => {
+    const existing = configuredMap.get(provider.id);
+    const credential = auth[provider.id] || {};
+    // 账号登录（OAuth）凭据存的是 access/refresh，不是 key，判定要一起看，
+    // 否则已授权的供应商会被显示成"未添加"。
+    const credentialSet = Boolean(credential.key || credential.access || credential.refresh || credential.token || credential.secret);
+    const keyConfigured = Boolean(existing?.keyConfigured || credentialSet);
+    return {
+      ...provider,
+      configured: Boolean(existing) || keyConfigured,
+      modelsConfigured: Boolean(existing),
+      enabled: existing ? existing.enabled : null,
+      keyConfigured,
+      credentialType: credential.type || null,
+      configuredModelCount: existing ? existing.models.length : 0,
+      authError: credentialErrors[provider.id]?.message || existing?.authError || null,
+      isDefault: defaultProvider === provider.id,
+    };
+  });
+  return {
+    ok: true,
+    generatedAt: list.generatedAt,
+    error: list.error,
+    totalModels: list.totalModels,
+    summary: {
+      total: providers.length,
+      importable: providers.filter((provider) => provider.importable).length,
+      configured: providers.filter((provider) => provider.configured).length,
+      oauth: providers.filter((provider) => provider.auth.oauth).length,
+    },
+    providers,
+    loginOnly: list.loginOnly,
+    defaultModel,
+  };
+}
+
+app.get("/api/agent/provider-catalog", (_req, res) => {
+  try {
+    res.json(providerCatalogPayload());
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error?.message || error), code: "PROVIDER_CATALOG_FAILED" });
+  }
+});
+
+// 单个供应商的完整模型清单（含上下文窗口 / 图片 / 思考），供"查看模型"与导入前勾选。
+app.get("/api/agent/provider-catalog/:id", (req, res) => {
+  try {
+    const detail = builtinProviderDetail(req.params.id);
+    if (!detail) return res.status(404).json({ ok: false, error: "内置供应商不存在", code: "PROVIDER_CATALOG_MISSING" });
+    const existing = publicModelConfigs().find((item) => item.provider === detail.id) || null;
+    res.json({ ok: true, provider: detail, configured: existing });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error?.message || error), code: "PROVIDER_CATALOG_FAILED" });
+  }
+});
+
+// 一键添加：Base URL / 协议 / 模型能力全部从内置目录带出，用户只需补 Key。
+// 已存在的同名模型保留用户改过的字段（合并而不是覆盖）。
+app.post("/api/agent/provider-catalog/import", async (req, res) => {
+  const provider = String(req.body?.provider || "").trim();
+  try {
+    const built = buildBuiltinImport(provider, {
+      modelIds: req.body?.modelIds,
+      name: req.body?.name,
+      baseUrl: req.body?.baseUrl,
+      enabled: req.body?.enabled,
+    });
+    const config = readModelsConfig() || {};
+    const providers = config.providers && typeof config.providers === "object" ? config.providers : {};
+    const previous = providers[built.provider] && typeof providers[built.provider] === "object" ? providers[built.provider] : {};
+    const previousModels = Array.isArray(previous.models) ? previous.models : [];
+    const merged = previousModels.map((model) => ({ ...model }));
+    let added = 0;
+    for (const model of built.models) {
+      const index = merged.findIndex((item) => item?.id === model.id);
+      if (index >= 0) {
+        // 保留用户对已有模型的编辑（名称、上下文、能力开关）
+        merged[index] = { ...model, ...merged[index], name: merged[index].name || model.name };
+      } else {
+        merged.push(model);
+        added += 1;
+      }
+    }
+    const nextProvider = {
+      ...previous,
+      name: built.name,
+      api: built.api,
+      baseUrl: built.baseUrl,
+      enabled: built.enabled,
+      models: merged.slice(0, 200),
+    };
+    delete nextProvider.apiKey;
+    delete nextProvider.api_key;
+    writeModelsConfig({ ...config, providers: { ...providers, [built.provider]: nextProvider } });
+    const apiKey = String(req.body?.apiKey || "").trim();
+    if (apiKey) await setApiKey(built.provider, apiKey);
+    let defaultModel = null;
+    if (req.body?.setDefault === true) {
+      const target = String(req.body?.defaultModel || built.models[0].id);
+      writeDefaultModel({ provider: built.provider, model: target });
+      defaultModel = `${built.provider}/${target}`;
+    }
+    piRuntimeManager.resetModelRuntime();
+    res.json({
+      ok: true,
+      provider: built.provider,
+      name: built.name,
+      added,
+      total: nextProvider.models.length,
+      keyConfigured: Boolean(apiKey) || Boolean(publicModelConfigs().find((item) => item.provider === built.provider)?.keyConfigured),
+      defaultModel,
+      loginMethods: built.auth,
+    });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: String(error?.message || error), code: "PROVIDER_IMPORT_FAILED" });
+  }
+});
+
+// 设为默认模型供应商（写 Pi settings.json 的 defaultProvider/defaultModel）
+app.post("/api/agent/default-model", (req, res) => {
+  const provider = String(req.body?.provider || "").trim();
+  const model = String(req.body?.model || "").trim();
+  if (!provider || !model) return res.status(400).json({ ok: false, error: "provider 和 model 都需要", code: "DEFAULT_MODEL_INVALID" });
+  try {
+    const saved = writeDefaultModel({ provider, model });
+    piRuntimeManager.resetModelRuntime();
+    res.json({ ok: true, ...saved, defaultModel: `${saved.defaultProvider}/${saved.defaultModel}` });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error?.message || error), code: "DEFAULT_MODEL_FAILED" });
   }
 });
 
@@ -1587,15 +1756,20 @@ app.post("/api/agent/custom-provider", (req, res) => {
     const previous = providers[provider] && typeof providers[provider] === "object" ? providers[provider] : {};
     const previousModels = Array.isArray(previous.models) ? previous.models : [];
     const previousModel = previousModels.find((item) => item?.id === modelId) || {};
+    // 没填上下文窗口 / 图片能力时，去 Pi 内置目录按模型 ID 补全，避免用户逐个模型手配。
+    const known = findBuiltinModel(modelId);
+    const requestedContext = Number(req.body?.contextWindow);
+    const contextWindow = requestedContext > 0 ? Math.floor(requestedContext) : (known?.contextWindow || 0);
+    const vision = req.body?.vision === true || (req.body?.vision === undefined && known?.vision === true);
     const model = {
       ...previousModel,
       id: modelId,
       name: modelName.slice(0, 160),
       api,
       baseUrl,
-      reasoning: req.body?.reasoning !== false,
-      ...(req.body?.vision === true ? { input: ["text", "image"] } : { input: ["text"] }),
-      ...(Number(req.body?.contextWindow) > 0 ? { contextWindow: Math.floor(Number(req.body.contextWindow)) } : {}),
+      reasoning: req.body?.reasoning === undefined ? (known?.reasoning ?? true) : req.body?.reasoning !== false,
+      ...(vision ? { input: ["text", "image"] } : { input: ["text"] }),
+      ...(contextWindow > 0 ? { contextWindow } : {}),
     };
     // 凭据只允许进入 auth.json；即使更新旧模型，也清理历史上可能残留的密钥字段。
     delete model.apiKey;
@@ -1947,7 +2121,12 @@ app.get("/api/browser/stream", (req, res) => {
   };
   heartbeat = setInterval(() => {
     if (closed) return;
-    try { res.write(`event: heartbeat\ndata: {"at":"${new Date().toISOString()}"}\n\n`); } catch { cleanup(); }
+    try {
+      const chunk = `event: heartbeat\ndata: {"at":"${new Date().toISOString()}"}\n\n`;
+      res.write(chunk);
+      // 心跳也计入写入记账：否则"纯状态流"在诊断里会一直显示静默（被误判成僵尸流）。
+      if (streamId) noteStreamWrite(streamId, Buffer.byteLength(chunk));
+    } catch { cleanup(); }
   }, 15000);
   const session = browserModule.getBrowserSession(key);
   write({ type: "state", data: session ? session.stateView() : { active: false, url: "", title: "", loading: false, hasFrame: false, ownership: { owner: "agent", reason: "", leaseExpiresAt: 0, secondsRemaining: 0 } } });
@@ -2778,7 +2957,9 @@ app.get("/api/agent/events", (req, res) => {
   heartbeat = setInterval(() => {
     if (closed) return;
     try {
-      res.write(`event: heartbeat\ndata: {"at":"${new Date().toISOString()}"}\n\n`);
+      const chunk = `event: heartbeat\ndata: {"at":"${new Date().toISOString()}"}\n\n`;
+      res.write(chunk);
+      if (streamId) noteStreamWrite(streamId, Buffer.byteLength(chunk));
     } catch { cleanup(); }
   }, 15000);
   const replay = listEvents({ after, clientId, threadId, limit: replayLimit });
@@ -3735,14 +3916,32 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
       });
     }
     const runtimeHealth = entry ? agentManager.runtimeHealth(key) : null;
-    if (runtimeHealth && !userAborted) recordRunEvent(run.id, "runtime_error", { code: diagnostic.errorCode || e?.code || null, message: diagnostic.message, runtime: runtimeHealth });
+    // 供应商流截断（未返回 finish_reason）：既不是用户中断，也不该按"模型调用失败"处理——
+    // 关键看这一轮有没有客观产出（文件改动 / 暂存产物 / 模型最终文本）。
+    const truncatedRecoverable = !userAborted
+      && isProviderTruncation(diagnostic.message)
+      && (Boolean(entry?.lastFinalText) || changed.length > 0 || stagedValidations.length > 0);
+    if (runtimeHealth && !userAborted && !truncatedRecoverable) recordRunEvent(run.id, "runtime_error", { code: diagnostic.errorCode || e?.code || null, message: diagnostic.message, runtime: runtimeHealth });
     const cancelled = userAborted || getRun(run.id)?.status === "cancel_requested";
-    const failureCompletion = resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations], runId: run.id });
+    // 供应商流截断但活已经干完：按「部分完成」收尾而不是「本轮失败」——
+    // 判定必须看客观产物（有改动或有过校验通过）与模型的最终文本，而不是只看调用是否干净收尾。
+    const truncationCompletion = truncatedRecoverable
+      ? {
+        status: "partial",
+        source: "inferred",
+        summary: `${entry?.lastFinalText ? String(entry.lastFinalText).slice(0, 4000) : run?.task?.goal || "本轮产物已产出"}\n\n⚠ 模型流被供应商截断（未返回 finish_reason，已自动重试并继续），产物已产出并通过校验，请按结果核对。`,
+        incomplete: [],
+        blockers: [],
+        verification: null,
+        verificationStatus: "not_checked",
+      }
+      : null;
+    const failureCompletion = truncationCompletion || resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations], runId: run.id });
     const failed = finishRun(run.id, {
-      status: cancelled ? "cancelled" : "failed",
+      status: cancelled ? "cancelled" : (truncatedRecoverable ? "completed" : "failed"),
       sessionId: entry?.session?.sessionId || null,
-      error: cancelled ? "用户请求取消" : e.message,
-      summary: cancelled ? "任务已中断" : "Agent 执行失败",
+      error: cancelled ? "用户请求取消" : (truncatedRecoverable ? "模型流被供应商截断（产物已产出）" : e.message),
+      summary: cancelled ? "任务已中断" : (truncatedRecoverable ? "部分完成（模型流被截断）" : "Agent 执行失败"),
       validations: [...validations, ...stagedValidations],
       completion: failureCompletion,
     });

@@ -12,8 +12,15 @@
 const streams = new Map();
 let seq = 0;
 
-/** 同一 (path, client, thread) 允许同时存活的流条数。 */
-const MAX_SAME_KEY = 1;
+/**
+ * 同一 (path, client, thread) 允许同时存活的流条数。
+ *
+ * 早先是 1（最新者胜）：好处是不累积，但**同一会话的多个读者会互相踢**——
+ * 两个标签页共享同一个 client id（存在 localStorage），加上外部监测工具，
+ * 会陷入"你连我断、我连你断"的重连循环。放宽到 2：允许一个备用读者并存，
+ * 仍由 MAX_PER_CLIENT 与周期清扫兜住上限。
+ */
+const MAX_SAME_KEY = 2;
 /** 同一个 client 允许同时存活的总流条数（多标签页时的兜底）。 */
 const MAX_PER_CLIENT = 8;
 /**
@@ -22,9 +29,9 @@ const MAX_PER_CLIENT = 8;
  * keep 是保留条数；graceMs 内不判旧（覆盖组件切换时新旧流短暂并存）。
  */
 const SUPERSEDE = {
-  "/api/agent/stream": { keep: 1, graceMs: 60000 },
-  "/api/browser/stream": { keep: 1, graceMs: 5000 },
-  "/api/agent/events": { keep: 1, graceMs: 5000 },
+  "/api/agent/stream": { keep: 2, graceMs: 60000 },
+  "/api/browser/stream": { keep: 2, graceMs: 5000 },
+  "/api/agent/events": { keep: 2, graceMs: 5000 },
   "/api/memory/stream": { keep: 1, graceMs: 5000 },
 };
 

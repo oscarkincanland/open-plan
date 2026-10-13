@@ -91,13 +91,31 @@ const MODEL_PROVIDER_META = {
   qwen: { label: "Qwen", icon: "qwen" },
   alibaba: { label: "Qwen", icon: "qwen" },
   "opencode-go": { label: "OpenCode Go", icon: "opencode" },
+  opencode: { label: "OpenCode Zen", icon: "opencode" },
   "xiaomi-token-plan-cn": { label: "MiMo", icon: "xiaomi" },
   "command-code": { label: "Command Code", icon: "commandcode" },
   "command-code-anthropic": { label: "Command Code", icon: "commandcode" },
   zhipu: { label: "智谱 GLM", icon: "zhipu" },
+  zai: { label: "Z.AI", icon: "zhipu" },
+  "zai-coding-cn": { label: "Z.AI Coding CN", icon: "zhipu" },
   moonshot: { label: "Moonshot", icon: "moonshot" },
-  kimi: { label: "Kimi", icon: "moonshot" },
+  moonshotai: { label: "Moonshot AI", icon: "moonshot" },
+  "moonshotai-cn": { label: "Moonshot AI CN", icon: "moonshot" },
+  kimi: { label: "Kimi", icon: "kimi" },
+  "kimi-coding": { label: "Kimi For Coding", icon: "kimi" },
   xai: { label: "xAI", icon: "xai" },
+  mistral: { label: "Mistral", icon: "mistral" },
+  meta: { label: "Meta", icon: "meta" },
+  nvidia: { label: "NVIDIA", icon: "nvidia" },
+  openrouter: { label: "OpenRouter", icon: "openrouter" },
+  huggingface: { label: "Hugging Face", icon: "huggingface" },
+  cloudflare: { label: "Cloudflare", icon: "cloudflare" },
+  "cloudflare-ai-gateway": { label: "Cloudflare AI Gateway", icon: "cloudflare" },
+  "cloudflare-workers-ai": { label: "Cloudflare Workers AI", icon: "cloudflare" },
+  "vercel-ai-gateway": { label: "Vercel AI Gateway", icon: "vercel" },
+  "amazon-bedrock": { label: "Amazon Bedrock", icon: "bedrock" },
+  azure: { label: "Azure OpenAI", icon: "azure" },
+  "google-vertex": { label: "Google Vertex AI", icon: "googlecloud" },
 };
 
 function modelProvider(model) {
@@ -3468,8 +3486,12 @@ case "runtime_connecting":
             {queuedMessages.length > 0 && <button type="button" onClick={() => { queueRef.current = []; setQueuedMessages([]); }} title="清空待执行消息">清空</button>}
           </div>
         )}
-        <div className="chat-input">
+        {/* 任务卡放在输入框之外：它表达的是"本轮进度"，不是输入内容。
+            放在 .chat-input 里面时会被读成"被输入框吞掉的一块"，而且输入框按内容撑高，
+            忙时状态会把对话区压到几十像素（实测 720px 窗口只剩 364px、420px 只剩 95px）。 */}
+        <div className="chat-compose">
           {todoItems.length > 0 && <TaskProgressCard tasks={todoItems} running={busy} />}
+          <div className="chat-input">
           {busy && (
             <div className="busy-input-mode" role="group" aria-label="当前任务中的新输入处理方式">
               <span>当前任务中新输入：</span>
@@ -3735,6 +3757,7 @@ case "runtime_connecting":
               </button>
             </div>
             {modelMsg && <span className={`model-msg${pendingModel ? " pending" : ""}`} title={pendingModel ? `已排队：本轮结束后切换为 ${pendingModel}` : undefined}>{modelMsg}</span>}
+          </div>
           </div>
         </div>
       </div>
@@ -5240,6 +5263,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
 // ========== 输入框上方任务入口：点击查看，离开后自动收起 ==========
 function TaskProgressCard({ tasks, running = false }) {
   const [open, setOpen] = useState(false);
+  const [panelMaxHeight, setPanelMaxHeight] = useState(260);
   const cardRef = useRef(null);
   const closeTimerRef = useRef(null);
   const done = tasks.filter((t) => t.done || ["completed", "skipped"].includes(t.status)).length;
@@ -5259,6 +5283,31 @@ function TaskProgressCard({ tasks, running = false }) {
     document.addEventListener("pointerdown", handleOutsidePointer);
     return () => document.removeEventListener("pointerdown", handleOutsidePointer);
   }, [open]);
+  // 清单从卡片向上弹出，而外层容器（.center-chat-slot）是 overflow:hidden：
+  // 矮窗口下按"卡片上方可用空间"夹取高度，否则清单顶部会被裁掉（实测 420px 窗口裁 25px、360px 裁 85px）。
+  // 窗口尺寸变化会改变可用空间，所以要跟着 resize 重算，不能只在打开那一刻算一次。
+  useLayoutEffect(() => {
+    if (!open) return undefined;
+    const measure = () => {
+      const card = cardRef.current;
+      if (!card) return;
+      let clipTop = 8;
+      let node = card.parentElement;
+      while (node && node !== document.body) {
+        const style = getComputedStyle(node);
+        if (style.overflowY !== "visible" || style.overflow !== "visible") {
+          clipTop = Math.max(clipTop, node.getBoundingClientRect().top);
+        }
+        node = node.parentElement;
+      }
+      const available = card.getBoundingClientRect().top - clipTop - 12;
+      // 下限 96px：够显示 3 条左右（清单内部可滚动），同时在极矮窗口下也不会把面板顶出容器。
+      setPanelMaxHeight(Math.max(96, Math.min(260, Math.round(available))));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [open, tasks.length]);
   const keepOpen = () => {
     if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
   };
@@ -5276,7 +5325,7 @@ function TaskProgressCard({ tasks, running = false }) {
         <span className="task-progress">{done}/{tasks.length} 完成{failed ? ` · ${failed} 失败` : ""}</span>
       </button>
       {open && (
-        <div className="task-body">
+        <div className="task-body" style={{ maxHeight: panelMaxHeight }}>
           <div className="task-bar">
             <div className="task-bar-fill" style={{ width: `${(done / tasks.length) * 100}%` }} />
           </div>

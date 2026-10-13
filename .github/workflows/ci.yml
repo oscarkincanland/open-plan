@@ -66,3 +66,9 @@ jobs:
 
       - name: 工作区隔离（地图项目生命周期）
         run: node scripts/工作区隔离回归测试.mjs
+
+      - name: Pi 内置供应商目录与一键添加（登录方式区分 / 能力自动带出）
+        run: node scripts/供应商目录与一键导入测试.mjs
+
+      - name: Review 报错修复（officecli 参数 / 临时文件 / 输入区布局）
+        run: node scripts/Review报错修复回归测试.mjs

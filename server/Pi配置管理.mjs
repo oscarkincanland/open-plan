@@ -360,6 +360,20 @@ export function readRuntimeSettings({ dir = AGENT_DIR } = {}) {
   return readJsonFile(getPiConfigPaths(dir).settingsPath, {});
 }
 
+/** 只改默认模型这两个字段，其余运行设置原样保留。 */
+export function writeDefaultModel({ provider = "", model = "" }, { dir = AGENT_DIR } = {}) {
+  const paths = getPiConfigPaths(dir);
+  const current = readJsonFile(paths.settingsPath, {});
+  const next = { ...current };
+  if (provider) next.defaultProvider = String(provider);
+  else delete next.defaultProvider;
+  if (model) next.defaultModel = String(model);
+  else delete next.defaultModel;
+  ensureConfigDirectory(dir);
+  atomicWriteJson(paths.settingsPath, next);
+  return { defaultProvider: next.defaultProvider || "", defaultModel: next.defaultModel || "" };
+}
+
 /** 返回脱敏网络设置；运行时内部使用 loadNetworkSettings 取得真实代理地址。 */
 export function readNetworkSettings({ dir = AGENT_DIR } = {}) {
   return publicNetworkSettings(readJsonFile(getPiConfigPaths(dir).networkPath, {}));

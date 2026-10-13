@@ -439,6 +439,48 @@ export function listStagedFilesForValidation(runId) {
   }));
 }
 
+/**
+ * 把本轮暂存区里被**外部工具**（officecli 等独立进程）引用到的文件物化到真实磁盘。
+ *
+ * officecli 是独立进程，只认真实磁盘；而 Agent 用 write 工具写出的文件在暂存覆盖层里。
+ * 不物化就会出现"文件明明写了，officecli 却说找不到"——实测里 Agent 因此反复失败绕道
+ * （第二轮 `.ch6work/b4.json` 就是这样）。
+ * 只物化被显式引用、且磁盘上没有更新版本的文件；返回被物化的相对路径。
+ */
+export function materializeStagedReferences({ runId, workspace, paths = [] } = {}) {
+  if (!runId || !Array.isArray(paths) || !paths.length) return [];
+  let loaded;
+  try { loaded = loadManifest(runId); } catch { return []; }
+  const { info, manifest } = loaded;
+  const wanted = new Set(
+    paths.map((item) => String(item || "").replace(/\\/g, "/").replace(/^\.\//, "").trim()).filter(Boolean),
+  );
+  if (!wanted.size) return [];
+  const materialized = [];
+  for (const entry of manifest.files || []) {
+    const rel = String(entry.path || "").replace(/\\/g, "/");
+    if (!wanted.has(rel)) continue;
+    const stagedPath = path.resolve(info.runDir, entry.stagedPath || "");
+    if (!isInside(info.stagingDir, stagedPath) || !fs.existsSync(stagedPath)) continue;
+    let target;
+    try { target = validateTarget(workspace, path.resolve(workspace, rel), { allowWorkspaceRoot: false }).target; } catch { continue; }
+    try {
+      const stagedStat = fs.statSync(stagedPath);
+      const diskStat = fs.existsSync(target) ? fs.statSync(target) : null;
+      // 磁盘上已有更新（或同样新）的版本就不覆盖：那种情况是 Agent 直接写盘的结果。
+      if (diskStat && diskStat.mtimeMs >= stagedStat.mtimeMs) continue;
+      ensureDirectory(path.dirname(target));
+      fs.copyFileSync(stagedPath, target);
+      entry.materializedAt = new Date().toISOString();
+      materialized.push(rel);
+    } catch {}
+  }
+  if (materialized.length) {
+    try { saveManifest(info, manifest); } catch {}
+  }
+  return materialized;
+}
+
 function isTransientPublishError(error) {
   return ["EPERM", "EACCES", "EBUSY", "ENOTEMPTY"].includes(error?.code);
 }
@@ -468,23 +510,46 @@ function materializeStagedFile(target, content, existed) {
   throw lastError;
 }
 
+/**
+ * 中间工作文件判定：Agent 的临时目录与备份文件不算交付产物。
+ *
+ * 实测踩坑：Agent 把 batch 输入放在 `.work/`，写完就删；但暂存清单里仍留着它，
+ * Run 收尾发布时又把它复制回工作区，用户目录里于是多出一份垃圾（且 Agent 以为已清理）。
+ * 这里统一认定"临时目录/备份后缀"不参与发布，工作区只留真正的产物。
+ * 分隔符除 `/` 外还接受 `-._`：Agent 也常把临时文件写成 `.work-review.html` 这种
+ * 平铺在工作区根目录的名字（实测留下过一个 82MB 的导出文件，规则不认就清不掉）。
+ */
+const TEMP_WORK_PATTERN = /^(?:\.work|\.tmp|\.temp|\.cache|\.scratch|\.ch6work|\.intermediate)(?:[-._/]|$)|\.(?:bak|tmp|temp|orig)$|~$/i;
+
+export function isTempWorkPath(relPath) {
+  const rel = String(relPath || "").replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!rel) return false;
+  return TEMP_WORK_PATTERN.test(rel);
+}
+
 export function publishStagedRun(runId, workspace, { onEvent, threadId = null, paths = null } = {}) {
   const { root } = validateTarget(workspace, workspace);
   const { info, manifest } = loadManifest(runId);
   const files = Array.isArray(manifest.files) ? manifest.files : [];
+  // 临时工作文件与备份不发布：它们只是 Agent 的中间产物，不属于交付物。
+  // 注意：被跳过的文件要从"待发布清单"里剔除（不能只丢进 skipped——后面的存在性校验仍会按全量清单检查，
+  // 而跳过逻辑已经把暂存副本删了，会抛"临时产物不存在"把整轮判成失败）。
+  const tempSkipped = files.filter((entry) => isTempWorkPath(entry.path));
+  const publishable = files.filter((entry) => !isTempWorkPath(entry.path));
   const allowedPaths = Array.isArray(paths)
     ? new Set(paths.map((item) => String(item || "").replace(/\\/g, "/")).filter(Boolean))
     : null;
-  const skipped = allowedPaths
-    ? files.filter((entry) => !allowedPaths.has(String(entry.path || "").replace(/\\/g, "/")))
-    : [];
+  const skipped = [
+    ...tempSkipped,
+    ...(allowedPaths ? publishable.filter((entry) => !allowedPaths.has(String(entry.path || "").replace(/\\/g, "/"))) : []),
+  ];
   for (const entry of skipped) {
     const stagedPath = path.resolve(info.runDir, entry.stagedPath || "");
     if (isInside(info.stagingDir, stagedPath)) {
       try { fs.rmSync(stagedPath, { force: true }); } catch {}
     }
   }
-  const checked = files.filter((entry) => !allowedPaths || allowedPaths.has(String(entry.path || "").replace(/\\/g, "/"))).map((entry) => {
+  const checked = publishable.filter((entry) => !allowedPaths || allowedPaths.has(String(entry.path || "").replace(/\\/g, "/"))).map((entry) => {
     const target = validateTarget(root, path.resolve(root, entry.path), { allowWorkspaceRoot: false }).target;
     const stagedPath = path.resolve(info.runDir, entry.stagedPath || "");
     if (!isInside(info.stagingDir, stagedPath) || !fs.existsSync(stagedPath) || !fs.statSync(stagedPath).isFile()) throw new Error(`临时产物不存在：${entry.path}`);
