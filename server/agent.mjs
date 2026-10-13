@@ -280,7 +280,8 @@ function localSkillRoots() {
     path.join(PROJECT_DIR, ".agents", "skills"),
     path.join(PROJECT_DIR, ".pi", "skills"),
     path.join(PROJECT_DIR, ".claude", "skills"),
-    "F:\\Claude code本地文件\\.claude\\skills",
+    // 工作根目录（项目目录的上一级）下的 .claude/skills：用相对推导而不是写死某台机器的路径
+    path.resolve(PROJECT_DIR, "..", ".claude", "skills"),
   ];
 }
 

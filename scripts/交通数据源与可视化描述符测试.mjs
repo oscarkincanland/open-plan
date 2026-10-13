@@ -131,6 +131,12 @@ await test("M2 路网流量与 OD 期望线", () => {
 
 await test("柬埔寨 OD（points + lines 两个几何）", () => {
   const raw = getCambodiaOD({ minFlow: 0 });
+  // 柬埔寨 OD 是外部素材（不进仓库），缺素材时按同一套"跳过并说明"的规矩处理，
+  // 而不是让 CI 在别的机器上必然失败。素材路径可用 CAMBODIA_PROJECT_DIR 覆盖。
+  if (raw?.error) {
+    console.log("      （跳过：未提供柬埔寨 OD 数据，" + raw.error + "）");
+    return;
+  }
   const d = fromCambodiaOd(raw);
   assertDescriptorShape(d, "柬埔寨 OD");
   assert.ok(d.lines?.features?.length > 0, "应保留流向线");

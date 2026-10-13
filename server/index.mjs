@@ -2316,8 +2316,8 @@ const SKILL_ROOTS = [
   path.join(PROJECT_DIR, ".agents", "skills"),
   path.join(PROJECT_DIR, ".pi", "skills"),
   path.join(PROJECT_DIR, ".claude", "skills"),
-  // 用户实际工作根目录的 .claude skills（F:\Claude code本地文件\.claude\skills）
-  "F:\\Claude code本地文件\\.claude\\skills",
+  // 用户实际工作根目录（项目目录的上一级）的 .claude skills：相对推导，避免写死某台机器的路径
+  path.resolve(PROJECT_DIR, "..", ".claude", "skills"),
 ];
 // scanSkills 在每次 prompt admission 都会被调用；技能目录内容在会话期间基本不变，
 // 用根目录 mtime 签名 + 短 TTL 缓存，避免每轮读取数百个 SKILL.md 拖慢首字节。
