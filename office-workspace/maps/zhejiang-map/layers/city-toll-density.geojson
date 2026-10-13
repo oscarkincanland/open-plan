@@ -1,0 +1,20 @@
+{
+  "type": "FeatureCollection",
+  "metadata": {
+    "note": "DEMO 演示口径：基于 toll-stations.geojson（1522 个点）按 13.8% 均匀抽样 210 点、nearest-centroid 归类后等比外推，非官方统计",
+    "sampleSize": 210,
+    "totalStations": 1522
+  },
+  "features": [
+    { "type": "Feature", "geometry": { "type": "Point", "coordinates": [119.0, 30.3] }, "properties": { "city": "杭州", "count": 334 } },
+    { "type": "Feature", "geometry": { "type": "Point", "coordinates": [121.55, 29.87] }, "properties": { "city": "宁波", "count": 73 } },
+    { "type": "Feature", "geometry": { "type": "Point", "coordinates": [120.7, 27.99] }, "properties": { "city": "温州", "count": 239 } },
+    { "type": "Feature", "geometry": { "type": "Point", "coordinates": [120.75, 30.75] }, "properties": { "city": "嘉兴", "count": 152 } },
+    { "type": "Feature", "geometry": { "type": "Point", "coordinates": [120.09, 30.89] }, "properties": { "city": "湖州", "count": 196 } },
+    { "type": "Feature", "geometry": { "type": "Point", "coordinates": [120.58, 30.0] }, "properties": { "city": "绍兴", "count": 189 } },
+    { "type": "Feature", "geometry": { "type": "Point", "coordinates": [119.65, 29.08] }, "properties": { "city": "金华", "count": 145 } },
+    { "type": "Feature", "geometry": { "type": "Point", "coordinates": [118.87, 28.94] }, "properties": { "city": "衢州", "count": 80 } },
+    { "type": "Feature", "geometry": { "type": "Point", "coordinates": [122.11, 30.02] }, "properties": { "city": "舟山", "count": 58 } },
+    { "type": "Feature", "geometry": { "type": "Point", "coordinates": [121.43, 28.66] }, "properties": { "city": "台州", "count": 29 } }
+  ]
+}

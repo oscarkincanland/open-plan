@@ -1,7 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const DEFAULT_ROOT = path.join("F:\\Claude code本地文件", "柬埔寨公交项目");
+const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * 柬埔寨 OD 数据是外部素材，不进仓库。默认位置取"项目目录的兄弟目录"，
+ * 而不是写死某台机器的绝对路径——写死会让功能与测试只在那一台机器上成立
+ * （CI 上 getCambodiaOD 一直返回 error，断言必然失败）。
+ * 素材放在别处时用 CAMBODIA_PROJECT_DIR / CAMBODIA_OD_FILE 覆盖。
+ */
+const DEFAULT_ROOT = path.resolve(PROJECT_DIR, "..", "柬埔寨公交项目");
 
 function dataFile() {
   return process.env.CAMBODIA_OD_FILE || path.join(process.env.CAMBODIA_PROJECT_DIR || DEFAULT_ROOT, "od_data_for_map.json");

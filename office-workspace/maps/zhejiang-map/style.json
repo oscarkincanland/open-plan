@@ -51,6 +51,154 @@
       ],
       "maxzoom": 14
     },
+    "city-toll-density": {
+      "type": "geojson",
+      "data": {
+        "type": "FeatureCollection",
+        "features": [
+          {
+            "type": "Feature",
+            "geometry": {
+              "type": "Point",
+              "coordinates": [
+                119,
+                30.3
+              ]
+            },
+            "properties": {
+              "city": "杭州",
+              "count": 334
+            }
+          },
+          {
+            "type": "Feature",
+            "geometry": {
+              "type": "Point",
+              "coordinates": [
+                121.55,
+                29.87
+              ]
+            },
+            "properties": {
+              "city": "宁波",
+              "count": 73
+            }
+          },
+          {
+            "type": "Feature",
+            "geometry": {
+              "type": "Point",
+              "coordinates": [
+                120.7,
+                27.99
+              ]
+            },
+            "properties": {
+              "city": "温州",
+              "count": 239
+            }
+          },
+          {
+            "type": "Feature",
+            "geometry": {
+              "type": "Point",
+              "coordinates": [
+                120.75,
+                30.75
+              ]
+            },
+            "properties": {
+              "city": "嘉兴",
+              "count": 152
+            }
+          },
+          {
+            "type": "Feature",
+            "geometry": {
+              "type": "Point",
+              "coordinates": [
+                120.09,
+                30.89
+              ]
+            },
+            "properties": {
+              "city": "湖州",
+              "count": 196
+            }
+          },
+          {
+            "type": "Feature",
+            "geometry": {
+              "type": "Point",
+              "coordinates": [
+                120.58,
+                30
+              ]
+            },
+            "properties": {
+              "city": "绍兴",
+              "count": 189
+            }
+          },
+          {
+            "type": "Feature",
+            "geometry": {
+              "type": "Point",
+              "coordinates": [
+                119.65,
+                29.08
+              ]
+            },
+            "properties": {
+              "city": "金华",
+              "count": 145
+            }
+          },
+          {
+            "type": "Feature",
+            "geometry": {
+              "type": "Point",
+              "coordinates": [
+                118.87,
+                28.94
+              ]
+            },
+            "properties": {
+              "city": "衢州",
+              "count": 80
+            }
+          },
+          {
+            "type": "Feature",
+            "geometry": {
+              "type": "Point",
+              "coordinates": [
+                122.11,
+                30.02
+              ]
+            },
+            "properties": {
+              "city": "舟山",
+              "count": 58
+            }
+          },
+          {
+            "type": "Feature",
+            "geometry": {
+              "type": "Point",
+              "coordinates": [
+                121.43,
+                28.66
+              ]
+            },
+            "properties": {
+              "city": "台州",
+              "count": 29
+            }
+          }
+        ]
+      }
+    },
     "roads-province": {
       "type": "vector",
       "tiles": [
@@ -76,6 +224,20 @@
       "type": "vector",
       "tiles": [
         "/api/map/data/zhejiang-map/tiles/taizhou_od/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 13
+    },
+    "ningbo-zhoushan-port-areas": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/ningbo-zhoushan-port-areas/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 13
+    },
+    "yiwu_od_demo": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/yiwu_od_demo/{z}/{x}/{y}.pbf"
       ],
       "maxzoom": 13
     },
@@ -259,82 +421,10 @@
         "basemap": true
       }
     },
-    "maptiler-streets": {
-      "name": "MapTiler 街道（无标注）",
-      "type": "raster",
-      "tileSize": 256,
-      "tiles": [
-        "https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=__MAP_SERVICE_KEY__&language=none"
-      ],
-      "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
-      "metadata": {
-        "basemap": true
-      }
-    },
-    "maptiler-satellite": {
-      "name": "MapTiler 卫星（无标注）",
-      "type": "raster",
-      "tileSize": 256,
-      "tiles": [
-        "https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=__MAP_SERVICE_KEY__&language=none"
-      ],
-      "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
-      "metadata": {
-        "basemap": true
-      }
-    },
-    "maptiler-hybrid": {
-      "name": "MapTiler 卫星混合（无标注）",
-      "type": "raster",
-      "tileSize": 256,
-      "tiles": [
-        "https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=__MAP_SERVICE_KEY__&language=none"
-      ],
-      "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
-      "metadata": {
-        "basemap": true
-      }
-    },
-    "maptiler-outdoor": {
-      "name": "MapTiler 户外地形（无标注）",
-      "type": "raster",
-      "tileSize": 256,
-      "tiles": [
-        "https://api.maptiler.com/maps/outdoor-v2/{z}/{x}/{y}.png?key=__MAP_SERVICE_KEY__&language=none"
-      ],
-      "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
-      "metadata": {
-        "basemap": true
-      }
-    },
-    "maptiler-winter": {
-      "name": "MapTiler 冬季地形（无标注）",
-      "type": "raster",
-      "tileSize": 256,
-      "tiles": [
-        "https://api.maptiler.com/maps/winter-v2/{z}/{x}/{y}.png?key=__MAP_SERVICE_KEY__&language=none"
-      ],
-      "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
-      "metadata": {
-        "basemap": true
-      }
-    },
-    "maptiler-basic": {
-      "name": "MapTiler 简洁底图（无标注）",
-      "type": "raster",
-      "tileSize": 256,
-      "tiles": [
-        "https://api.maptiler.com/maps/basic-v2/{z}/{x}/{y}.png?key=__MAP_SERVICE_KEY__&language=none"
-      ],
-      "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
-      "metadata": {
-        "basemap": true
-      }
-    },
-    "ningbo-zhoushan-port-areas": {
+    "yiwu_od_demo-lines": {
       "type": "vector",
       "tiles": [
-        "/api/map/data/zhejiang-map/tiles/ningbo-zhoushan-port-areas/{z}/{x}/{y}.pbf"
+        "/api/map/data/zhejiang-map/tiles/yiwu_od_demo-lines/{z}/{x}/{y}.pbf"
       ],
       "maxzoom": 13
     }
@@ -366,7 +456,7 @@
       "type": "raster",
       "source": "gaode-sat",
       "layout": {
-        "visibility": "none"
+        "visibility": "visible"
       },
       "paint": {
         "raster-opacity": 1
@@ -483,77 +573,11 @@
       }
     },
     {
-      "id": "basemap-maptiler-streets",
-      "type": "raster",
-      "source": "maptiler-streets",
-      "layout": {
-        "visibility": "none"
-      },
-      "paint": {
-        "raster-opacity": 1
-      }
-    },
-    {
-      "id": "basemap-maptiler-satellite",
-      "type": "raster",
-      "source": "maptiler-satellite",
-      "layout": {
-        "visibility": "none"
-      },
-      "paint": {
-        "raster-opacity": 1
-      }
-    },
-    {
-      "id": "basemap-maptiler-hybrid",
-      "type": "raster",
-      "source": "maptiler-hybrid",
-      "layout": {
-        "visibility": "none"
-      },
-      "paint": {
-        "raster-opacity": 1
-      }
-    },
-    {
-      "id": "basemap-maptiler-outdoor",
-      "type": "raster",
-      "source": "maptiler-outdoor",
-      "layout": {
-        "visibility": "none"
-      },
-      "paint": {
-        "raster-opacity": 1
-      }
-    },
-    {
-      "id": "basemap-maptiler-winter",
-      "type": "raster",
-      "source": "maptiler-winter",
-      "layout": {
-        "visibility": "none"
-      },
-      "paint": {
-        "raster-opacity": 1
-      }
-    },
-    {
-      "id": "basemap-maptiler-basic",
-      "type": "raster",
-      "source": "maptiler-basic",
-      "layout": {
-        "visibility": "none"
-      },
-      "paint": {
-        "raster-opacity": 1
-      }
-    },
-    {
       "id": "boundary-city",
       "source": "boundary-city",
       "source-layer": "boundary-city",
       "layout": {
-        "visibility": "none"
+        "visibility": "visible"
       },
       "type": "line",
       "paint": {
@@ -856,7 +880,7 @@
         ],
         "text-anchor": "bottom",
         "text-allow-overlap": false,
-        "visibility": "none"
+        "visibility": "visible"
       },
       "paint": {
         "text-color": "#2d3142",
@@ -967,8 +991,48 @@
       },
       "type": "line",
       "paint": {
-        "line-color": "#ff7f00",
-        "line-width": 5.5,
+        "line-color": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "coalesce",
+            [
+              "get",
+              "flow_avg"
+            ],
+            0
+          ],
+          0,
+          "#22d3ee",
+          10000,
+          "#3b82f6",
+          20000,
+          "#facc15",
+          30000,
+          "#f97316",
+          45000,
+          "#e6194b"
+        ],
+        "line-width": [
+          "interpolate",
+          [
+            "exponential",
+            1.35
+          ],
+          [
+            "zoom"
+          ],
+          5,
+          1.8,
+          8,
+          3.4,
+          11,
+          6,
+          14,
+          10
+        ],
         "line-opacity": 1
       }
     },
@@ -1510,6 +1574,22 @@
       "source": "ningbo-zhoushan-port-areas",
       "source-layer": "ningbo-zhoushan-port-areas",
       "layout": {
+        "visibility": "none"
+      },
+      "type": "circle",
+      "paint": {
+        "circle-radius": 4.5,
+        "circle-color": "#9467bd",
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-opacity": 0.9
+      }
+    },
+    {
+      "id": "yiwu_od_demo",
+      "source": "yiwu_od_demo",
+      "source-layer": "yiwu_od_demo",
+      "layout": {
         "visibility": "visible"
       },
       "type": "circle",
@@ -1520,7 +1600,129 @@
         "circle-stroke-width": 1,
         "circle-opacity": 0.9
       }
+    },
+    {
+      "id": "yiwu_od_demo-lines",
+      "source": "yiwu_od_demo-lines",
+      "source-layer": "yiwu_od_demo-lines",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "line",
+      "paint": {
+        "line-color": "#ff7f0e",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          5,
+          0.8,
+          10,
+          1.8,
+          13,
+          3.2
+        ],
+        "line-opacity": 0.85
+      }
+    },
+    {
+      "id": "yiwu_od_demo-lines-label",
+      "type": "symbol",
+      "source": "yiwu_od_demo-lines",
+      "source-layer": "yiwu_od_demo-lines",
+      "minzoom": 7,
+      "layout": {
+        "symbol-placement": "line",
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "ref"
+          ],
+          [
+            "get",
+            "name"
+          ],
+          ""
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          8,
+          10,
+          13,
+          12
+        ],
+        "text-font": [
+          "Noto Sans Regular"
+        ],
+        "text-rotation-alignment": "map",
+        "text-allow-overlap": false
+      },
+      "paint": {
+        "text-color": "#ffffff",
+        "text-halo-color": "rgba(0,0,0,0.75)",
+        "text-halo-width": 1.2
+      }
+    },
+    {
+      "id": "city-toll-density",
+      "source": "city-toll-density",
+      "type": "circle",
+      "layout": {
+        "visibility": "visible"
+      },
+      "paint": {
+        "circle-radius": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "get",
+            "count"
+          ],
+          20,
+          6,
+          80,
+          10,
+          160,
+          15,
+          260,
+          20,
+          360,
+          26
+        ],
+        "circle-color": [
+          "step",
+          [
+            "get",
+            "count"
+          ],
+          "#cfe8ff",
+          60,
+          "#7fc0ff",
+          120,
+          "#3d95f0",
+          200,
+          "#f2a33c",
+          300,
+          "#e8452c"
+        ],
+        "circle-opacity": 0.85,
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 2
+      }
     }
   ],
-  "glyphs": "https://glyphs.openfreestyle.com/{fontstack}/{range}.pbf"
+  "glyphs": "/glyphs/{fontstack}/{range}.pbf"
 }

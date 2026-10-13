@@ -176,4 +176,81 @@ assert.match(对话面板, /const modelDisplayName = useCallback/, "分割线应
 assert.match(样式, /\.model-switch-divider \{/, "切换分割线应有样式");
 assert.match(样式, /\.model-msg\.pending \{ color: var\(--warning\); \}/, "待切换提示应有独立样式");
 
+// 10. 模型选择浮层：高度必须真正夹住（展开「全部模型」不再撑出视口）+ 供应商图标覆盖
+assert.match(对话面板, /maxHeight: modelPopRect\.maxHeight/, "模型浮层必须把夹取后的高度应用到内联样式（只算不用会被撑出视口）");
+assert.match(对话面板, /const spaceAbove = rect\.top - margin - 6;/, "浮层高度应按触发器上方可用空间计算");
+assert.match(对话面板, /const spaceBelow = window\.innerHeight - rect\.bottom - margin - 6;/, "同时计算下方空间用于翻转");
+assert.match(对话面板, /const flip = spaceAbove < 200 && spaceBelow > spaceAbove;/, "上方空间不足时应改为向下展开");
+assert.match(样式, /\.model-control-pop \{\n  display: flex;\n  flex-direction: column;\n  overflow: hidden;\n\}/, "浮层应是内部滚动的列容器（头部/思考深度固定，中间列表滚动）");
+assert.match(对话面板, /"command-code": \{ label: "Command Code", icon: "commandcode" \}/, "Command Code 供应商应有自己的品牌图标");
+assert.match(对话面板, /"command-code-anthropic": \{ label: "Command Code", icon: "commandcode" \}/, "command-code-anthropic 走同一品牌图标");
+assert.match(图标, /commandcode: \(/, "应提供 Command Code 的终端提示符图形");
+// opencode 改用 simple-icons 的真实品牌矢量（填充渲染，不再需要描边兜底），
+// 所以描边集合只保留 commandcode 这个自绘占位图形。
+assert.match(图标, /STROKED_PROVIDER_GLYPHS = new Set\(\["commandcode"\]\)/, "描边渲染集合应只含自绘占位图形");
+assert.match(图标, /opencode: "opencode"/, "opencode 应改用品牌矢量（simple-icons）");
+assert.match(图标, /PROVIDER_GLYPHS\[key\] = <path fill="currentColor" d=\{品牌图形\[slug\]\} \/>/, "品牌矢量应合并进供应商图形表");
+assert.match(对话面板, /function providerInitials\(provider\)/, "未收录供应商应显示首字母缩写");
+assert.match(对话面板, /function providerHue\(provider\)/, "首字母标记应有稳定配色（同一供应商颜色固定）");
+assert.match(对话面板, /provider-initials/, "未收录供应商应带 provider-initials 类");
+assert.match(样式, /\.model-provider-mark\.provider-initials \{/, "首字母标记应有样式");
+assert.match(样式, /\.model-provider-mark\.provider-command-code, \.model-provider-mark\.provider-command-code-anthropic \{/, "Command Code 标记应有配色");
+
+// 11. 地图能力与模式一致（阶段 3 · 防复发）
+// 背景：X1 断链的根因是 capability_plan 标了地图能力、但 Chat 的工具白名单里没有任何
+// map 工具——"说得到做不到"。这条断言用真实函数调用守住两者的对应关系。
+const { planTaskCapabilities, toolPolicyForMode } = await import("../server/task.mjs");
+
+const mapText = "在地图上显示义乌市的点位热力图";
+for (const mode of ["chat", "office", "agent", "review"]) {
+  const plan = planTaskCapabilities({ text: mapText, task: { mode } });
+  const mapCap = (plan.capabilities || []).find((c) => c.id === "map");
+  const tools = toolPolicyForMode(mode).tools.filter((t) => t.startsWith("map_"));
+
+  if (!mapCap) {
+    // 没有声明地图能力时，也不应该有地图工具（避免"有能力没声明"的反向不一致）
+    assert.equal(tools.length, 0, `${mode} 未声明地图能力，不应授予地图工具：${tools.join(",")}`);
+    continue;
+  }
+
+  // 核心一致性：声明了地图能力 → 必须真的有地图工具可用
+  assert.ok(tools.length > 0, `${mode} 声明了地图能力（${mapCap.status}），但工具白名单里没有 map_* 工具`);
+
+  if (mode === "chat") {
+    assert.equal(plan.routing.map, "read_only", "Chat 模式地图应为只读（routing.map=read_only）");
+    assert.ok(!tools.some((t) => ["map_edit", "map_import", "map_save_analysis"].includes(t)),
+      "Chat 模式不得授予地图写工具");
+    assert.ok(tools.includes("map_analyze"), "Chat 模式必须能生成临时可视化（map_analyze）");
+  } else if (mode === "agent") {
+    assert.equal(plan.routing.map, "read_write", "Work 模式地图应为可写（routing.map=read_write）");
+    for (const t of ["map_edit", "map_import", "map_save_analysis"]) {
+      assert.ok(tools.includes(t), `Work 模式应授予写工具 ${t}`);
+    }
+  } else {
+    assert.equal(plan.routing.map, "not_needed", `${mode} 模式不应启用地图能力`);
+    assert.equal(tools.length, 0, `${mode} 模式不应授予地图工具`);
+  }
+}
+
+// 能力说明注入提示词：Chat 必须明确"保存图层需切 Work"
+const chatPlan = planTaskCapabilities({ text: mapText, task: { mode: "chat" } });
+const { taskSummary } = await import("../server/task.mjs");
+const chatSummary = taskSummary({
+  goal: mapText, mode: "chat", modeLabel: "Chat", capabilityPlan: chatPlan,
+});
+assert.match(chatSummary, /地图能力（只读）/, "Chat 提示词应说明地图只读能力");
+assert.match(chatSummary, /切到 Work 模式/, "Chat 提示词应引导用户切 Work 而不是尝试绕过");
+assert.doesNotMatch(chatSummary, /可保存为正式图层/, "Chat 提示词不得暗示可以保存图层");
+
+const workPlan = planTaskCapabilities({ text: mapText, task: { mode: "agent" } });
+const workSummary = taskSummary({
+  goal: mapText, mode: "agent", modeLabel: "Work", capabilityPlan: workPlan,
+});
+assert.match(workSummary, /保存为正式图层/, "Work 提示词应说明可将结果保存为正式图层");
+assert.doesNotMatch(workSummary, /需要用户切换到 Work 模式/, "Work 提示词不应再要求切换模式");
+
+// 非地图轮次不注入地图说明（避免每轮多占上下文）
+const plainSummary = taskSummary({ goal: "写一段总结", mode: "chat", modeLabel: "Chat" });
+assert.doesNotMatch(plainSummary, /地图能力/, "无地图意图的轮次不应注入地图能力说明");
+
 console.log("主任务流可信度回归：通过");
