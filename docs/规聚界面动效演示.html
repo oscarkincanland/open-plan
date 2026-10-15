@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>规聚 · 界面动效演示</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #202b39;
+      --muted: #778293;
+      --blue: #3476ee;
+      --green: #4c9683;
+      --line: #e1e6ed;
+      --paper: #f4f6f9;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      padding: 34px 24px 44px;
+      color: var(--ink);
+      background: radial-gradient(ellipse at 52% 0%, #fff 0, rgba(255,255,255,0) 42rem), var(--paper);
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    }
+    button { font: inherit; }
+    .page { width: min(1080px, 100%); margin: auto; }
+    .page-head { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin: 0 3px 20px; }
+    .eyebrow { color: #658d7b; font-size: 10px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; }
+    h1 { margin: 8px 0 0; font-family: "Noto Serif SC", "Songti SC", serif; font-size: clamp(25px, 4vw, 34px); font-weight: 550; letter-spacing: -.045em; }
+    .page-head p { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+    .show-refresh { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 15px; border: 1px solid #d7e1ef; border-radius: 8px; color: #315fba; background: #fff; box-shadow: 0 2px 5px rgba(29,57,96,.04); font-size: 12px; cursor: pointer; transition: .18s ease; }
+    .show-refresh:hover { border-color: #9ab7e9; background: #f8fbff; transform: translateY(-1px); }
+    .show-refresh svg { width: 14px; height: 14px; }
+
+    .app-window { overflow: hidden; border: 1px solid #dce2e9; border-radius: 13px; background: #fff; box-shadow: 0 20px 55px rgba(42,57,76,.1), 0 2px 6px rgba(42,57,76,.035); }
+    .window-top { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 0 20px; border-bottom: 1px solid #edf0f4; background: #fcfcfd; }
+    .window-lights { display: flex; gap: 5px; margin-right: 5px; }
+    .window-lights i { width: 7px; height: 7px; border-radius: 50%; background: #d9dee5; }
+    .window-lights i:first-child { background: #e6aa9b; }
+    .window-lights i:nth-child(2) { background: #e8cc82; }
+    .window-lights i:nth-child(3) { background: #9ecaa6; }
+    .window-title { color: #647184; font-size: 11px; }
+    .window-title strong { color: #344255; font-weight: 650; }
+    .window-spacer { flex: 1; }
+    .demo-label { display: inline-flex; align-items: center; gap: 6px; color: #8592a3; font-size: 10px; }
+    .demo-label::before { width: 6px; height: 6px; border-radius: 50%; background: #81b19a; content: ""; }
+    .conversation { padding: 22px 25px 18px; }
+    .model-row { display: flex; align-items: center; gap: 12px; min-height: 44px; }
+    .model-avatar { position: relative; display: grid; width: 42px; height: 42px; flex: 0 0 auto; place-items: center; overflow: visible; border-radius: 12px; background: #edf5f1; }
+    .model-avatar::before { position: absolute; inset: 0; border: 1px solid rgba(80,151,125,.18); border-radius: inherit; background: linear-gradient(145deg, #78b9a2, #3f887b); content: ""; }
+    .model-avatar svg { position: relative; z-index: 1; width: 31px; height: 31px; overflow: visible; animation: avatar-breathe 1.95s ease-in-out infinite; transform-origin: center; filter: drop-shadow(0 2px 4px rgba(42,105,82,.17)); }
+    .model-avatar::after { position: absolute; z-index: 0; inset: -6px; border: 1px solid rgba(89,163,132,.22); border-radius: 16px; opacity: 0; content: ""; animation: avatar-halo 1.95s ease-out infinite; }
+    .model-meta { min-width: 0; }
+    .model-name { overflow: hidden; color: #505e70; font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+    .model-time { margin-top: 3px; color: #929baa; font-size: 10px; }
+    .model-state { display: inline-flex; align-items: center; gap: 7px; margin-left: 3px; color: #3672db; font-size: 11px; white-space: nowrap; }
+    .model-state i { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 4px rgba(52,118,238,.1); animation: state-dot 1.5s ease-in-out infinite; }
+    .row-spacer { flex: 1; }
+    .motion-tag { padding: 4px 8px; border: 1px solid #dcece3; border-radius: 999px; color: #58816d; background: #f6faf7; font-size: 9px; white-space: nowrap; }
+
+    .execution { position: relative; margin: 15px 0 18px 49px; overflow: hidden; border: 1px solid #a9c4f5; border-radius: 9px; background: #f7f9fc; }
+    .execution::after { position: absolute; top: 37px; right: 0; left: 0; height: 2px; background: linear-gradient(90deg, transparent 69%, #d9e5fa 78%, #5187f1 86%, #8bc8fa 93%, transparent); content: ""; animation: scan 3.2s ease-in-out infinite; }
+    .execution-head { display: flex; align-items: center; justify-content: space-between; height: 39px; padding: 0 12px; border-bottom: 1px solid #e3e9f3; background: #f0f3f9; color: #68758a; font-size: 11px; }
+    .execution-head > span { color: #8793a3; font-size: 10px; }
+    .execution-body { display: grid; gap: 10px; height: 210px; padding: 14px 15px; overflow: hidden; color: #737f8e; font-size: 11px; line-height: 1.65; }
+    .execution-body p { margin: 0; }
+    .execution-body .options { padding-left: 10px; color: #8490a0; }
+    .reply { margin: 0 0 0 49px; color: #344052; font-size: 13px; line-height: 1.75; }
+    .status-line { display: flex; align-items: center; gap: 10px; min-height: 40px; margin: 13px 0 0 49px; }
+    .status-pin { position: relative; width: 22px; height: 22px; flex: 0 0 auto; display: grid; place-items: center; }
+    .pin-core { position: absolute; z-index: 2; top: 50%; left: 50%; width: 7px; height: 7px; border-radius: 50%; background: var(--blue); transform: translate(-50%,-50%); }
+    .pin-wave { position: absolute; top: 50%; left: 50%; width: 8px; height: 8px; margin: -4px; border: 1px solid rgba(52,118,238,.65); border-radius: 50%; opacity: 0; }
+    .status-pin[data-effect="ripple"] .pin-wave { animation: marker-ripple 1.8s ease-out infinite; }
+    .status-pin[data-effect="ripple"] .wave-two { animation-delay: .9s; }
+    .status-pin[data-effect="ripple"] .pin-core { animation: marker-core 1.8s ease-in-out infinite; }
+    .pin-orbit { position: absolute; inset: 3px; border: 1px solid rgba(52,118,238,.16); border-radius: 50%; opacity: 0; }
+    .pin-orbit::before, .pin-orbit::after, .pin-orbit i { position: absolute; width: 4px; height: 4px; border: 1px solid #fff; border-radius: 50%; background: #4e83eb; content: ""; }
+    .pin-orbit::before { top: -2px; left: calc(50% - 2px); }
+    .pin-orbit::after { right: -2px; bottom: 2px; background: #77a994; }
+    .pin-orbit i { bottom: 1px; left: -2px; width: 3px; height: 3px; background: #92a9dd; }
+    .status-pin[data-effect="orbit"] .pin-orbit { opacity: 1; animation: marker-orbit 2.4s linear infinite; }
+    .pin-spinner { position: absolute; inset: 2px; border: 1.5px solid transparent; border-top-color: #3476ee; border-right-color: rgba(52,118,238,.28); border-radius: 50%; opacity: 0; }
+    .status-pin[data-effect="sweep"] .pin-spinner { opacity: 1; animation: marker-spin 1.05s linear infinite; }
+    .pin-petal { position: absolute; z-index: 1; width: 4px; height: 6px; border-radius: 60% 60% 50% 50%; background: #5d9c84; opacity: 0; }
+    .pin-petal.north { top: 1px; left: 9px; --petal-turn: 0deg; }
+    .pin-petal.east { top: 8px; right: 1px; --petal-turn: 90deg; }
+    .pin-petal.south { bottom: 1px; left: 9px; --petal-turn: 180deg; }
+    .pin-petal.west { top: 8px; left: 1px; --petal-turn: -90deg; }
+    .status-pin[data-effect="petals"] .pin-petal { animation: marker-petal 1.15s ease-in-out infinite; }
+    .status-pin[data-effect="petals"] .pin-petal.east { animation-delay: .18s; }
+    .status-pin[data-effect="petals"] .pin-petal.south { animation-delay: .36s; }
+    .status-pin[data-effect="petals"] .pin-petal.west { animation-delay: .54s; }
+    .status-copy { min-height: 21px; overflow: hidden; color: #435065; font-size: 12px; font-weight: 600; }
+    .status-copy span { display: block; animation: copy-in .34s ease both; }
+    .status-progress { margin-left: auto; color: #a0a9b5; font-size: 10px; font-variant-numeric: tabular-nums; }
+    .window-foot { display: flex; align-items: center; justify-content: space-between; min-height: 37px; padding: 0 22px; border-top: 1px solid #edf0f4; background: #fcfcfd; color: #96a0ad; font-size: 9px; }
+    .window-foot b { color: #718b7c; font-weight: 600; }
+
+    .notes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 16px; }
+    .note { padding: 13px 15px; border: 1px solid #e3e8ed; border-radius: 9px; background: rgba(255,255,255,.76); }
+    .note b { display: block; margin-bottom: 5px; color: #455b4f; font-size: 10px; font-weight: 700; }
+    .note p { margin: 0; color: #788593; font-size: 10px; line-height: 1.65; }
+    .controls { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+    .control-button { min-height: 32px; padding: 0 11px; border: 1px solid #dce2e9; border-radius: 7px; color: #596779; background: #fff; font-size: 10px; cursor: pointer; transition: .16s ease; }
+    .control-button:hover { border-color: #b5c5db; color: #315fba; }
+    .control-help { margin-left: auto; color: #8c97a5; font-size: 9px; }
+    .marker-lab { margin-top: 17px; padding: 15px 16px; border: 1px solid #e1e7ed; border-radius: 10px; background: rgba(255,255,255,.83); }
+    .marker-lab-head { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; margin-bottom: 11px; }
+    .marker-lab-head strong { color: #455465; font-size: 11px; font-weight: 700; }
+    .marker-lab-head span { color: #8b96a3; font-size: 9px; }
+    .effect-options { display: flex; flex-wrap: wrap; gap: 7px; }
+    .effect-option { min-height: 31px; padding: 0 11px; border: 1px solid #dfe5ec; border-radius: 7px; color: #647184; background: #fff; font-size: 10px; cursor: pointer; transition: .16s ease; }
+    .effect-option:hover { border-color: #b8c9dc; color: #376abf; }
+    .effect-option[aria-pressed="true"] { border-color: #9bb8ed; color: #2f68c8; background: #f2f6ff; box-shadow: 0 0 0 2px rgba(52,118,238,.06); }
+    .effect-caption { min-height: 16px; margin: 9px 1px 0; color: #82909f; font-size: 9px; line-height: 1.6; }
+
+    .refresh-overlay { position: fixed; z-index: 10; inset: 0; display: grid; padding: 24px; place-items: center; background: rgba(242,247,244,.95); opacity: 0; pointer-events: none; transition: opacity .32s ease; backdrop-filter: blur(10px); }
+    .refresh-overlay.visible { opacity: 1; pointer-events: auto; }
+    .refresh-card { display: grid; justify-items: center; width: min(440px, 100%); padding: 45px 36px 36px; border: 1px solid rgba(209,226,214,.9); border-radius: 23px; background: linear-gradient(155deg,#fff,#f5faf6); box-shadow: 0 28px 80px rgba(49,94,69,.12), inset 0 1px #fff; text-align: center; transform: translateY(12px) scale(.985); transition: transform .42s cubic-bezier(.2,.75,.2,1); }
+    .visible .refresh-card { transform: translateY(0) scale(1); }
+    .refresh-flower { width: 116px; height: 116px; margin: 1px 0 24px; filter: drop-shadow(0 16px 23px rgba(50,112,88,.19)); }
+    .refresh-flower svg { display: block; width: 100%; height: 100%; overflow: visible; }
+    .blooming .petal { transform-box: view-box; transform-origin: 50% 50%; animation: petal-open .76s cubic-bezier(.2,.78,.2,1.12) .12s both; }
+    .blooming .petal:nth-of-type(2) { animation-delay: .25s; }
+    .blooming .petal:nth-of-type(3) { animation-delay: .38s; }
+    .blooming .petal:nth-of-type(4) { animation-delay: .51s; }
+    .blooming .orbit-dot { transform-box: fill-box; transform-origin: center; opacity: 0; animation: dot-arrive .3s cubic-bezier(.2,.8,.2,1.35) .99s both; }
+    .blooming .core { transform-box: fill-box; transform-origin: center; opacity: 0; animation: heart-arrive .42s cubic-bezier(.2,.8,.2,1.2) both; }
+    .refresh-kicker { color: #6f9882; font-size: 10px; font-weight: 700; letter-spacing: .16em; }
+    .refresh-card h2 { margin: 11px 0 10px; color: #294237; font-family: "Noto Serif SC", "Songti SC", serif; font-size: 22px; font-weight: 550; line-height: 1.5; }
+    .refresh-card p { margin: 0; color: #829188; font-size: 11px; line-height: 1.7; }
+    .refresh-progress { width: min(250px,100%); height: 3px; margin: 26px 0 10px; overflow: hidden; border-radius: 4px; background: #e1ebe3; }
+    .refresh-progress i { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg,#6caf91,#4c9683); }
+    .visible .refresh-progress i { animation: progress-run 2.8s ease-in-out both; }
+    .refresh-foot { color: #8b9a91; font-size: 10px; }
+    .refresh-close { margin-top: 20px; border: 0; color: #718b7d; background: transparent; font-size: 10px; cursor: pointer; }
+
+    @keyframes avatar-breathe { 0%,100% { transform: scale(.82); filter: drop-shadow(0 2px 4px rgba(42,105,82,.13)); } 50% { transform: scale(1.18); filter: drop-shadow(0 6px 10px rgba(42,105,82,.32)); } }
+    @keyframes avatar-halo { 0% { opacity: .55; transform: scale(.83); } 80%,100% { opacity: 0; transform: scale(1.22); } }
+    @keyframes state-dot { 0%,100% { transform: scale(.84); opacity: .75; } 50% { transform: scale(1.12); opacity: 1; } }
+    @keyframes marker-ripple { 0% { opacity: .68; transform: scale(.48); } 100% { opacity: 0; transform: scale(2.7); } }
+    @keyframes marker-core { 0%,100% { box-shadow: 0 0 0 0 rgba(52,118,238,.22); transform: translate(-50%,-50%) scale(.9); } 50% { box-shadow: 0 0 0 4px rgba(52,118,238,.08); transform: translate(-50%,-50%) scale(1.08); } }
+    @keyframes marker-orbit { to { transform: rotate(360deg); } }
+    @keyframes marker-spin { to { transform: rotate(360deg); } }
+    @keyframes marker-petal { 0%,100% { opacity: .22; transform: scale(.62) rotate(var(--petal-turn, 0deg)); } 48%,72% { opacity: 1; transform: scale(1.22) rotate(var(--petal-turn, 0deg)); } }
+    @keyframes scan { 0% { transform: translateX(-75%); } 55%,100% { transform: translateX(80%); } }
+    @keyframes copy-in { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes petal-open { 0% { opacity: 0; transform: scale(.18) rotate(-19deg); } 68% { opacity: 1; transform: scale(1.07) rotate(2deg); } 100% { opacity: 1; transform: scale(1) rotate(0); } }
+    @keyframes dot-arrive { from { opacity: 0; transform: scale(.1); } to { opacity: 1; transform: scale(1); } }
+    @keyframes heart-arrive { 0% { opacity: 0; transform: scale(.45); } 70% { opacity: 1; transform: scale(1.12); } 100% { opacity: 1; transform: scale(1); } }
+    @keyframes progress-run { 0% { width: 0; } 100% { width: 100%; } }
+    @media (max-width: 680px) {
+      body { padding: 22px 12px 30px; }
+      .page-head { align-items: flex-start; }
+      .page-head p { max-width: 320px; }
+      .show-refresh { padding: 0 10px; white-space: nowrap; }
+      .show-refresh span { display: none; }
+      .conversation { padding: 17px 14px 14px; }
+      .execution { margin-left: 0; }
+      .execution-body { height: 205px; }
+      .reply, .status-line { margin-left: 0; }
+      .motion-tag { display: none; }
+      .notes { grid-template-columns: 1fr; }
+      .marker-lab-head { align-items: flex-start; flex-direction: column; gap: 4px; }
+      .window-foot { padding: 0 14px; }
+      .control-help { max-width: 160px; text-align: right; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="page-head">
+      <div>
+        <div class="eyebrow">规聚 · 界面动效试映</div>
+        <h1>工作中的规聚，也可以轻轻呼吸。</h1>
+        <p>按你截图里的会话布局做了两处演示：刷新时花瓣逐一绽放，模型头像以更明显的幅度柔和呼吸。</p>
+      </div>
+      <button class="show-refresh" id="模拟刷新" type="button" aria-label="模拟整个界面刷新">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13 5.5A5.5 5.5 0 1 0 13.2 9M13 2.5v3.7H9.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>模拟整个界面刷新</span>
+      </button>
+    </header>
+
+    <section class="app-window" aria-label="规聚会话界面动效示例">
+      <div class="window-top">
+        <span class="window-lights" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="window-title"><strong>规聚</strong>　/　会话工作台</span>
+        <span class="window-spacer"></span>
+        <span class="demo-label">动效演示，不会真实刷新</span>
+      </div>
+
+      <div class="conversation">
+        <div class="model-row">
+          <div class="model-avatar" title="模型头像呼吸动效">
+            <svg viewBox="0 0 48 48" fill="none" role="img" aria-label="规聚花朵模型头像">
+              <g fill="none" stroke="#fff" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M22.2 20.6C17.3 11.6 8.3 8.7 5.2 14.1c-3.4 6 3.8 10.4 14.9 9.8"/>
+                <path d="M27.4 22.2C36.4 17.3 39.3 8.3 33.9 5.2c-6-3.4-10.4 3.8-9.8 14.9"/>
+                <path d="M25.8 27.4C30.7 36.4 39.7 39.3 42.8 33.9c3.4-6-3.8-10.4-14.9-9.8"/>
+                <path d="M20.6 25.8C11.6 30.7 8.7 39.7 14.1 42.8c6 3.4 10.4-3.8 9.8-14.9"/>
+              </g>
+              <g fill="#fff"><circle cx="24" cy="18.6" r="2.3"/><circle cx="29.4" cy="24" r="2.3"/><circle cx="24" cy="29.4" r="2.3"/><circle cx="18.6" cy="24" r="2.3"/><circle cx="24" cy="24" r="5.1"/></g>
+            </svg>
+          </div>
+          <div class="model-meta">
+            <div class="model-name">command-code / deepseek / deepseek-v4.1-flash</div>
+            <div class="model-time">规聚工作台　·　10/15 17:08</div>
+          </div>
+          <span class="model-state"><i></i>生成中</span>
+          <span class="row-spacer"></span>
+          <span class="motion-tag">模型头像 · 柔和呼吸</span>
+        </div>
+
+        <div class="execution">
+          <div class="execution-head"><span>⌁　执行过程</span><span>实时</span></div>
+          <div class="execution-body">
+            <p>我先梳理这项工作的目标和资料范围，再把调查、分析与成果编排成一条完整路径。</p>
+            <p>我会按步骤检查事实来源与关键数据，遇到不确定的地方先标出来，避免结论跑在证据前面。</p>
+            <p>当前交付内容准备为：</p>
+            <div class="options">- 现状调查与资料梳理<br>- 重点问题与分析结论<br>- 图表、汇报稿和成果清单</div>
+            <p>正在继续整理，请稍候。</p>
+          </div>
+        </div>
+
+        <p class="reply">好的，我会把调查、分析和成稿串成完整流程，并在每一步完成时更新状态。</p>
+        <div class="status-line" aria-live="polite" aria-atomic="true">
+          <span class="status-pin" id="状态点" data-effect="orbit" title="状态点动效：环绕汇聚" aria-hidden="true">
+            <i class="pin-wave wave-one"></i><i class="pin-wave wave-two"></i>
+            <span class="pin-orbit"><i></i></span>
+            <i class="pin-spinner"></i>
+            <i class="pin-petal north"></i><i class="pin-petal east"></i><i class="pin-petal south"></i><i class="pin-petal west"></i>
+            <i class="pin-core"></i>
+          </span>
+          <div class="status-copy" id="状态文案"><span>规聚正在聚合资料</span></div>
+          <span class="status-progress" id="步骤计数">01 / 16</span>
+        </div>
+      </div>
+      <div class="window-foot"><span><b>状态短句</b>　每 2.4 秒自动切换</span><span>示意界面 · 仅供预览</span></div>
+    </section>
+
+    <section class="marker-lab" aria-label="状态点动效选择">
+      <div class="marker-lab-head"><strong>截图红框 · 状态原点动效</strong><span>切换下方选项，直接观察会话状态行里的蓝点</span></div>
+      <div class="effect-options" role="group" aria-label="选择状态点动画">
+        <button class="effect-option" type="button" data-effect="ripple" aria-pressed="false">水波扩散</button>
+        <button class="effect-option" type="button" data-effect="orbit" aria-pressed="true">环绕汇聚</button>
+        <button class="effect-option" type="button" data-effect="sweep" aria-pressed="false">旋转光环</button>
+        <button class="effect-option" type="button" data-effect="petals" aria-pressed="false">四瓣点亮</button>
+      </div>
+      <p class="effect-caption" id="动效说明">环绕汇聚：小点围绕中心运转，呼应“规聚”，也和头像呼吸区分开来。推荐先看这一版。</p>
+    </section>
+
+    <section class="notes" aria-label="动效说明">
+      <article class="note"><b>全界面刷新 · 逐瓣绽放</b><p>点右上角模拟刷新。中心先亮，四片花瓣依次舒展，再落下四周光点。</p></article>
+      <article class="note"><b>模型头像 · 加大幅度呼吸</b><p>头像在较小与较大之间缓慢起伏，并带一圈柔和光晕；生成中持续播放。</p></article>
+      <article class="note"><b>状态短句 · 16 条循环</b><p>按资料、调查、分析、写作、校对、交付的节奏轮换，避免长时间只显示“生成中”。</p></article>
+    </section>
+    <div class="controls" role="group" aria-label="状态文案控制">
+      <button class="control-button" id="暂停轮播" type="button" aria-pressed="false">暂停文案轮播</button>
+      <button class="control-button" id="下一句" type="button">切换下一句</button>
+      <span class="control-help">你可以先看节奏，再决定哪些文案要保留。</span>
+    </div>
+  </main>
+
+  <div class="refresh-overlay" id="刷新遮罩" aria-hidden="true">
+    <div class="refresh-card" role="dialog" aria-modal="true" aria-labelledby="刷新标题">
+      <div class="refresh-flower blooming" id="绽放标志">
+        <svg viewBox="0 0 48 48" fill="none" role="img" aria-label="规聚花朵逐瓣绽放">
+          <defs><linearGradient id="刷新渐变" x1="6" y1="4" x2="42" y2="44" gradientUnits="userSpaceOnUse"><stop stop-color="#78b9a2"/><stop offset="1" stop-color="#3f887b"/></linearGradient></defs>
+          <rect x="1.5" y="1.5" width="45" height="45" rx="13" fill="url(#刷新渐变)"/>
+          <g class="petal" fill="none" stroke="#fff" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22.2 20.6C17.3 11.6 8.3 8.7 5.2 14.1c-3.4 6 3.8 10.4 14.9 9.8"/></g>
+          <g class="petal" fill="none" stroke="#fff" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"><path d="M27.4 22.2C36.4 17.3 39.3 8.3 33.9 5.2c-6-3.4-10.4 3.8-9.8 14.9"/></g>
+          <g class="petal" fill="none" stroke="#fff" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"><path d="M25.8 27.4C30.7 36.4 39.7 39.3 42.8 33.9c3.4-6-3.8-10.4-14.9-9.8"/></g>
+          <g class="petal" fill="none" stroke="#fff" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 25.8C11.6 30.7 8.7 39.7 14.1 42.8c6 3.4 10.4-3.8 9.8-14.9"/></g>
+          <circle class="orbit-dot" cx="24" cy="18.6" r="2.3" fill="#fff"/>
+          <circle class="orbit-dot" cx="29.4" cy="24" r="2.3" fill="#fff"/>
+          <circle class="orbit-dot" cx="24" cy="29.4" r="2.3" fill="#fff"/>
+          <circle class="orbit-dot" cx="18.6" cy="24" r="2.3" fill="#fff"/>
+          <circle class="core" cx="24" cy="24" r="5.1" fill="#fff"/>
+        </svg>
+      </div>
+      <div class="refresh-kicker">OPEN PLAN · WORKSPACE</div>
+      <h2 id="刷新标题">工作台正在重新聚合</h2>
+      <p>资料、知识、分析与成果，<br>很快回到同一张工作台。</p>
+      <div class="refresh-progress" aria-hidden="true"><i></i></div>
+      <div class="refresh-foot">正在重新载入界面…</div>
+      <button class="refresh-close" id="关闭刷新演示" type="button">提前结束演示</button>
+    </div>
+  </div>
+
+  <script>
+    const phrases = [
+      "规聚正在聚合资料",
+      "规聚正在梳理需求",
+      "规聚正在检索规范",
+      "规聚正在调查现状",
+      "规聚正在比对数据",
+      "规聚正在提炼要点",
+      "规聚正在搭建分析框架",
+      "规聚正在开展专题分析",
+      "规聚正在核对关键结论",
+      "规聚正在整理图表",
+      "规聚正在撰写章节",
+      "规聚正在合并稿件",
+      "规聚正在统一口径",
+      "规聚正在校对格式",
+      "规聚正在检查引用",
+      "规聚正在生成成果",
+    ];
+    const copy = document.getElementById("状态文案");
+    const counter = document.getElementById("步骤计数");
+    const pauseButton = document.getElementById("暂停轮播");
+    const overlay = document.getElementById("刷新遮罩");
+    const flower = document.getElementById("绽放标志");
+    const statusPin = document.getElementById("状态点");
+    const effectCaption = document.getElementById("动效说明");
+    const effectButtons = [...document.querySelectorAll("[data-effect]")].filter((button) => button.tagName === "BUTTON");
+    const effectDescriptions = {
+      ripple: "水波扩散：从原点向外轻轻扩散，节奏平缓，适合长时间等待。",
+      orbit: "环绕汇聚：小点围绕中心运转，呼应“规聚”，也和头像呼吸区分开来。推荐先看这一版。",
+      sweep: "旋转光环：反馈最明确，用户会立刻读成“正在处理”，视觉上更接近常见加载指示。",
+      petals: "四瓣点亮：品牌记忆最强，和 logo 呼应明显；如果头像也在呼吸，画面会更热闹。",
+    };
+    let phraseIndex = 0;
+    let paused = false;
+    let overlayTimer = 0;
+
+    function showPhrase(index) {
+      phraseIndex = (index + phrases.length) % phrases.length;
+      copy.innerHTML = "";
+      const span = document.createElement("span");
+      span.textContent = phrases[phraseIndex];
+      copy.append(span);
+      counter.textContent = `${String(phraseIndex + 1).padStart(2, "0")} / ${phrases.length}`;
+    }
+
+    function advance() {
+      if (!paused) showPhrase(phraseIndex + 1);
+    }
+
+    function startRefreshDemo() {
+      window.clearTimeout(overlayTimer);
+      flower.classList.remove("blooming");
+      void flower.offsetWidth;
+      flower.classList.add("blooming");
+      overlay.classList.add("visible");
+      overlay.setAttribute("aria-hidden", "false");
+      overlayTimer = window.setTimeout(closeRefreshDemo, 3400);
+    }
+
+    function closeRefreshDemo() {
+      window.clearTimeout(overlayTimer);
+      overlay.classList.remove("visible");
+      overlay.setAttribute("aria-hidden", "true");
+      flower.classList.remove("blooming");
+    }
+
+    document.getElementById("模拟刷新").addEventListener("click", startRefreshDemo);
+    document.getElementById("关闭刷新演示").addEventListener("click", closeRefreshDemo);
+    pauseButton.addEventListener("click", () => {
+      paused = !paused;
+      pauseButton.textContent = paused ? "继续文案轮播" : "暂停文案轮播";
+      pauseButton.setAttribute("aria-pressed", String(paused));
+    });
+    document.getElementById("下一句").addEventListener("click", () => showPhrase(phraseIndex + 1));
+    effectButtons.forEach((button) => button.addEventListener("click", () => {
+      const effect = button.dataset.effect;
+      statusPin.dataset.effect = effect;
+      statusPin.title = `状态点动效：${button.textContent}`;
+      effectCaption.textContent = effectDescriptions[effect];
+      effectButtons.forEach((option) => option.setAttribute("aria-pressed", String(option === button)));
+    }));
+    window.setInterval(advance, 2400);
+  </script>
+</body>
+</html>

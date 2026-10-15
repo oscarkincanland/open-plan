@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>规聚 · 花朵绽放动画预览</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #20372f;
+      --muted: #71827b;
+      --green: #4c9683;
+      --line: #dce8e0;
+      --paper: #f6f8f3;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(ellipse at 76% 24%, rgba(193, 223, 203, .48), transparent 32rem),
+        radial-gradient(ellipse at 8% 88%, rgba(225, 235, 216, .52), transparent 28rem),
+        var(--paper);
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    }
+    .page { width: min(1120px, calc(100% - 48px)); margin: auto; padding: 34px 0 42px; }
+    .topline { display: flex; align-items: center; justify-content: space-between; color: #71827b; font-size: 11px; letter-spacing: .17em; }
+    .brand { display: flex; align-items: center; gap: 10px; color: var(--ink); font-size: 13px; font-weight: 650; letter-spacing: .04em; }
+    .brand svg { width: 25px; height: 25px; }
+    .top-note { text-transform: uppercase; }
+    .hero { display: grid; grid-template-columns: .9fr 1.1fr; align-items: center; gap: clamp(28px, 6vw, 84px); min-height: 570px; padding: 48px 0 30px; }
+    .eyebrow { display: flex; align-items: center; gap: 10px; color: var(--green); font-size: 11px; font-weight: 700; letter-spacing: .15em; text-transform: uppercase; }
+    .eyebrow::before { width: 24px; height: 1px; background: var(--green); content: ""; }
+    h1 { max-width: 480px; margin: 22px 0 18px; font-family: "Noto Serif SC", "Songti SC", "SimSun", serif; font-size: clamp(38px, 5vw, 60px); font-weight: 500; line-height: 1.24; letter-spacing: -.055em; }
+    h1 em { color: var(--green); font-style: normal; }
+    .intro { max-width: 420px; color: var(--muted); font-size: 14px; line-height: 1.95; }
+    .concept { display: flex; align-items: flex-start; gap: 13px; max-width: 410px; margin-top: 30px; padding-top: 18px; border-top: 1px solid var(--line); }
+    .concept-index { color: #8cae9c; font-family: Georgia, serif; font-size: 13px; }
+    .concept p { margin: 0; color: #576e63; font-size: 12px; line-height: 1.8; }
+    .concept strong { color: #294a3b; font-weight: 650; }
+    .stage { position: relative; display: grid; min-height: 440px; place-items: center; overflow: hidden; border: 1px solid rgba(202, 220, 207, .9); border-radius: 28px; background: linear-gradient(145deg, rgba(255,255,255,.86), rgba(239,246,237,.8)); box-shadow: 0 26px 70px rgba(47, 82, 62, .08), inset 0 1px rgba(255,255,255,.9); }
+    .stage::before, .stage::after { position: absolute; width: 280px; height: 280px; border: 1px solid rgba(145, 184, 157, .18); border-radius: 50%; content: ""; }
+    .stage::after { width: 360px; height: 360px; border-color: rgba(145, 184, 157, .11); }
+    .stage-top { position: absolute; z-index: 2; top: 23px; right: 25px; left: 25px; display: flex; align-items: center; justify-content: space-between; color: #7b9185; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+    .live { display: inline-flex; align-items: center; gap: 7px; letter-spacing: .04em; text-transform: none; }
+    .live::before { width: 6px; height: 6px; border-radius: 50%; background: #77aa88; box-shadow: 0 0 0 4px rgba(119,170,136,.13); content: ""; }
+    .lockup { position: relative; z-index: 1; display: grid; justify-items: center; gap: 20px; padding-top: 15px; }
+    .mark { position: relative; width: clamp(150px, 19vw, 210px); aspect-ratio: 1; filter: drop-shadow(0 18px 20px rgba(54, 110, 90, .19)); }
+    .mark svg { display: block; width: 100%; height: 100%; overflow: visible; }
+    .petal { transform-box: view-box; transform-origin: 50% 50%; }
+    .is-playing[data-mode="bloom"] .petal { animation: petal-open .76s cubic-bezier(.2,.78,.2,1.12) .16s both; }
+    .is-playing[data-mode="bloom"] g.petal:nth-of-type(2) { animation-delay: .28s; }
+    .is-playing[data-mode="bloom"] g.petal:nth-of-type(3) { animation-delay: .40s; }
+    .is-playing[data-mode="bloom"] g.petal:nth-of-type(4) { animation-delay: .52s; }
+    .orbit-dot, .heart { transform-box: fill-box; transform-origin: center; opacity: 0; }
+    .is-playing[data-mode="bloom"] .orbit-dot { animation: dot-arrive .3s cubic-bezier(.2,.8,.2,1.35) .94s both; }
+    .is-playing[data-mode="bloom"] .heart { animation: heart-arrive .42s cubic-bezier(.2,.8,.2,1.2) both; }
+    .is-playing[data-mode="breathe"] .petal { animation: petal-breathe 2.8s ease-in-out infinite; }
+    .is-playing[data-mode="breathe"] g.petal:nth-of-type(2) { animation-delay: .12s; }
+    .is-playing[data-mode="breathe"] g.petal:nth-of-type(3) { animation-delay: .24s; }
+    .is-playing[data-mode="breathe"] g.petal:nth-of-type(4) { animation-delay: .36s; }
+    .is-playing[data-mode="breathe"] .orbit-dot { animation: dot-breathe 2.8s ease-in-out infinite; }
+    .is-playing[data-mode="breathe"] .orbit-dot:nth-child(7) { animation-delay: .16s; }
+    .is-playing[data-mode="breathe"] .orbit-dot:nth-child(8) { animation-delay: .32s; }
+    .is-playing[data-mode="breathe"] .orbit-dot:nth-child(9) { animation-delay: .48s; }
+    .is-playing[data-mode="breathe"] .heart { animation: heart-breathe 2.8s ease-in-out infinite; }
+    .wordmark { text-align: center; }
+    .wordmark strong { display: block; color: #243e33; font-family: "Noto Serif SC", "Songti SC", serif; font-size: 23px; font-weight: 600; letter-spacing: .22em; text-indent: .22em; }
+    .wordmark span { display: block; margin-top: 5px; color: #91a69a; font-size: 8px; letter-spacing: .3em; text-indent: .3em; }
+    .controls { position: absolute; z-index: 2; right: 20px; bottom: 20px; left: 20px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+    button { min-height: 36px; padding: 0 14px; border: 1px solid #d7e4da; border-radius: 999px; color: #60766b; background: rgba(255,255,255,.75); font: inherit; font-size: 11px; cursor: pointer; transition: .18s ease; }
+    button:hover { border-color: #9ec2aa; color: #315944; background: #fff; }
+    button[aria-pressed="true"] { border-color: #4c9683; color: #fff; background: #4c9683; box-shadow: 0 5px 14px rgba(76,150,131,.2); }
+    .replay { display: inline-flex; align-items: center; gap: 7px; margin-left: 6px; border-color: transparent; background: transparent; }
+    .replay:hover { background: rgba(255,255,255,.8); }
+    .replay svg { width: 13px; height: 13px; }
+    .bottom { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 24px; padding-top: 22px; border-top: 1px solid var(--line); }
+    .sequence { display: flex; align-items: center; gap: 12px; color: #82948a; font-size: 11px; letter-spacing: .04em; }
+    .sequence b { color: #486c58; font-weight: 600; }
+    .sequence i { width: 18px; height: 1px; background: #c6d8cb; }
+    .usage { max-width: 390px; color: #819087; font-size: 10px; line-height: 1.7; text-align: right; }
+    @keyframes petal-open {
+      0% { opacity: 0; transform: scale(.18) rotate(-19deg); }
+      68% { opacity: 1; transform: scale(1.07) rotate(2deg); }
+      100% { opacity: 1; transform: scale(1) rotate(0); }
+    }
+    @keyframes dot-arrive { from { opacity: 0; transform: scale(.1); } to { opacity: 1; transform: scale(1); } }
+    @keyframes heart-arrive { 0% { opacity: 0; transform: scale(.45); } 70% { opacity: 1; transform: scale(1.12); } 100% { opacity: 1; transform: scale(1); } }
+    @keyframes petal-breathe { 0%, 100% { opacity: .94; transform: scale(1); } 50% { opacity: 1; transform: scale(1.035); } }
+    @keyframes dot-breathe { 0%, 100% { opacity: .8; transform: scale(.92); } 50% { opacity: 1; transform: scale(1.08); } }
+    @keyframes heart-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.045); } }
+    @media (max-width: 760px) {
+      .page { width: min(560px, calc(100% - 32px)); padding-top: 22px; }
+      .top-note { font-size: 9px; }
+      .hero { grid-template-columns: 1fr; gap: 28px; padding-top: 55px; }
+      h1 { margin-top: 16px; font-size: clamp(38px, 11vw, 54px); }
+      .stage { min-height: 390px; }
+      .mark { width: 170px; }
+      .bottom { grid-template-columns: 1fr; gap: 10px; }
+      .usage { text-align: left; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="topline">
+      <div class="brand" aria-label="规聚"><svg viewBox="0 0 48 48" aria-hidden="true"><rect x="1.5" y="1.5" width="45" height="45" rx="13" fill="#4c9683"/><path d="M22.2 20.6C17.3 11.6 8.3 8.7 5.2 14.1c-3.4 6 3.8 10.4 14.9 9.8M27.4 22.2C36.4 17.3 39.3 8.3 33.9 5.2c-6-3.4-10.4 3.8-9.8 14.9M25.8 27.4C30.7 36.4 39.7 39.3 42.8 33.9c3.4-6-3.8-10.4-14.9-9.8M20.6 25.8C11.6 30.7 8.7 39.7 14.1 42.8c6 3.4 10.4-3.8 9.8-14.9" fill="none" stroke="white" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="24" cy="18.6" r="2.3" fill="white"/><circle cx="29.4" cy="24" r="2.3" fill="white"/><circle cx="24" cy="29.4" r="2.3" fill="white"/><circle cx="18.6" cy="24" r="2.3" fill="white"/><circle cx="24" cy="24" r="5.1" fill="white"/></svg>规聚</div>
+      <div class="top-note">品牌动效 · 概念预览 01</div>
+    </header>
+
+    <section class="hero">
+      <div class="copy">
+        <div class="eyebrow">A little bloom of ideas</div>
+        <h1>让一朵花，<br><em>逐瓣舒展开来。</em></h1>
+        <p class="intro">把原有的四条汇聚轨迹，变成一场轻轻的绽放。花瓣从中心依次舒展，最后五个光点落位，回到熟悉的规聚标志。</p>
+        <div class="concept"><span class="concept-index">01</span><p><strong>由聚而开</strong><br>中心先亮起，四片花瓣逐一展开，像资料、知识、分析与成果在同一处汇聚，然后向外生长。</p></div>
+      </div>
+
+      <div class="stage" aria-label="规聚标志动画预览">
+        <div class="stage-top"><span>LOGO MOTION STUDY</span><span class="live" id="状态">逐瓣绽放</span></div>
+        <div class="lockup">
+          <div class="mark is-playing" data-mode="bloom" id="花朵">
+            <svg viewBox="0 0 48 48" fill="none" role="img" aria-label="四瓣逐一绽放的规聚标志">
+              <defs><linearGradient id="标志渐变" x1="6" y1="4" x2="42" y2="44" gradientUnits="userSpaceOnUse"><stop stop-color="#78b9a2"/><stop offset="1" stop-color="#3f887b"/></linearGradient></defs>
+              <rect x="1.5" y="1.5" width="45" height="45" rx="13" fill="url(#标志渐变)"/>
+              <g class="petal" fill="none" stroke="#fff" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"><path d="M22.2 20.6C17.3 11.6 8.3 8.7 5.2 14.1c-3.4 6 3.8 10.4 14.9 9.8"/></g>
+              <g class="petal" fill="none" stroke="#fff" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"><path d="M27.4 22.2C36.4 17.3 39.3 8.3 33.9 5.2c-6-3.4-10.4 3.8-9.8 14.9"/></g>
+              <g class="petal" fill="none" stroke="#fff" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"><path d="M25.8 27.4C30.7 36.4 39.7 39.3 42.8 33.9c3.4-6-3.8-10.4-14.9-9.8"/></g>
+              <g class="petal" fill="none" stroke="#fff" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 25.8C11.6 30.7 8.7 39.7 14.1 42.8c6 3.4 10.4-3.8 9.8-14.9"/></g>
+              <circle class="orbit-dot" cx="24" cy="18.6" r="2.3" fill="#fff"/>
+              <circle class="orbit-dot" cx="29.4" cy="24" r="2.3" fill="#fff"/>
+              <circle class="orbit-dot" cx="24" cy="29.4" r="2.3" fill="#fff"/>
+              <circle class="orbit-dot" cx="18.6" cy="24" r="2.3" fill="#fff"/>
+              <circle class="heart" cx="24" cy="24" r="5.1" fill="#fff"/>
+            </svg>
+          </div>
+          <div class="wordmark"><strong>规聚</strong><span>OPEN PLAN · ONE WORKSPACE</span></div>
+        </div>
+        <div class="controls" role="group" aria-label="选择动画方式">
+          <button type="button" data-play="bloom" aria-pressed="true">逐瓣绽放</button>
+          <button type="button" data-play="breathe" aria-pressed="false">柔和呼吸</button>
+          <button type="button" class="replay" id="重播"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13 5.5A5.5 5.5 0 1 0 13.2 9M13 2.5v3.7H9.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>再看一次</button>
+        </div>
+      </div>
+    </section>
+
+    <footer class="bottom">
+      <div class="sequence"><b>聚</b><i></i><span>舒展</span><i></i><span>点亮</span><i></i><b>规聚</b></div>
+      <p class="usage">建议：首次启动或任务完成时播放一次；日常侧栏和窗口图标保持静态，轻盈又不打扰。</p>
+    </footer>
+  </main>
+  <script>
+    const mark = document.getElementById("花朵");
+    const status = document.getElementById("状态");
+    const buttons = [...document.querySelectorAll("[data-play]")];
+    const labels = { bloom: "逐瓣绽放", breathe: "柔和呼吸" };
+
+    function play(mode) {
+      mark.classList.remove("is-playing");
+      mark.dataset.mode = mode;
+      void mark.offsetWidth;
+      mark.classList.add("is-playing");
+      status.textContent = labels[mode];
+      buttons.forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.play === mode)));
+    }
+
+    buttons.forEach((button) => button.addEventListener("click", () => play(button.dataset.play)));
+    document.getElementById("重播").addEventListener("click", () => play(mark.dataset.mode));
+  </script>
+</body>
+</html>
