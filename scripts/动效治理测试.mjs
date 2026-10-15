@@ -104,9 +104,9 @@ for (const 名称 of 全部关键帧) {
   if (动画声明.some((d) => /infinite/.test(d) && 命中.test(d.replace(/^animation\s*:/, " ")))) 无限动画.add(名称);
 }
 const 期望持续动画 = [
-  "activity-marquee-sweep", "agent-avatar-breathe", "blink", "brain-pulse", "dot-breathe", "dot-breathe-soft", "ldot-bounce",
+  "activity-marquee-sweep", "agent-avatar-breathe", "blink", "brain-pulse", "dot-breathe", "dot-breathe-soft",
   "marquee-neon", "marquee-scroll", "marquee-scan", "marquee-shine", "marquee-stripe",
-  "mp-spin", "pulse", "pulse-status", "pulse-status-soft", "session-pulse", "spin", "thinking-caret-blink",
+  "mp-spin", "pulse", "pulse-status", "pulse-status-soft", "session-pulse", "spin", "streaming-label-breathe", "thinking-caret-blink",
 ];
 assert.deepEqual(
   [...无限动画].sort(),
@@ -121,11 +121,11 @@ const 持续动画宿主 = {
   blink: [".typing", ".run-summary-dot.running"],
   "dot-breathe": [".efp-pulse"],
   "dot-breathe-soft": [".efp-pulse"],
-  "ldot-bounce": [".ldot"],
   pulse: [".tool-icon.run", ".todo-item.running .todo-num"],
   "brain-pulse": [".brain-core.running .brain-core-dot", ".browser-status.loading i"],
   "pulse-status": [".conversation-status.working i", ".browser-connection.offline i", ".execution-flow-live i"],
   "pulse-status-soft": [".execution-flow-live i", ".streaming-dot .open-plan-logo-petal"],
+  "streaming-label-breathe": [".msg-streaming-label"],
   "session-pulse": [".session-item .session-indicator", ".project-session-open > i"],
   "marquee-scroll": [".marquee-inner"],
   "marquee-shine": [".marquee-text"],

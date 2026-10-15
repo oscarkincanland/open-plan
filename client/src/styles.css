@@ -1172,22 +1172,33 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 .msg-author { font-weight: 600; color: var(--muted); }
 .msg.user .msg-author { color: var(--muted); }
 .msg-time { font-size: 9px; color: var(--dim); font-variant-numeric: tabular-nums; }
-.msg-streaming-badge {
+.msg-streaming-status {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 2px 8px 2px 6px;
-  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  gap: 7px;
+  margin-top: 8px;
+  padding: 3px 10px 3px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
   border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
   box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 22%, transparent);
   font-size: 10px;
   line-height: 1.4;
-  color: color-mix(in srgb, var(--accent) 76%, var(--text));
+  color: color-mix(in srgb, var(--accent) 72%, var(--text));
 }
-.msg-streaming-label { font-weight: 600; }
+.msg-streaming-label {
+  display: inline-block;
+  font-weight: 600;
+  letter-spacing: .08px;
+  animation: streaming-label-breathe 4.2s ease-in-out infinite;
+}
+.msg-streaming-elapsed { margin-left: 2px; color: var(--dim); font-size: 9px; font-variant-numeric: tabular-nums; }
+@keyframes streaming-label-breathe {
+  0%, 100% { opacity: .88; transform: translateY(0) scale(.99); }
+  50% { opacity: 1; transform: translateY(-.2px) scale(1); }
+}
 .msg-error-badge { font-size: 9px; color: var(--error); }
 .msg-stopped-badge {
   display: flex;
@@ -1229,28 +1240,6 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   0%, 100% { opacity: 0.25; transform: scale(0.85); }
   50% { opacity: 0.85; transform: scale(1.1); }
 }
-/* 等待指示器：弹跳点 + 耗时（Proma MessageLoading） */
-.loading-dots {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 4px 0;
-}
-.ldot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: ldot-bounce 1s ease-in-out infinite;
-}
-.ldot:nth-child(2) { animation-delay: 0.15s; }
-.ldot:nth-child(3) { animation-delay: 0.3s; }
-@keyframes ldot-bounce {
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
-  30% { transform: translateY(-4px); opacity: 1; }
-}
-.loading-label { font-size: 10px; color: var(--muted); margin-left: 4px; }
-.loading-elapsed { font-size: 9px; color: var(--dim); font-variant-numeric: tabular-nums; }
 /* 思考过程耗时/状态 */
 .thinking-status {
   font-size: 9px;
@@ -2775,10 +2764,10 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   color: var(--body-bg);
 }
 @keyframes agent-avatar-breathe {
-  0%, 100% { transform: scale(.985); }
-  50% { transform: scale(1.025); }
+  0%, 100% { transform: scale(.992); }
+  50% { transform: scale(1.012); }
 }
-.avatar.agent-avatar.is-streaming { animation: agent-avatar-breathe 3.2s ease-in-out infinite; transform-origin: center; }
+.avatar.agent-avatar.is-streaming { animation: agent-avatar-breathe 3.8s ease-in-out infinite; transform-origin: center; }
 
 /* ===== 技能广场分类 ===== */
 .modal-view-switch {
@@ -9665,6 +9654,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 [data-motion-level="calm"] .execution-flow-live i,
 [data-motion-level="calm"] .efp-pulse,
 [data-motion-level="calm"] .streaming-dot .open-plan-logo-petal,
+[data-motion-level="calm"] .msg-streaming-label,
 [data-motion-level="calm"] .avatar.agent-avatar.is-streaming,
 [data-motion-level="calm"] .session-item .session-indicator,
 [data-motion-level="calm"] .project-session-open > i { animation: none; }
@@ -9673,6 +9663,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 [data-motion-level="off"] .execution-flow-live i,
 [data-motion-level="off"] .efp-pulse,
 [data-motion-level="off"] .streaming-dot .open-plan-logo-petal,
+[data-motion-level="off"] .msg-streaming-label,
 [data-motion-level="off"] .avatar.agent-avatar.is-streaming,
 [data-motion-level="off"] .session-item .session-indicator,
 [data-motion-level="off"] .project-session-open > i,
@@ -10347,9 +10338,6 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .msg .markdown-body li { margin: 2px 0; }
 .msg .markdown-body h1, .msg .markdown-body h2, .msg .markdown-body h3,
 .msg .markdown-body h4, .msg .markdown-body h5, .msg .markdown-body h6 { margin: 10px 0 4px; }
-/* 等待首块：无框行内指示（不再用一个气泡框） */
-.loading-inline { display: inline-flex; align-items: center; gap: 6px; padding: 0; background: transparent; border: 0; color: var(--muted); font-size: 11px; }
-.loading-inline .loading-dots { background: transparent; border: 0; padding: 0; }
 /* 消息内空块不占位：避免 Markdown 空段落/空列表项形成大缝隙 */
 .msg .markdown-body p:empty,
 .msg .markdown-body li:empty,
@@ -10388,8 +10376,8 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   .run-summary-dot.running,
   .streaming-dot,
   .streaming-dot .open-plan-logo-petal,
+  .msg-streaming-label,
   .avatar.agent-avatar.is-streaming,
-  .ldot,
   .tool-icon.run,
   .brain-core.running .brain-core-dot,
   .browser-status.loading i,
@@ -10741,3 +10729,26 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .plan-models { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow: auto; }
 .plan-model-id { color: var(--dim); font-size: 10px; margin-left: 4px; }
 .plan-access-actions { display: flex; align-items: center; gap: 8px; }
+
+/* ===== 统一反馈基座（Feedback.jsx：toast 队列 + 应用内确认框） ===== */
+.fb-toast-stack { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 10000; max-width: min(420px, calc(100vw - 32px)); }
+.fb-toast { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 6px; background: var(--panel2-bg); border: 1px solid var(--border); color: var(--text); font-size: 12px; box-shadow: 0 6px 24px rgba(0,0,0,0.35); animation: fb-toast-in 160ms ease-out; }
+.fb-toast-error { border-color: var(--error); }
+.fb-toast-error .icon { color: var(--error); }
+.fb-toast-success { border-color: var(--success); }
+.fb-toast-success .icon { color: var(--success); }
+.fb-toast-warn { border-color: var(--warning); }
+.fb-toast-warn .icon { color: var(--warning); }
+.fb-toast-text { flex: 1; min-width: 0; word-break: break-word; white-space: pre-wrap; }
+.fb-toast-close { display: inline-flex; padding: 2px; border: none; background: none; color: var(--dim); cursor: pointer; border-radius: 4px; }
+.fb-toast-close:hover { color: var(--text); background: var(--surface); }
+@keyframes fb-toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.fb-confirm-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 10001; }
+.fb-confirm { width: min(420px, calc(100vw - 48px)); background: var(--panel2-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
+.fb-confirm-body { font-size: 13px; line-height: 1.6; color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 50vh; overflow: auto; }
+.fb-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.fb-btn { padding: 5px 14px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 12px; cursor: pointer; }
+.fb-btn:hover { border-color: var(--accent); }
+.fb-btn-danger { background: var(--error); border-color: var(--error); color: #fff; }
+.fb-btn-danger:hover { filter: brightness(1.1); }
+.fb-btn:focus-visible, .fb-toast-close:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }

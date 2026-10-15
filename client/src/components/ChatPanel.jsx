@@ -3576,7 +3576,7 @@ case "runtime_connecting":
                     <span>模型切换为 <b>{modelDisplayName(roundModel)}</b></span>
                   </div>
                 )}
-                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} runSummary={runSummary} executionFlow={executionFlow} />
+                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} runSummary={runSummary} executionFlow={executionFlow} />
               </React.Fragment>
             );
            }); })()}
@@ -4372,7 +4372,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onResend, index, prevRole, clientId, threadId, runSummary = null, executionFlow = null }) {
+function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onResend, index, prevRole, clientId, threadId, runSummary = null, executionFlow = null }) {
   if (m.role === "system") {
     if (m.summary) {
       const runId = m.runId || null;
@@ -4659,7 +4659,9 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
   return (
     <div className={`msg ${isUser ? "user" : "assistant"} ${m.status || ""}`} data-msg-index={index}>
       <div className={`avatar ${isUser ? "user-avatar" : "agent-avatar"} ${!isUser && streaming ? "is-streaming" : ""}`}>
-        <Icon name={isUser ? "user" : "robot"} size={14} />
+        {isUser
+          ? <Icon name="user" size={14} />
+          : <Logo size={22} withBackground={false} markColor="#fff" className="agent-avatar-mark" />}
       </div>
       <div className="msg-main">
         {/* 消息头：作者 + 时间（相邻同角色消息省略，减少重复气泡头部） */}
@@ -4667,7 +4669,6 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
         <div className="msg-header">
           <span className="msg-author">{isUser ? "You" : (model || "Agent")}</span>
           <span className="msg-time">{formatMsgTime(m.createdAt || Date.now())}</span>
-          {!isUser && streaming && <span className="msg-streaming-badge"><StreamingDot /><StreamingActivityLabel /></span>}
           {!isUser && m.status === "error" && <span className="msg-error-badge">生成失败</span>}
           {/* 中断既要认本地标记，也要认 Run 的终态：刷新/切回会话后本地标记会丢，只有 runStatus 还在 */}
           {!isUser && (m.stopped || runInterrupted) && <span className="msg-stopped-badge">{m.stopped ? "已停止生成" : "本轮已中断"}</span>}
@@ -4720,14 +4721,14 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
               />
             )}
             {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
-            {/* 流式等待首块：思考中 + 耗时 */}
-            {streaming && !hasContent && (
-              <div className="loading-inline">
-                <LoadingDots label={agentPhase || "正在思考"} seconds={waitSec} />
+            {/* 状态固定在消息内容下方：等待首字和持续生成共用同一组四瓣与状态短句 */}
+            {streaming && (
+              <div className="msg-streaming-status" role="status" aria-live="off">
+                <StreamingDot />
+                <StreamingActivityLabel />
+                {!hasContent && waitSec > 0 && <span className="msg-streaming-elapsed">{waitSec}s</span>}
               </div>
             )}
-            {/* 流式收尾：呼吸脉冲圆点 */}
-            {streaming && hasContent && <StreamingDot />}
             {/* 已停止 / 错误标记 */}
             {m.status === "error" && <div className="err-badge" title={m.errorText}>{m.errorText || "处理失败，请重试"}</div>}
           </>
@@ -4756,8 +4757,6 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
 // 不应随每个 token 一起重新渲染。操作回调保持稳定，工作区/线程真正变化时
 // 则仍由 onOpenFile、threadId 等关键属性触发必要更新。
 const MemoMessage = React.memo(Message, (previous, next) => {
-  const phaseChangedWhileWaiting = (previous.m?.status === "streaming" || next.m?.status === "streaming")
-    && previous.agentPhase !== next.agentPhase;
   return previous.m === next.m
     && previous.model === next.model
     && previous.index === next.index
@@ -4765,8 +4764,7 @@ const MemoMessage = React.memo(Message, (previous, next) => {
     && previous.clientId === next.clientId
     && previous.threadId === next.threadId
     && previous.onOpenFile === next.onOpenFile
-    && previous.onOpenSubagent === next.onOpenSubagent
-    && !phaseChangedWhileWaiting;
+    && previous.onOpenSubagent === next.onOpenSubagent;
 });
 
 function ReferenceChips({ references = [], onOpenFile }) {
@@ -4798,7 +4796,7 @@ function StreamingActivityLabel() {
   const [index, setIndex] = useState(0);
   useEffect(() => {
     if (isMotionReduced()) return undefined;
-    const timer = window.setInterval(() => setIndex((value) => (value + 1) % STREAMING_ACTIVITY_LABELS.length), 2400);
+    const timer = window.setInterval(() => setIndex((value) => (value + 1) % STREAMING_ACTIVITY_LABELS.length), 4200);
     return () => window.clearInterval(timer);
   }, []);
   return <span className="msg-streaming-label" aria-live="off">{STREAMING_ACTIVITY_LABELS[index]}</span>;
@@ -4809,17 +4807,6 @@ function StreamingDot() {
   return (
     <span className="streaming-dot" title="正在处理" aria-hidden="true">
       <Logo size={16} withBackground={false} markColor="currentColor" className="streaming-dot-mark" />
-    </span>
-  );
-}
-
-// ========== 等待指示器：弹跳点 + 耗时（Proma MessageLoading） ==========
-function LoadingDots({ label, seconds }) {
-  return (
-    <span className="loading-dots">
-      <span className="ldot" /><span className="ldot" /><span className="ldot" />
-      <span className="loading-label">{label}…</span>
-      {seconds > 0 && <span className="loading-elapsed">{seconds}s</span>}
     </span>
   );
 }
