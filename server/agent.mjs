@@ -3620,8 +3620,11 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         throw error;
       }
       // 刷新 .agent-context.md（当前工作区路径/记忆/当前文件动态注入）
+      // T3（首字优化）：同一轮内 writeContextFile 与 buildDynamicContext 只读一次记忆目录，
+      // 显式传参复用，消除每轮重复的 memory/*.md 目录扫描与文件拼接 IO。
       const contextFileStartedAt = Date.now();
-      this.writeContextFile(entry, entry.currentFile);
+      const sharedMemCtx = readMemoryContext(entry?.workspace || getWorkspace());
+      this.writeContextFile(entry, entry.currentFile, sharedMemCtx);
       const contextFileMs = Date.now() - contextFileStartedAt;
       // 按 Pi 模型目录归一化推理档位；不支持的 medium 优先降到 low，避免
       // UI 显示标准但 SDK 实际沿用高延迟默认档位。
@@ -3649,7 +3652,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       const dynamicContextStartedAt = Date.now();
       let dynamicContextMs = 0;
       try {
-        const dyn = this.buildDynamicContext(entry, entry.currentFile);
+        const dyn = this.buildDynamicContext(entry, entry.currentFile, sharedMemCtx);
         dynamicContextMs = Date.now() - dynamicContextStartedAt;
         if (dyn) text = dyn + "\n\n" + text;
       } catch { dynamicContextMs = Date.now() - dynamicContextStartedAt; }
@@ -4038,11 +4041,12 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
   /** 记录当前工作文件，并同步到 agent 上下文（agent 通过读 .agent-context.md 感知）。 */
   /**
    * 构建每次对话前注入的动态上下文文本（当前工作区绝对路径 + 当前文件 + 记忆摘要）
+   * T3：memCtx 可由调用方传入（同一轮内与 writeContextFile 共享一次记忆读取）。
    */
-  buildDynamicContext(entry, file) {
+  buildDynamicContext(entry, file, sharedMemCtx = null) {
     try {
       const ws = entry?.workspace || getWorkspace();
-      const memCtx = readMemoryContext(ws);
+      const memCtx = sharedMemCtx ?? readMemoryContext(ws);
       const mode = normalizeTaskMode(entry?.mode || "agent");
       const ctxFile = entry?.threadId ? `.agent-context.${entry.threadId}.md` : ".agent-context.md";
       const lines = [
@@ -4084,11 +4088,12 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
   /**
    * 写入当前工作区的 .agent-context.md——每次对话前刷新：
    * 当前工作区路径（跟随 setWorkspace 动态变化）+ 当前工作文件 + 工作区记忆摘要
+   * T3：memCtx 可由调用方传入（同一轮内与 buildDynamicContext 共享一次记忆读取）。
    */
-  writeContextFile(entry, file) {
+  writeContextFile(entry, file, sharedMemCtx = null) {
     try {
       const ws = entry?.workspace || getWorkspace();
-      const memCtx = readMemoryContext(ws);
+      const memCtx = sharedMemCtx ?? readMemoryContext(ws);
       const ctx = [
         "# Open Plan（规聚）Workspace",
         "",
