@@ -79,3 +79,18 @@ bin/
 .zcode/
 OpenPlan-备份/
 scripts/_tmp_*
+
+# 视频类内容一律不入库（授课/录屏/短视频素材，体积大且与代码无关）
+授课视频短视频剪辑/
+**/授课视频短视频剪辑/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.wmv
+*.flv
+*.webm
+*.m4v
+*.mpg
+*.mpeg
+*.3gp

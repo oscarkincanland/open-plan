@@ -58,6 +58,28 @@ const REGISTRY = [
   { type: "artifact_rolled_back", lifecycle: true, persist: true, note: "产物回滚" },
   { type: "file_changed", lifecycle: true, persist: true, note: "工作区文件变更" },
 
+  // ---- 子代理（Subagent）----
+  // 子代理事件一律带 parentToolCallId（即父会话 run_subagent 的 toolCallId），
+  // 前端据此把子代理归到父工具调用下；此前未登记导致不落盘、跨会话回放拿不到。
+  // 方案 §3.4 事件契约：planned→started→(progress|tool)*→result→(verified→result)*→closed。
+  { type: "subagent_planned", lifecycle: true, persist: true, note: "子代理编排计划（含角色/任务/工具白名单/预算）" },
+  { type: "subagent_start", lifecycle: true, persist: true, note: "子代理启动（含角色/子任务；执行器兼容事件）" },
+  { type: "subagent_started", lifecycle: true, persist: true, note: "子代理会话已建立（含模型与播种引用）" },
+  { type: "subagent_tool", lifecycle: true, persist: true, note: "子代理工具调用（start/end，含子 toolCallId）" },
+  { type: "subagent_update", lifecycle: true, persist: false, note: "子代理进度/思考节流（高频，不落盘，对齐 tool_call_progress）" },
+  { type: "subagent_progress", lifecycle: true, persist: false, note: "子代理阶段进度（orchestrator 契约，节流高频不落盘）" },
+  { type: "subagent_end", lifecycle: true, persist: true, note: "子代理结束（含结论摘要/错误）" },
+  { type: "subagent_result", lifecycle: true, persist: true, note: "子代理结构化结果（status/output/artifacts/toolStats）" },
+  { type: "subagent_verified", lifecycle: true, persist: true, note: "子代理对抗式核验结论（verdict/checklist）" },
+  { type: "subagent_closed", lifecycle: true, persist: true, note: "子代理关账（finalStatus/parentToolCallId，roster 持久化锚点）" },
+
+  // ---- Editorial Pipeline（方案 §5.2）----
+  // 流水线每步产出中间产物并独立发事件，前端展示为可折叠阶段条。
+  { type: "pipeline_started", lifecycle: true, persist: true, note: "编辑流水线开始（Planner→Writer→Formatter→Evaluator）" },
+  { type: "pipeline_stage_started", lifecycle: true, persist: true, note: "流水线阶段开始（含 stage/目标/中间产物路径）" },
+  { type: "pipeline_stage_finished", lifecycle: true, persist: true, note: "流水线阶段完成（含产物路径与检查结论）" },
+  { type: "pipeline_finished", lifecycle: true, persist: true, note: "编辑流水线结束（交付产物/回环/失败终态）" },
+
   // ---- 审批 / 提问 ----
   { type: "ask_user", lifecycle: true, persist: true, note: "向用户提问" },
   { type: "tool_approval_request", lifecycle: true, persist: true, note: "工具审批请求" },
@@ -73,6 +95,15 @@ const REGISTRY = [
   { type: "agent_queued", lifecycle: true, persist: true, note: "任务排队" },
   { type: "agent_queue_update", lifecycle: true, persist: true, note: "队列状态更新" },
   { type: "steer", lifecycle: true, persist: true, note: "运行中插话/系统提醒" },
+
+  // ---- 运行预算（E02）----
+  { type: "run_budget_notice", lifecycle: true, persist: true, note: "运行预算软提醒（回合/工具接近软预算）" },
+  { type: "run_budget_blocked", lifecycle: true, persist: true, note: "运行预算硬阻断（硬预算/重复无进展/连续失败）" },
+  { type: "tool_gate_denied", lifecycle: true, persist: true, note: "工具被把关扩展单点拒绝（U2，扩展 tool_call 拦截，Run 继续执行）" },
+
+  // ---- 上下文预算（U1/U6）----
+  { type: "context_usage", lifecycle: true, persist: false, note: "回合边界精确上下文用量（U1，getContextUsage 实测，高频不落盘）" },
+  { type: "compaction_failed", lifecycle: true, persist: true, note: "上下文压缩失败（U6，含原因与是否中止，不再静默）" },
 
   // ---- 上下文与错误 ----
   { type: "context_compacting", lifecycle: true, persist: true, note: "开始压缩上下文" },

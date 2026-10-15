@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { OFFICECLI, WORKSPACE_DIR } from "./workspace.mjs";
 import { officeLimiter } from "./Pi运行时管理.mjs";
+import { runNativeOfficeCommand } from "./文档引擎.mjs";
 
 const FILE_ARGUMENT_COMMANDS = new Set([
   "view", "get", "set", "batch", "query", "watch", "open", "close", "save", "validate", "refresh", "dump",
@@ -69,7 +70,7 @@ const MUTATING_COMMANDS = new Set(["set", "batch", "add", "remove", "move", "swa
  */
 export function runOfficecli(args, { cwd = WORKSPACE_DIR, timeoutMs = 120000, executable = OFFICECLI } = {}) {
   const command = Array.isArray(args) ? args.map(String) : [];
-  return runOfficecliOnce(command, { cwd, timeoutMs, executable }).then(async (result) => {
+  const viaCli = () => runOfficecliOnce(command, { cwd, timeoutMs, executable }).then(async (result) => {
     // 文件被 WPS/Word/Excel 打开时写入会失败：自动 close 释放句柄后重试一次，
     // 仍失败则标记 lockBlocked，由上层提示用户关闭文档（而不是让模型反复重试）。
     const file = MUTATING_COMMANDS.has(command[0]?.toLowerCase()) ? command[1] : "";
@@ -81,6 +82,12 @@ export function runOfficecli(args, { cwd = WORKSPACE_DIR, timeoutMs = 120000, ex
     retry.lockBlocked = true;
     return retry;
   });
+  // P1-A/P1-B/P2-C：原生文档引擎优先（create 全格式 / view text|outline|stats /
+  // docx 全文查找替换），命中即免启动二进制、不占 officeLimiter；
+  // 未命中或原生异常都回退 officecli，保证不因原生路径失败而中断（§5.5 降级策略）。
+  return runNativeOfficeCommand(command, { cwd })
+    .catch(() => null)
+    .then((native) => native || viaCli());
 }
 
 function runOfficecliOnce(command, { cwd = WORKSPACE_DIR, timeoutMs = 120000, executable = OFFICECLI } = {}) {

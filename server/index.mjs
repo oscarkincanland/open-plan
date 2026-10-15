@@ -19,6 +19,8 @@ import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, l
 import { markRunTiming, attachRunTimingMeta, attachRunTimingSpans, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
+import { workspaceTrustSummary, setWorkspaceTrust } from "./项目信任.mjs";
+import { runtimeFlagsSnapshot } from "./运行开关.mjs";
 import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
 import { listPublishedArtifacts, publishArtifact, inspectRunAcceptance, confirmArtifactAcceptance, rollbackPublishedArtifact } from "./成果管理.mjs";
 import { atomicWriteFile, atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
@@ -323,6 +325,8 @@ app.get("/api/status", (req, res) => {
     authRequired: Boolean(API_TOKEN),
     platform: process.platform,
     native: nativeCapabilities(),
+    // 评审 R8：优化项 feature flag 快照统一经 /api/status 下发（前端据此决定面板可见性）。
+    runtimeFlags: runtimeFlagsSnapshot(),
     // 是否有等待用户操作的系统选择器（前端可据此显示"等待选择/取消等待"）
     picker: activePickerInfo(),
     service: {
@@ -3777,10 +3781,63 @@ app.post("/api/agent/compact", async (req, res) => {
   }
 });
 
+// U9：项目信任位（Pi SDK ProjectTrustStore 薄封装）。GET 只读诊断；POST 需 flag 开启。
+app.get("/api/agent/workspace-trust", (req, res) => {
+  const cwd = String(req.query.cwd || "");
+  if (!cwd) return res.status(400).json({ error: "cwd required" });
+  res.json(workspaceTrustSummary(cwd));
+});
+
+app.post("/api/agent/workspace-trust", (req, res) => {
+  const { cwd, trusted } = req.body || {};
+  if (!cwd) return res.status(400).json({ error: "cwd required" });
+  try {
+    res.json(setWorkspaceTrust(cwd, trusted === true));
+  } catch (e) {
+    res.status(409).json({ error: e.message });
+  }
+});
+
+// U3：读取当前会话的 Pi 会话树（分支节点，供"从此节点分叉"UI 选择）。
+app.get("/api/agent/session-tree", async (req, res) => {
+  const client = String(req.query.client || "");
+  const thread = String(req.query.thread || "");
+  if (!client) return res.status(400).json({ error: "client required" });
+  try {
+    res.json(await agentManager.sessionTree(agentKey(client, thread)));
+  } catch (e) {
+    res.status(409).json({ error: e.message });
+  }
+});
+
+// U3：会话树导航（分支回退/切换）。导航后下一次 prompt 在目标节点分支继续；
+// 被弃分支默认生成原生摘要（summarize: true 可关）。
+app.post("/api/agent/session-branch", async (req, res) => {
+  const { client, thread, entryId, summarize, label } = req.body || {};
+  if (!client) return res.status(400).json({ error: "client required" });
+  if (!entryId) return res.status(400).json({ error: "entryId required" });
+  try {
+    res.json(await agentManager.branchSession(agentKey(client, thread), String(entryId), {
+      summarize: summarize !== false,
+      label: label ? String(label).slice(0, 120) : undefined,
+    }));
+  } catch (e) {
+    res.status(409).json({ error: e.message });
+  }
+});
+
 app.get("/api/agent/pending", (req, res) => {
   const client = String(req.query.client || "");
   const thread = String(req.query.thread || "");
-  res.json({ questions: agentManager.pendingQuestions(client && thread ? agentKey(client, thread) : "") });
+  const key = client && thread ? agentKey(client, thread) : "";
+  const entry = key ? agentManager.resolveLiveEntry(key) : null;
+  // U7：会话内待投递消息（steering/followUp 队列），前端可显示"待投递 N 条"徽标。
+  let pendingMessages = null;
+  try {
+    const session = entry?.session;
+    pendingMessages = typeof session?.pendingMessageCount === "number" ? session.pendingMessageCount : null;
+  } catch {}
+  res.json({ questions: agentManager.pendingQuestions(key), pendingMessages });
 });
 
 // 回答 agent 的提问（ask_user 工具：用户回答后 agent 继续）
@@ -4096,6 +4153,11 @@ app.post("/api/agent/prompt", async (req, res) => {
           error.code = "OFFICE_PREFLIGHT_FAILED";
           throw error;
         }
+      } else if (capabilityPlan.routing.officecli === "lazy") {
+        // §5.3：生成类任务不被预检阻塞——预检转后台惰性执行；真正需要 CLI 的高级操作
+        // 由 officeTool 内部兜底，失败时照常发 officecli_failed。
+        capabilityPlan.officecli = { available: null, deferred: true, message: "生成类任务：原生直写优先，Office CLI 预检延后" };
+        void checkOfficecli().then((info) => { capabilityPlan.officecli = info; }).catch(() => {});
       }
     if ((workflowId || requestedSkills.length) && !preflight.ok) {
       const error = new Error(preflight.message);
@@ -4401,6 +4463,10 @@ async function startContinuation(sourceRun, action) {
       error.code = "OFFICE_PREFLIGHT_FAILED";
       throw error;
     }
+  } else if (capabilityPlan.routing.officecli === "lazy") {
+    // 恢复路径同样惰性：生成类任务不因预检阻塞恢复
+    capabilityPlan.officecli = { available: null, deferred: true, message: "生成类任务：原生直写优先，Office CLI 预检延后" };
+    void checkOfficecli().then((info) => { capabilityPlan.officecli = info; }).catch(() => {});
   }
   const task = createTaskEnvelope({
     ...oldTask,

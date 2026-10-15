@@ -152,6 +152,7 @@ export default function App() {
   const [artifactScope, setArtifactScope] = useState("session");
   const [browserPanelOpen, setBrowserPanelOpen] = useState(false); // 内置浏览器独立侧栏
   const [browserFullscreen, setBrowserFullscreen] = useState(false);
+  const [subagentDetail, setSubagentDetail] = useState(null); // 点开子代理卡片后，右栏展示的该子代理完整过程
   // 用户手动关掉浏览器侧栏后，本轮不再自动弹开（否则每个 browser_* 工具都会把它重新拉起来）。
   const browserAutoOpenBlockedRef = useRef(false);
 
@@ -808,6 +809,20 @@ export default function App() {
     else open(name);
   }, [activeModule, open]);
 
+  // 子代理卡片 → 右栏「子代理」页：展示该子代理的思考 / 回复 / 工具调用完整过程。
+  // 传入的是点击时刻的 block 快照；运行中想看最新过程可再次点击卡片。
+  const openSubagentDetail = useCallback((block) => {
+    setSubagentDetail(block || null);
+    setPreviewOpen(true);
+    setPreviewTab("subagent");
+  }, []);
+
+  // 子代理运行中：ChatPanel 推送最新 block，若正是右栏正在看的那个则原地刷新（实时更新思考/回复/工具）
+  const handleSubagentUpdate = useCallback((_thread, block) => {
+    if (!block?.id) return;
+    setSubagentDetail((prev) => (prev && prev.id === block.id ? block : prev));
+  }, []);
+
   // 关闭 tab（按标签 id；关闭当前标签时中止在途打开请求，避免旧结果写入已关闭的预览）
   const closeTab = useCallback((id) => {
     setTabs((prev) => {
@@ -1297,6 +1312,8 @@ export default function App() {
       onRunFinished={handleRunFinished}
       onOpenRunChanges={openChangesForRun}
       onOpenRunArtifacts={openArtifactsForRun}
+      onOpenSubagent={openSubagentDetail}
+      onSubagentUpdate={handleSubagentUpdate}
       onModeChange={setConversationMode}
       onPhaseChange={setConversationPhase}
       onBrowserActivity={handleBrowserActivity}
@@ -1602,7 +1619,7 @@ export default function App() {
               </span>
             </div>
             <div className="preview-panel-tabs">
-              {[['document', '预览'], ['changes', '改动'], ['artifacts', '产物']].map(([id, label]) => (
+              {[['document', '预览'], ['changes', '改动'], ['artifacts', '产物'], ...(subagentDetail ? [['subagent', '子代理']] : [])].map(([id, label]) => (
                 <button key={id} className={previewTab === id ? "active" : ""} onClick={() => setPreviewTab(id)}>{label}</button>
               ))}
             </div>
@@ -1618,6 +1635,7 @@ export default function App() {
               onArtifactScopeChange={setArtifactScope}
               refreshToken={artifactVersion}
               onOpenFile={open}
+              subagentBlock={subagentDetail}
             >
               <Suspense fallback={<div className="module-loading">正在加载文档预览…</div>}>
                 <DocViewer

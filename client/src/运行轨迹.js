@@ -40,6 +40,10 @@ export function createRunTrace(runId = null) {
     phase: "idle",
     phases: [],
     tools: [],
+    // 子代理：按 childId 聚合（planned/started/progress/tool/result/verified/closed 合成一条）
+    subagents: [],
+    // Editorial Pipeline（§5.2）：阶段条（planner→writer→formatter→evaluator），可折叠展示
+    pipeline: null,
     files: [],
     errors: [],
     todos: [],
@@ -75,6 +79,41 @@ function advancePhase(trace, phase, at) {
   if (next < 0) return;
   if (current >= 0 && current >= next) return;
   setPhase(trace, phase, at);
+}
+
+/** 子代理按 childId 聚合；缺失时用 parentToolCallId 兜底，保证回放也能重建卡片。 */
+function upsertSubagent(trace, data, at, { status = "running" } = {}) {
+  const id = String(data?.childId || data?.parentToolCallId || `subagent:${trace.subagents.length}`);
+  let sub = trace.subagents.find((item) => item.id === id);
+  if (!sub) {
+    sub = {
+      id,
+      parentToolCallId: data?.parentToolCallId ? String(data.parentToolCallId) : null,
+      role: String(data?.role || "scout"),
+      task: String(data?.task || ""),
+      status,
+      activity: "",
+      thinking: "",
+      preview: "",
+      summary: "",
+      output: "",
+      error: "",
+      verdict: null,
+      checklist: [],
+      tools: [],
+      transcript: [],
+      startAt: at,
+      endAt: null,
+    };
+    trace.subagents.push(sub);
+  } else {
+    if (data?.parentToolCallId && !sub.parentToolCallId) sub.parentToolCallId = String(data.parentToolCallId);
+    // planned → running 只前进；status=null 表示本次事件不改写状态（如 verified）；
+    // closed 的 finalStatus 在调用方显式写入，是权威终态
+    if (status === "planned" && sub.status === "planned") sub.status = "planned";
+    else if (status && status !== "planned" && sub.status === "planned") sub.status = status;
+  }
+  return sub;
 }
 
 function findTool(trace, data) {
@@ -189,11 +228,132 @@ export function applyRunTraceEvent(trace, event) {
       }
       break;
     }
+    case "subagent_planned": {
+      // 方案 §3.4：编排器先发 planned（roster 持久化锚点），此后 started/progress/tool/result 跟进
+      if (!trace.startedAt) trace.startedAt = at;
+      advancePhase(trace, "executing", at);
+      upsertSubagent(trace, data, at, { status: "planned" });
+      if (Array.isArray(data.tools)) {
+        const sub = upsertSubagent(trace, data, at, { status: "planned" });
+        sub.tools = data.tools.map((name, index) => ({ toolCallId: null, name: String(name || "tool"), status: "planned", isError: false, order: index }));
+      }
+      break;
+    }
+    case "subagent_start":
+    case "subagent_started": {
+      if (!trace.startedAt) trace.startedAt = at;
+      advancePhase(trace, "executing", at);
+      const sub = upsertSubagent(trace, data, at);
+      if (sub.status === "planned") sub.status = "running";
+      break;
+    }
+    case "subagent_update":
+    case "subagent_progress": {
+      const sub = upsertSubagent(trace, data, at);
+      if (sub.status === "planned") sub.status = "running";
+      if (data.activity) sub.activity = String(data.activity).slice(0, 200);
+      if (data.phase) sub.activity = String(data.phase).slice(0, 200);
+      if (data.thinking) sub.thinking = String(data.thinking).slice(-600);
+      if (data.preview) sub.preview = String(data.preview).slice(-600);
+      break;
+    }
+    case "subagent_tool": {
+      const sub = upsertSubagent(trace, data, at);
+      const childToolCallId = data.toolCallId ? String(data.toolCallId) : null;
+      let tool = childToolCallId ? sub.tools.find((item) => item.toolCallId === childToolCallId) : null;
+      if (!tool) {
+        tool = { toolCallId: childToolCallId, name: String(data.toolName || "read"), status: "running", isError: false };
+        sub.tools.push(tool);
+      }
+      if (data.status === "end") {
+        tool.status = "done";
+        tool.isError = data.isError === true;
+      } else {
+        tool.status = "running";
+      }
+      break;
+    }
+    case "subagent_end": {
+      const sub = upsertSubagent(trace, data, at);
+      sub.status = String(data.status || "completed");
+      if (data.summary) sub.summary = String(data.summary);
+      if (data.error) sub.error = String(data.error).slice(0, 600);
+      if (Array.isArray(data.transcript)) sub.transcript = data.transcript.slice(-40);
+      sub.endAt = at;
+      break;
+    }
+    case "subagent_result": {
+      // §3.4：结构化结果（status/output/artifacts/toolStats）；同一 childId 可能因 revise 回环多次 result，取最后一次
+      const sub = upsertSubagent(trace, data, at);
+      sub.status = String(data.status || sub.status || "completed");
+      if (data.output !== undefined && data.output !== null) sub.summary = String(data.output).slice(0, 9000);
+      if (Array.isArray(data.artifacts)) sub.artifacts = data.artifacts.map((item) => String(item?.path || item || "")).filter(Boolean);
+      if (data.toolStats && typeof data.toolStats === "object") sub.toolStats = data.toolStats;
+      if (Array.isArray(data.transcript)) sub.transcript = data.transcript.slice(-40);
+      break;
+    }
+    case "subagent_verified": {
+      // 核验结论不改写子代理状态（revise 回环由编排器事件推进；closed 才是终态）
+      const sub = upsertSubagent(trace, data, at, { status: null });
+      sub.verdict = String(data.verdict || "");
+      sub.checklist = Array.isArray(data.checklist) ? data.checklist.slice(0, 40).map((item) => ({
+        item: String(item?.item || item || "").slice(0, 300),
+        ok: item?.ok !== false,
+      })) : [];
+      if (data.notes) sub.verifyNotes = String(data.notes).slice(0, 1200);
+      break;
+    }
+    case "subagent_closed": {
+      const sub = upsertSubagent(trace, data, at);
+      sub.status = String(data.finalStatus || sub.status || "completed");
+      sub.endAt = at;
+      break;
+    }
     case "file_changed": {
       const files = Array.isArray(data.files) ? data.files : [];
       for (const file of files) {
         const value = String(file || "").replace(/\\/g, "/");
         if (value && !trace.files.includes(value)) trace.files.push(value);
+      }
+      break;
+    }
+    // ---- Editorial Pipeline（§5.2）：阶段条归约，实时与回放共用 ----
+    case "pipeline_started": {
+      if (!trace.startedAt) trace.startedAt = at;
+      advancePhase(trace, "executing", at);
+      trace.pipeline = { id: String(data.pipelineId || "pipeline"), stages: [], status: "running", deliverable: null, startedAt: at, endedAt: null };
+      break;
+    }
+    case "pipeline_stage_started":
+    case "pipeline_stage_finished": {
+      const started = type === "pipeline_stage_started";
+      if (!trace.pipeline) {
+        trace.pipeline = { id: String(data.pipelineId || "pipeline"), stages: [], status: "running", deliverable: null, startedAt: at, endedAt: null };
+      }
+      const stageId = String(data.stage || `stage${trace.pipeline.stages.length + 1}`);
+      let stage = trace.pipeline.stages.find((item) => item.stage === stageId);
+      if (!stage) {
+        stage = { stage: stageId, label: String(data.label || ""), status: "running", artifact: "", checks: [], startedAt: at, endedAt: null };
+        trace.pipeline.stages.push(stage);
+      }
+      if (started) {
+        stage.status = "running";
+        stage.startedAt = at;
+        if (data.label) stage.label = String(data.label);
+      } else {
+        stage.status = String(data.status || "done");
+        stage.endedAt = at;
+        if (data.artifact) stage.artifact = String(data.artifact);
+        if (Array.isArray(data.checks)) stage.checks = data.checks.slice(0, 30).map((item) => String(item).slice(0, 200));
+        if (data.error) stage.error = String(data.error).slice(0, 400);
+      }
+      break;
+    }
+    case "pipeline_finished": {
+      if (trace.pipeline) {
+        trace.pipeline.status = String(data.status || "completed");
+        trace.pipeline.endedAt = at;
+        if (data.deliverable) trace.pipeline.deliverable = String(data.deliverable);
       }
       break;
     }
@@ -307,6 +467,10 @@ export function summarizeRunTrace(trace) {
     toolOk: ok,
     toolFailed: failed,
     toolRunning: running,
+    subagentTotal: (trace?.subagents || []).length,
+    subagentRunning: (trace?.subagents || []).filter((item) => !["completed", "failed", "cancelled"].includes(item.status)).length,
+    pipelineStages: (trace?.pipeline?.stages || []).length,
+    pipelineRunning: (trace?.pipeline?.status || "idle") === "running",
     fileCount: (trace?.files || []).length,
     errorCount: (trace?.errors || []).length,
     todoTotal: todos.length,
@@ -512,6 +676,9 @@ export function runTraceSummaryText(trace) {
   }
   if (stats.todoTotal) {
     parts.push(`待办 ${stats.todoDone}/${stats.todoTotal}${stats.todoUnfinished ? `（未完成 ${stats.todoUnfinished}）` : ""}`);
+  }
+  if (stats.subagentTotal) {
+    parts.push(`子 Agent ${stats.subagentTotal}${stats.subagentRunning ? `（${stats.subagentRunning} 进行中）` : ""}`);
   }
   if (stats.fileCount) parts.push(`${stats.fileCount} 个文件变更`);
   if (stats.errorCount) parts.push(`${stats.errorCount} 次错误`);

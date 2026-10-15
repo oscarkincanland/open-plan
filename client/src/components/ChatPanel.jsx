@@ -10,7 +10,7 @@ import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
 import { completionLabel, formatDuration, formatTokenCount, reduceRunTrace, reduceTurnMetrics, runToolDetailText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, summarizeTurnMetrics, turnMetricsText, verificationLabel } from "../运行轨迹.js";
 import { associateRunMessages, projectLegacyRunSummary, upsertRunSummaryMessage } from "../运行展示投影.js";
-import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone } from "../事件展示.js";
+import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, toolIdentity } from "../事件展示.js";
 import { buildArtifactIndex } from "../产物类型.js";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
@@ -519,7 +519,7 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   // 草稿按 thread 恢复（交互 3）：模块导航会卸载本组件，重挂载时从缓存取回未发送内容。
@@ -532,6 +532,16 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       return next;
     });
   }, [threadId]);
+  // 子代理详情实时更新：把最新的子代理 block 推给外层（App 右栏详情按 id 订阅）。
+  useEffect(() => {
+    if (!onSubagentUpdate) return;
+    for (const message of messages) {
+      for (const block of (message?.blocks || [])) {
+        if (block?.type === "subagent") onSubagentUpdate(threadId, block);
+      }
+    }
+  }, [messages, threadId, onSubagentUpdate]);
+
   // 发送成功、切换/新建会话、执行斜杠命令时才清空草稿。
   const clearInput = useCallback(() => {
     writeDraft(threadId, "");
@@ -1900,50 +1910,190 @@ case "runtime_connecting":
         if (aid) scheduleFlush("thinking", data);
         break;
       case "subagent_start":
+      case "subagent_planned":
+      case "subagent_started":
         flushToolOutput();
         setAgentPhase("子 Agent 正在处理只读子任务");
         if (!aid) aid = ensureAssistant();
         if (aid) {
           if (streamBufRef.current) flushNow(aid);
-          const childId = data.childId || data.toolCallId || newId();
+          const childId = data.childId || data.parentToolCallId || newId();
+          const planned = type === "subagent_planned";
           patch(aid, (m) => m.blocks?.some((block) => block.type === "subagent" && block.id === childId)
             ? m
-            : ({ ...m, blocks: [...(m.blocks || []), { type: "subagent", id: childId, role: data.role || "scout", task: data.task || "", status: "running", activity: "正在准备隔离的只读会话", preview: "", summary: "", error: "" }] }));
+            : ({ ...m, blocks: [...(m.blocks || []), { type: "subagent", id: childId, parentToolCallId: data.parentToolCallId || null, role: data.role || "scout", task: data.task || "", status: planned ? "planned" : "running", activity: planned ? "子任务已编排，等待执行" : "正在准备隔离的只读会话", thinking: "", preview: "", summary: "", error: "", tools: [], transcript: [] }] }));
         }
         break;
       case "subagent_update":
+      case "subagent_progress":
         if (!aid) aid = ensureAssistant();
         if (aid) {
-          const childId = data.childId || data.toolCallId;
+          const childId = data.childId || data.parentToolCallId;
           patch(aid, (m) => {
             const blocks = [...(m.blocks || [])];
             let block = blocks.find((item) => item.type === "subagent" && item.id === childId);
             if (!block) {
-              block = { type: "subagent", id: childId || newId(), role: data.role || "scout", task: data.task || "", status: "running", preview: "", summary: "", error: "" };
+              block = { type: "subagent", id: childId || newId(), parentToolCallId: data.parentToolCallId || null, role: data.role || "scout", task: data.task || "", status: "running", thinking: "", preview: "", summary: "", error: "", tools: [], transcript: [] };
               blocks.push(block);
             }
-            Object.assign(block, { status: data.status || block.status, activity: data.activity || block.activity, preview: data.preview ?? block.preview });
+            Object.assign(block, {
+              status: data.status || block.status,
+              activity: data.activity || data.phase || block.activity,
+              thinking: data.thinking ?? block.thinking,
+              preview: data.preview ?? block.preview,
+              transcript: data.delta ? appendSubagentTrace(block.transcript, { kind: data.delta.kind, text: data.delta.text }) : (block.transcript || []),
+            });
             return { ...m, blocks };
           });
         }
         break;
-      case "subagent_end":
-        flushToolOutput();
+      case "subagent_tool": {
+        // 子代理内部工具调用：归到对应子代理卡片下，按子 toolCallId 去重（回放不重复）
         if (!aid) aid = ensureAssistant();
         if (aid) {
-          const childId = data.childId || data.toolCallId;
+          const childId = data.childId || data.parentToolCallId;
           patch(aid, (m) => {
             const blocks = [...(m.blocks || [])];
             let block = blocks.find((item) => item.type === "subagent" && item.id === childId);
             if (!block) {
-              block = { type: "subagent", id: childId || newId(), role: data.role || "scout", task: data.task || "", status: "running" };
+              block = { type: "subagent", id: childId || newId(), parentToolCallId: data.parentToolCallId || null, role: data.role || "scout", task: data.task || "", status: "running", thinking: "", preview: "", summary: "", error: "", tools: [], transcript: [] };
               blocks.push(block);
             }
+            const tools = [...(block.tools || [])];
+            const tid = data.toolCallId ? String(data.toolCallId) : null;
+            let tool = tid ? tools.find((item) => item.toolCallId === tid) : null;
+            if (!tool) {
+              tool = { toolCallId: tid, name: data.toolName || "read", status: "running", isError: false };
+              tools.push(tool);
+            }
+            let transcript = block.transcript || [];
+            if (data.status === "end") {
+              tool.status = "done";
+              tool.isError = data.isError === true;
+              tool.result = data.result || tool.result || "";
+              transcript = appendSubagentTrace(transcript, { kind: "tool_result", toolCallId: tid, isError: data.isError === true, result: data.result || "" });
+            } else {
+              tool.status = "running";
+              tool.args = data.args || tool.args || "";
+              transcript = appendSubagentTrace(transcript, { kind: "tool_call", toolName: data.toolName || "read", toolCallId: tid, args: data.args || "" });
+            }
+            block.tools = tools;
+            block.transcript = transcript;
+            return { ...m, blocks };
+          });
+        }
+        break;
+      }
+      case "subagent_end":
+        flushToolOutput();
+        if (!aid) aid = ensureAssistant();
+        if (aid) {
+          const childId = data.childId || data.parentToolCallId;
+          patch(aid, (m) => {
+            const blocks = [...(m.blocks || [])];
+            let block = blocks.find((item) => item.type === "subagent" && item.id === childId);
+            if (!block) {
+              block = { type: "subagent", id: childId || newId(), parentToolCallId: data.parentToolCallId || null, role: data.role || "scout", task: data.task || "", status: "running", thinking: "", tools: [], transcript: [] };
+              blocks.push(block);
+            }
+            // subagent_end 携带后端有界会话轨迹（含思考/文本/工具），回放与实时都据此重建详情
+            if (Array.isArray(data.transcript) && data.transcript.length) block.transcript = data.transcript;
             Object.assign(block, { status: data.status || "completed", activity: data.status === "completed" ? "子任务已完成" : "子任务已结束", summary: data.summary || "", error: data.error || "" });
             return { ...m, blocks };
           });
         }
         break;
+      case "subagent_result":
+        // §3.4 契约：结构化结果（output/artifacts），与 subagent_end 语义互补
+        if (!aid) aid = ensureAssistant();
+        if (aid) {
+          const childId = data.childId || data.parentToolCallId;
+          patch(aid, (m) => {
+            const blocks = [...(m.blocks || [])];
+            const block = blocks.find((item) => item.type === "subagent" && item.id === childId);
+            if (!block) return m;
+            if (data.output) block.summary = String(data.output).slice(0, 9000);
+            if (Array.isArray(data.artifacts) && data.artifacts.length) block.artifacts = data.artifacts.map((item) => String(item?.path || item || "")).filter(Boolean);
+            if (data.status) block.status = String(data.status);
+            return { ...m, blocks };
+          });
+        }
+        break;
+      case "subagent_verified":
+        // 对抗式核验结论：pass / revise / fail，附检查清单
+        if (!aid) aid = ensureAssistant();
+        if (aid) {
+          const childId = data.childId || data.parentToolCallId;
+          patch(aid, (m) => {
+            const blocks = [...(m.blocks || [])];
+            const block = blocks.find((item) => item.type === "subagent" && item.id === childId);
+            if (!block) return m;
+            block.verdict = String(data.verdict || "");
+            block.checklist = Array.isArray(data.checklist) ? data.checklist.slice(0, 40).map((item) => ({ item: String(item?.item || item || "").slice(0, 300), ok: item?.ok !== false })) : [];
+            if (data.notes) block.verifyNotes = String(data.notes).slice(0, 1200);
+            if (data.verdict === "revise") block.status = "running"; // 进入修订回环
+            return { ...m, blocks };
+          });
+        }
+        break;
+      case "subagent_closed":
+        if (!aid) aid = ensureAssistant();
+        if (aid) {
+          const childId = data.childId || data.parentToolCallId;
+          patch(aid, (m) => {
+            const blocks = [...(m.blocks || [])];
+            const block = blocks.find((item) => item.type === "subagent" && item.id === childId);
+            if (!block) return m;
+            if (data.finalStatus) block.status = String(data.finalStatus);
+            return { ...m, blocks };
+          });
+        }
+        break;
+      case "pipeline_started":
+      case "pipeline_stage_started":
+      case "pipeline_stage_finished":
+      case "pipeline_finished": {
+        // P2-A：编辑流水线阶段条（§5.2）——planner→writer→formatter→evaluator 可折叠展示
+        if (!aid) aid = ensureAssistant();
+        if (aid) {
+          if (streamBufRef.current && type === "pipeline_started") flushNow(aid);
+          patch(aid, (m) => {
+            const blocks = [...(m.blocks || [])];
+            let block = blocks.find((item) => item.type === "pipeline" && item.id === (data.pipelineId || "pipeline"));
+            if (!block) {
+              block = { type: "pipeline", id: data.pipelineId || newId(), pipelineId: data.pipelineId || null, format: data.format || null, status: "running", stages: [], deliverable: "" };
+              blocks.push(block);
+            }
+            if (type === "pipeline_started" && data.format) block.format = data.format;
+            const stageId = String(data.stage || "");
+            if (stageId && type !== "pipeline_finished") {
+              const stages = [...(block.stages || [])];
+              let stage = stages.find((item) => item.stage === stageId);
+              if (!stage) {
+                stage = { stage: stageId, label: data.label || stageId, status: "running", checks: [], issues: [] };
+                stages.push(stage);
+              }
+              if (type === "pipeline_stage_started") {
+                stage.status = "running";
+                if (data.label) stage.label = data.label;
+              } else {
+                stage.status = String(data.status || "done");
+                if (data.artifact) stage.artifact = data.artifact;
+                if (Array.isArray(data.checks)) stage.checks = data.checks.slice(0, 12);
+                if (Array.isArray(data.issues)) stage.issues = data.issues.slice(0, 8);
+              }
+              block.stages = stages;
+            }
+            if (type === "pipeline_finished") {
+              block.status = String(data.status || "completed");
+              if (data.deliverable) block.deliverable = String(data.deliverable);
+              if (Array.isArray(data.issues)) block.issues = data.issues.slice(0, 8);
+            }
+            return { ...m, blocks };
+          });
+        }
+        break;
+      }
       // 工具调用开始：推入新 tool block（按 toolCallId 去重，重放不产生重复卡片）
       case "tool_start":
         if (data.name === "run_subagent") break;
@@ -3426,7 +3576,7 @@ case "runtime_connecting":
                     <span>模型切换为 <b>{modelDisplayName(roundModel)}</b></span>
                   </div>
                 )}
-                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onAskAnswered={handleMessageAskAnswered} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} runSummary={runSummary} executionFlow={executionFlow} />
+                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} runSummary={runSummary} executionFlow={executionFlow} />
               </React.Fragment>
             );
            }); })()}
@@ -4222,7 +4372,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onAskAnswered, onResend, index, prevRole, clientId, threadId, runSummary = null, executionFlow = null }) {
+function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onResend, index, prevRole, clientId, threadId, runSummary = null, executionFlow = null }) {
   if (m.role === "system") {
     if (m.summary) {
       const runId = m.runId || null;
@@ -4300,7 +4450,7 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
   // 本轮是否被中断：本地标记只管当下，刷新/切回会话后靠 Run 终态
   const runInterrupted = /^(cancelled|aborted)$/.test(String(runSummary?.runStatus || m.runStatus || ""));
   const isTaskLive = streaming || Boolean(executionFlow?.running) || LIVE_RUN_STATUSES.has(String(runSummary?.runStatus || ""));
-  const processBlockTypes = new Set(["thinking", "tool", "subagent", "ask", "approval", "process_note"]);
+  const processBlockTypes = new Set(["thinking", "tool", "subagent", "pipeline", "ask", "approval", "process_note"]);
   // 模型发言（text）不再归入过程区：它是这一小节的结论，必须留在消息正文里。
   // 过去只有"最后一个文本块"能留在外面，于是每写一段新小结，上一段就被折进
   // "思考与工具过程"，折叠后整轮只剩最终答复。现在只把思考、工具、审批、
@@ -4347,8 +4497,8 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
       const id = String(data.id || `${data.runId || "approval"}:${data.tool || ""}:${data.input || ""}`).trim();
       return !processApprovalIds.has(id);
     }
-    if (["subagent_start", "subagent_update", "subagent_end"].includes(event?.type)) {
-      const id = String(data.childId || data.toolCallId || "").trim();
+    if (["subagent_start", "subagent_tool", "subagent_update", "subagent_end"].includes(event?.type)) {
+      const id = String(data.childId || data.parentToolCallId || "").trim();
       return !processSubagentIds.has(id);
     }
     return true;
@@ -4386,7 +4536,8 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
     const key = block.id || `block-${blockIndex}`;
     if (block.type === "thinking") return <ThinkingBlock key={key} text={block.text} startTime={block.startTime} streaming={streaming && processOrder === lastThinkingBlockIndex} embedded />;
     if (block.type === "tool") return <ToolCard key={key} tool={block} onToggle={() => onToggleTool?.(m.id, block.id || blockIndex)} />;
-    if (block.type === "subagent") return <SubagentCard key={key} block={block} />;
+    if (block.type === "subagent") return <SubagentCard key={key} block={block} onOpenDetail={onOpenSubagent} />;
+    if (block.type === "pipeline") return <PipelineCard key={key} block={block} onOpenFile={onOpenFile} />;
     if (block.type === "ask") return <AskBlock key={key} block={block} clientId={clientId} threadId={threadId} onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)} />;
     if (block.type === "approval") return <ApprovalBlock key={key} block={block} />;
     if (block.type === "process_note") return (
@@ -4614,6 +4765,7 @@ const MemoMessage = React.memo(Message, (previous, next) => {
     && previous.clientId === next.clientId
     && previous.threadId === next.threadId
     && previous.onOpenFile === next.onOpenFile
+    && previous.onOpenSubagent === next.onOpenSubagent
     && !phaseChangedWhileWaiting;
 });
 
@@ -4698,24 +4850,106 @@ function ThinkingBlock({ text, startTime, streaming, embedded = false }) {
   );
 }
 
-function SubagentCard({ block }) {
+/** 子代理轨迹追加：连续同类文本（思考/正文）合并，避免碎片化；有界存储。 */
+function appendSubagentTrace(list, item) {
+  const next = Array.isArray(list) ? list.slice() : [];
+  if (!item) return next;
+  const last = next[next.length - 1];
+  if ((item.kind === "thinking" || item.kind === "text") && last && last.kind === item.kind) {
+    next[next.length - 1] = { ...last, text: `${last.text || ""}${item.text || ""}`.slice(-20000) };
+  } else {
+    next.push(item);
+  }
+  if (next.length > 240) next.splice(0, next.length - 240);
+  return next;
+}
+
+// ========== 编辑流水线阶段条（P2-A，方案 §5.2） ==========
+function PipelineCard({ block, onOpenFile }) {
   const [expanded, setExpanded] = useState(block.status === "running");
-  const statusText = block.status === "completed" ? "已完成" : block.status === "failed" ? "失败" : block.status === "cancelled" ? "已取消" : "执行中";
-  const roleText = { scout: "资料探索", reviewer: "审阅", planner: "方案拆解" }[block.role] || "只读任务";
+  const stages = Array.isArray(block.stages) ? block.stages : [];
+  const runningStage = stages.find((stage) => stage.status === "running");
+  const failed = stages.some((stage) => stage.status === "failed") || block.status === "failed";
+  const statusText = block.status === "completed" ? "已交付" : block.status === "failed" ? "未通过验收" : block.status === "cancelled" ? "已取消" : runningStage ? `进行中：${runningStage.label || runningStage.stage}` : "进行中";
+  return (
+    <section className={`pipeline-card ${block.status || "running"}`} aria-label={`编辑流水线（${block.format === "pptx" ? "PPT" : "Word"}）`}>
+      <button type="button" className="pipeline-card-head" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+        <span className="pipeline-card-icon"><Icon name={failed ? "x" : block.status === "completed" ? "check" : "flow"} size={13} /></span>
+        <span className="pipeline-card-title">
+          <strong>编辑流水线 · {block.format === "pptx" ? "PPT" : "Word"}</strong>
+          <small>{stages.length ? stages.map((stage) => stage.label || stage.stage).join(" → ") : "规划 → 撰写 → 排版 → 验收"}</small>
+        </span>
+        <span className="pipeline-card-status">{block.status === "running" && <i />} {statusText}</span>
+        <span className={`pipeline-card-chevron ${expanded ? "open" : ""}`}>▸</span>
+      </button>
+      {expanded && <div className="pipeline-card-body">
+        <ol className="pipeline-stages">
+          {stages.map((stage) => (
+            <li key={stage.stage} className={`pipeline-stage ${stage.status || "running"}`}>
+              <span className="pipeline-stage-icon"><Icon name={stage.status === "done" || stage.status === "pass" || stage.status === "completed" ? "check" : stage.status === "running" ? "flow" : "x"} size={11} /></span>
+              <div className="pipeline-stage-info">
+                <b>{stage.label || stage.stage}</b>
+                <em>{stage.status === "done" || stage.status === "pass" || stage.status === "completed" ? "完成" : stage.status === "revise" ? "需修订" : stage.status === "failed" ? "失败" : "进行中"}{stage.artifact ? ` · ${stage.artifact}` : ""}</em>
+                {stage.issues?.length > 0 && <span className="pipeline-stage-issues">{stage.issues.slice(0, 3).join("；")}</span>}
+              </div>
+            </li>
+          ))}
+        </ol>
+        {block.deliverable && (
+          <div className="pipeline-deliverable">
+            <b>产物</b>
+            {onOpenFile
+              ? <button type="button" className="pipeline-open" onClick={() => onOpenFile(block.deliverable)}>{block.deliverable}</button>
+              : <span>{block.deliverable}</span>}
+          </div>
+        )}
+        {block.issues?.length > 0 && <div className="pipeline-issues" role="status">待改进：{block.issues.slice(0, 4).join("；")}</div>}
+      </div>}
+    </section>
+  );
+}
+
+function SubagentCard({ block, onOpenDetail }) {
+  const [expanded, setExpanded] = useState(block.status === "running");
+  const statusText = block.status === "completed" ? "已完成" : block.status === "failed" ? "失败" : block.status === "cancelled" ? "已取消" : block.status === "planned" ? "已编排" : "执行中";
+  const roleText = { scout: "资料探索", reviewer: "审阅", planner: "方案拆解", verifier: "独立核验", worker: "执行" }[block.role] || "只读任务";
   const content = block.summary || block.preview || "";
+  const tools = Array.isArray(block.tools) ? block.tools : [];
+  const runningTools = tools.filter((tool) => tool.status !== "done").length;
+  const verdictText = { pass: "核验通过", revise: "核验需修订", fail: "核验不通过" }[block.verdict] || "";
   return (
     <section className={`subagent-card ${block.status || "running"}`} aria-label={`子 Agent：${roleText}`}>
       <button type="button" className="subagent-card-head" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
         <span className="subagent-card-icon"><Icon name={block.status === "completed" ? "check" : block.status === "failed" ? "x" : "robot"} size={13} /></span>
-        <span className="subagent-card-title"><strong>子 Agent · {roleText}</strong><small>{block.activity || "隔离上下文 · 只读文件"}</small></span>
+        <span className="subagent-card-title"><strong>子 Agent · {roleText}</strong><small>{block.activity || "隔离上下文 · 不继承主对话"}</small></span>
+        {tools.length > 0 && <span className="subagent-card-toolcount">{runningTools ? `${tools.length} 个工具 · ${runningTools} 进行中` : `${tools.length} 个工具`}</span>}
         <span className="subagent-card-status">{block.status === "running" && <i />} {statusText}</span>
         <span className={`subagent-card-chevron ${expanded ? "open" : ""}`}>▸</span>
       </button>
       {expanded && <div className="subagent-card-body">
+        <div className="subagent-card-actions">
+          <button type="button" className="subagent-open-detail" onClick={() => onOpenDetail?.(block)}>
+            <Icon name="file" size={11} /> 在右侧查看完整过程
+          </button>
+        </div>
         {block.task && <div className="subagent-task"><b>子任务</b><span>{block.task}</span></div>}
+        {block.thinking && <div className="subagent-thinking"><b>思考</b><span>{block.thinking}</span></div>}
+        {tools.length > 0 && <div className="subagent-tools">
+          <b>工具调用</b>
+          <div className="subagent-tool-list">
+            {tools.map((tool, index) => (
+              <span key={tool.toolCallId || `${tool.name}-${index}`} className={`subagent-tool ${tool.status === "done" ? (tool.isError ? "error" : "done") : tool.status === "planned" ? "planned" : "running"}`}>
+                <Icon name={toolIdentity(tool.name).icon} size={11} />
+                <em>{tool.name}</em>
+                <i>{tool.status === "done" ? (tool.isError ? "失败" : "完成") : tool.status === "planned" ? "计划" : "执行中"}</i>
+              </span>
+            ))}
+          </div>
+        </div>}
+        {verdictText && <div className={`subagent-verdict ${block.verdict}`}><b>核验</b><span>{verdictText}</span></div>}
         {block.error && <div className="subagent-error" role="alert">{block.error}</div>}
         {content && <div className={`subagent-result ${block.status === "running" ? "preview" : ""}`}>{block.status === "running" ? readableProgressText(content) : <SafeMarkdown text={content} />}</div>}
-        {!content && !block.error && <div className="subagent-placeholder">子任务只使用当前 Run 授权的文件读取能力，不继承主对话上下文。</div>}
+        {!content && !block.error && <div className="subagent-placeholder">子任务使用隔离上下文与受权工具执行，不继承主对话内容。</div>}
       </div>}
     </section>
   );

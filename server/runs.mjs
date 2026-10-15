@@ -548,7 +548,7 @@ export function filterRunChanges(run, changes = []) {
   });
 }
 
-export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [], workflow = null, projectId = null, capabilityPlan = null, runtimeSnapshot = null, recoveryChain = [], snapshotMode = "full", beforeSnapshot = null, model = null } = {}) {
+export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [], workflow = null, projectId = null, capabilityPlan = null, runtimeSnapshot = null, recoveryChain = [], snapshotMode = "full", beforeSnapshot = null, model = null, branchOfRunId = null, branchPointEntryId = null } = {}) {
   const id = `run_${crypto.randomUUID()}`;
   const staging = ensureRunStaging(id, cwd);
   const normalizedSnapshotMode = snapshotMode === "none" ? "none" : "full";
@@ -571,6 +571,10 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
     threadId: threadId || null,
     sessionId,
     projectId: projectId || null,
+    // U3：分支溯源（可选字段，缺省 null 向后兼容）——该 Run 是否由某次会话树导航
+    // （session-branch）继续而来；branchPointEntryId 指向 Pi 会话树的目标节点。
+    branchOfRunId: branchOfRunId || null,
+    branchPointEntryId: branchPointEntryId || null,
     cwd: before.root,
     // 本轮实际使用的模型（provider/model）：会话里按轮显示"由谁执行"、以及
     // 模型切换分割线都读这一份记录，不再用"当前选择"冒充历史。

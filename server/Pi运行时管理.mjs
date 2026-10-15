@@ -1,6 +1,7 @@
 import path from "node:path";
 import crypto from "node:crypto";
 import {
+  calculateContextTokens,
   createBashToolDefinition,
   createEditToolDefinition,
   createLocalBashOperations,
@@ -14,6 +15,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { AGENT_DIR, PROJECT_DIR } from "./workspace.mjs";
+import { RUNTIME_FLAGS } from "./运行开关.mjs";
 import { getPiConfigPaths, loadNetworkSettings, readCredentials as readConfigCredentials, writeCredentials as writeConfigCredentials } from "./Pi配置管理.mjs";
 import { atomicWriteJson, ensureDirectory, readJsonFile } from "./持久化工具.mjs";
 import {
@@ -163,10 +165,25 @@ export class AsyncLimiter {
 }
 
 export const runtimeCapabilities = Object.freeze({
-  nativeFork: { status: "reserved", message: "Pi AgentSessionRuntime 提供 fork 接口，本阶段暂未绑定到工作台 Run。" },
+  // U3：会话树导航已接线（navigateTree/getTree 经 PiRuntimeManager 透传）。
+  nativeFork: { status: "available", message: "会话树导航（navigateTree）已绑定工作台分支端点；文件级 fork 由会话树承载。" },
   nativeCheckpoint: { status: "unsupported", message: "当前没有 token 级检查点；使用 JSONL 会话重开 + 恢复提示词。" },
   replay: { status: "fallback", message: "支持从 JSONL 会话文件恢复，并由 Run 恢复链重新执行未完成目标。" },
 });
+
+/**
+ * U1（上下文预算精确化）：Pi SDK 原生 compaction 纯函数 `calculateContextTokens(usage)`
+ * （compaction.d.ts L38）的容错包装。usage 缺失/形状异常时返回 null，调用方回落估算。
+ */
+export function contextTokensFromUsage(usage) {
+  try {
+    if (!usage || typeof usage !== "object") return null;
+    const tokens = calculateContextTokens(usage);
+    return Number.isFinite(tokens) && tokens >= 0 ? tokens : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Pi 的唯一生命周期入口。业务层只通过本类创建、恢复、停止、压缩和调用会话，
@@ -237,6 +254,10 @@ export class PiRuntimeManager {
       // 上下文压缩交给 Pi 按当前模型的 contextWindow 自动判断；
       // 明确保留输出/工具调用空间，避免工作台另设固定 token 线与 Pi 竞争。
       compaction: { enabled: true, reserveTokens: PI_COMPACTION_POLICY.reserveTokens, keepRecentTokens: PI_COMPACTION_POLICY.keepRecentTokens },
+      // U10（flag 控制）：Pi 原生 CacheWarmer——Run 进行中以一次 1-token 请求保活
+      // 提示词缓存（streaming 模式），用户思考/审批期间缓存不失效，下一请求省去
+      // 全量 cache miss 重算。off（默认）不配置，行为与基线一致。
+      ...(RUNTIME_FLAGS.cacheWarming ? { cacheWarming: "streaming" } : {}),
       // 工作台自己负责备用模型和最终失败收敛；Pi 只保留一次短重试，
       // 避免供应商不可达时叠加多层指数退避，把界面长时间卡在“连接模型”。
       retry: { enabled: true, maxRetries: 1, baseDelayMs: 800, provider: { maxRetries: 0 } },
@@ -513,6 +534,41 @@ export class PiRuntimeManager {
       this.markFailure(runtimeId, error, { recovering: false, reason: "thinking_level_apply_failed" });
       throw error;
     }
+  }
+
+  /**
+   * U1（上下文预算精确化）：读取 Pi SDK 原生上下文用量（agent-session.d.ts L874
+   * `getContextUsage(): ContextUsage | undefined`）。无 usage（非流式/新会话/极端
+   * 路径）时返回 null，调用方回落到既有估算逻辑。
+   */
+  getContextUsage(_runtimeId, session) {
+    try {
+      const usage = typeof session?.getContextUsage === "function" ? session.getContextUsage() : undefined;
+      return usage && typeof usage === "object" ? usage : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** U3：读取会话树（session-manager.d.ts L340 `getTree(): SessionTreeNode[]`）。 */
+  getSessionTree(_runtimeId, sessionManager) {
+    try {
+      return typeof sessionManager?.getTree === "function" ? sessionManager.getTree() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * U3：会话树导航（agent-session.d.ts L850 `navigateTree(targetId, options)`）。
+   * 同一会话文件内切换到目标节点（分支切换，可带被弃分支摘要）；不创建新文件。
+   * options: { summarize?: boolean, customInstructions?: string, label?: string }
+   */
+  async navigateSessionTree(_runtimeId, session, targetId, options = {}) {
+    if (typeof session?.navigateTree !== "function") {
+      throw new Error("当前 Pi 会话不支持会话树导航（navigateTree 不可用）");
+    }
+    return session.navigateTree(String(targetId || ""), options);
   }
 
   health(runtimeId, session, overrides = {}) {

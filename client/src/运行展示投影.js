@@ -348,6 +348,8 @@ export function projectRunView(run = {}, events = [], { now = Date.now() } = {})
     },
     trace: {
       tools: trace.tools || [],
+      subagents: trace.subagents || [],
+      pipeline: trace.pipeline || null,
       notes: trace.notes || [],
       errors: trace.errors || [],
       files: trace.files || [],

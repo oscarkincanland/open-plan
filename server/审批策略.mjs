@@ -28,6 +28,8 @@ const DEFAULT_RULES = [
   { tool: "officecli", pattern: "swap *", action: "ask" },
   { tool: "officecli", pattern: "delete *", action: "ask" },
   { tool: "officecli", pattern: "create *", action: "ask" },
+  // 编辑流水线会在工作区落一份完整文档（Formatter 原生直写），与 officecli create 同级先问
+  { tool: "editorial_pipeline", pattern: "*", action: "ask" },
   { tool: "officecli", pattern: "import *", action: "ask" },
   { tool: "officecli", pattern: "save *", action: "ask" },
   { tool: "officecli", pattern: "open *", action: "ask" },

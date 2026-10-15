@@ -3,6 +3,7 @@ import { confirmArtifactAcceptance, getRun, getRunAcceptance, listPublishedArtif
 import Icon from "./Icon.jsx";
 import { artifactStatusInfo } from "./验收状态.js";
 import FileChangesPanel from "./FileChangesPanel.jsx";
+import 子代理详情面板 from "./子代理详情面板.jsx";
 import { projectRunView } from "../运行展示投影.js";
 import { acquireStream } from "../长连接预算.js";
 
@@ -400,9 +401,10 @@ function RunChangesPanel({ workspace, projectId, currentSessionId, selectedRunId
   );
 }
 
-export default function WorkProductPanel({ tab, clientId, threadId, workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", onArtifactScopeChange, refreshToken = 0, onOpenFile, children }) {
-  // B03：右栏三页签 —— 预览 / 改动 / 产物
+export default function WorkProductPanel({ tab, clientId, threadId, workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", onArtifactScopeChange, refreshToken = 0, onOpenFile, subagentBlock = null, children }) {
+  // B03：右栏三页签 —— 预览 / 改动 / 产物；subagent 为按需打开的「子代理详情」页
   if (tab === "events") return <EventStream clientId={clientId} threadId={threadId} />;
+  if (tab === "subagent") return <子代理详情面板 block={subagentBlock} />;
   if (tab === "changes") return <RunChangesPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} selectedRunId={selectedRunId} refreshToken={refreshToken} onOpenFile={onOpenFile} />;
   if (tab === "artifacts") return <ArtifactPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} selectedRunId={selectedRunId} artifactScope={artifactScope} onArtifactScopeChange={onArtifactScopeChange} refreshToken={refreshToken} onOpenFile={onOpenFile} />;
   return children;

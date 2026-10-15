@@ -65,6 +65,9 @@ test("server 代码里发出的事件类型都已登记", () => {
     /appendEvent\(\{[\s\S]{0,240}?type:\s*"([a-z_]+)"/g,
     /writeEvent\(\s*"([a-z_]+)"/g,
     /emitChannelSafe\([^,]+,\s*"([a-z_]+)"/g,
+    // 子代理走变量传参 emitChild("类型", ...)，早前用正则只扫 writeEvent 字面量，
+    // 导致 subagent_* 未登记却测试通过；这里显式纳入扫描。
+    /emitChild\(\s*"([a-z_]+)"/g,
   ];
   const missing = new Map();
   for (const name of fs.readdirSync(SERVER_DIR).filter((item) => item.endsWith(".mjs"))) {
