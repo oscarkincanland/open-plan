@@ -137,6 +137,12 @@ export const browserClose = (client, thread, { force = false } = {}) =>
   api("/api/browser/close", { method: "POST", body: JSON.stringify({ client, thread, force }) });
 export const browserReset = (client, thread) =>
   api("/api/browser/reset", { method: "POST", body: JSON.stringify({ client, thread }) });
+export const browserStreamPause = (payload = {}) =>
+  api("/api/browser/stream-pause", { method: "POST", body: JSON.stringify(payload) });
+export const browserFullpage = (payload = {}) =>
+  api("/api/browser/fullpage", { method: "POST", body: JSON.stringify(payload) });
+export const browserPdf = (payload = {}) =>
+  api("/api/browser/pdf", { method: "POST", body: JSON.stringify(payload) });
 
 export const listModels = () => api("/api/models");
 export const refreshModels = () => api("/api/models/refresh", { method: "POST" });

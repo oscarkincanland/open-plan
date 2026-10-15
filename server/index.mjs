@@ -2056,6 +2056,53 @@ app.post("/api/browser/open", async (req, res) => {
   }
 });
 
+// B3：面板可见性联动暂停/恢复推流（OAW_BROWSER_ADAPTIVE_STREAM，默认关；未开启时为 no-op）
+app.post("/api/browser/stream-pause", async (req, res) => {
+  const { client, thread, paused } = req.body || {};
+  if (!client) return res.status(400).json({ ok: false, error: "client required" });
+  try {
+    await browserModule.browserSetStreamPaused(browserModule.browserSessionKey(client, thread || ""), Boolean(paused));
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: String(error?.message || error) });
+  }
+});
+
+// B4：整页截图（OAW_BROWSER_FULLPAGE，默认关）
+app.post("/api/browser/fullpage", async (req, res) => {
+  const { client, thread } = req.body || {};
+  if (!client) return res.status(400).json({ ok: false, error: "client required" });
+  try {
+    const result = await browserModule.browserFullpageScreenshot(browserModule.browserSessionKey(client, thread || ""));
+    res.json({ ok: true, file: result.file, base64: result.base64, bytes: result.bytes, url: result.url });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: String(error?.message || error), code: error?.code || null });
+  }
+});
+
+// B4：整页 PDF 导出（OAW_BROWSER_FULLPAGE，默认关）
+app.post("/api/browser/pdf", async (req, res) => {
+  const { client, thread } = req.body || {};
+  if (!client) return res.status(400).json({ ok: false, error: "client required" });
+  try {
+    const result = await browserModule.browserPrintToPdf(browserModule.browserSessionKey(client, thread || ""));
+    res.json({ ok: true, file: result.file, base64: result.base64, bytes: result.bytes, url: result.url });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: String(error?.message || error), code: error?.code || null });
+  }
+});
+
+// O-P5/B4 配套：截图与导出文件的回看/下载。文件名经 browserShotFile 白名单校验，防目录穿越。
+app.get("/api/browser/shot", (req, res) => {
+  try {
+    const file = browserModule.browserShotFile(String(req.query.file || ""));
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    res.sendFile(file);
+  } catch (error) {
+    res.status(error?.code === "SHOT_NOT_FOUND" ? 404 : 400).json({ ok: false, error: String(error?.message || error) });
+  }
+});
+
 app.get("/api/browser/stream", (req, res) => {
   const client = String(req.query.client || "");
   const thread = String(req.query.thread || "");

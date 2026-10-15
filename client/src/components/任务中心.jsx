@@ -311,8 +311,8 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
             <div><h2>任务中心</h2><p>并行任务、运行状态与历史会话</p></div>
           </div>}
           <div className="task-center-head">
-            <span><Icon name="list" size={13} /> 并行任务</span>
-            <button className="btn-xs" onClick={refresh} title="刷新任务状态"><Icon name="refresh" size={11} /></button>
+            <span><Icon name="list" size={14} /> 并行任务</span>
+            <button className="btn-xs" onClick={refresh} title="刷新任务状态"><Icon name="refresh" size={12} /></button>
           </div>
           <div className="task-center-filters">
             <select value={projectScope} onChange={(e) => setProjectScope(e.target.value)} title="项目范围">
@@ -343,7 +343,7 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
             </div>
           ) : (
             <div className="task-center-detail">
-              <button className="task-center-back" onClick={() => { setSelectedId(null); setDetail(null); }}><Icon name="back" size={11} /> 返回任务列表</button>
+              <button className="task-center-back" onClick={() => { setSelectedId(null); setDetail(null); }}><Icon name="back" size={12} /> 返回任务列表</button>
               <div className="task-center-detail-title">{taskTitle(detail)}</div>
               <div className="task-center-detail-meta">{taskMetaParts(detail, projectNameFor(detail) || "当前项目").join(" · ")}</div>
               <div className="task-center-status">

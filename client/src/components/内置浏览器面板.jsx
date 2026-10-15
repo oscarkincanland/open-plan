@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
-import { browserClose, browserInput, browserOpen, browserReset, browserState } from "../api.js";
+import { browserClose, browserFullpage, browserInput, browserOpen, browserPdf, browserReset, browserState, browserStreamPause } from "../api.js";
 import { acquireStream, waitForStreamSlot } from "../长连接预算.js";
+import { flag } from "../运行开关.js";
+import { setBrowserStreamState } from "../浏览器联动.js";
 
 // 只有「启动 / profile 锁 / CDP 归属」这类异常才值得重置浏览器；
 // 导航失败、URL 无效、用户接管都不应销毁标签与登录态。
@@ -20,9 +22,9 @@ function isRecoverableBrowserError(error) {
 }
 
 /**
- * 内置浏览器面板（工作产物 → 浏览器）
+ * 内置浏览器面板（独立侧栏，与右栏工作产物面板并列）
  *
- * - Agent 调用 browser_* 工具时，画面以帧流（CDP screencast）实时显示在这里；
+ * - Agent 调用 browser_* 写操作工具时，画面以帧流（CDP screencast）实时显示在这里；
  * - 用户可直接在画面上点击、输入，随时接管（登录、验证码等）；
  * - 只在有活动会话时建立帧流连接，避免空跑。
  */
@@ -70,9 +72,10 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
       source = new EventSource(`/api/browser/stream?${params.toString()}`);
       slot?.attach(() => source?.close());
       sourceRef.current = source;
-      source.onopen = () => { retryCount = 0; setConnected(true); };
+      source.onopen = () => { retryCount = 0; setConnected(true); setBrowserStreamState("ok"); };
       source.onerror = () => {
         setConnected(false);
+        setBrowserStreamState("reconnecting"); // O-P8：向对话工具卡广播重连状态（对账提示用）
         try { source.close(); } catch {}
         if (!stopped) {
           const delay = Math.min(10000, 1000 * (2 ** Math.min(retryCount, 3)));
@@ -127,6 +130,20 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
       cancelWaiting?.();
       sourceRef.current = null;
       slot?.release();
+      setBrowserStreamState("idle");
+    };
+  }, [clientId, threadId]);
+
+  // B3（OAW_BROWSER_ADAPTIVE_STREAM，默认关）：面板所在页面不可见时暂停推流，回可见即恢复。
+  useEffect(() => {
+    if (!clientId || !flag("browserAdaptiveStream")) return undefined;
+    const notify = () => {
+      browserStreamPause({ client: clientId, thread: threadId || "", paused: document.hidden }).catch(() => {});
+    };
+    document.addEventListener("visibilitychange", notify);
+    return () => {
+      document.removeEventListener("visibilitychange", notify);
+      browserStreamPause({ client: clientId, thread: threadId || "", paused: false }).catch(() => {});
     };
   }, [clientId, threadId]);
 
@@ -356,6 +373,58 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
   // 接管/交还都走服务端：前端不再只改本地布尔值，Agent 写操作由服务端仲裁。
   const ownership = state.ownership || { owner: "agent", secondsRemaining: 0 };
   const userOwns = ownership.owner === "user";
+  // O-P6：接管倒计时本地逐秒递减（服务端 state 事件到达时以最新 leaseExpiresAt 重同步），
+  // 修复"lease 空闲期间显示固定秒数"的不连贯观感。
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (!userOwns || !ownership.leaseExpiresAt) return undefined;
+    const timer = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [userOwns, ownership.leaseExpiresAt]);
+  const secondsRemainingLocal = userOwns && ownership.leaseExpiresAt
+    ? Math.max(0, Math.ceil((ownership.leaseExpiresAt - nowTick) / 1000))
+    : (ownership.secondsRemaining || 0);
+
+  // B4（OAW_BROWSER_FULLPAGE，默认关）：整页截图 / 整页 PDF —— 服务端 CDP 能力，前端触发下载。
+  const downloadBase64 = (base64, filename, mime) => {
+    const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+    const blob = new Blob([bytes], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 4000);
+  };
+  const captureFullpage = useCallback(async () => {
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await browserFullpage({ client: clientId, thread: threadId || "" });
+      if (result?.ok === false) throw new Error(result.error || "整页截图失败");
+      downloadBase64(result.base64, String(result.file || "shot-full.jpg").split(/[\\/]/).pop(), "image/jpeg");
+      setMessage("整页截图已完成并下载（同时保留在 .oaw/browser-shots/）");
+    } catch (error) {
+      setMessage(String(error.message || error));
+    } finally {
+      setBusy(false);
+    }
+  }, [clientId, threadId]);
+  const exportPdf = useCallback(async () => {
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await browserPdf({ client: clientId, thread: threadId || "" });
+      if (result?.ok === false) throw new Error(result.error || "PDF 导出失败");
+      downloadBase64(result.base64, String(result.file || "page.pdf").split(/[\\/]/).pop(), "application/pdf");
+      setMessage("整页 PDF 已导出并下载（同时保留在 .oaw/browser-shots/）");
+    } catch (error) {
+      setMessage(String(error.message || error));
+    } finally {
+      setBusy(false);
+    }
+  }, [clientId, threadId]);
+
   const toggleOwnership = useCallback(async () => {
     const action = userOwns ? "release" : "takeover";
     setBusy(true);
@@ -387,7 +456,7 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
           <form className="browser-idle-open" onSubmit={(event) => { event.preventDefault(); openUrl(openDraft); }}>
             <Icon name="link" size={14} />
             <input value={openDraft} onChange={(event) => setOpenDraft(event.target.value)} placeholder="输入网址，例如 https://cn.bing.com" spellCheck={false} />
-            <button type="submit" className="browser-primary-btn" disabled={busy || !openDraft.trim()}><Icon name="arrowRight" size={13} />打开</button>
+            <button type="submit" className="browser-primary-btn" disabled={busy || !openDraft.trim()}><Icon name="arrowRight" size={14} />打开</button>
           </form>
           <div className="browser-quick-links">
             <span>快速打开</span>
@@ -427,8 +496,8 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
       </div>
       <div className="browser-toolbar">
         <div className="browser-nav-actions">
-          <button className="btn-icon" onClick={() => send({ action: "back" })} disabled={busy} title="后退" aria-label="后退"><Icon name="back" size={13} /></button>
-          <button className="btn-icon" onClick={() => send({ action: "reload" })} disabled={busy} title="刷新页面" aria-label="刷新页面"><Icon name="refresh" size={13} /></button>
+          <button className="btn-icon" onClick={() => send({ action: "back" })} disabled={busy} title="后退" aria-label="后退"><Icon name="back" size={14} /></button>
+          <button className="btn-icon" onClick={() => send({ action: "reload" })} disabled={busy} title="刷新页面" aria-label="刷新页面"><Icon name="refresh" size={14} /></button>
         </div>
         <form
           className="browser-url-form"
@@ -449,8 +518,8 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
           <i /> {statusText}
         </span>
         <span className={`browser-connection ${connected ? "online" : "offline"}`}><i />{connected ? "同步中" : "重连中"}</span>
-        <span className={`browser-takeover ${userOwns ? "is-user" : "is-agent"}`} title={userOwns ? `${ownership.reason || "你正在操作"}；Agent 写操作已暂停，交还或等待 ${ownership.secondsRemaining || 0}s 后自动恢复` : "Agent 可继续使用此浏览器"}>
-          <i />{userOwns ? `你在操作${ownership.secondsRemaining ? ` · ${ownership.secondsRemaining}s` : ""}` : "Agent 可用"}
+        <span className={`browser-takeover ${userOwns ? "is-user" : "is-agent"}`} title={userOwns ? `${ownership.reason || "你正在操作"}；Agent 写操作已暂停，交还或等待 ${secondsRemainingLocal}s 后自动恢复` : "Agent 可继续使用此浏览器"}>
+          <i />{userOwns ? `你在操作${secondsRemainingLocal ? ` · ${secondsRemainingLocal}s` : ""}` : "Agent 可用"}
         </span>
         <button
           type="button"
@@ -461,6 +530,12 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
         >
           <Icon name="cursor" size={12} />{userOwns ? "交还 Agent" : "接管操作"}
         </button>
+        {flag("browserFullpage") && (
+          <>
+            <button type="button" className="btn-icon" onClick={captureFullpage} disabled={busy || !state.active} title="整页截图（长页面完整保存）" aria-label="整页截图"><Icon name="image" size={14} /></button>
+            <button type="button" className="btn-icon" onClick={exportPdf} disabled={busy || !state.active} title="导出整页 PDF" aria-label="导出整页 PDF"><Icon name="download" size={14} /></button>
+          </>
+        )}
         <button
           type="button"
           className="browser-fullscreen-toggle"
@@ -468,9 +543,9 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
           title={fullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
           aria-label={fullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
         >
-          <Icon name={fullscreen ? "minimize" : "maximize"} size={13} />
+          <Icon name={fullscreen ? "minimize" : "maximize"} size={14} />
         </button>
-        <button className="btn-icon" onClick={handleClose} disabled={busy} title="关闭浏览器" aria-label="关闭浏览器"><Icon name="close" size={13} /></button>
+        <button className="btn-icon" onClick={handleClose} disabled={busy} title="关闭浏览器" aria-label="关闭浏览器"><Icon name="close" size={14} /></button>
       </div>
       {state.title && <div className="browser-title" title={state.title}>{state.title}</div>}
       <div ref={viewRef} className="browser-view" title="滚轮滚动 · 单击接管 · 按住拖动可操作滑块">
@@ -499,7 +574,7 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
           <div className="browser-placeholder"><span>{state.loading ? "正在加载网页…" : "正在获取画面…"}</span><button className="btn-sm" onClick={() => send({ action: "reload" })} disabled={busy}>重新连接</button></div>
         )}
       </div>
-      <div className="browser-hint"><Icon name="cursor" size={11} /> {userOwns ? "你正在接管：Agent 写操作已暂停，点击「交还 Agent」后恢复" : "点击网页控件后直接键盘输入 · 滚轮滚动 · 按住拖动滑块/验证码 · 回车提交"}</div>
+      <div className="browser-hint"><Icon name="cursor" size={12} /> {userOwns ? "你正在接管：Agent 写操作已暂停，点击「交还 Agent」后恢复" : "点击网页控件后直接键盘输入 · 滚轮滚动 · 按住拖动滑块/验证码 · 回车提交"}</div>
       {state.error && <div className="browser-msg">{state.error}</div>}
       {message && <div className="browser-msg">{message}</div>}
     </div>

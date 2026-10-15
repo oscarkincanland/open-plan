@@ -1,7 +1,8 @@
-import React from "react";
+import React, { lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
-import DesktopAgentPrototype from "./components/桌面端Agent原型.jsx";
+// F4：桌面原型仅 ?prototype=desktop 可达，lazy 化后不进入主 bundle（按需 chunk 加载）。
+const DesktopAgentPrototype = lazy(() => import("./components/桌面端Agent原型.jsx"));
 import { ThemeProvider } from "./theme.jsx";
 import "./styles.css";
 
@@ -21,6 +22,8 @@ const isDesktopPrototype = new URLSearchParams(window.location.search).get("prot
 
 createRoot(document.getElementById("root")).render(
   <ThemeProvider>
-    {isDesktopPrototype ? <DesktopAgentPrototype /> : <App />}
+    <Suspense fallback={null}>
+      {isDesktopPrototype ? <DesktopAgentPrototype /> : <App />}
+    </Suspense>
   </ThemeProvider>
 );

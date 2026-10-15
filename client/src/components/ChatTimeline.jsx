@@ -274,7 +274,7 @@ export default function ChatTimeline({ messages, containerRef }) {
           <div className="timeline-popup-head">
             <span>会话导航</span>
             <span className="timeline-popup-count">{entries.length} 条 · 第 {(cursorPosition ?? 0) + 1} 条</span>
-            <button type="button" className="timeline-popup-close" onClick={closePopup} aria-label="关闭会话导航"><Icon name="close" size={11} /></button>
+            <button type="button" className="timeline-popup-close" onClick={closePopup} aria-label="关闭会话导航"><Icon name="close" size={12} /></button>
           </div>
           <div className="timeline-popup-list">
             {windowEntries.map((entry) => (

@@ -9,6 +9,7 @@ import Logo from "./Logo.jsx";
 import MemoryTab from "./MemoryTab.jsx";
 import SettingsPanel from "./SettingsPanel.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
+import { notifyError, notifySuccess, askConfirm } from "./Feedback.jsx";
 
 // 运行中的状态集合：这些会话的名字用跑马灯 + 灯效展示，一眼看出"还在跑"
 const RUNNING_SESSION_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
@@ -213,7 +214,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
               title={s.title || s.label || "未命名会话"}
               onDoubleClick={(e) => { e.stopPropagation(); setEditingId(s.id); setEditValue(s.label || s.title || ""); }}
             >
-              {isPinned && <Icon name="pin" size={10} className="pin-icon" />}
+              {isPinned && <Icon name="pin" size={12} className="pin-icon" />}
               {s.frozen && <span className="session-frozen-mark" title="会话已冻结">冻结</span>}
               {s.parentSessionId && <span className="session-branch-mark" title={s.branchPurpose || "独立分支"}>分支</span>}
               <跑马灯文本
@@ -246,7 +247,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
         <button className="btn-icon" onClick={() => handleToggleFreeze(s)} title={s.frozen ? "解冻会话" : "冻结会话"}><Icon name={s.frozen ? "check" : "stop"} size={12} /></button>
         <button
           className="btn-icon danger"
-          onClick={async () => { if (confirm("确认删除此会话?")) { await onDelete(s.id); } }}
+          onClick={async () => { if (await askConfirm("确认删除此会话?")) { await onDelete(s.id); } }}
           title="删除"
         ><Icon name="trash" size={12} /></button>
         </div>
@@ -258,7 +259,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   return (
     <div className="session-list">
       <div className="session-search">
-        <Icon name="search" size={11} />
+        <Icon name="search" size={12} />
         <input placeholder="搜索会话…" value={search} onChange={(e) => setSearch(e.target.value)} />
       </div>
       <div className="session-batch-toolbar">
@@ -268,7 +269,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
           <button type="button" onClick={() => setSelectedIds(new Set())}>清空</button>
           <button type="button" className="danger" disabled={!selectedIds.size || !onBatchDelete} onClick={async () => {
             if (!selectedIds.size || !onBatchDelete) return;
-            if (!window.confirm(`确认删除已选的 ${selectedIds.size} 个会话吗？运行中的会话会自动跳过。`)) return;
+            if (!(await askConfirm(`确认删除已选的 ${selectedIds.size} 个会话吗？运行中的会话会自动跳过。`))) return;
             await onBatchDelete([...selectedIds]);
             setSelectedIds(new Set());
             setSelecting(false);
@@ -284,7 +285,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
       {/* 置顶区 */}
       {pinnedList.length > 0 && (
         <div className="session-group">
-          <div className="session-group-title"><Icon name="pin" size={10} /> 置顶</div>
+          <div className="session-group-title"><Icon name="pin" size={12} /> 置顶</div>
           {pinnedList.map((s) => renderItem(s))}
         </div>
       )}
@@ -430,24 +431,24 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       await addFileRoot(value);
       setRootPath("");
       refreshFileRoots();
-    } catch (e) { alert("登记失败: " + e.message); }
+    } catch (e) { notifyError("登记失败: " + e.message); }
   };
 
   const applyCustom = async () => {
     const dir = customPath.trim();
-    if (!dir) return alert("请输入文件夹路径");
+    if (!dir) return notifyError("请输入文件夹路径");
     setApplying(true);
     try {
       const v = await validateWorkspace(dir);
       if (!v.ok) {
         const reason = v.writeAccess?.message || v.error || "无效目录";
-        alert(`无法将此目录用作可写工作区：${reason}`);
+        notifyError(`无法将此目录用作可写工作区：${reason}`);
         return;
       }
       await onWorkspaceChange(dir);
       setCustomMode(false);
       setSwitcherOpen(false);
-    } catch (e) { alert("验证失败: " + e.message); }
+    } catch (e) { notifyError("验证失败: " + e.message); }
     finally { setApplying(false); }
   };
 
@@ -463,7 +464,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       if (!result.ok) {
         const reason = result.writeAccess?.message || result.error || "无效目录";
         setPickNotice("");
-        alert(`无法将此目录用作可写工作区：${reason}`);
+        notifyError(`无法将此目录用作可写工作区：${reason}`);
         return;
       }
       setPickNotice("");
@@ -472,7 +473,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       setSwitcherOpen(false);
     } catch (e) {
       setPickNotice("");
-      alert("选择工作区失败: " + e.message);
+      notifyError("选择工作区失败: " + e.message);
     }
     finally { setApplying(false); setPicking(false); }
   };
@@ -498,7 +499,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
         throw new Error(`上传落点与当前工作区不一致（${result.workspace}）`);
       }
       onUploaded();
-    } catch (err) { alert("上传失败: " + err.message); }
+    } catch (err) { notifyError("上传失败: " + err.message); }
     e.target.value = "";
   };
 
@@ -525,13 +526,13 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       while (names.has(name)) name = `新建文档 ${i++}.docx`;
       await uploadFile(name, data, currentWorkspace);
       onUploaded();
-    } catch (err) { alert("新建失败: " + err.message); }
+    } catch (err) { notifyError("新建失败: " + err.message); }
     setCreatingWord(false);
   };
 
   const handleDeleteFile = async (name) => {
-    if (!confirm(`删除 ${name} ?`)) return;
-        try { await deleteFile(name, currentWorkspace); onRefreshFiles(); } catch (err) { alert("删除失败: " + err.message); }
+    if (!(await askConfirm(`删除 ${name} ?`))) return;
+        try { await deleteFile(name, currentWorkspace); onRefreshFiles(); } catch (err) { notifyError("删除失败: " + err.message); }
   };
 
   // 在文件管理器中显示（macOS 为 Finder 中选中该文件）
@@ -541,9 +542,9 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
     } catch (error) {
       try {
         await navigator.clipboard.writeText(filePath);
-        alert(`无法打开文件管理器（${error.message}），路径已复制到剪贴板：${filePath}`);
+        notifyError(`无法打开文件管理器（${error.message}），路径已复制到剪贴板：${filePath}`);
       } catch {
-        alert(`无法打开文件管理器：${error.message}`);
+        notifyError(`无法打开文件管理器：${error.message}`);
       }
     }
   };
@@ -554,7 +555,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       const result = await openInSystem(filePath);
       if (result?.opened === "reveal") onRefreshFiles?.();
     } catch (error) {
-      alert(`用系统应用打开失败：${error.message}`);
+      notifyError(`用系统应用打开失败：${error.message}`);
     }
   };
 
@@ -563,7 +564,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
     try {
       const result = await pickNativeFiles({ multiple: true, prompt: "选择要打开的文件" });
       if (!result?.ok) {
-        if (!result?.canceled) alert("选择文件失败");
+        if (!result?.canceled) notifyError("选择文件失败");
         return;
       }
       const files = Array.isArray(result.files) ? result.files : [];
@@ -575,16 +576,16 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
         await openInSystem(first.path);
       }
       if (files.length > 1) {
-        alert(`已选中 ${files.length} 个文件，先处理了第 1 个：${first.name || first.path}`);
+        notifySuccess(`已选中 ${files.length} 个文件，先处理了第 1 个：${first.name || first.path}`);
       }
     } catch (error) {
-      alert(`原生文件选择器不可用：${error.message}`);
+      notifyError(`原生文件选择器不可用：${error.message}`);
     }
   };
 
   // 存入知识库：docx → 服务端转 md 并注册为 kb 根
   const handleIngestToKB = async (name) => {
-    if (!confirm(`将「${name}」存入知识库（自动转换为 Markdown 并注册为知识库根）？`)) return;
+    if (!(await askConfirm(`将「${name}」存入知识库（自动转换为 Markdown 并注册为知识库根）？`))) return;
     try {
       const r = await fetch("/api/kb/ingest", {
         method: "POST",
@@ -593,9 +594,9 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok || data.ok === false) throw new Error(data.error || `HTTP ${r.status}`);
-      alert(`已存入知识库：${data.mdName || name}`);
+      notifySuccess(`已存入知识库：${data.mdName || name}`);
     } catch (err) {
-      alert("存入失败: " + err.message);
+      notifyError("存入失败: " + err.message);
     }
   };
 
@@ -674,10 +675,10 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           onClick={() => setSwitcherOpen(true)}
           title="选择项目和工作区"
         >
-          <Icon name="folder" size={13} />
+          <Icon name="folder" size={14} />
           <span>{currentProject?.name || "选择项目"}</span>
           <small>{currentWorkspace ? shortenCwd(currentWorkspace) : "默认工作区"}</small>
-          <Icon name="chevronDown" size={11} />
+          <Icon name="chevronDown" size={12} />
         </button>
         {projects.length > 0 && (
           <>
@@ -718,19 +719,19 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           <option value="__custom__">自定义路径…</option>
         </select>
          <button className="btn-sm sidebar-new-session" onClick={() => onNewSession && onNewSession()} title="新建会话">
-           <Icon name="plus" size={13} />
+           <Icon name="plus" size={14} />
          </button>
          {!customMode && currentWorkspace && currentWorkspace !== workspaces[0]?.path && (
            <button
              className="btn-sm sidebar-del-ws"
              title="从列表移除该工作区"
              onClick={async () => {
-               if (window.confirm("从列表中移除该工作区路径？（不删除文件）")) {
-                 try { await deleteWorkspace(currentWorkspace); onWorkspaceRemove && onWorkspaceRemove(currentWorkspace); } catch (e) { alert("移除失败: " + e.message); }
+               if (await askConfirm("从列表中移除该工作区路径？（不删除文件）")) {
+                 try { await deleteWorkspace(currentWorkspace); onWorkspaceRemove && onWorkspaceRemove(currentWorkspace); } catch (e) { notifyError("移除失败: " + e.message); }
                }
              }}
              aria-label="从列表移除该工作区"
-           ><Icon name="close" size={11} /></button>
+           ><Icon name="close" size={12} /></button>
          )}
          {primaryTab === "file" && <button className={`btn-sm sidebar-root-btn ${rootOpen ? "active" : ""}`} onClick={() => setRootOpen((v) => !v)} title="登记工作区外的本地目录">外部目录</button>}
       </div>
@@ -743,7 +744,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           {fileRoots.map((root) => (
             <div className="external-root-item" key={root.id} title={root.path}>
               <span>{root.label || root.path}</span>
-              <button className="btn-icon danger" onClick={async () => { await removeFileRoot(root.id); refreshFileRoots(); }} title="移除目录" aria-label="移除目录"><Icon name="close" size={11} /></button>
+              <button className="btn-icon danger" onClick={async () => { await removeFileRoot(root.id); refreshFileRoots(); }} title="移除目录" aria-label="移除目录"><Icon name="close" size={12} /></button>
             </div>
           ))}
           {!fileRoots.length && <div className="external-root-empty">尚未登记外部目录</div>}
@@ -762,13 +763,13 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
             {applying && !picking ? "验证中..." : "打开"}
           </button>
           <button className="btn-xs" onClick={pickCustomWorkspace} disabled={applying} title="打开系统文件夹选择器">
-            <Icon name="folderOpen" size={11} /> {picking ? "等待选择…" : "选择文件夹"}
+            <Icon name="folderOpen" size={12} /> {picking ? "等待选择…" : "选择文件夹"}
           </button>
         </div>
       )}
       {(picking || pickNotice) && (
         <div className="workspace-pick-notice" role="status">
-          <Icon name={picking ? "loading" : "info"} size={11} className={picking ? "icon-loading" : ""} />
+          <Icon name={picking ? "loading" : "info"} size={12} className={picking ? "icon-loading" : ""} />
           <span>{pickNotice}</span>
           {picking && <button type="button" className="btn-xs" onClick={cancelPick}>取消等待</button>}
         </div>
@@ -788,7 +789,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                     <div className="workspace-switcher-type">{type}</div>
                     {projects.filter((project) => (project.type || "综合项目") === type).map((project) => (
                       <button type="button" key={project.id} className={"workspace-switcher-option " + (project.id === currentProjectId ? "active" : "")} onClick={() => { onProjectChange?.(project.id); setSwitcherOpen(false); }}>
-                        <Icon name="folder" size={13} />
+                        <Icon name="folder" size={14} />
                         <span><strong>{project.name}</strong><small>{project.status || "进行中"} · 会话 {project.sessionCount ?? projectSessions(project).length}</small></span>
                         {project.pendingMemoryCount > 0 && <em>待沉淀 {project.pendingMemoryCount}</em>}
                       </button>
@@ -801,19 +802,19 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                 <div className="workspace-switcher-section-title">工作区目录</div>
                 {workspaces.map((workspaceItem) => (
                   <button type="button" key={workspaceItem.path} className={"workspace-switcher-option " + (samePath(workspaceItem.path, currentWorkspace) ? "active" : "")} onClick={() => { onWorkspaceChange?.(workspaceItem.path); setSwitcherOpen(false); }}>
-                    <Icon name="folderOpen" size={13} />
+                    <Icon name="folderOpen" size={14} />
                     <span><strong>{workspaceItem.name}</strong><small>{shortenCwd(workspaceItem.path)}</small></span>
                   </button>
                 ))}
-                <button type="button" className="workspace-switcher-custom" onClick={() => setCustomMode(true)}><Icon name="plus" size={13} /> 打开自定义目录</button>
+                <button type="button" className="workspace-switcher-custom" onClick={() => setCustomMode(true)}><Icon name="plus" size={14} /> 打开自定义目录</button>
                 {customMode && (
                   <div className="workspace-switcher-custom-form">
                     <input autoFocus value={customPath} placeholder="输入文件夹绝对路径" onChange={(e) => setCustomPath(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") applyCustom(); }} />
                     <button type="button" className="btn-xs" onClick={applyCustom} disabled={applying}>{applying && !picking ? "验证中…" : "打开"}</button>
-                    <button type="button" className="btn-xs" onClick={pickCustomWorkspace} disabled={applying} title="打开系统文件夹选择器"><Icon name="folderOpen" size={11} /> {picking ? "等待选择…" : "选择文件夹"}</button>
+                    <button type="button" className="btn-xs" onClick={pickCustomWorkspace} disabled={applying} title="打开系统文件夹选择器"><Icon name="folderOpen" size={12} /> {picking ? "等待选择…" : "选择文件夹"}</button>
                     {(picking || pickNotice) && (
                       <div className="workspace-pick-notice" role="status">
-                        <Icon name={picking ? "loading" : "info"} size={11} className={picking ? "icon-loading" : ""} />
+                        <Icon name={picking ? "loading" : "info"} size={12} className={picking ? "icon-loading" : ""} />
                         <span>{pickNotice}</span>
                         {picking && <button type="button" className="btn-xs" onClick={cancelPick}>取消等待</button>}
                       </div>
@@ -837,7 +838,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
             className="project-memory-btn"
             onClick={() => { if (onOpenSettings) onOpenSettings("memory"); else { onBeforeOpenModal?.(); setModal("settings"); setModalTab("memory"); } }}
             title="打开当前工作区的记忆与沉淀"
-          ><Icon name="book" size={11} /> 记忆</button>
+          ><Icon name="book" size={12} /> 记忆</button>
         </div>
       )}
 
@@ -866,7 +867,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
               {project.id === currentProjectId && projectSessions(project).length > 0 && (
                 <div className="project-session-preview" onClick={(e) => e.stopPropagation()}>
                   <div className="project-session-preview-head">
-                    <span><Icon name="history" size={11} /> 最近会话</span>
+                    <span><Icon name="history" size={12} /> 最近会话</span>
                     <button type="button" onClick={() => { setHistoryProjectId(project.id); setModal("history"); }}>查看全部</button>
                   </div>
                   {projectSessions(project).slice(0, 4).map((session) => (
@@ -880,7 +881,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                         />
                         <small>{session.runStatus === "running" ? "执行中" : formatTime(session.modified)}</small>
                       </button>
-                      <button type="button" className="project-session-edit" onClick={() => { setHistoryProjectId(project.id); setHistoryEditSessionId(session.id); setModal("history"); }} title="编辑会话名称" aria-label="编辑会话名称"><Icon name="penTool" size={11} /></button>
+                      <button type="button" className="project-session-edit" onClick={() => { setHistoryProjectId(project.id); setHistoryEditSessionId(session.id); setModal("history"); }} title="编辑会话名称" aria-label="编辑会话名称"><Icon name="penTool" size={12} /></button>
                     </div>
                   ))}
                   {projectSessions(project).length > 4 && <button type="button" className="project-history-more" onClick={() => { setHistoryProjectId(project.id); setModal("history"); }}>还有 {projectSessions(project).length - 4} 个会话</button>}
@@ -918,26 +919,26 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           onClick={toggleFileSort}
           title={fileSort === "time" ? "当前按修改时间排序，点击改为按类型分组" : "当前按文件类型排序，点击改为按修改时间排序"}
         >
-          <Icon name={fileSort === "time" ? "history" : "layers"} size={11} />
+          <Icon name={fileSort === "time" ? "history" : "layers"} size={12} />
           <span className="section-sort-text">{fileSort === "time" ? "时间" : "类型"}</span>
         </button>
         <span className="section-count">{files.length}</span>
         {/* 图层入口（阶段 1 · B6 的"工作区入口"）：在工作区语境下也能一步到图层管理。
             与「能力」页的地图入口同源（都打开地图模块），只是就近放在文件页工具条。 */}
         <button className="btn-xs section-layers" onClick={onOpenMap} title="图层管理（打开地图模块，查看共享数据集与本工作区图层）">
-          <Icon name="layers" size={11} />
+          <Icon name="layers" size={12} />
         </button>
         <button className="btn-xs section-refresh" onClick={() => onRefreshFiles()} title="刷新文件">
-          <Icon name="refresh" size={11} />
+          <Icon name="refresh" size={12} />
         </button>
         <button className="btn-xs section-new" onClick={handleNewWord} disabled={creatingWord} title="新建空白 Word 文档">
-          <Icon name="plus" size={11} />
+          <Icon name="plus" size={12} />
         </button>
         <button className="btn-xs section-pick-native" onClick={handlePickNativeFiles} title="用系统原生选择器打开本机文件（macOS Finder / Windows 资源管理器）">
-          <Icon name="folderOpen" size={11} />
+          <Icon name="folderOpen" size={12} />
         </button>
         <button className="btn-xs section-upload" onClick={() => fileRef.current?.click()} title="上传文件（复制进当前工作区）">
-          <Icon name="upload" size={11} />
+          <Icon name="upload" size={12} />
         </button>
         <input ref={fileRef} type="file" accept=".docx,.xlsx,.pptx,.pdf,.csv,.json,.md,.markdown,.txt,.html,.htm" hidden onChange={handleUpload} />
       </div>
@@ -953,13 +954,13 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           </div>
         )}
         <div className="file-search">
-          <Icon name="search" size={11} />
+          <Icon name="search" size={12} />
           <input
             placeholder="搜索整个工作区的文件和目录…"
             value={fileQ}
             onChange={(e) => setFileQ(e.target.value)}
           />
-          {fileQ && <button className="file-search-clear" onClick={() => setFileQ("")} title="清除" aria-label="清除搜索"><Icon name="close" size={11} /></button>}
+          {fileQ && <button className="file-search-clear" onClick={() => setFileQ("")} title="清除" aria-label="清除搜索"><Icon name="close" size={12} /></button>}
         </div>
         <div className="file-list">
           {fileSearchLoading && <div className="file-search-status">正在搜索整个工作区…</div>}
@@ -986,7 +987,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                 <FileTypeIcon file={f} />
                 <span className="file-name" title={f.name}>{f.isDir ? f.name : f.name}</span>
                 <span className="file-meta">
-                  {fileQ.trim() ? <span className="file-path-hint" title={filePath}>{filePath}</span> : (f.isDir ? <Icon name="chevronRight" size={11} className="file-dir-chevron" /> : formatSize(f.size))}
+                  {fileQ.trim() ? <span className="file-path-hint" title={filePath}>{filePath}</span> : (f.isDir ? <Icon name="chevronRight" size={12} className="file-dir-chevron" /> : formatSize(f.size))}
                   {!f.isDir && <span className="file-mtime">{formatTime(new Date(f.mtime).toISOString())}</span>}
                 </span>
                 <span
@@ -1000,7 +1001,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                   aria-label={`引用 ${f.name}`}
                 >@</span>
                 {!f.isDir && (
-                  <span className="file-del" onClick={(e) => { e.stopPropagation(); handleDeleteFile(filePath); }} role="button" aria-label={`删除 ${f.name}`} title={`删除 ${f.name}`}><Icon name="close" size={10} /></span>
+                  <span className="file-del" onClick={(e) => { e.stopPropagation(); handleDeleteFile(filePath); }} role="button" aria-label={`删除 ${f.name}`} title={`删除 ${f.name}`}><Icon name="close" size={12} /></span>
                 )}
               </div>
             );
@@ -1013,10 +1014,10 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       {/* 底部：产物 / 设置（弹窗） */}
       <div className="sidebar-bottom-tabs">
         <button className={`bt-btn ${modal === "artifacts" ? "active" : ""}`} onClick={() => { if (onOpenArtifacts) onOpenArtifacts(); else { if (modal !== "artifacts") onBeforeOpenModal?.(); setModal(modal === "artifacts" ? null : "artifacts"); } }} title="产物（agent 生成的文件）">
-          <Icon name="file" size={13} /> 产物
+          <Icon name="file" size={14} /> 产物
         </button>
         <button className={`bt-btn ${modal === "settings" ? "active" : ""}`} onClick={() => { if (onOpenSettings) onOpenSettings("settings"); else { if (modal !== "settings") onBeforeOpenModal?.(); setModal(modal === "settings" ? null : "settings"); } }} title="设置（含记忆）">
-          <Icon name="gear" size={13} /> 设置
+          <Icon name="gear" size={14} /> 设置
         </button>
       </div>
 
@@ -1025,7 +1026,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
         <div className="sb-modal-backdrop" onClick={() => { setModal(null); setHistoryEditSessionId(null); }}>
           <div className="sb-modal project-history-modal" onClick={(e) => e.stopPropagation()}>
             <div className="sb-modal-head">
-              <Icon name="history" size={13} />
+              <Icon name="history" size={14} />
               <span className="sb-modal-title">{historyProject?.name || "项目"} · 会话历史</span>
               <span className="sb-modal-sub">共 {historySessions.length} 个，会话可独立切换、分支和恢复</span>
               <button className="mp-op" onClick={() => setModal(null)} title="关闭"><Icon name="close" size={14} /></button>
@@ -1053,7 +1054,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
         <div className="sb-modal-backdrop" onClick={() => setModal(null)}>
           <div className="sb-modal" onClick={(e) => e.stopPropagation()}>
             <div className="sb-modal-head">
-              <Icon name="file" size={13} />
+              <Icon name="file" size={14} />
               <span className="sb-modal-title">成果（{artifactEntries.length}）</span>
               <span className="sb-modal-sub">按 Run manifest 展示，可固定为项目正式成果</span>
               <button className="mp-op" onClick={() => setModal(null)} title="关闭"><Icon name="close" size={14} /></button>
@@ -1088,11 +1089,11 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                           e.stopPropagation();
                           const note = window.prompt("请输入人工确认说明（可选）", "已检查内容、格式和页面显示");
                           if (note === null) return;
-                          try { await confirmArtifactAcceptance(item.run.id, item.artifactId, note); await refreshArtifacts(); } catch (error) { alert("人工确认失败: " + error.message); }
+                          try { await confirmArtifactAcceptance(item.run.id, item.artifactId, note); await refreshArtifacts(); } catch (error) { notifyError("人工确认失败: " + error.message); }
                         }}>人工确认</button>}
                         {canPublish && <button className="btn-xs artifact-publish-btn" onClick={async (e) => {
                           e.stopPropagation();
-                          try { await publishArtifact(item.run.id, item.artifactId); await refreshArtifacts(); } catch (error) { alert("固定成果失败: " + error.message); }
+                          try { await publishArtifact(item.run.id, item.artifactId); await refreshArtifacts(); } catch (error) { notifyError("固定成果失败: " + error.message); }
                         }}>固定成果</button>}
                         {acceptance && <details className="artifact-acceptance-details" onClick={(e) => e.stopPropagation()}>
                           <summary>验收详情</summary>
@@ -1109,8 +1110,8 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                   <span className="file-name" title={item.path}>{String(item.path || "").split(/[\\/]/).pop()}</span>
                   <span className="artifact-history-meta">v{item.version} · {item.diffSummary?.changeType || "修改"} · Run {String(item.sourceRunId || item.runId || "").slice(-8)} · {item.status === "rolled_back" ? "已回滚" : "当前版本"}</span>
                   {item.status !== "rolled_back" && item.rollbackTarget && <button className="btn-xs" onClick={async () => {
-                    if (!window.confirm(`确认将 ${item.path} 回滚到 v${publishedArtifacts.find((entry) => entry.id === item.rollbackTarget)?.version || "历史"}？`)) return;
-                    try { await rollbackPublishedArtifact(item.id); await refreshArtifacts(); } catch (error) { alert("回滚成果失败: " + error.message); }
+                    if (!(await askConfirm(`确认将 ${item.path} 回滚到 v${publishedArtifacts.find((entry) => entry.id === item.rollbackTarget)?.version || "历史"}？`))) return;
+                    try { await rollbackPublishedArtifact(item.id); await refreshArtifacts(); } catch (error) { notifyError("回滚成果失败: " + error.message); }
                   }}>回滚</button>}
                 </div>)}
               </div>}
@@ -1124,7 +1125,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
         <div className="sb-modal-backdrop" onClick={() => setModal(null)}>
           <div className="sb-modal sb-modal-wide" onClick={(e) => e.stopPropagation()}>
             <div className="sb-modal-head">
-              <Icon name="gear" size={13} />
+              <Icon name="gear" size={14} />
               <span className="sb-modal-title">设置</span>
               <div className="sb-subtabs">
                 <button className={`sb-subtab ${modalTab === "settings" ? "active" : ""}`} onClick={() => setModalTab("settings")}>设置</button>

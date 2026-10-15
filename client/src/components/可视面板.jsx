@@ -273,11 +273,11 @@ export default function 可视面板({
   return (
     <div className="vp" role="dialog" aria-label="可视面板">
       <div className="vp-head">
-        <Icon name="chart" size={13} />
+        <Icon name="chart" size={14} />
         <span className="vp-title">可视化</span>
         <span className="vp-sub">六个分析面板已整合到这里</span>
         <button type="button" className="mp-op" onClick={onClose} title="关闭可视面板" aria-label="关闭可视面板">
-          <Icon name="close" size={13} />
+          <Icon name="close" size={14} />
         </button>
       </div>
 
@@ -303,7 +303,7 @@ export default function 可视面板({
         </div>
 
         <button className="vp-advanced-toggle" type="button" onClick={() => setAdvanced((v) => !v)} aria-expanded={advanced}>
-          <Icon name={advanced ? "chevronDown" : "chevronRight"} size={11} /> 高级（手动选数据集与参数）
+          <Icon name={advanced ? "chevronDown" : "chevronRight"} size={12} /> 高级（手动选数据集与参数）
         </button>
 
         {advanced && (
@@ -361,7 +361,7 @@ export default function 可视面板({
         {descriptor && (
           <div className="vp-card">
             <div className="vp-card-head">
-              <Icon name="star" size={11} />
+              <Icon name="star" size={12} />
               <span className="vp-card-name" title={descriptor.title}>{descriptor.title}</span>
               <span className="vp-card-badge">临时</span>
             </div>

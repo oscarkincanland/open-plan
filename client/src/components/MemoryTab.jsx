@@ -189,10 +189,10 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
       {/* 记忆变更 Dock（Proma MemoryChangeDock 风格） */}
       {changes.length > 0 && (
         <div className="memory-dock">
-          <div className="memory-dock-head"><Icon name="info" size={10} /> 记忆已更新</div>
+          <div className="memory-dock-head"><Icon name="info" size={12} /> 记忆已更新</div>
           {changes.map((c) => (
             <div key={c.file} className="memory-change-item" onClick={() => loadFile(c.file)}>
-              <Icon name="file" size={10} />
+              <Icon name="file" size={12} />
               <span className="memory-change-file">{c.file}</span>
               <button className="memory-change-dismiss" onClick={(e) => { e.stopPropagation(); dismissChange(c.file); }}>
                 <Icon name="x" size={9} />
@@ -205,7 +205,7 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
       {/* 待沉淀卡片：长期记忆必须经过用户确认 */}
       <div className="memory-proposals">
           <div className="memory-proposals-head">
-            <span><Icon name="bookmark" size={11} /> 记忆治理（{proposals.length}）</span>
+            <span><Icon name="bookmark" size={12} /> 记忆治理（{proposals.length}）</span>
             <select value={proposalStatus} onChange={(e) => { setProposalStatus(e.target.value); setSelectedProposals([]); }}>
               <option value="pending">待审核</option>
               <option value="all">全部历史</option>
@@ -254,7 +254,7 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
               className={`memory-file-item ${active === f.rel ? "active" : ""}`}
               onClick={() => loadFile(f.rel)}
             >
-              <Icon name={f.type === "agents" ? "doc" : "file"} size={11} />
+              <Icon name={f.type === "agents" ? "doc" : "file"} size={12} />
               <span className="memory-file-name">{f.rel}</span>
               <span className="memory-file-size">{(f.size / 1024).toFixed(1)}k</span>
             </div>

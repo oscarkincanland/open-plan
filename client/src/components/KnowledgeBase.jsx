@@ -8,6 +8,7 @@ import {
   kbStatus, kbAddRoot, kbRemoveRoot, kbTree, kbSearch, kbGraph, kbDoc,
   kbImaStatus, kbImaBases, kbImaSearch, kbImaDoc,
 } from "../api.js";
+import { notifyError, notifySuccess, askConfirm } from "./Feedback.jsx";
 
 /**
  * 知识库全屏模式（Obsidian 风格）
@@ -357,9 +358,9 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok || data.ok === false) throw new Error(data.error || `HTTP ${r.status}`);
-      alert(`已导出：${data.name}（保存到工作区）`);
+      notifySuccess(`已导出：${data.name}（保存到工作区）`);
     } catch (err) {
-      alert("导出失败: " + err.message);
+      notifyError("导出失败: " + err.message);
     } finally {
       setExporting(false);
     }
@@ -374,18 +375,18 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
       const st = await kbStatus();
       setRoots(st.roots || []);
       if (st.roots.length > 0) loadRoot(st.roots.length - 1);
-    } catch (e) { alert("添加失败: " + e.message); }
+    } catch (e) { notifyError("添加失败: " + e.message); }
   }, [loadRoot]);
 
   const handleRemoveRoot = useCallback(async (i) => {
-    if (!window.confirm(`移除根目录「${roots[i]?.name}」？（仅移出索引，不删除文件）`)) return;
+    if (!(await askConfirm(`移除根目录「${roots[i]?.name}」？（仅移出索引，不删除文件）`))) return;
     try {
       await kbRemoveRoot(roots[i]?.path);
       const st = await kbStatus();
       setRoots(st.roots || []);
       if (st.roots.length > 0) loadRoot(0);
       else { setTree([]); setTabs([]); setActiveTab(null); setDocCache({}); }
-    } catch (e) { alert("移除失败: " + e.message); }
+    } catch (e) { notifyError("移除失败: " + e.message); }
   }, [roots, loadRoot]);
 
   // IMA
@@ -393,7 +394,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
     try {
       const r = await kbImaBases();
       if (r.ok) setImaBases(r.bases || []);
-      else alert(r.error || "获取知识库列表失败");
+      else notifyError(r.error || "获取知识库列表失败");
     } catch {}
   }, []);
   const doImaSearch = useCallback(async () => {
@@ -401,14 +402,14 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
     try {
       const r = await kbImaSearch(imaQ.trim(), "");
       if (r.ok) setImaResults(r.items || []);
-      else alert(r.error || "搜索失败");
+      else notifyError(r.error || "搜索失败");
     } catch {}
   }, [imaQ]);
   const openImaDoc = useCallback(async (mediaId) => {
     try {
       const r = await kbImaDoc(mediaId);
       if (r.ok) setImaDocView(r);
-      else alert(r.error || "获取内容失败");
+      else notifyError(r.error || "获取内容失败");
     } catch {}
   }, []);
 
@@ -509,12 +510,12 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
             <option key={i} value={i}>{r.name}{r.exists ? "" : "（缺失）"}</option>
           ))}
         </select>
-        <button className="btn-sm" onClick={handleAddRoot} title="添加知识库根目录"><Icon name="plus" size={12} /></button>
-        {roots.length > 1 && <button className="btn-sm" onClick={() => handleRemoveRoot(rootIdx)} title="移除当前根目录"><Icon name="trash" size={12} /></button>}
+        <button className="btn-sm" onClick={handleAddRoot} title="添加知识库根目录" aria-label="添加知识库根目录"><Icon name="plus" size={12} /></button>
+        {roots.length > 1 && <button className="btn-sm" onClick={() => handleRemoveRoot(rootIdx)} title="移除当前根目录" aria-label="移除当前根目录"><Icon name="trash" size={12} /></button>}
         <div className="kb-search">
           <input placeholder="搜索知识库…" value={searchQ} onChange={(e) => setSearchQ(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && doSearch(searchQ)} />
-          <button className="btn-sm" onClick={() => doSearch(searchQ)} disabled={searching}>
+          <button className="btn-sm" onClick={() => doSearch(searchQ)} disabled={searching} aria-label="搜索知识库">
             {searching ? "…" : <Icon name="search" size={12} />}
           </button>
           {searchQ && <button className="btn-sm" onClick={() => { setSearchQ(""); setResults(null); }} aria-label="清除搜索"><Icon name="close" size={12} /></button>}
@@ -529,7 +530,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
         </button>
         <button className={"btn-sm kb-ima-btn" + (imaOpen ? " active" : "")}
           onClick={() => { setImaOpen((v) => !v); if (!imaOpen && !imaBases.length) loadImaBases(); }}
-          title="IMA 云端知识库"><Icon name="cloud" size={13} /> IMA{imaConfigured ? "" : " ⚠"}</button>
+          title="IMA 云端知识库"><Icon name="cloud" size={14} /> IMA{imaConfigured ? "" : " ⚠"}</button>
       </div>
 
       {chatOpen && (
@@ -647,7 +648,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
                 {tabs.map((t) => (
                   <div key={t.relPath} className={"kb-tab" + (activeTab === t.relPath ? " active" : "")} onClick={() => setActiveTab(t.relPath)} title={t.relPath}>
                     <span className="kb-tab-title">{t.title}</span>
-                    <span className="kb-tab-close" role="button" aria-label={`关闭 ${t.title}`} onClick={(e) => { e.stopPropagation(); closeTab(t.relPath); }}><Icon name="close" size={11} /></span>
+                    <span className="kb-tab-close" role="button" aria-label={`关闭 ${t.title}`} onClick={(e) => { e.stopPropagation(); closeTab(t.relPath); }}><Icon name="close" size={12} /></span>
                   </div>
                 ))}
               </div>
@@ -726,7 +727,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
               <>
                 <div className="kb-right-section">
                   <button className="btn-sm primary kb-at-btn" onClick={handleAtMention} title="插入 @ 引用到主 Chat 对话">
-                    <Icon name="at" size={13} /> @ 到对话
+                    <Icon name="at" size={14} /> @ 到对话
                   </button>
                 </div>
                 <div className="kb-right-section">
@@ -735,7 +736,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
                   <ul className="kb-links">
                     {doc.links.map((l, i) => (
                       <li key={i} onClick={() => openDoc(l.relPath, l.rootIdx)} title={l.relPath}>
-                        <Icon name="link" size={11} /> {l.alias || l.title}
+                        <Icon name="link" size={12} /> {l.alias || l.title}
                       </li>
                     ))}
                   </ul>
@@ -747,7 +748,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
                     {doc.backlinks.map((b, i) => (
                       <li key={i} className={backOpen[b.relPath] ? "open" : ""}>
                         <div className="kb-backlink-title" onClick={() => openDoc(b.relPath, b.rootIdx)} title={b.relPath}>
-                          <Icon name="backlink" size={11} /> {b.title}
+                          <Icon name="backlink" size={12} /> {b.title}
                         </div>
                         {b.snippet && (
                           <div
@@ -769,7 +770,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
                     {(doc.mentions || []).map((m, i) => (
                       <li key={i} className={backOpen["m" + m.relPath] ? "open" : ""}>
                         <div className="kb-backlink-title" onClick={() => openDoc(m.relPath, m.rootIdx)} title={m.relPath}>
-                          <Icon name="file" size={11} /> {m.title}
+                          <Icon name="file" size={12} /> {m.title}
                         </div>
                         {m.snippet && (
                           <div

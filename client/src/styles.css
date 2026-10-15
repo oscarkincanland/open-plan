@@ -10732,7 +10732,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 
 /* ===== 统一反馈基座（Feedback.jsx：toast 队列 + 应用内确认框） ===== */
 .fb-toast-stack { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 10000; max-width: min(420px, calc(100vw - 32px)); }
-.fb-toast { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 6px; background: var(--panel2-bg); border: 1px solid var(--border); color: var(--text); font-size: 12px; box-shadow: 0 6px 24px rgba(0,0,0,0.35); animation: fb-toast-in 160ms ease-out; }
+.fb-toast { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 6px; background: var(--panel2-bg); border: 1px solid var(--border); color: var(--text); font-size: 12px; box-shadow: 0 6px 24px rgba(0,0,0,0.35); animation: oaw-pop-in 160ms ease-out; }
 .fb-toast-error { border-color: var(--error); }
 .fb-toast-error .icon { color: var(--error); }
 .fb-toast-success { border-color: var(--success); }
@@ -10742,7 +10742,6 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .fb-toast-text { flex: 1; min-width: 0; word-break: break-word; white-space: pre-wrap; }
 .fb-toast-close { display: inline-flex; padding: 2px; border: none; background: none; color: var(--dim); cursor: pointer; border-radius: 4px; }
 .fb-toast-close:hover { color: var(--text); background: var(--surface); }
-@keyframes fb-toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .fb-confirm-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 10001; }
 .fb-confirm { width: min(420px, calc(100vw - 48px)); background: var(--panel2-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
 .fb-confirm-body { font-size: 13px; line-height: 1.6; color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 50vh; overflow: auto; }
@@ -10752,3 +10751,10 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .fb-btn-danger { background: var(--error); border-color: var(--error); color: #fff; }
 .fb-btn-danger:hover { filter: brightness(1.1); }
 .fb-btn:focus-visible, .fb-toast-close:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+
+/* ===== 交互优化配套（O-P3 徽标 / O-P5 截图回看 / O-P8 对账提示） ===== */
+.topbar-browser-toggle { position: relative; }
+.browser-activity-dot { position: absolute; top: 2px; right: 2px; width: 7px; height: 7px; border-radius: 50%; background: var(--warning); box-shadow: 0 0 0 2px var(--panel-bg); }
+.tool-shot-preview .tool-shot-thumb { display: block; max-width: 100%; max-height: 260px; border: 1px solid var(--border); border-radius: 6px; margin: 4px 0 6px; }
+.tool-shot-preview a.btn-xs { display: inline-block; margin-top: 4px; text-decoration: none; }
+.tool-reconcile-hint { color: var(--warning); font-size: 12px; }

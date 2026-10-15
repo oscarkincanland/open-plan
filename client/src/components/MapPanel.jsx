@@ -10,6 +10,7 @@ import TaskCenter from "./任务中心.jsx";
 import 可视面板 from "./可视面板.jsx";
 import shp from "shpjs";
 import { registerLayerReplay, unregisterLayerReplay } from "../图层注册表.js";
+import { askConfirm } from "./Feedback.jsx";
 import {
   mapProjects, mapCreateProject, mapProject, mapSaveStyle, mapSaveConfig,
   mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute, mapDemoAnalysis,
@@ -580,7 +581,7 @@ export default function MapPanel({
   }, [style, saveStyle]);
 
   const removeLayer = useCallback(async (layerId) => {
-    if (!window.confirm(`删除图层「${layerId}」？（数据与瓦片一并移除）`)) return;
+    if (!(await askConfirm(`删除图层「${layerId}」？（数据与瓦片一并移除）`))) return;
     try {
       await mapDeleteLayer(project, layerId);
       if (selectedLayer === layerId) setSelectedLayer(null);
@@ -1480,7 +1481,7 @@ export default function MapPanel({
         setProject(renamed.project || name.trim());
         flash(`项目已重命名为「${renamed.project || name.trim()}」`);
       } else if (action === "archive") {
-        if (!window.confirm(`归档地图项目「${project}」？归档后仍可通过再次操作恢复，不影响已有图层与瓦片。`)) return;
+        if (!(await askConfirm(`归档地图项目「${project}」？归档后仍可通过再次操作恢复，不影响已有图层与瓦片。`))) return;
         await mapArchiveProject(project, true);
         const listed = await mapProjects();
         setProjects(listed.projects || []);
@@ -1491,7 +1492,7 @@ export default function MapPanel({
         setProjects(listed.projects || []);
         flash(`项目「${project}」已恢复`);
       } else if (action === "delete") {
-        if (!window.confirm(`删除地图项目「${project}」？项目会移入回收目录（.trash），不会立即物理删除。`)) return;
+        if (!(await askConfirm(`删除地图项目「${project}」？项目会移入回收目录（.trash），不会立即物理删除。`))) return;
         await mapDeleteProject(project);
         const listed = await mapProjects();
         const next = listed.projects || [];
@@ -1645,8 +1646,8 @@ export default function MapPanel({
               title="地图项目：切换 / 新建 / 复制 / 重命名 / 归档 / 删除"
               aria-expanded={projectMenuOpen}
             >
-              <Icon name="folder" size={13} /> {projects.find((x) => (x.project || x.name) === project)?.name || project}
-              <Icon name="chevronDown" size={11} />
+              <Icon name="folder" size={14} /> {projects.find((x) => (x.project || x.name) === project)?.name || project}
+              <Icon name="chevronDown" size={12} />
             </button>
             {projectMenuOpen && (
               <>
@@ -1697,8 +1698,8 @@ export default function MapPanel({
             title="区域：切换地市/县市区、显示范围、标注开关"
             aria-expanded={regionMenuOpen}
           >
-            <Icon name="locate" size={13} /> {drill ? drill.name : "全省"}
-            <Icon name="chevronDown" size={11} />
+            <Icon name="locate" size={14} /> {drill ? drill.name : "全省"}
+            <Icon name="chevronDown" size={12} />
           </button>
           {regionMenuOpen && (
             <>
@@ -1758,12 +1759,12 @@ export default function MapPanel({
           title={leftHidden ? "显示图层栏" : "隐藏图层栏（地图更宽）"}
           aria-pressed={!leftHidden}
         >
-          <Icon name="layers" size={13} /> 图层
+          <Icon name="layers" size={14} /> 图层
         </button>
 
         {/* 5) 可视化（开可视面板） */}
         <button className={`btn-sm ${visualOpen ? "active" : ""}`} onClick={() => setVisualOpen((v) => !v)} title="可视化：数据集、分析与图层结果">
-          <Icon name="chart" size={13} /> 可视化
+          <Icon name="chart" size={14} /> 可视化
         </button>
 
         {/* 6) 数据（导入 / 重建瓦片 / 刷新） */}
@@ -1774,13 +1775,13 @@ export default function MapPanel({
             title="数据：导入、重建瓦片、刷新地图"
             aria-expanded={dataMenuOpen}
           >
-            <Icon name="upload" size={13} /> 数据 <Icon name="chevronDown" size={11} />
+            <Icon name="upload" size={14} /> 数据 <Icon name="chevronDown" size={12} />
           </button>
           {dataMenuOpen && (
             <div className="mp-analysis-menu" onClick={(e) => e.stopPropagation()}>
-              <button onClick={() => { setImportOpen(true); setDataMenuOpen(false); }}><Icon name="upload" size={13} /> 导入数据</button>
-              <button onClick={() => { handleRebuild(); setDataMenuOpen(false); }}><Icon name="refresh" size={13} /> 重建矢量瓦片</button>
-              <button onClick={() => { refreshMap(); setDataMenuOpen(false); }}><Icon name="refresh" size={13} /> 刷新地图</button>
+              <button onClick={() => { setImportOpen(true); setDataMenuOpen(false); }}><Icon name="upload" size={14} /> 导入数据</button>
+              <button onClick={() => { handleRebuild(); setDataMenuOpen(false); }}><Icon name="refresh" size={14} /> 重建矢量瓦片</button>
+              <button onClick={() => { refreshMap(); setDataMenuOpen(false); }}><Icon name="refresh" size={14} /> 刷新地图</button>
             </div>
           )}
         </div>
@@ -1795,16 +1796,16 @@ export default function MapPanel({
             title="视图：地球/平面、Agent 对话开关"
             aria-expanded={viewMenuOpen}
           >
-            <Icon name="globe" size={13} /> 视图 <Icon name="chevronDown" size={11} />
+            <Icon name="globe" size={14} /> 视图 <Icon name="chevronDown" size={12} />
           </button>
           {viewMenuOpen && (
             <div className="mp-analysis-menu" onClick={(e) => e.stopPropagation()}>
               <button onClick={() => { toggleGlobe(); setViewMenuOpen(false); }}>
-                <Icon name="globe" size={13} /> 切换为{globeMode ? "平面地图" : "地球视图"}
+                <Icon name="globe" size={14} /> 切换为{globeMode ? "平面地图" : "地球视图"}
               </button>
               {hideChat && (
                 <button onClick={() => { onToggleChat?.(); setViewMenuOpen(false); }}>
-                  <Icon name="comment" size={13} /> {chatVisible ? "隐藏 Agent 对话" : "显示 Agent 对话"}
+                  <Icon name="comment" size={14} /> {chatVisible ? "隐藏 Agent 对话" : "显示 Agent 对话"}
                 </button>
               )}
             </div>
@@ -1813,7 +1814,7 @@ export default function MapPanel({
 
         {/* 8) 导出 */}
         <button className="btn-sm" onClick={() => setExportOpen(true)} title="导出报告图（含图例/比例尺/指北针）">
-          <Icon name="download" size={13} /> 导出
+          <Icon name="download" size={14} /> 导出
         </button>
 
         {msg && <span className="mp-msg">{msg}</span>}
@@ -1919,7 +1920,7 @@ export default function MapPanel({
               title="OD 流量分析：粘贴 CSV 出热力图与流向线"
               aria-pressed={odOpen}
             >
-              <Icon name="flow" size={13} /> OD
+              <Icon name="flow" size={14} /> OD
             </button>
             <button
               className={`mp-float-btn ${isoOpen ? "active" : ""}`}
@@ -1927,7 +1928,7 @@ export default function MapPanel({
               title="可达性：等时圈与路径规划"
               aria-pressed={isoOpen}
             >
-              <Icon name="history" size={13} /> 可达性
+              <Icon name="history" size={14} /> 可达性
             </button>
             <span className="mp-float-sep" />
             <button
@@ -1936,7 +1937,7 @@ export default function MapPanel({
               title="测量距离/面积（点击加点，双击结束）"
               aria-pressed={Boolean(draw?.kind?.startsWith("measure"))}
             >
-              <Icon name="locate" size={13} /> 测量
+              <Icon name="locate" size={14} /> 测量
             </button>
             <button
               className={`mp-float-btn ${draw && !draw.kind.startsWith("measure") ? "active" : ""}`}
@@ -1944,7 +1945,7 @@ export default function MapPanel({
               title="绘制点/线/面并保存为图层"
               aria-pressed={Boolean(draw && !draw.kind.startsWith("measure"))}
             >
-              <Icon name="penTool" size={13} /> 绘制
+              <Icon name="penTool" size={14} /> 绘制
             </button>
             {(activeAnalysis || tempLayers.length > 0 || measureResult) && (
               <button
@@ -1983,7 +1984,7 @@ export default function MapPanel({
                 }}
                 title="清除地图上的临时图层（分析结果 / 测量 / 绘制）"
               >
-                <Icon name="trash" size={13} /> 清除
+                <Icon name="trash" size={14} /> 清除
               </button>
             )}
           </div>
@@ -2005,7 +2006,7 @@ export default function MapPanel({
             <div className="mp-measure">
               {measureResult.dist !== undefined && <span>距离：{fmtLen(measureResult.dist)}</span>}
               {measureResult.area !== undefined && <span>面积：{fmtArea(measureResult.area)}</span>}
-              <button className="mp-op" title="清除" onClick={() => { setMeasureResult(null); clearDrawLayers(); }}>
+              <button className="mp-op" title="清除" aria-label="清除" onClick={() => { setMeasureResult(null); clearDrawLayers(); }}>
                 <Icon name="close" size={12} />
               </button>
             </div>
@@ -2061,7 +2062,7 @@ export default function MapPanel({
           <div className="mp-iso-panel mp-od-panel" onClick={(e) => e.stopPropagation()}>
             <div className="mp-iso-head">
               <span><Icon name="locate" size={14} /> OD 流量分析</span>
-              <button className="mp-op" onClick={() => setOdOpen(false)} title="关闭"><Icon name="close" size={14} /></button>
+              <button className="mp-op" onClick={() => setOdOpen(false)} title="关闭" aria-label="关闭"><Icon name="close" size={14} /></button>
             </div>
             <div className="mp-iso-body">
               <div className="mp-iso-hint" style={{ border: "none", padding: 0, marginBottom: 8 }}>
@@ -2112,7 +2113,7 @@ export default function MapPanel({
           <div className="mp-iso-panel" onClick={(e) => e.stopPropagation()}>
             <div className="mp-iso-head">
               <span><Icon name="upload" size={14} /> 导入路网数据</span>
-              <button className="mp-op" onClick={() => setImportOpen(false)} title="关闭"><Icon name="close" size={14} /></button>
+              <button className="mp-op" onClick={() => setImportOpen(false)} title="关闭" aria-label="关闭"><Icon name="close" size={14} /></button>
             </div>
             <div className="mp-iso-body">
               <div className="mp-iso-modes" style={{ marginBottom: 10 }}>
@@ -2155,7 +2156,7 @@ export default function MapPanel({
           <div className="mp-iso-panel" onClick={(e) => e.stopPropagation()}>
             <div className="mp-iso-head">
               <span><Icon name="download" size={14} /> 导出报告图</span>
-              <button className="mp-op" onClick={() => setExportOpen(false)} title="关闭"><Icon name="close" size={14} /></button>
+              <button className="mp-op" onClick={() => setExportOpen(false)} title="关闭" aria-label="关闭"><Icon name="close" size={14} /></button>
             </div>
             <div className="mp-iso-body">
               <div className="mp-iso-row">
@@ -2227,7 +2228,7 @@ export default function MapPanel({
                 <button className={`mp-iso-tab ${iso.tab === "iso" ? "active" : ""}`} onClick={() => setIso((s) => ({ ...s, tab: "iso" }))}>等时圈</button>
                 <button className={`mp-iso-tab ${iso.tab === "route" ? "active" : ""}`} onClick={() => setIso((s) => ({ ...s, tab: "route" }))}>路径规划</button>
               </div>
-              <button className="mp-op" onClick={() => setIsoOpen(false)} title="关闭"><Icon name="close" size={14} /></button>
+              <button className="mp-op" onClick={() => setIsoOpen(false)} title="关闭" aria-label="关闭"><Icon name="close" size={14} /></button>
             </div>
             <div className="mp-iso-body">
             {iso.tab === "iso" ? (

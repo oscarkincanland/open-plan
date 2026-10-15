@@ -1,125 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { confirmArtifactAcceptance, getRun, getRunAcceptance, listPublishedArtifacts, listRuns, publishArtifact, rollbackPublishedArtifact } from "../api.js";
 import Icon from "./Icon.jsx";
+import { notifyError } from "./Feedback.jsx";
 import { artifactStatusInfo } from "./验收状态.js";
 import FileChangesPanel from "./FileChangesPanel.jsx";
 import 子代理详情面板 from "./子代理详情面板.jsx";
 import { projectRunView } from "../运行展示投影.js";
-import { acquireStream } from "../长连接预算.js";
 
 const statusText = { running: "执行中", queued: "排队中", waiting_user: "等待回答", recovering: "恢复中", completed: "已完成", failed: "失败", cancelled: "已取消", aborted: "已中断" };
-
-function eventText(event) {
-  const data = event?.data || event?.payload || {};
-  return String(data.summary || data.message || data.detail || data.toolName || data.stepName || data.status || "事件已记录").slice(0, 220);
-}
-
-function eventTime(value) {
-  if (!value) return "";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
 
 function artifactName(path) {
   return String(path || "").split(/[\\/]/).pop() || "未命名产物";
 }
 
-function EventStream({ clientId, threadId }) {
-  const [events, setEvents] = useState([]);
-  const [connected, setConnected] = useState(false);
-  const eventsRef = useRef(new Map());
-  const cursorRef = useRef(0);
-  const flushTimerRef = useRef(null);
-
-  useEffect(() => {
-    setEvents([]);
-    setConnected(false);
-    eventsRef.current = new Map();
-    cursorRef.current = 0;
-    if (!clientId || !threadId) return undefined;
-    let source = null;
-    let retryTimer = null;
-    let stopped = false;
-    let retryDelay = 800;
-    // 事件页签的流是可放弃连接：拿不到槽位就保持"等待连接"，不挤占控制面请求的槽位。
-    const slot = acquireStream("thread-events", { priority: 4, label: "事件页签流" });
-    if (!slot) return undefined;
-
-    const flush = () => {
-      flushTimerRef.current = null;
-      const next = [...eventsRef.current.values()]
-        .sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0))
-        .slice(-120);
-      setEvents(next);
-    };
-    const scheduleFlush = () => {
-      if (!flushTimerRef.current) flushTimerRef.current = window.setTimeout(flush, 80);
-    };
-    const scheduleReconnect = () => {
-      if (stopped || retryTimer) return;
-      setConnected(false);
-      try { source?.close(); } catch {}
-      retryTimer = window.setTimeout(() => {
-        retryTimer = null;
-        connect();
-      }, retryDelay);
-      retryDelay = Math.min(5000, retryDelay * 2);
-    };
-    const connect = () => {
-      if (stopped) return;
-      const after = cursorRef.current || 0;
-      source = new EventSource(`/api/agent/events?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId)}&after=${after}&limit=400`);
-      slot.attach(() => source?.close());
-      source.onopen = () => {
-        retryDelay = 800;
-        setConnected(true);
-      };
-      source.onmessage = (message) => {
-        try {
-          const payload = JSON.parse(message.data || "{}");
-          const event = payload.event || payload;
-          if (!event?.type) return;
-          const seq = Number(event.seq || 0);
-          if (seq && seq <= cursorRef.current) return;
-          if (seq) cursorRef.current = seq;
-          eventsRef.current.set(seq || `${event.type}:${event.at || Date.now()}`, event);
-          while (eventsRef.current.size > 160) eventsRef.current.delete(eventsRef.current.keys().next().value);
-          scheduleFlush();
-        } catch {}
-      };
-      source.onerror = scheduleReconnect;
-    };
-    connect();
-    return () => {
-      stopped = true;
-      try { source?.close(); } catch {}
-      if (retryTimer) clearTimeout(retryTimer);
-      if (flushTimerRef.current) {
-        clearTimeout(flushTimerRef.current);
-        flushTimerRef.current = null;
-      }
-      slot.release();
-    };
-  }, [clientId, threadId]);
-
-  return (
-    <div className="preview-event-stream">
-      <div className="preview-data-meta"><span>本轮事件流</span><span className={connected ? "preview-live" : "preview-muted"}>{connected ? "实时连接" : "等待连接"}</span></div>
-      {!events.length && <div className="preview-empty"><Icon name="flow" size={20} />暂无当前会话事件</div>}
-      {events.slice().reverse().map((event) => (
-        <details className="preview-event" key={`${event.seq || "event"}-${event.type}`}>
-          <summary>
-            <i className={event.type.includes("error") || event.type.includes("fail") ? "error" : event.type.includes("run") ? "running" : ""} />
-            <strong>{event.type}</strong>
-            <span>{eventTime(event.timestamp || event.createdAt || event.time)}</span>
-            <Icon name="chevronRight" size={11} />
-          </summary>
-          <div className="preview-event-detail">{eventText(event)}</div>
-        </details>
-      ))}
-    </div>
-  );
-}
+// O-P4：原 EventStream 组件（tab === "events"）为不可达死代码，已整体移除；
+// 事件轨迹由「改动」页签的 Run 事件与子代理详情面板承接。
 
 function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", onArtifactScopeChange, refreshToken = 0, onOpenFile }) {
   const [runs, setRuns] = useState([]);
@@ -205,7 +100,7 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
 
   const runAction = async (key, callback) => {
     setAction(key);
-    try { await callback(); await refresh(); } catch (error) { alert(error.message || "成果操作失败"); }
+    try { await callback(); await refresh(); } catch (error) { notifyError(error.message || "成果操作失败"); }
     setAction("");
   };
 
@@ -249,21 +144,30 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
         {!loading && !loadError && !entries.length && <div className="preview-empty"><Icon name="file" size={20} />{artifactScope === "run" ? "本轮暂未生成产物" : "当前会话暂未生成产物"}{runs.some((run) => run.snapshotTruncated) ? "（工作区过大，部分轮次的产物检测可能不完整）" : ""}</div>}
         {entries.map(({ artifact, run }, index) => {
         const name = artifactName(artifact.path);
+        const isStaged = artifact.source === "staged"; // O-P1：运行中暂存条目（仅展示，不可打开/固定）
         const publication = publishedByArtifact.get(artifact.artifactId);
         const result = acceptance[run.id]?.artifacts?.find((item) => item.path === artifact.path) || artifact.acceptance;
         const resultStatus = result?.status || artifact.acceptanceStatus || "not_checked";
         const info = artifactStatusInfo({ publication, result, resultStatus, runStatus: run.status });
-        const canConfirm = run.status === "completed" && !publication && result && !result.readyToPublish && resultStatus !== "failed";
-        const canPublish = info.canPublish;
+        const canConfirm = !isStaged && run.status === "completed" && !publication && result && !result.readyToPublish && resultStatus !== "failed";
+        const canPublish = !isStaged && info.canPublish;
         return (
           <div className="preview-artifact" key={`${artifact.artifactId || artifact.path}-${index}`}>
-            <button className="preview-artifact-main" onClick={() => onOpenFile?.(artifact.path, undefined, run.cwd)} title={artifact.path}>
-              <Icon name="file" size={14} />
-              <span><strong>{name}</strong><small>{statusText[run.status] || run.status || "已完成"} · {String(artifact.path || "").replace(name, "").replace(/[\\/]$/, "") || "工作区根目录"}</small></span>
-            </button>
-            {artifact.source === "unattributed" && <span className="preview-artifact-status suspect" title="本轮没有写入台账记录该文件，可能来自并发运行；仅作线索，未自动计入交付">未归属线索</span>}
-            {artifact.source === "run-window" && <span className="preview-artifact-status suspect" title="本轮确有写入（台账只到工作区级，bash / officecli 不回报具体路径），按“运行窗口内变更”归属到本轮；若同一工作区有并行运行，可能来自它">待确认</span>}
-            <span className={`preview-artifact-status ${info.tone}`} title={info.hint}>{info.label}</span>
+            {isStaged ? (
+              <span className="preview-artifact-main" title={`${artifact.path}（任务结束后可预览）`}>
+                <Icon name="file" size={14} />
+                <span><strong>{name}</strong><small>任务执行中 · 暂存未落盘</small></span>
+              </span>
+            ) : (
+              <button className="preview-artifact-main" onClick={() => onOpenFile?.(artifact.path, undefined, run.cwd)} title={artifact.path}>
+                <Icon name="file" size={14} />
+                <span><strong>{name}</strong><small>{statusText[run.status] || run.status || "已完成"} · {String(artifact.path || "").replace(name, "").replace(/[\\/]$/, "") || "工作区根目录"}</small></span>
+              </button>
+            )}
+            {isStaged && <span className="preview-artifact-status suspect" title="任务仍在执行，文件已暂存、尚未物化到工作区；任务结束后可预览与固定">任务中暂存</span>}
+            {!isStaged && artifact.source === "unattributed" && <span className="preview-artifact-status suspect" title="本轮没有写入台账记录该文件，可能来自并发运行；仅作线索，未自动计入交付">未归属线索</span>}
+            {!isStaged && artifact.source === "run-window" && <span className="preview-artifact-status suspect" title="本轮确有写入（台账只到工作区级，bash / officecli 不回报具体路径），按“运行窗口内变更”归属到本轮；若同一工作区有并行运行，可能来自它">待确认</span>}
+            {!isStaged && <span className={`preview-artifact-status ${info.tone}`} title={info.hint}>{info.label}</span>}
             {canConfirm && <button className="btn-xs" disabled={action === `confirm-${artifact.artifactId}`} onClick={() => runAction(`confirm-${artifact.artifactId}`, async () => { const note = window.prompt("请输入人工确认说明（可选）", "已检查内容、格式和页面显示"); if (note !== null) await confirmArtifactAcceptance(run.id, artifact.artifactId, note); })}>人工确认</button>}
             {canPublish && <button className="btn-xs" disabled={action === `publish-${artifact.artifactId}`} onClick={() => runAction(`publish-${artifact.artifactId}`, () => publishArtifact(run.id, artifact.artifactId))}>固定成果</button>}
           </div>
@@ -273,7 +177,7 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
       {published.length > 0 && <div className="preview-publications artifact-publications"><div className="artifact-list-head"><span>正式成果版本</span><small>{rollbackableCount ? `可回滚 ${rollbackableCount} 个（回到上一正式版本）` : "当前没有可回滚的历史版本"}</small></div>{published.map((item) => {
         const rolledBack = item.status === "rolled_back";
         const canRollback = !rolledBack && !!item.rollbackTarget;
-        return <div className="preview-publication" key={item.id}><span title={item.path}><Icon name="check" size={11} /> {artifactName(item.path)} · v{item.version}{rolledBack ? " · 已回滚" : ""}</span>{canRollback ? <button className="btn-xs" onClick={() => runAction(`rollback-${item.id}`, () => rollbackPublishedArtifact(item.id))}>回滚</button> : <small className="preview-publication-note">{rolledBack ? "已回滚" : "首个版本 · 无历史版本可回滚"}</small>}</div>;
+        return <div className="preview-publication" key={item.id}><span title={item.path}><Icon name="check" size={12} /> {artifactName(item.path)} · v{item.version}{rolledBack ? " · 已回滚" : ""}</span>{canRollback ? <button className="btn-xs" onClick={() => runAction(`rollback-${item.id}`, () => rollbackPublishedArtifact(item.id))}>回滚</button> : <small className="preview-publication-note">{rolledBack ? "已回滚" : "首个版本 · 无历史版本可回滚"}</small>}</div>;
       })}</div>}
     </div>
   );
@@ -402,8 +306,7 @@ function RunChangesPanel({ workspace, projectId, currentSessionId, selectedRunId
 }
 
 export default function WorkProductPanel({ tab, clientId, threadId, workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", onArtifactScopeChange, refreshToken = 0, onOpenFile, subagentBlock = null, children }) {
-  // B03：右栏三页签 —— 预览 / 改动 / 产物；subagent 为按需打开的「子代理详情」页
-  if (tab === "events") return <EventStream clientId={clientId} threadId={threadId} />;
+  // B03：右栏页签 —— 预览 / 改动 / 产物；subagent 为按需打开的「子代理详情」页
   if (tab === "subagent") return <子代理详情面板 block={subagentBlock} />;
   if (tab === "changes") return <RunChangesPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} selectedRunId={selectedRunId} refreshToken={refreshToken} onOpenFile={onOpenFile} />;
   if (tab === "artifacts") return <ArtifactPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} selectedRunId={selectedRunId} artifactScope={artifactScope} onArtifactScopeChange={onArtifactScopeChange} refreshToken={refreshToken} onOpenFile={onOpenFile} />;

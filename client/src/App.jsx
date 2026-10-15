@@ -24,6 +24,8 @@ import { loadUIState, saveUIState } from "./persist-ui.js";
 import { acquireStream } from "./长连接预算.js";
 import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession } from "./api.js";
 import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
+import FeedbackHost, { notifyError } from "./components/Feedback.jsx";
+import { initRuntimeFlags, flag } from "./运行开关.js";
 
 function historyReferences(text = "") {
   const refs = [];
@@ -181,6 +183,11 @@ export default function App() {
   // 用户手动关掉浏览器侧栏后，本轮不再自动弹开（否则每个 browser_* 工具都会把它重新拉起来）。
   const browserAutoOpenBlockedRef = useRef(false);
 
+  // 反馈基座/运行开关：挂载即拉取 /api/status 的 runtimeFlags 快照；拉取失败保持全关（= 基线行为）。
+  useEffect(() => {
+    initRuntimeFlags();
+  }, []);
+
   useEffect(() => {
     if (!browserPanelOpen) setBrowserFullscreen(false);
   }, [browserPanelOpen]);
@@ -218,13 +225,31 @@ export default function App() {
   // Agent 调用 browser_* 时自动打开浏览器侧栏。信号来自对话流里的工具事件
   // （ChatPanel 的 tool_start），不再为此常驻一条 /api/browser/stream：
   // 每条长连接都占一个同源连接槽位，槽位被占满会让切工作区/切会话永远排队。
+  const previewOpenRef = useRef(previewOpen);
+  previewOpenRef.current = previewOpen;
+  const previewOpenBeforeBrowserRef = useRef(false); // O-P7：窄屏让位前的预览栏状态
+  const previewTabManualAtRef = useRef(0); // O-P2：用户最近一次手动切换右栏页签的时间
+  const [browserActivityPing, setBrowserActivityPing] = useState(0); // O-P3：手关浏览器后的活动徽标
   const handleBrowserActivity = useCallback(() => {
-    if (browserAutoOpenBlockedRef.current) return;
+    if (browserAutoOpenBlockedRef.current) {
+      // O-P3（OAW_BROWSER_BADGE，默认关）：手关后不再静默丢弃本轮浏览器活动，顶栏开关亮徽标
+      if (flag("browserBadge")) setBrowserActivityPing((value) => value + 1);
+      return;
+    }
+    // O-P7（OAW_NARROW_RESTORE，默认关）：窄屏弹开浏览器让位预览栏前记住状态，关闭后恢复
+    if (flag("narrowRestore") && typeof window !== "undefined" && window.innerWidth <= 1024 && previewOpenRef.current) {
+      previewOpenBeforeBrowserRef.current = true;
+    }
+    setBrowserActivityPing(0);
     setBrowserPanelOpen(true);
   }, []);
   const closeBrowserPanel = useCallback(() => {
     browserAutoOpenBlockedRef.current = true;
     setBrowserPanelOpen(false);
+    if (previewOpenBeforeBrowserRef.current) {
+      previewOpenBeforeBrowserRef.current = false;
+      if (flag("narrowRestore") && typeof window !== "undefined" && window.innerWidth <= 1024) setPreviewOpen(true);
+    }
   }, []);
 
   const [models, setModels] = useState([]);
@@ -545,7 +570,7 @@ export default function App() {
           eventCursorRef.current = seq;
           localStorage.setItem(cursorKey, String(seq));
           const isCurrentThread = !event.threadId || event.threadId === currentThreadRef.current;
-          scheduleEventBatch(isCurrentThread && ["run_finished", "file_changed", "artifact_published"].includes(event.type));
+          scheduleEventBatch(isCurrentThread && ["run_finished", "file_changed", "artifact_published", ...(flag("stagedVisible") ? ["artifact_staged"] : [])].includes(event.type));
           const thread = event.threadId || "";
           const noticeKey = `${thread}:${event.runId || "event"}:${event.type}`;
           if (thread && thread !== currentThreadRef.current && GLOBAL_EVENT_NOTICES.has(event.type) && !eventNoticeKeysRef.current.has(noticeKey)) {
@@ -754,7 +779,7 @@ export default function App() {
         const def = workspaces.find((w) => w.name === "默认工作区");
         if (def) handleWorkspaceChange(def.path);
       }
-    } catch (e) { alert("移除失败: " + e.message); }
+    } catch (e) { notifyError("移除失败: " + e.message); }
   }, [currentWorkspace, workspaces, handleWorkspaceChange]);
 
 // 进入/返回子目录
@@ -820,9 +845,9 @@ export default function App() {
       // 而是刷新列表并提示重新选择。
       if (/not found|enoent|http 404/i.test(message)) {
         try { await refreshFiles?.(); } catch {}
-        alert(`文件不存在或已被移动：${name}\n已刷新文件列表，请重新选择。`);
+        notifyError(`文件不存在或已被移动：${name}\n已刷新文件列表，请重新选择。`);
       } else {
-        alert("打开失败: " + message);
+        notifyError("打开失败: " + message);
       }
       setDocLoading(false);
       return null;
@@ -1059,7 +1084,7 @@ export default function App() {
         }
       }
     } catch (e) {
-      if (loadSeq === sessionLoadSeqRef.current) alert("加载会话失败: " + e.message);
+      if (loadSeq === sessionLoadSeqRef.current) notifyError("加载会话失败: " + e.message);
     }
   }, [clientId, currentWorkspace, open, refreshProjects]);
 
@@ -1130,7 +1155,7 @@ export default function App() {
     await refreshSessions();
     if (result.skipped?.length) {
       const names = result.skipped.map((item) => item.reason).filter(Boolean);
-      if (names.length) window.setTimeout(() => alert(`部分会话未删除：${names.join("、")}`), 0);
+      if (names.length) window.setTimeout(() => notifyError(`部分会话未删除：${names.join("、")}`), 0);
     }
     return result;
   }, [currentSessionId, refreshSessions]);
@@ -1221,6 +1246,12 @@ export default function App() {
     }
     const status = String(result.status || "completed").toLowerCase();
     if (!["completed", "success"].includes(status)) return;
+    // O-P2（OAW_AUTO_TAB，默认关）：本轮产生文件产物时直达「产物」页签；
+    // 用户 10s 内手动切换过页签视为锁定，不抢用户主动权。
+    if (flag("autoTab") && artifacts.length && Date.now() - previewTabManualAtRef.current > 10000) {
+      openArtifactsForRun(runId);
+      return;
+    }
     const firstArtifact = artifacts[0];
     if (!firstArtifact) return;
     // B02 自动打开预览：never 从不；deliverable 仅通过验收的交付文件；requested 本轮有产物就打开
@@ -1365,13 +1396,14 @@ export default function App() {
     <AppErrorBoundary>
       <div className={`app ${previewLayout === 1 ? "preview-half" : previewLayout === 2 ? "preview-maximized" : ""} ${browserFullscreen ? "browser-fullscreen" : ""} ${sidebarOpen ? "sidebar-expanded" : "sidebar-collapsed"}`}>
         <RefreshBloom />
+        <FeedbackHost />
         {loadFailureText && (
           <div
             className="load-recovery"
             role="alert"
             title={loadFailures.map(([scope, message]) => `${LOAD_SCOPE_LABELS[scope] || scope}：${message}`).join("\n")}
           >
-            <Icon name="warning" size={13} />
+            <Icon name="warning" size={14} />
             <span>{loadFailureText}</span>
             <button className="btn-xs" onClick={retryStartupLoads} disabled={loadRetrying}>{loadRetrying ? "重试中…" : "重试"}</button>
           </div>
@@ -1531,7 +1563,7 @@ export default function App() {
           <div className="center-content">
             <div className="topbar">
               {sidebarOpen && (
-                <button className="btn-sm sidebar-collapse" onClick={() => setSidebarOpen(false)} title="收起侧栏" aria-label="收起侧栏"><Icon name="chevronLeft" size={13} /></button>
+                <button className="btn-sm sidebar-collapse" onClick={() => setSidebarOpen(false)} title="收起侧栏" aria-label="收起侧栏"><Icon name="chevronLeft" size={14} /></button>
               )}
             <span className="topbar-title">
               <Icon name="comment" size={16} />
@@ -1580,9 +1612,9 @@ export default function App() {
               </button>
             </div>
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
-            <button className="btn-sm topbar-new-chat" onClick={() => handleNewSession()} disabled={creatingSession} title="新建对话"><Icon name="plus" size={13} /></button>
-            <button ref={previewToggleRef} className="btn-sm topbar-preview-toggle" onClick={() => { if (previewOpen) setPreviewLayout(0); setPreviewOpen((v) => !v); }} title={previewOpen ? "隐藏右侧预览" : "显示右侧预览"} aria-label={previewOpen ? "隐藏右侧预览" : "显示右侧预览"} aria-expanded={previewOpen}><Icon name="layers" size={13} /></button>
-            <button className={`btn-sm topbar-browser-toggle ${browserPanelOpen ? "active" : ""}`} onClick={() => { if (browserPanelOpen) closeBrowserPanel(); else { browserAutoOpenBlockedRef.current = false; setBrowserPanelOpen(true); } }} title={browserPanelOpen ? "隐藏内置浏览器" : "显示内置浏览器"} aria-label="内置浏览器"><Icon name="globe" size={13} /></button>
+            <button className="btn-sm topbar-new-chat" onClick={() => handleNewSession()} disabled={creatingSession} title="新建对话"><Icon name="plus" size={14} /></button>
+            <button ref={previewToggleRef} className="btn-sm topbar-preview-toggle" onClick={() => { if (previewOpen) setPreviewLayout(0); setPreviewOpen((v) => !v); }} title={previewOpen ? "隐藏右侧预览" : "显示右侧预览"} aria-label={previewOpen ? "隐藏右侧预览" : "显示右侧预览"} aria-expanded={previewOpen}><Icon name="layers" size={14} /></button>
+            <button className={`btn-sm topbar-browser-toggle ${browserPanelOpen ? "active" : ""}`} onClick={() => { if (browserPanelOpen) closeBrowserPanel(); else { browserAutoOpenBlockedRef.current = false; if (flag("narrowRestore") && typeof window !== "undefined" && window.innerWidth <= 1024 && previewOpenRef.current) previewOpenBeforeBrowserRef.current = true; setBrowserActivityPing(0); setBrowserPanelOpen(true); } }} title={browserPanelOpen ? "隐藏内置浏览器" : "显示内置浏览器"} aria-label="内置浏览器"><Icon name="globe" size={14} />{browserActivityPing > 0 && !browserPanelOpen && <i className="browser-activity-dot" aria-hidden="true" />}</button>
               <TaskCenter
                 sessions={visibleSessions}
                 projects={projects}
@@ -1599,7 +1631,7 @@ export default function App() {
             </div>
             {!activeModule && sessionResumeError && (
               <div className="session-resume-warning" role="alert">
-                <Icon name="warning" size={13} />
+                <Icon name="warning" size={14} />
                 <span>历史已加载为只读：Agent 会话恢复失败（{sessionResumeError.message}），继续对话前请先重试恢复。</span>
                 <button className="btn-xs" onClick={retrySessionResume} disabled={sessionResumeRetrying}>{sessionResumeRetrying ? "恢复中…" : "重试恢复"}</button>
               </div>
@@ -1608,7 +1640,7 @@ export default function App() {
                 用户以为已建好新会话。现在保留旧会话与草稿，并给出重试入口。 */}
             {!activeModule && newSessionError && (
               <div className="session-resume-warning" role="alert">
-                <Icon name="warning" size={13} />
+                <Icon name="warning" size={14} />
                 <span>新建会话失败：{newSessionError.message}（已保留当前会话与未发送内容）</span>
                 <button className="btn-xs" onClick={() => handleNewSession()} disabled={creatingSession}>{creatingSession ? "创建中…" : "重试新建"}</button>
                 <button className="btn-xs" onClick={() => setNewSessionError(null)}>忽略</button>
@@ -1617,7 +1649,7 @@ export default function App() {
             {/* 交互 8：工作区切换失败保留原目录与列表，说明失败原因并允许重试。 */}
             {!activeModule && workspaceSwitchError && (
               <div className="session-resume-warning" role="alert">
-                <Icon name="warning" size={13} />
+                <Icon name="warning" size={14} />
                 <span>切换工作区失败：{workspaceSwitchError.message}（已保留原工作区与文件列表）</span>
                 <button className="btn-xs" onClick={() => { const target = workspaceSwitchError.workspace; setWorkspaceSwitchError(null); handleWorkspaceChange(target); }}>重试切换</button>
                 <button className="btn-xs" onClick={() => setWorkspaceSwitchError(null)}>忽略</button>
@@ -1646,7 +1678,7 @@ export default function App() {
             </div>
             <div className="preview-panel-tabs">
               {[['document', '预览'], ['changes', '改动'], ['artifacts', '产物'], ...(subagentDetail ? [['subagent', '子代理']] : [])].map(([id, label]) => (
-                <button key={id} className={previewTab === id ? "active" : ""} onClick={() => setPreviewTab(id)}>{label}</button>
+                <button key={id} className={previewTab === id ? "active" : ""} onClick={() => { previewTabManualAtRef.current = Date.now(); setPreviewTab(id); }}>{label}</button>
               ))}
             </div>
             <WorkProductPanel
@@ -1730,7 +1762,7 @@ export default function App() {
         </>
         )}
          {!["knowledge", "templates", "map"].includes(activeModule) && !previewOpen && (
-          <button className="preview-reopen" onClick={() => setPreviewOpen(true)} title="显示右侧预览"><Icon name="file" size={13} /> 预览</button>
+          <button className="preview-reopen" onClick={() => setPreviewOpen(true)} title="显示右侧预览"><Icon name="file" size={14} /> 预览</button>
         )}
          <DeferredModule label="命令面板">
         <CommandPalette

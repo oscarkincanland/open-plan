@@ -1199,7 +1199,7 @@ const MapViewer = forwardRef(function MapViewer(
           <Icon name="map" size={14} /> {config?.name || "地图"}
         </span>
         <label className="map-import-btn" title="导入 GeoJSON / SHP 矢量数据">
-          <Icon name="upload" size={13} /> 导入
+          <Icon name="upload" size={14} /> 导入
           <input
             ref={fileInputRef}
             type="file"

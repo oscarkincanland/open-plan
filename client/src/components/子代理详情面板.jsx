@@ -22,7 +22,7 @@ function TimelineItem({ item }) {
   if (kind === "thinking") {
     return (
       <li className="sa-detail-item thinking">
-        <span className="sa-detail-label"><Icon name="brain" size={11} /> 思考</span>
+        <span className="sa-detail-label"><Icon name="brain" size={12} /> 思考</span>
         <div className="sa-detail-text">{item.text}</div>
       </li>
     );
@@ -30,7 +30,7 @@ function TimelineItem({ item }) {
   if (kind === "text") {
     return (
       <li className="sa-detail-item text">
-        <span className="sa-detail-label"><Icon name="comment" size={11} /> 回复</span>
+        <span className="sa-detail-label"><Icon name="comment" size={12} /> 回复</span>
         <div className="sa-detail-text">{item.text}</div>
       </li>
     );
@@ -38,7 +38,7 @@ function TimelineItem({ item }) {
   if (kind === "tool_call") {
     return (
       <li className="sa-detail-item tool">
-        <span className="sa-detail-label"><Icon name="tool" size={11} /> 调用 {item.toolName || "工具"}</span>
+        <span className="sa-detail-label"><Icon name="tool" size={12} /> 调用 {item.toolName || "工具"}</span>
         {item.args ? <pre className="sa-detail-code">{String(item.args)}</pre> : null}
       </li>
     );
@@ -46,7 +46,7 @@ function TimelineItem({ item }) {
   if (kind === "tool_result") {
     return (
       <li className={`sa-detail-item tool-result ${item.isError ? "error" : ""}`}>
-        <span className="sa-detail-label"><Icon name={item.isError ? "x" : "check"} size={11} /> 结果</span>
+        <span className="sa-detail-label"><Icon name={item.isError ? "x" : "check"} size={12} /> 结果</span>
         {item.result ? <pre className="sa-detail-code">{String(item.result)}</pre> : null}
       </li>
     );
@@ -76,7 +76,7 @@ export default function 子代理详情面板({ block }) {
     <div className="preview-subagent-panel">
       <div className="subagent-detail-head">
         <div className="subagent-detail-title">
-          <span className="subagent-detail-icon"><Icon name="flow" size={13} /></span>
+          <span className="subagent-detail-icon"><Icon name="flow" size={14} /></span>
           <strong>子 Agent · {roleText}</strong>
           <span className={`subagent-detail-status ${block.status || "running"}`}>{block.status === "running" ? <i /> : null}{statusText}</span>
         </div>
@@ -96,7 +96,7 @@ export default function 子代理详情面板({ block }) {
             <ul className="sa-detail-checklist">
               {block.checklist.map((item, index) => (
                 <li key={index} className={item.ok === false ? "miss" : "hit"}>
-                  <Icon name={item.ok === false ? "x" : "check"} size={10} /> {item.item}
+                  <Icon name={item.ok === false ? "x" : "check"} size={12} /> {item.item}
                 </li>
               ))}
             </ul>
