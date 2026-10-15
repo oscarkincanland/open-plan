@@ -92,6 +92,34 @@ body {
 }
 body.resizing { cursor: col-resize; user-select: none; }
 .app { display: flex; height: 100vh; overflow: hidden; }
+.app-refresh-bloom {
+  position: fixed;
+  z-index: 10000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--body-bg) 18%, transparent);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  opacity: 1;
+  transition: opacity 340ms ease;
+}
+.app-refresh-bloom.is-closing { opacity: 0; }
+.app-refresh-bloom-mark { color: var(--accent); filter: drop-shadow(0 5px 18px color-mix(in srgb, var(--accent) 25%, transparent)); }
+.app-refresh-bloom-mark .open-plan-logo-petal {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scale(.7);
+  opacity: .08;
+  transition: transform 620ms cubic-bezier(.2, .75, .25, 1), opacity 380ms ease;
+}
+.app-refresh-bloom.is-open .open-plan-logo-petal { transform: scale(1); opacity: 1; }
+.app-refresh-bloom-mark .petal-ne { transition-delay: 75ms; }
+.app-refresh-bloom-mark .petal-se { transition-delay: 150ms; }
+.app-refresh-bloom-mark .petal-sw { transition-delay: 225ms; }
+.app-refresh-bloom-mark .open-plan-logo-centers { opacity: .08; transition: opacity 320ms ease 300ms; }
+.app-refresh-bloom.is-open .open-plan-logo-centers { opacity: 1; }
 .load-recovery { position: fixed; z-index: 400; top: 10px; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 8px; max-width: min(680px, calc(100vw - 32px)); padding: 7px 12px; border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border)); border-radius: 7px; background: var(--panel-bg); color: var(--warning); box-shadow: 0 12px 30px rgba(0,0,0,.32); font-size: 11px; }
 .load-recovery > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .load-recovery .btn-xs { flex: 0 0 auto; color: var(--text); }
@@ -1145,12 +1173,21 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 .msg.user .msg-author { color: var(--muted); }
 .msg-time { font-size: 9px; color: var(--dim); font-variant-numeric: tabular-nums; }
 .msg-streaming-badge {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 9px;
-  color: var(--accent);
+  padding: 2px 8px 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 22%, transparent);
+  font-size: 10px;
+  line-height: 1.4;
+  color: color-mix(in srgb, var(--accent) 76%, var(--text));
 }
+.msg-streaming-label { font-weight: 600; }
 .msg-error-badge { font-size: 9px; color: var(--error); }
 .msg-stopped-badge {
   display: flex;
@@ -1171,18 +1208,23 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   background: color-mix(in srgb, var(--accent) 12%, var(--panel-bg));
   border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
 }
-/* 流式指示器：呼吸脉冲圆点（Proma StreamingIndicator） */
+/* 流式指示器：四瓣依次点亮 */
 .streaming-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent);
-  opacity: 0.6;
-  animation: dot-breathe 1.2s ease-in-out infinite;
-  margin: 6px 2px;
-  flex-shrink: 0;
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  flex: 0 0 auto;
+  color: var(--accent);
 }
+.streaming-dot-mark { display: block; overflow: visible; }
+.streaming-dot .open-plan-logo-petal { opacity: .22; animation: pulse-status-soft 1.6s ease-in-out infinite; }
+.streaming-dot .petal-ne { animation-delay: .4s; }
+.streaming-dot .petal-se { animation-delay: .8s; }
+.streaming-dot .petal-sw { animation-delay: 1.2s; }
+.streaming-dot .open-plan-logo-centers { opacity: .95; }
 @keyframes dot-breathe {
   0%, 100% { opacity: 0.25; transform: scale(0.85); }
   50% { opacity: 0.85; transform: scale(1.1); }
@@ -2732,6 +2774,11 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   background: var(--accent);
   color: var(--body-bg);
 }
+@keyframes agent-avatar-breathe {
+  0%, 100% { transform: scale(.985); }
+  50% { transform: scale(1.025); }
+}
+.avatar.agent-avatar.is-streaming { animation: agent-avatar-breathe 3.2s ease-in-out infinite; transform-origin: center; }
 
 /* ===== 技能广场分类 ===== */
 .modal-view-switch {
@@ -9609,7 +9656,6 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .execution-flow-live i { animation: pulse-status-soft 2.4s ease-in-out infinite; }
 .efp-pulse { animation: dot-breathe-soft 2.6s ease-in-out infinite; }
-.streaming-dot { animation: dot-breathe-soft 1.8s ease-in-out infinite; }
 .session-item.is-running .session-indicator[data-status="running"],
 .session-item:has(.marquee.is-active) .session-indicator[data-status="running"] { animation-duration: 3s; }
 /* 状态栏圆点：去掉外发光扩散，避免整行看起来在闪 */
@@ -9618,14 +9664,16 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 /* 克制档：只保留必要的滚动，关掉所有脉冲与呼吸 */
 [data-motion-level="calm"] .execution-flow-live i,
 [data-motion-level="calm"] .efp-pulse,
-[data-motion-level="calm"] .streaming-dot,
+[data-motion-level="calm"] .streaming-dot .open-plan-logo-petal,
+[data-motion-level="calm"] .avatar.agent-avatar.is-streaming,
 [data-motion-level="calm"] .session-item .session-indicator,
 [data-motion-level="calm"] .project-session-open > i { animation: none; }
 
 /* 关闭动效：静态颜色标识 */
 [data-motion-level="off"] .execution-flow-live i,
 [data-motion-level="off"] .efp-pulse,
-[data-motion-level="off"] .streaming-dot,
+[data-motion-level="off"] .streaming-dot .open-plan-logo-petal,
+[data-motion-level="off"] .avatar.agent-avatar.is-streaming,
 [data-motion-level="off"] .session-item .session-indicator,
 [data-motion-level="off"] .project-session-open > i,
 [data-motion-level="off"] .execution-flow-progress .efp-pulse { animation: none; opacity: 1; }
@@ -10339,6 +10387,8 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   .typing,
   .run-summary-dot.running,
   .streaming-dot,
+  .streaming-dot .open-plan-logo-petal,
+  .avatar.agent-avatar.is-streaming,
   .ldot,
   .tool-icon.run,
   .brain-core.running .brain-core-dot,

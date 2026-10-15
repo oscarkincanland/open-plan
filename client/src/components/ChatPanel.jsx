@@ -4658,7 +4658,7 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
   }, [streaming, visibleBlocks]);
   return (
     <div className={`msg ${isUser ? "user" : "assistant"} ${m.status || ""}`} data-msg-index={index}>
-      <div className={`avatar ${isUser ? "user-avatar" : "agent-avatar"}`}>
+      <div className={`avatar ${isUser ? "user-avatar" : "agent-avatar"} ${!isUser && streaming ? "is-streaming" : ""}`}>
         <Icon name={isUser ? "user" : "robot"} size={14} />
       </div>
       <div className="msg-main">
@@ -4667,7 +4667,7 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
         <div className="msg-header">
           <span className="msg-author">{isUser ? "You" : (model || "Agent")}</span>
           <span className="msg-time">{formatMsgTime(m.createdAt || Date.now())}</span>
-          {!isUser && streaming && <span className="msg-streaming-badge"><StreamingDot /> 生成中</span>}
+          {!isUser && streaming && <span className="msg-streaming-badge"><StreamingDot /><StreamingActivityLabel /></span>}
           {!isUser && m.status === "error" && <span className="msg-error-badge">生成失败</span>}
           {/* 中断既要认本地标记，也要认 Run 的终态：刷新/切回会话后本地标记会丢，只有 runStatus 还在 */}
           {!isUser && (m.stopped || runInterrupted) && <span className="msg-stopped-badge">{m.stopped ? "已停止生成" : "本轮已中断"}</span>}
@@ -4787,9 +4787,30 @@ function ReferenceChips({ references = [], onOpenFile }) {
   );
 }
 
-// ========== 流式指示器：呼吸脉冲圆点（Proma StreamingIndicator） ==========
+const STREAMING_ACTIVITY_LABELS = [
+  "正在聚合资料", "正在梳理需求", "正在检索规范", "正在调查现状",
+  "正在比对数据", "正在提炼要点", "正在搭建分析框架", "正在开展专题分析",
+  "正在核对关键结论", "正在整理图表", "正在撰写章节", "正在合并稿件",
+  "正在统一口径", "正在校对格式", "正在检查引用", "正在生成成果",
+];
+
+function StreamingActivityLabel() {
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    if (isMotionReduced()) return undefined;
+    const timer = window.setInterval(() => setIndex((value) => (value + 1) % STREAMING_ACTIVITY_LABELS.length), 2400);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <span className="msg-streaming-label" aria-live="off">{STREAMING_ACTIVITY_LABELS[index]}</span>;
+}
+
+// ========== 流式指示器：四瓣依次点亮 ==========
 function StreamingDot() {
-  return <span className="streaming-dot" title="生成中" />;
+  return (
+    <span className="streaming-dot" title="正在处理" aria-hidden="true">
+      <Logo size={16} withBackground={false} markColor="currentColor" className="streaming-dot-mark" />
+    </span>
+  );
 }
 
 // ========== 等待指示器：弹跳点 + 耗时（Proma MessageLoading） ==========

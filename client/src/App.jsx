@@ -12,7 +12,7 @@ const CommandPalette = lazy(() => import("./components/CommandPalette.jsx"));
 // 文档预览依赖 docx-preview / pptxviewjs / x-data-spreadsheet 等重库，按需加载
 const DocViewer = lazy(() => import("./components/DocViewer.jsx"));
 import Icon from "./components/Icon.jsx";
-import { useAppearance } from "./界面外观.js";
+import { isMotionReduced, useAppearance } from "./界面外观.js";
 import Logo from "./components/Logo.jsx";
 import TaskCenter from "./components/任务中心.jsx";
 import WorkProductPanel from "./components/工作产物面板.jsx";
@@ -60,6 +60,31 @@ function cleanPersistedMessage(text = "") {
 
 function DeferredModule({ children, label = "模块" }) {
   return <Suspense fallback={<div className="module-loading">正在加载{label}…</div>}>{children}</Suspense>;
+}
+
+function RefreshBloom() {
+  const [visible, setVisible] = useState(() => !isMotionReduced());
+  const [opened, setOpened] = useState(false);
+  const [closing, setClosing] = useState(false);
+
+  useEffect(() => {
+    if (!visible) return undefined;
+    const frame = window.requestAnimationFrame(() => setOpened(true));
+    const closeTimer = window.setTimeout(() => setClosing(true), 850);
+    const removeTimer = window.setTimeout(() => setVisible(false), 1200);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(closeTimer);
+      window.clearTimeout(removeTimer);
+    };
+  }, [visible]);
+
+  if (!visible) return null;
+  return (
+    <div className={`app-refresh-bloom ${opened ? "is-open" : ""} ${closing ? "is-closing" : ""}`} aria-hidden="true">
+      <Logo size={56} withBackground={false} markColor="currentColor" className="app-refresh-bloom-mark" />
+    </div>
+  );
 }
 
 // 全局错误边界
@@ -1339,6 +1364,7 @@ export default function App() {
   return (
     <AppErrorBoundary>
       <div className={`app ${previewLayout === 1 ? "preview-half" : previewLayout === 2 ? "preview-maximized" : ""} ${browserFullscreen ? "browser-fullscreen" : ""} ${sidebarOpen ? "sidebar-expanded" : "sidebar-collapsed"}`}>
+        <RefreshBloom />
         {loadFailureText && (
           <div
             className="load-recovery"
