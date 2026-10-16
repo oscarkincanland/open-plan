@@ -267,9 +267,7 @@ registerSource({
   },
 });
 
-/** 未来接入点的注册桩（本阶段不实现，只声明形状，便于后续替换） */
+/** 未来接入点的注册桩（G2 的 live-traffic-api / sql-database 已落地于 数据源适配器扩展.mjs，flag OAW_DATA_ADAPTERS） */
 export const PLANNED_SOURCES = Object.freeze([
-  { id: "live-traffic-api", label: "实时交通流 API", kind: "traffic-flow", note: "实现 load() 拉取 → 描述符，kind 用 traffic-flow" },
-  { id: "sql-database", label: "数据库直连（SQL / PostGIS）", kind: "traffic-flow", note: "实现 load() 查询 → 描述符；不要引入数据库依赖到核心路径" },
   { id: "gps-trajectory", label: "车载 GPS 轨迹", kind: "flow", note: "load() 分片读 + 抽稀（参考 scripts/prepare-map-data.mjs 的 simplifyLine）" },
 ]);

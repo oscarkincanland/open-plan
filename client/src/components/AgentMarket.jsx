@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import Icon from "./Icon.jsx";
 import { createAgent, deleteAgent, listAgents, updateAgent } from "../api.js";
+import { askConfirm } from "./Feedback.jsx";
 
 /**
  * 智能体广场：面向交通规划工程师的预置专用助手
@@ -96,7 +97,7 @@ export default function AgentMarket({ open, onClose, onAtMention, onPromoteToAge
     finally { setLoading(false); }
   };
   const remove = async (agent) => {
-    if (agent.builtin || !window.confirm(`删除自定义智能体“${agent.name}”？`)) return;
+    if (agent.builtin || !(await askConfirm(`删除自定义智能体“${agent.name}”？`))) return;
     setLoading(true);
     try {
       const result = await deleteAgent(agent.id);

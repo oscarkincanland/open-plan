@@ -20,7 +20,7 @@ import { markRunTiming, attachRunTimingMeta, attachRunTimingSpans, finishRunTimi
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
 import { workspaceTrustSummary, setWorkspaceTrust } from "./项目信任.mjs";
-import { runtimeFlagsSnapshot } from "./运行开关.mjs";
+import { runtimeFlagsSnapshot, RUNTIME_FLAGS } from "./运行开关.mjs";
 import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
 import { listPublishedArtifacts, publishArtifact, inspectRunAcceptance, confirmArtifactAcceptance, rollbackPublishedArtifact } from "./成果管理.mjs";
 import { atomicWriteFile, atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
@@ -643,6 +643,26 @@ app.get("/api/map/project", async (req, res) => {
   res.json(p);
 });
 
+// GIS G9：项目打包归档（flag OAW_MAP_PACK，默认关）。
+// zip 内布局 = 项目目录布局（跨环境恢复 = 解压到 MAPS_ROOT/<project>/）；瓦片默认只带索引。
+app.get("/api/map/project/export", async (req, res) => {
+  if (!RUNTIME_FLAGS.mapPack) return res.status(404).json({ error: "not found" });
+  try {
+    const { buildProjectZip } = await import("./项目打包.mjs");
+    const out = await buildProjectZip({
+      project: String(req.query.name || ""),
+      includeTiles: req.query.tiles === "1",
+    });
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(out.fileName)}"`);
+    res.setHeader("X-Pack-Manifest", encodeURIComponent(JSON.stringify({ project: out.manifest.project, files: out.stats.files, bytes: out.stats.bytes })));
+    res.send(out.buffer);
+  } catch (e) {
+    const status = e?.code === "MAP_PROJECT_NOT_FOUND" ? 404 : e?.code === "MAP_PACK_TOO_LARGE" ? 413 : 500;
+    res.status(status).json({ ok: false, error: e.message, code: e.code || "MAP_PACK_FAILED" });
+  }
+});
+
 // 地图项目生命周期管理：复制 / 重命名 / 归档 / 删除（默认项目受保护）
 app.post("/api/map/projects/duplicate", (req, res) => {
   try {
@@ -778,7 +798,7 @@ app.post("/api/map/route", async (req, res) => {
 app.get("/api/map/demo-analysis", (req, res) => {
   try {
     res.json(mapAnalysis.createDemoAnalysis({ analysis: req.query.analysis, region: req.query.region, project: req.query.project, count: req.query.count }));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
 
 app.get("/api/demo/cambodia-od", (req, res) => {
@@ -1877,6 +1897,8 @@ app.get("/api/agent/diagnostics", async (req, res) => {
     requestId: req.requestId,
     model: { ... (catalog || { selected: loadSettingsDefault(), selectedInCatalog: null, selectedAvailable: null }), authProvider: selectedProvider, authConfigured: Boolean(selectedProvider && auth[selectedProvider]), catalogError },
     runtime,
+    // A4：per-client 会话占用快照（busy/queuedCount/compacting），区分"正常占用"与"卡死"
+    sessions: agentManager.listSessionStates(),
     scheduler: runtimeList.scheduler,
     recentFailures: readRecentAgentDiagnostics({ client, thread, runId: req.query.runId, limit: req.query.limit }).map((item) => ({ ...item, hint: agentFailureHint(item) })),
     authProviders,
@@ -2053,6 +2075,54 @@ app.post("/api/browser/open", async (req, res) => {
     res.json({ ok: true, state });
   } catch (error) {
     res.status(400).json({ ok: false, error: String(error?.message || error), code: error?.code || null });
+  }
+});
+
+// B3：面板可见性联动暂停/恢复推流（OAW_BROWSER_ADAPTIVE_STREAM，默认关；未开启时为 no-op）
+app.post("/api/browser/stream-pause", async (req, res) => {
+  const { client, thread, paused } = req.body || {};
+  if (!client) return res.status(400).json({ ok: false, error: "client required" });
+  try {
+    await browserModule.browserSetStreamPaused(browserModule.browserSessionKey(client, thread || ""), Boolean(paused));
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: String(error?.message || error) });
+  }
+});
+
+// B4：整页截图（OAW_BROWSER_FULLPAGE，默认关）
+app.post("/api/browser/fullpage", async (req, res) => {
+  const { client, thread } = req.body || {};
+  if (!client) return res.status(400).json({ ok: false, error: "client required" });
+  try {
+    const result = await browserModule.browserFullpageScreenshot(browserModule.browserSessionKey(client, thread || ""));
+    res.json({ ok: true, file: result.file, base64: result.base64, bytes: result.bytes, url: result.url });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: String(error?.message || error), code: error?.code || null });
+  }
+});
+
+// B4：整页 PDF 导出（OAW_BROWSER_FULLPAGE，默认关）
+app.post("/api/browser/pdf", async (req, res) => {
+  const { client, thread } = req.body || {};
+  if (!client) return res.status(400).json({ ok: false, error: "client required" });
+  try {
+    const result = await browserModule.browserPrintToPdf(browserModule.browserSessionKey(client, thread || ""));
+    res.json({ ok: true, file: result.file, base64: result.base64, bytes: result.bytes, url: result.url });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: String(error?.message || error), code: error?.code || null });
+  }
+});
+
+// O-P5/B4 配套：截图与导出文件的回看/下载。文件名经 browserShotFile 白名单校验，防目录穿越。
+app.get("/api/browser/shot", (req, res) => {
+  try {
+    const file = browserModule.browserShotFile(String(req.query.file || ""));
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    // dotfiles 必须放行：SHOT_DIR 位于 .oaw 点目录下，send 默认会把点路径当隐藏文件直接 404。
+    res.sendFile(file, { dotfiles: "allow" });
+  } catch (error) {
+    res.status(error?.code === "SHOT_NOT_FOUND" ? 404 : 400).json({ ok: false, error: String(error?.message || error) });
   }
 });
 
@@ -3244,7 +3314,7 @@ app.post("/api/sessions/:id/fork", (req, res) => {
     const fileName = `${id}.jsonl`;
     atomicWriteFile(path.join(SESSIONS_DIR, fileName), lines.join("\n") + "\n", "utf8");
     res.json({ ok: true, id, fileName, parentSessionId: nextHeader.parentSessionId, cwd: nextHeader.cwd, threadId: id, label, projectId: nextHeader.projectId || null });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
 
 let workspacesCache = null;
@@ -4531,7 +4601,7 @@ app.post("/api/agent/new", async (req, res) => {
     const project = projectManager.getProject(projectId) || projectManager.getProjectForWorkspace(workspace);
     updateSessionHeader(result.sessionId, { projectId: project?.id || null, label: String(label || "").trim() });
     res.json(result);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
 
 app.post("/api/agent/resume", async (req, res) => {
@@ -4554,7 +4624,7 @@ app.post("/api/agent/resume", async (req, res) => {
     const result = await agentManager.resumeThread(agentKey(client, thread), thread, found.fullPath, workspace);
     annotateSessionThread(result.sessionId, thread);
     res.json(result);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
 
 // SSE stream per client
@@ -4694,9 +4764,28 @@ try {
   }
   // 首次连接（无游标）只回放最近 300 条：聊天正文由会话 JSONL 恢复，
   // 全量回放（可达数千条 token/thinking 事件）会明显拖慢刷新。
-  const replayHistory = lastId === 0 && entry.channel.history.length > 300
-    ? entry.channel.history.slice(-300)
-    : entry.channel.history;
+  let replayHistory;
+  if (lastId === 0 && entry.channel.history.length > 300) {
+    replayHistory = entry.channel.history.slice(-300);
+    // OAW_REPLAY_RECOVER：首连时若通道里存在尚未终结的 Run（最近的建档事件之后
+    // 没有 run_finished），从该 Run 建档起整段回放，让刷新后的客户端能重建当前
+    // Run 的完整流式内容；无活跃 Run 维持 300 条现状（flag 关 = 基线不变）。
+    if (RUNTIME_FLAGS.replayRecover) {
+      const history = entry.channel.history;
+      let runStartIdx = -1;
+      for (let i = history.length - 1; i >= 0; i -= 1) {
+        const historyType = history[i]?.type;
+        if (historyType === "run_finished") break;
+        if (historyType === "run_admitted" || historyType === "run_admitting") { runStartIdx = i; break; }
+      }
+      if (runStartIdx >= 0) {
+        // 硬上限 4000 条：极端超长 Run 只回放最近 4000 条，防止拖慢首屏。
+        replayHistory = history.slice(Math.max(runStartIdx, history.length - 4000));
+      }
+    }
+  } else {
+    replayHistory = entry.channel.history;
+  }
   for (const ev of replayHistory) if (ev.id > lastId) send(ev);
   write(`event: open\ndata: ${JSON.stringify({ historyId: entry.channel.seq, streamId: channelStreamId })}\n\n`);
 } catch (error) {
@@ -4821,7 +4910,7 @@ app.get("/api/memory", (_req, res) => {
   try {
     const files = listMemoryFiles();
     res.json({ files, memoryDir: getMemoryDir() });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
 
 app.get("/api/memory/stream", (req, res) => {
@@ -4871,7 +4960,7 @@ app.post("/api/memory/init", (_req, res) => {
     appendEvent({ type: "memory_initialized", data: { workspace: ws } });
     startMemoryWatcher();
     res.json({ ok: true, files: listMemoryFiles() });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
 
 app.get("/api/memory/proposals", (req, res) => {
@@ -4936,7 +5025,7 @@ app.post(/^\/api\/memory\/([^/]+)$/, (req, res) => {
     atomicWriteFile(fp, req.body?.content || "", "utf8");
     appendEvent({ clientId: String(req.body?.client || "") || null, threadId: String(req.body?.thread || "") || null, type: "memory_file_edited", data: { workspace: getWorkspace(), path: req.params[0], source: "memory-panel" } });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
 
 // ---------- 地图项目（MapLibre 可视化） ----------
@@ -4945,6 +5034,11 @@ import * as mapSvc from "./map.mjs";
 // 导入即注册内置适配器（local-file / bundled-xinchang）。
 import * as visual from "./地图可视化.mjs";
 import "./交通数据源.mjs";
+// GIS G2：外部数据适配器（live-traffic-api / sql-database，OAW_DATA_ADAPTERS 默认关）。
+// flag 关闭 = 不注册 = /api/map/visual/sources 与 map_datasets 看不到，基线行为零变化。
+if (RUNTIME_FLAGS.dataAdapters) {
+  import("./数据源适配器扩展.mjs").catch((e) => console.warn("[data-adapters] 适配器注册失败：", e?.message || e));
+}
 
 // 列出可用数据源（供可视面板与 Agent 发现；与 map_datasets 同源）
 app.get("/api/map/visual/sources", async (_req, res) => {
@@ -4964,6 +5058,10 @@ app.get("/api/map/visual", async (req, res) => {
     minFlow: req.query.threshold || undefined,
     region: req.query.region || undefined,
     workspace: String(req.query.workspace || ""),
+    // G2 外部数据适配器参数（live-traffic-api 的端点 / sql-database 的库与查询）
+    url: req.query.url || undefined,
+    db: req.query.db || undefined,
+    sql: req.query.sql || undefined,
   };
   try {
     // 1) 优先按数据源适配器解析（local-file / bundled-xinchang / 未来接入的源）
@@ -5002,6 +5100,153 @@ app.get("/api/map/visual", async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// GIS G8：地图分析报告一键成文（flag OAW_MAP_REPORT，默认关）。
+// 入参：workspace（可省略=当前工作区）/ project / title / sections / images（工作区相对路径）。
+// 产物落工作区根目录，路径安全由 buildMapReport 内部把关（拒绝穿越、只收工作区内图片）。
+app.post("/api/map/report", async (req, res) => {
+  if (!RUNTIME_FLAGS.mapReport) return res.status(404).json({ error: "not found" });
+  const workspace = normalizeWorkspace(String(req.body?.workspace || "")) || getWorkspace();
+  try {
+    const { buildMapReport } = await import("./地图报告.mjs");
+    const result = await buildMapReport({
+      workspace,
+      project: req.body?.project,
+      title: req.body?.title,
+      sections: req.body?.sections,
+      images: req.body?.images,
+      fileName: req.body?.fileName,
+    });
+    res.json({ ok: true, file: result.file, fileName: path.basename(result.file), blocks: result.blocks, images: result.images });
+  } catch (e) {
+    const status = /越界|不存在/.test(e.message) ? 400 : 500;
+    res.status(status).json({ error: e.message });
+  }
+});
+
+// ---------- GIS G7：批量导出队列（flag OAW_MAP_EXPORT，默认关） ----------
+// 计划器/队列编排为纯函数（server/批量导出.mjs）；执行器复用 B4 底座：
+// 专用浏览器会话（map-export|batch，独立实例不干扰用户面板）→ 打开 /?export=map 导出视图
+// → 视口设为目标尺寸 → 轮询就绪 → PNG 截图 / printToPDF → 产物落工作区 地图导出/{批次}/。
+const mapExportBatches = new Map(); // batchId → {id, status, plan, summary?, error?, createdAt, finishedAt?}
+let mapExportActiveBatch = null; // 同一浏览器会话串行复用：同一时刻只允许一个批次在跑
+let mapExportSeq = 0;
+
+function buildExportViewUrl(job) {
+  const qs = new URLSearchParams({ export: "map", project: job.project, title: job.title });
+  if (job.layers?.length) qs.set("layers", job.layers.join(","));
+  return `http://127.0.0.1:${PORT}/?${qs.toString()}`;
+}
+
+async function executeExportJob(job, workspace) {
+  const browser = await import("./内置浏览器.mjs");
+  const key = browser.browserSessionKey("map-export", "batch");
+  await browser.browserOpen(key, buildExportViewUrl(job));
+  await browser.browserResize(key, job.width, job.height);
+  await browser.browserWaitForExpression(key, "window.__OAW_EXPORT_READY === true", { timeoutMs: 45000 });
+  const pageError = await browser.browserEvaluateValue(key, "window.__OAW_EXPORT_ERROR || ''").catch(() => "");
+  if (pageError) throw new Error(`导出视图异常：${pageError}`);
+  const capture = job.format === "pdf"
+    ? await browser.browserPrintToPdf(key)
+    : await browser.browserScreenshot(key, { format: "png" });
+  const outDir = path.join(workspace, "地图导出");
+  fs.mkdirSync(outDir, { recursive: true });
+  const target = path.join(outDir, job.fileName);
+  if (!target.startsWith(path.resolve(workspace))) throw new Error("导出产物路径越界");
+  fs.writeFileSync(target, Buffer.from(capture.base64 || "", "base64"));
+  return { file: target, bytes: Buffer.byteLength(capture.base64 || "", "base64") };
+}
+
+app.post("/api/map/export/batch", async (req, res) => {
+  if (!RUNTIME_FLAGS.mapExport) return res.status(404).json({ error: "not found" });
+  if (mapExportActiveBatch) {
+    return res.status(409).json({ ok: false, error: `已有导出批次在执行（${mapExportActiveBatch}），请等待完成后再发起` });
+  }
+  const workspace = normalizeWorkspace(String(req.body?.workspace || "")) || getWorkspace();
+  const 批量导出 = await import("./批量导出.mjs");
+  const plan = 批量导出.planExportJobs({
+    projects: req.body?.projects,
+    layerSets: req.body?.layerSets,
+    sizes: req.body?.sizes,
+    formats: req.body?.formats,
+    title: req.body?.title,
+  });
+  if (plan.errors.length) return res.status(400).json({ ok: false, errors: plan.errors });
+  const batchId = `batch-${Date.now()}-${++mapExportSeq}`;
+  const batch = {
+    id: batchId,
+    status: "running",
+    workspace,
+    total: plan.jobs.length,
+    skipped: plan.skipped,
+    summary: { total: plan.jobs.length, done: 0, failed: 0, results: plan.jobs.map((j) => ({ id: j.id, project: j.project, format: j.format, sizeId: j.sizeId, status: "pending" })) },
+    createdAt: new Date().toISOString(),
+  };
+  mapExportBatches.set(batchId, batch);
+  mapExportActiveBatch = batchId;
+  // 后台串行执行（不阻塞响应）；进度实时写回 batch.summary 供轮询。
+  批量导出.runExportQueue(plan.jobs, (job) => executeExportJob(job, workspace), {
+    onProgress: (snapshot) => { batch.summary = snapshot; },
+  })
+    .then((summary) => {
+      batch.summary = summary;
+      batch.status = summary.failed ? "completed-with-failures" : "completed";
+      batch.finishedAt = new Date().toISOString();
+    })
+    .catch((e) => {
+      batch.status = "failed";
+      batch.error = String(e?.message || e);
+      batch.finishedAt = new Date().toISOString();
+    })
+    .finally(() => { if (mapExportActiveBatch === batchId) mapExportActiveBatch = null; });
+  res.json({
+    ok: true,
+    batchId,
+    total: plan.jobs.length,
+    skipped: plan.skipped,
+    jobs: plan.jobs.map(({ id, project, layers, sizeId, sizeLabel, width, height, format, fileName }) => ({ id, project, layers, sizeId, sizeLabel, width, height, format, fileName })),
+  });
+});
+
+app.get("/api/map/export/batch", (req, res) => {
+  if (!RUNTIME_FLAGS.mapExport) return res.status(404).json({ error: "not found" });
+  const id = String(req.query.id || "").trim();
+  const batch = mapExportBatches.get(id);
+  if (!batch) return res.status(404).json({ ok: false, error: "批次不存在或服务已重启" });
+  res.json({
+    ok: true,
+    id: batch.id,
+    status: batch.status,
+    total: batch.total,
+    skipped: batch.skipped,
+    summary: batch.summary,
+    error: batch.error || "",
+    createdAt: batch.createdAt,
+    finishedAt: batch.finishedAt || "",
+  });
+});
+
+// ---------- GIS G5-v1：OD 通勤分析模板（flag OAW_MAP_TEMPLATES，默认关） ----------
+// 确定性编排：local-file 数据导入 → 期望线 → 带宽分级 → G8 报告成文（产物落工作区）。
+app.post("/api/map/template/od-commuter", async (req, res) => {
+  if (!RUNTIME_FLAGS.mapTemplates) return res.status(404).json({ error: "not found" });
+  const workspace = normalizeWorkspace(String(req.body?.workspace || "")) || getWorkspace();
+  try {
+    const { runOdCommuterTemplate } = await import("./地图模板.mjs");
+    const result = await runOdCommuterTemplate({
+      workspace,
+      path: req.body?.path,
+      title: req.body?.title,
+      bands: req.body?.bands,
+      project: req.body?.project,
+      fileName: req.body?.fileName,
+    });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    const status = /越界|不存在|缺少|不是 OD|没有/.test(e.message) ? 400 : 500;
+    res.status(status).json({ ok: false, error: e.message });
   }
 });
 

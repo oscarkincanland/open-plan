@@ -345,7 +345,7 @@ export default function LayerPanel({
           />
         ) : (
           <span className="lp-row-name" title={lockTitle || id} onDoubleClick={(e) => { e.stopPropagation(); setEditing({ layerId: id, name: meta?.name || id }); }}>
-            {shared && <span className="lp-row-lock" title={lockTitle}><Icon name="lock" size={10} /></span>}
+            {shared && <span className="lp-row-lock" title={lockTitle}><Icon name="lock" size={12} /></span>}
             {meta?.name || id}
             <span className="lp-row-type">{TYPE_NAMES[meta?.type] || meta?.type || "?"}</span>
           </span>
@@ -355,7 +355,7 @@ export default function LayerPanel({
           title="图例 / 信息"
           onClick={(e) => { e.stopPropagation(); toggleLegend(id); }}
         >
-          <Icon name="chevronDown" size={10} />
+          <Icon name="chevronDown" size={12} />
         </button>
       </div>
     );
@@ -364,16 +364,16 @@ export default function LayerPanel({
   return (
     <div className="lp" ref={panelRef}>
       <div className="lp-toolbar">
-        <span><Icon name="layers" size={11} /> 图层组</span>
+        <span><Icon name="layers" size={12} /> 图层组</span>
         {!newGroupOpen ? (
           <button className="lp-add-group" type="button" onClick={() => setNewGroupOpen(true)} title="新建图层组">
-            <Icon name="plus" size={11} /> 新建组
+            <Icon name="plus" size={12} /> 新建组
           </button>
         ) : (
           <form className="lp-new-group" onSubmit={submitNewGroup}>
             <input autoFocus value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} placeholder="组名称" />
-            <button type="submit" title="保存"><Icon name="check" size={11} /></button>
-            <button type="button" onClick={() => { setNewGroupOpen(false); setNewGroupName(""); }} title="取消"><Icon name="close" size={11} /></button>
+            <button type="submit" title="保存"><Icon name="check" size={12} /></button>
+            <button type="button" onClick={() => { setNewGroupOpen(false); setNewGroupName(""); }} title="取消"><Icon name="close" size={12} /></button>
           </form>
         )}
       </div>
@@ -390,11 +390,11 @@ export default function LayerPanel({
               onClick={() => setCollapsed((p) => ({ ...p, "__shared__": !p.__shared__ }))}
               title="共享数据集：所有工作区共用；编辑需逐次授权"
             >
-              <span className="lp-caret">{collapsed.__shared__ ? <Icon name="chevronRight" size={10} /> : <Icon name="chevronDown" size={10} />}</span>
+              <span className="lp-caret">{collapsed.__shared__ ? <Icon name="chevronRight" size={12} /> : <Icon name="chevronDown" size={12} />}</span>
               <label className="lp-eye" onClick={(e) => e.stopPropagation()} title={groupAllVisible(sharedIds) ? "隐藏整组" : "显示整组"}>
                 <input type="checkbox" checked={groupAllVisible(sharedIds)} onChange={() => toggleGroup(sharedIds)} />
               </label>
-              <span className="lp-group-name"><Icon name="lock" size={10} /> 共享数据集</span>
+              <span className="lp-group-name"><Icon name="lock" size={12} /> 共享数据集</span>
               <span className="lp-group-count">{sharedIds.length}</span>
             </div>
             {!collapsed.__shared__ && <div className="lp-group-body">{sharedIds.map(renderLayerRow)}</div>}
@@ -420,7 +420,7 @@ export default function LayerPanel({
                 }}
                 title="将图层拖到此组"
               >
-                <span className="lp-caret">{isCollapsed ? <Icon name="chevronRight" size={10} /> : <Icon name="chevronDown" size={10} />}</span>
+                <span className="lp-caret">{isCollapsed ? <Icon name="chevronRight" size={12} /> : <Icon name="chevronDown" size={12} />}</span>
                 <label className="lp-eye" onClick={(e) => e.stopPropagation()} title={gVisible ? "隐藏整组" : "显示整组"}>
                   <input type="checkbox" checked={gVisible} onChange={() => toggleGroup(ids)} />
                 </label>
@@ -440,9 +440,9 @@ export default function LayerPanel({
               onClick={() => setCollapsed((p) => ({ ...p, "__temp__": !p.__temp__ }))}
               title="本次会话的临时可视化，不写入项目；保存为正式图层需 Work 模式"
             >
-              <span className="lp-caret">{collapsed.__temp__ ? <Icon name="chevronRight" size={10} /> : <Icon name="chevronDown" size={10} />}</span>
+              <span className="lp-caret">{collapsed.__temp__ ? <Icon name="chevronRight" size={12} /> : <Icon name="chevronDown" size={12} />}</span>
               <span className="lp-caret-spacer" />
-              <span className="lp-group-name"><Icon name="star" size={10} /> 临时层</span>
+              <span className="lp-group-name"><Icon name="star" size={12} /> 临时层</span>
               <span className="lp-group-count">{tempLayers.length}</span>
             </div>
             {!collapsed.__temp__ && (
@@ -450,7 +450,7 @@ export default function LayerPanel({
                 {tempLayers.map((item) => (
                   <div key={item.key} className="lp-row lp-row-temp" title="临时可视化，不写入项目">
                     <span className="lp-eye-spacer" />
-                    <span className="lp-symbol lp-symbol-temp"><Icon name="star" size={11} /></span>
+                    <span className="lp-symbol lp-symbol-temp"><Icon name="star" size={12} /></span>
                     <span className="lp-row-name">
                       {item.label}
                       <span className="lp-row-type">未保存</span>
@@ -475,7 +475,7 @@ export default function LayerPanel({
             <div className="lp-legend-head">
               <LegendSymbol styleType={stype} paint={paint} />
               <span className="lp-legend-title">{meta?.name || id} 图例</span>
-              <button className="lp-op" onClick={() => onZoomToLayer(id)} title="缩放到图层"><Icon name="locate" size={11} /></button>
+              <button className="lp-op" onClick={() => onZoomToLayer(id)} title="缩放到图层"><Icon name="locate" size={12} /></button>
             </div>
             <div className="lp-legend-body">
               {data ? (
@@ -530,7 +530,7 @@ export default function LayerPanel({
               title={editorCollapsed ? "展开样式设置" : "折叠样式设置"}
               aria-label={editorCollapsed ? "展开样式设置" : "折叠样式设置"}
             >
-              <Icon name={editorCollapsed ? "chevronRight" : "chevronDown"} size={11} />
+              <Icon name={editorCollapsed ? "chevronRight" : "chevronDown"} size={12} />
             </button>
           </div>
           {!editorCollapsed && <div className="lp-editor-body">

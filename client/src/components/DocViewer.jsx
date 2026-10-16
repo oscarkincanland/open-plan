@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { openInSystem, revealInSystem } from "../api.js";
+import { notifyError } from "./Feedback.jsx";
 import { buildDocUrls, makeFileIdentity, identityMatches, PREVIEW_STATE, PREVIEW_STATE_LABEL } from "../文件地址.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import MarkdownToc from "./MarkdownToc.jsx";
@@ -527,8 +528,8 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
       <div className="docview-head">
         <span className="doc-title">{doc.name}</span>
         <span className={`badge preview-state preview-state-${previewState}`} title={previewErr || ""}>
-          {previewState === PREVIEW_STATE.LOADING && <Icon name="loading" size={11} />}
-          {previewState === PREVIEW_STATE.FAILED && <Icon name="warning" size={11} />}
+          {previewState === PREVIEW_STATE.LOADING && <Icon name="loading" size={12} />}
+          {previewState === PREVIEW_STATE.FAILED && <Icon name="warning" size={12} />}
           {PREVIEW_STATE_LABEL[previewState] || previewState}
         </span>
         {doc.kind === "html" && !isOfficePreview && (
@@ -577,8 +578,8 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
             </button>
           </>
         )}
-        {watchErr && <span className="badge err-badge"><Icon name="warning" size={11} /> {watchErr}</span>}
-        {previewErr && <span className="badge err-badge"><Icon name="warning" size={11} /> {previewErr}</span>}
+        {watchErr && <span className="badge err-badge"><Icon name="warning" size={12} /> {watchErr}</span>}
+        {previewErr && <span className="badge err-badge"><Icon name="warning" size={12} /> {previewErr}</span>}
         {watchUrl && <span className="badge ws-hint">可点选元素，配合右侧 agent 修改</span>}
       </div>
       {commentsOpen && comments.length > 0 && !showComments && (
@@ -830,7 +831,7 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
       if (action === "reveal") await revealInSystem(doc.name);
       else await openInSystem(doc.name);
     } catch (error) {
-      alert(`${action === "reveal" ? "在文件管理器中显示" : "用系统应用打开"}失败：${error.message}`);
+      notifyError(`${action === "reveal" ? "在文件管理器中显示" : "用系统应用打开"}失败：${error.message}`);
     }
   };
 
@@ -860,7 +861,7 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
                 aria-label={`关闭 ${t.name}`}
                 title={`关闭 ${t.name}`}
                 onClick={(e) => { e.stopPropagation(); onCloseTab && onCloseTab(tabId(t)); }}
-              ><Icon name="close" size={11} /></button>
+              ><Icon name="close" size={12} /></button>
             </div>
           ))}
         </div>
@@ -868,13 +869,13 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
       {/* 本机原生操作条：与预览器无关，任何格式都可用（图片/Excel/PDF 等用系统应用打开） */}
       {doc && (
         <div className="doc-native-actions">
-          <span className="doc-native-name" title={doc.name}><Icon name={ICONS[doc.ext] || "file"} size={11} /> {doc.name}</span>
+          <span className="doc-native-name" title={doc.name}><Icon name={ICONS[doc.ext] || "file"} size={12} /> {doc.name}</span>
           <span className="doc-native-spacer" />
           <button type="button" className="btn-xs" onClick={() => handleNative("open")} title="用系统默认应用打开（例如 WPS/Word/预览/浏览器）">
-            <Icon name="externalLink" size={11} /> 用系统应用打开
+            <Icon name="externalLink" size={12} /> 用系统应用打开
           </button>
           <button type="button" className="btn-xs" onClick={() => handleNative("reveal")} title="在文件管理器中显示该文件">
-            <Icon name="folderOpen" size={11} /> 在文件管理器中显示
+            <Icon name="folderOpen" size={12} /> 在文件管理器中显示
           </button>
         </div>
       )}

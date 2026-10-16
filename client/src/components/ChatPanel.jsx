@@ -17,6 +17,13 @@ import { loadSettings } from "./SettingsPanel.jsx";
 import { isMotionReduced, motionScrollBehavior, useAppearance, useAppearanceSetter } from "../界面外观.js";
 import { startLatencyProbe, markLatency, patchLatencyMeta, markFirstDomText, finalizeLatencyProbe } from "../首字延迟埋点.js";
 import { acquireStream } from "../长连接预算.js";
+import { notifyError, askConfirm } from "./Feedback.jsx";
+import { flag, flagsReady } from "../运行开关.js";
+import { getBrowserStreamState } from "../浏览器联动.js";
+
+// O-P3：浏览器"写操作类"工具白名单 —— 只有这些会拉起内置浏览器侧栏；
+// browser_close / browser_tabs / browser_snapshot / browser_screenshot 等查看或收尾动作不拉起。
+const BROWSER_PANEL_OPEN_TOOLS = new Set(["browser_open", "browser_click", "browser_type", "browser_press", "browser_scroll"]);
 
 // 错误边界包装器
 class ErrorBoundary extends React.Component {
@@ -775,6 +782,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const streamGenerationRef = useRef(0);
   const eventHandlerRef = useRef(null);
   const reconciledRunIdsRef = useRef(new Set());
+  // OAW_REPLAY_RECOVER：冷启动 Run 探测与回放缓冲（恢复差异报告 F1/F4，默认关）
+  const replayProbeRef = useRef({ pending: false, thread: null });
+  const replayBufferRef = useRef([]);
+  const replayProbedThreadsRef = useRef(new Set());
+  const [replayFlagsTick, setReplayFlagsTick] = useState(0); // 开关快照就绪后重跑一次探测
   // ChatPanel 本身持续挂载时，按 thread 保存界面状态，切换子对话不会把原对话的流式内容丢掉。
   const threadCacheRef = useRef(new Map());
   const previousThreadRef = useRef(threadId);
@@ -1042,7 +1054,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         stopRequestedRef.current = false;
         roundStoppedRef.current = false;
         setStopping(false);
-      assistantIdRef.current = isLiveRun ? latestAssistant?.id || null : null;
+      // OAW_REPLAY_RECOVER（F4）：恢复水合场景不锚定历史最后一条 assistant 气泡——
+      // 运行中那条消息尚未落盘，锚定会把回放 token 拼进上一轮气泡；改为由
+      // ensureAssistant 新建气泡承载恢复的流式内容（flag 关 = 基线锚定）。
+      assistantIdRef.current = isLiveRun ? (flag("replayRecover") ? null : (latestAssistant?.id || null)) : null;
       lastAssistantIdRef.current = latestAssistant?.id || null;
       streamBufRef.current = null;
       streamingMsgIdRef.current = assistantIdRef.current;
@@ -1095,7 +1110,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       stoppingRef.current = false;
       stopRequestedRef.current = false;
       roundStoppedRef.current = false;
-      assistantIdRef.current = hydratedIsLive ? hydratedAssistant?.id || null : null;
+      // OAW_REPLAY_RECOVER（F4）：同上，恢复水合时不锚定历史气泡（flag 关 = 基线锚定）。
+      assistantIdRef.current = hydratedIsLive ? (flag("replayRecover") ? null : (hydratedAssistant?.id || null)) : null;
     lastAssistantIdRef.current = hydratingHistory ? hydratedAssistant?.id || null : null;
     streamBufRef.current = null;
     streamingMsgIdRef.current = assistantIdRef.current;
@@ -1682,12 +1698,51 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   // 这里在拿到 runId 后立即拉取，并在执行期间短轮询，避免 Todo 只存在于任务中心。
   // 同时覆盖“后端已完成但 SSE 终结事件丢失”的情况：用当前 thread 找回 Run，
   // 再注入一个幂等的 run_finished，让输入框和状态栏恢复可用。
+  // OAW_REPLAY_RECOVER：开关快照异步到达（初始全关），就绪后重跑一次冷启动探测。
+  useEffect(() => {
+    let active = true;
+    flagsReady.then(() => { if (active) setReplayFlagsTick((t) => t + 1); });
+    return () => { active = false; };
+  }, []);
   useEffect(() => {
     const runId = runState.runId;
     const activeStatuses = ["running", "queued", "waiting_user", "recovering", "cancel_requested", "finishing"];
     const shouldReconcile = busy || activeStatuses.includes(runState.status);
     if (!runId && !shouldReconcile) {
-      setTodoItems([]);
+      // OAW_REPLAY_RECOVER（F1）：冷启动（无历史水合、本地 idle）时探测本 thread 是否
+      // 仍有执行中的 Run；命中则恢复运行上下文并冲刷探测期间缓冲的回放事件，使刷新后
+      // 的对话能重建“运行中”的实时内容。探测每 thread 仅一次，flag 关 = 基线行为。
+      if (flag("replayRecover") && threadId && !replayProbedThreadsRef.current.has(threadId)) {
+        replayProbedThreadsRef.current.add(threadId);
+        replayProbeRef.current = { pending: true, thread: threadId };
+        replayBufferRef.current = [];
+        const probeThread = threadId;
+        void (async () => {
+          try {
+            const result = await listRuns(probeThread, 12, { cwd: workspace });
+            if (replayProbeRef.current.thread !== probeThread) return; // 已切走：新探测接管
+            const live = (result?.runs || [])
+              .filter((item) => item?.clientId === clientId && activeStatuses.includes(item.status))
+              .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))[0] || null;
+            if (live) {
+              // F4：恢复的流式内容进新气泡，不续写历史最后一条 assistant（防跨轮拼接）
+              assistantIdRef.current = null;
+              runInProgressRef.current = true;
+              activeRunIdRef.current = live.id;
+              setBusy(true);
+              setRunState((s) => ({ ...s, status: live.status, runId: live.id, task: live.task || s.task, artifacts: live.artifacts || s.artifacts, references: live.references || s.references, mode: normalizeUiMode(live.task?.mode) }));
+              const nextTodos = live.todoVersion === 1 && Array.isArray(live.todos) ? live.todos : (Array.isArray(live.steps) ? live.steps : []);
+              if (nextTodos.length) setTodoItems(nextTodos);
+            }
+          } catch {}
+          replayProbeRef.current = { pending: false, thread: null };
+          const buffered = replayBufferRef.current;
+          replayBufferRef.current = [];
+          for (const ev of buffered) eventHandlerRef.current?.(ev);
+        })();
+      } else {
+        setTodoItems([]);
+      }
       return undefined;
     }
     let cancelled = false;
@@ -1753,7 +1808,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       window.removeEventListener("oaw:force-reconcile", onForceReconcile);
       if (timer) window.clearInterval(timer);
     };
-  }, [clientId, threadId, workspace, runState.runId, runState.status, busy]);
+  }, [clientId, threadId, workspace, runState.runId, runState.status, busy, replayFlagsTick]);
 
   const acceptSystemEvent = useCallback((key) => {
     const value = String(key || "");
@@ -1771,6 +1826,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   function handleEvent(ev) {
     const envelope = ev?.event || ev || {};
     const { type, data = {} } = envelope;
+    // OAW_REPLAY_RECOVER：冷启动探测期间缓冲通道回放事件，探测完成后统一冲刷落点，
+    // 避免探测竞态窗口内到达的 token/tool 事件因 busy/idle 门闩被静默丢弃。
+    if (flag("replayRecover") && replayProbeRef.current.pending && replayProbeRef.current.thread === threadId && type !== "connected") {
+      if (replayBufferRef.current.length < 6000) replayBufferRef.current.push(ev);
+      return;
+    }
     const eventRunId = data?.runId || null;
     // 重连会回放历史事件。已知当前 Run 时，旧 Run 的事件不能污染当前对话。
     if (eventRunId && activeRunIdRef.current && eventRunId !== activeRunIdRef.current) return;
@@ -1803,7 +1864,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         lastAssistantIdRef.current = assistantIdRef.current;
         return assistantIdRef.current;
       }
-      if (!force && !busy && !LIVE_RUN_STATUSES.has(runState.status)) return null;
+      // OAW_REPLAY_RECOVER：探测恢复的运行上下文经 ref 同步生效（state 可能尚未提交），
+      // 故 runInProgressRef 也放行；flag 关时与基线判定完全一致。
+      const replayRecoverGate = flag("replayRecover") && runInProgressRef.current;
+      if (!force && !busy && !LIVE_RUN_STATUSES.has(runState.status) && !replayRecoverGate) return null;
       const recoveredId = newId();
       assistantIdRef.current = recoveredId;
       lastAssistantIdRef.current = recoveredId;
@@ -2099,10 +2163,11 @@ case "runtime_connecting":
         if (data.name === "run_subagent") break;
         flushToolOutput();
         setAgentPhase(`调用工具：${data.name || "处理中"}`);
-        // 浏览器类工具开始执行时通知外层展开内置浏览器侧栏。
+        // 浏览器"写操作类"工具开始执行时通知外层展开内置浏览器侧栏（O-P3 判定修正：
+        // browser_close / browser_tabs / browser_snapshot 等查看或收尾动作不再把面板拉起）。
         // 这条通知替代了原先 App 常驻的 /api/browser/stream（只用它判断"浏览器活跃"），
         // 少一条长连接就少占一个同源连接槽位。
-        if (String(data.name || "").startsWith("browser_")) onBrowserActivity?.();
+        if (BROWSER_PANEL_OPEN_TOOLS.has(String(data.name || ""))) onBrowserActivity?.();
         if (!aid) aid = ensureAssistant();
         if (aid) {
           if (streamBufRef.current) flushNow(aid);
@@ -3091,7 +3156,7 @@ case "runtime_connecting":
   };
 
   const handleRollbackRun = async (runId, paths) => {
-    if (!runId || !window.confirm("确认回滚本轮产物？这会恢复修改前的文件内容。")) return;
+    if (!runId || !(await askConfirm("确认回滚本轮产物？这会恢复修改前的文件内容。"))) return;
     try {
       await rollbackRun(runId, paths);
       pushSystem("已回滚本轮可恢复的文件变更。");
@@ -3350,7 +3415,7 @@ case "runtime_connecting":
               className="btn-xs chat-hist-refresh"
               onClick={(e) => { e.stopPropagation(); onRefreshSessions(); }}
               title="刷新会话"
-            ><Icon name="refresh" size={11} /></button>
+            ><Icon name="refresh" size={12} /></button>
           </div>
           {histOpen && (
             <div className="chat-hist-list">
@@ -3363,10 +3428,10 @@ case "runtime_connecting":
                   try { await onSelectSession(s); setHistOpen(false); }
                   finally { setHistoryLoading(false); }
                 }}
-                onDelete={async (id) => { try { if (onDeleteSession) await onDeleteSession(id); else await deleteSession(id); onRefreshSessions(); } catch (e) { alert("删除失败: " + e.message); } }}
+                onDelete={async (id) => { try { if (onDeleteSession) await onDeleteSession(id); else await deleteSession(id); onRefreshSessions(); } catch (e) { notifyError("删除失败: " + e.message); } }}
                 onBatchDelete={onBatchDeleteSession || (async (ids) => { const result = await deleteSessions(ids); onRefreshSessions(); return result; })}
-                onRename={async (id, label) => { try { await renameSession(id, label); onRefreshSessions(); } catch (e) { alert("重命名失败: " + e.message); } }}
-                onFork={onForkSession || (async (id) => { try { await forkSession(id); onRefreshSessions(); } catch (e) { alert("创建分支失败: " + e.message); } })}
+                onRename={async (id, label) => { try { await renameSession(id, label); onRefreshSessions(); } catch (e) { notifyError("重命名失败: " + e.message); } }}
+                onFork={onForkSession || (async (id) => { try { await forkSession(id); onRefreshSessions(); } catch (e) { notifyError("创建分支失败: " + e.message); } })}
                 onPin={onPinSession}
                 onFreeze={onFreezeSession}
               />
@@ -3376,7 +3441,7 @@ case "runtime_connecting":
         <div className="chat-head">
           <span className="chat-title"><Logo size={16} /> {panelTitle}</span>
           <span className={`chat-mode-badge mode-${editMode}`} title={currentMode.title}>
-            <Icon name={currentMode.icon} size={11} /> {currentMode.label}
+            <Icon name={currentMode.icon} size={12} /> {currentMode.label}
           </span>
           {onPromoteToAgent && lastPrompt && editMode === "chat" && (
             <button
@@ -3396,7 +3461,7 @@ case "runtime_connecting":
             数据来自既有 props（mapProject / mapContext），不新增状态。 */}
         {mapProject && (
           <div className="chat-map-status" title="Agent 会读到当前地图项目与视口范围">
-            <Icon name="map" size={11} />
+            <Icon name="map" size={12} />
             <span className="cms-project">{mapProject}</span>
             {mapContext?.center && (
               <>
@@ -3413,7 +3478,7 @@ case "runtime_connecting":
               disabled={!mapContext?.center}
               title={mapContext?.center ? "将当前地图视图加入下一轮上下文" : "地图就绪后可固定当前视图"}
             >
-              <Icon name="pin" size={10} /> 固定视图
+              <Icon name="pin" size={12} /> 固定视图
             </button>
           </div>
         )}
@@ -3422,7 +3487,7 @@ case "runtime_connecting":
         {mapProject && lastMapVisual && (
           <div className="chat-map-visual" role="status">
             <div className="cmv-row">
-              <Icon name="star" size={11} />
+              <Icon name="star" size={12} />
               <span className="cmv-text">
                 已在地图上显示「{lastMapVisual.title}」<em>（临时，未保存）</em>
               </span>
@@ -3440,7 +3505,7 @@ case "runtime_connecting":
                   send(`把刚才的地图分析「${lastMapVisual.title}」保存为正式图层。`);
                 }}
               >
-                <Icon name="download" size={10} /> 保存为图层
+                <Icon name="download" size={12} /> 保存为图层
               </button>
             </div>
             {mapVisualHint && <div className="cmv-hint" role="alert">{mapVisualHint}</div>}
@@ -3576,14 +3641,14 @@ case "runtime_connecting":
                     <span>模型切换为 <b>{modelDisplayName(roundModel)}</b></span>
                   </div>
                 )}
-                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} runSummary={runSummary} executionFlow={executionFlow} />
+                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} runSummary={runSummary} executionFlow={executionFlow} />
               </React.Fragment>
             );
            }); })()}
           </div>
           {showScrollToBottom && (
             <button type="button" className="chat-scroll-latest" onClick={scrollToLatest} title="回到底部" aria-label="回到底部">
-              <Icon name="chevronDown" size={13} />
+              <Icon name="chevronDown" size={14} />
               <span>回到底部</span>
             </button>
           )}
@@ -3608,10 +3673,10 @@ case "runtime_connecting":
           <div className="att-preview-row">
             {attachments.map((att, i) => (
               <div className="att-chip" key={i} title={att.name}>
-                <Icon name="file" size={13} />
+                <Icon name="file" size={14} />
                 <span className="att-name">{att.name}</span>
                 <button className="att-remove" onClick={() => setAttachments((at) => at.filter((_, j) => j !== i))}>
-                  <Icon name="x" size={10} />
+                  <Icon name="x" size={12} />
                 </button>
               </div>
             ))}
@@ -3656,14 +3721,14 @@ case "runtime_connecting":
             <span className="chat-target-label">本轮目标</span>
             {workspace ? (
               <span className="chat-target-chip scope" title={`会话工作区（跨轮生效，在左侧会话栏切换）：${workspace}`}>
-                <Icon name="folder" size={11} /> 工作区 {pathBaseName(workspace)}
+                <Icon name="folder" size={12} /> 工作区 {pathBaseName(workspace)}
               </span>
             ) : (
               <span className="chat-target-chip muted" title="尚未选择工作区，Agent 只能处理引用/上传的材料">未选择工作区</span>
             )}
             {targetContextFile && (
               <span className="chat-target-chip file" title={`本轮会带上当前打开文件：${targetContextFile}`}>
-                <Icon name="file" size={11} /> {pathBaseName(targetContextFile)}
+                <Icon name="file" size={12} /> {pathBaseName(targetContextFile)}
                 <button
                   type="button"
                   onClick={() => setContextFileDismissed(true)}
@@ -3674,7 +3739,7 @@ case "runtime_connecting":
             )}
             {targetReferenceCount > 0 && (
               <span className="chat-target-chip ref" title="引用只作为参考上下文，不等于授权写入；写入仍受工作区与审批控制">
-                <Icon name="link" size={11} /> 参考文件 {targetReferenceCount}
+                <Icon name="link" size={12} /> 参考文件 {targetReferenceCount}
               </span>
             )}
           </div>
@@ -3753,7 +3818,7 @@ case "runtime_connecting":
               {busy ? (
                 <>
                   {hasDraft && <button className="btn primary pending-send-btn" onClick={() => send()} title={busyInputMode === "steer" ? "打断当前回合立即执行（Enter）" : busyInputMode === "queue" ? "排队执行（Enter）" : "注入上下文（Enter）"}>
-                    <Icon name={busyInputMode === "steer" ? "send" : busyInputMode === "queue" ? "list" : "layers"} size={13} />
+                    <Icon name={busyInputMode === "steer" ? "send" : busyInputMode === "queue" ? "list" : "layers"} size={14} />
                     <span>{busyInputMode === "steer" ? "立即" : busyInputMode === "queue" ? "排队" : "注入"}</span>
                   </button>}
                   <button className="btn danger stop-btn" onClick={stop} disabled={stopping} title={stopping ? "正在中断当前回复" : "中断当前回复"} aria-label={stopping ? "正在中断当前回复" : "中断当前回复"}>
@@ -3804,7 +3869,7 @@ case "runtime_connecting":
                     <strong>{modelDisplayName(selectedModelInfo)}</strong>
                     <small>{selectedEffort.shortLabel}</small>
                   </span>
-                  <Icon name="chevronDown" size={11} />
+                  <Icon name="chevronDown" size={12} />
                 </button>
                 {modelOpen && createPortal(
                   <div
@@ -3827,7 +3892,7 @@ case "runtime_connecting":
                     />
                     <div className="ct-pop-list model-control-list">
                       <button type="button" className="ct-pop-refresh" onClick={async (e) => { e.stopPropagation(); setModelMsg("扫描中…"); try { const d = await fetch("/api/models/refresh", { method: "POST" }).then((x) => x.json()); if (d.ok) { setModels(d.models || []); if (d.counts) setModelCounts(d.counts); setModelMsg(`可用 ${d.counts?.available ?? d.count ?? 0} / 配置 ${d.counts?.configured ?? "?"}`); } else setModelMsg("扫描失败: " + (d.error || "")); } catch (err) { setModelMsg("扫描失败: " + err.message); } setTimeout(() => setModelMsg(""), 2500); }} title="重新扫描 Pi 模型目录与可用模型">
-                        <Icon name="refresh" size={11} /> 重新扫描模型 <small>可用 {modelCounts.available || "—"}</small>
+                        <Icon name="refresh" size={12} /> 重新扫描模型 <small>可用 {modelCounts.available || "—"}</small>
                       </button>
                       {modelSections.map((section) => (
                         <div className="model-pinned-section" key={section.key}>
@@ -3853,7 +3918,7 @@ case "runtime_connecting":
                             aria-expanded={allModelsOpen}
                             title="展开全部模型列表（按供应商分组）"
                           >
-                            <Icon name={allModelsOpen ? "chevronDown" : "chevronRight"} size={11} /> 全部模型（{models.length}）
+                            <Icon name={allModelsOpen ? "chevronDown" : "chevronRight"} size={12} /> 全部模型（{models.length}）
                             <small>可用 {modelCounts.available || "—"}</small>
                           </button>
                           {allModelsOpen && (
@@ -3903,7 +3968,7 @@ case "runtime_connecting":
             <span className="chat-toolbar-spacer" />
             <div className="chat-toolbar-group toolbar-session-group">
               <button className="ct-btn" onClick={handleNewSession} title="新建会话">
-                <Icon name="plus" size={14} />
+                <Icon name="chatPlus" size={14} />
               </button>
             </div>
             {modelMsg && <span className={`model-msg${pendingModel ? " pending" : ""}`} title={pendingModel ? `已排队：本轮结束后切换为 ${pendingModel}` : undefined}>{modelMsg}</span>}
@@ -4192,11 +4257,11 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
         </div>
         </details>
         )}
-        {actionNeeded && <div className={`run-result-action ${actionNeeded.kind}`}><Icon name="arrowRight" size={11} /> {actionNeeded.text}</div>}
+        {actionNeeded && <div className={`run-result-action ${actionNeeded.kind}`}><Icon name="arrowRight" size={12} /> {actionNeeded.text}</div>}
         {/* 被中断的轮次：明确写出终态与可继续的方式，不靠"内容戛然而止"让用户猜 */}
         {interrupted && !actionNeeded && (
           <div className="run-result-action cancelled" role="status">
-            <Icon name="stop" size={11} /> 本轮已中断，已保留生成到一半的内容；可以重新发送、补充要求，或直接继续提问。
+            <Icon name="stop" size={12} /> 本轮已中断，已保留生成到一半的内容；可以重新发送、补充要求，或直接继续提问。
           </div>
         )}
         {/* 本轮用时与 token：明确到每一轮（回合）——总量常驻可见，逐轮明细一键展开 */}
@@ -4243,17 +4308,17 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
             <div className="result-tabs" role="tablist" aria-label="本轮结果视图">
               {products.length > 0 && (
                 <button type="button" role="tab" aria-selected={resultTab === "products"} className={`result-tab ${resultTab === "products" ? "active" : ""}`} onClick={() => setResultTab("products")}>
-                  <Icon name="folder" size={11} /> 本轮产物 <span className="result-tab-count">{attributedProducts.length}</span>
+                  <Icon name="folder" size={12} /> 本轮产物 <span className="result-tab-count">{attributedProducts.length}</span>
                 </button>
               )}
               {fileChanges.length > 0 && (
                 <button type="button" role="tab" aria-selected={resultTab === "changes"} className={`result-tab ${resultTab === "changes" ? "active" : ""}`} onClick={() => setResultTab("changes")}>
-                  <Icon name="edit" size={11} /> 文件改动 <span className="result-tab-count">{fileChanges.length}</span>
+                  <Icon name="edit" size={12} /> 文件改动 <span className="result-tab-count">{fileChanges.length}</span>
                 </button>
               )}
               {reviewSources.length > 0 && (
                 <button type="button" role="tab" aria-selected={resultTab === "sources"} className={`result-tab ${resultTab === "sources" ? "active" : ""}`} onClick={() => setResultTab("sources")}>
-                  <Icon name="shield" size={11} /> 依据 <span className="result-tab-count">{reviewSources.length}</span>
+                  <Icon name="shield" size={12} /> 依据 <span className="result-tab-count">{reviewSources.length}</span>
                 </button>
               )}
             </div>
@@ -4261,7 +4326,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
               <div className="result-tab-panel" role="tabpanel" aria-label="本轮产物">
                 <div className="product-cards-head">
                   <span>
-                    <Icon name="folder" size={11} /> 交付产物 {deliverables.length} · 已确认 {confirmedProducts.length}
+                    <Icon name="folder" size={12} /> 交付产物 {deliverables.length} · 已确认 {confirmedProducts.length}
                     {attributedProducts.length > confirmedProducts.length ? ` · 待确认 ${attributedProducts.length - confirmedProducts.length}` : ""}
                     {leadProducts.length ? ` · 未归属线索 ${leadProducts.length}` : ""}
                   </span>
@@ -4300,7 +4365,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
                     <div className="product-leads-list">
                       {leadProducts.map((item) => (
                         <button type="button" className="product-lead" key={item.path} onClick={() => onOpenFile?.(item.path)} title={`${item.path}（未归属线索）`}>
-                          <Icon name={item.icon || "file"} size={11} />
+                          <Icon name={item.icon || "file"} size={12} />
                           <span>{item.name}</span>
                           {item.sizeText && <em>{item.sizeText}</em>}
                         </button>
@@ -4315,7 +4380,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
               <div className="result-tab-panel" role="tabpanel" aria-label="文件改动">
                 <div className="file-change-summary">
                   <span className="file-change-label">
-                    <Icon name="folder" size={11} /> 本轮文件（{fileChanges.length}）
+                    <Icon name="folder" size={12} /> 本轮文件（{fileChanges.length}）
                     {deliverables.length ? ` · 交付 ${deliverables.length}` : ""}
                   </span>
                   {m.workspace && <small className="summary-workspace" title={m.workspace}>工作区：{m.workspace}</small>}
@@ -4327,7 +4392,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
                         onClick={() => onOpenFile?.(change.relativePath)}
                         title={`${change.changeType} · ${change.confidence === "suspected" ? "疑似变更" : "已确认"} · ${change.relativePath}`}
                       >
-                        <Icon name={change.changeType === "deleted" ? "trash" : "file"} size={11} /> {change.relativePath}
+                        <Icon name={change.changeType === "deleted" ? "trash" : "file"} size={12} /> {change.relativePath}
                       </span>
                     ))}
                   </div>
@@ -4346,7 +4411,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
             {resultTab === "sources" && reviewSources.length > 0 && (
               <div className="result-tab-panel" role="tabpanel" aria-label="规范依据">
                 <div className="review-source-summary">
-                  <div className="file-change-label"><Icon name="shield" size={11} /> 规范依据（已读取 {reviewSources.length}）</div>
+                  <div className="file-change-label"><Icon name="shield" size={12} /> 规范依据（已读取 {reviewSources.length}）</div>
                   <div className="review-source-list">
                     {reviewSources.map((source) => (
                       <div className="review-source-row" key={source.sourceId}>
@@ -4363,7 +4428,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
         )}
         {memoryProposalIds.length > 0 && (
           <div className="run-result-links">
-            <span className="run-result-chip muted" title={`有 ${memoryProposalIds.length} 条待审核记忆建议，在「设置 → 记忆」中确认或拒绝`}><Icon name="book" size={11} /> 记忆建议 {memoryProposalIds.length}</span>
+            <span className="run-result-chip muted" title={`有 ${memoryProposalIds.length} 条待审核记忆建议，在「设置 → 记忆」中确认或拒绝`}><Icon name="book" size={12} /> 记忆建议 {memoryProposalIds.length}</span>
           </div>
         )}
       </div>
@@ -4372,7 +4437,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onResend, index, prevRole, clientId, threadId, runSummary = null, executionFlow = null }) {
+function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onResend, index, prevRole, clientId, threadId, runSummary = null, executionFlow = null }) {
   if (m.role === "system") {
     if (m.summary) {
       const runId = m.runId || null;
@@ -4584,7 +4649,7 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
         }}
       >
         <summary>
-          <Icon name="flow" size={11} />
+          <Icon name="flow" size={12} />
           {isTaskActivity ? "执行过程" : foldedProcessBlocks.some((block) => block.type === "tool") ? "思考与工具过程" : "思考记录"}
           {isLiveFold && <span>实时</span>}
         </summary>
@@ -4658,8 +4723,10 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
   }, [streaming, visibleBlocks]);
   return (
     <div className={`msg ${isUser ? "user" : "assistant"} ${m.status || ""}`} data-msg-index={index}>
-      <div className={`avatar ${isUser ? "user-avatar" : "agent-avatar"}`}>
-        <Icon name={isUser ? "user" : "robot"} size={14} />
+      <div className={`avatar ${isUser ? "user-avatar" : "agent-avatar"} ${!isUser && streaming ? "is-streaming" : ""}`}>
+        {isUser
+          ? <Icon name="user" size={14} />
+          : <Logo size={22} withBackground={false} markColor="#fff" className="agent-avatar-mark" />}
       </div>
       <div className="msg-main">
         {/* 消息头：作者 + 时间（相邻同角色消息省略，减少重复气泡头部） */}
@@ -4667,7 +4734,6 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
         <div className="msg-header">
           <span className="msg-author">{isUser ? "You" : (model || "Agent")}</span>
           <span className="msg-time">{formatMsgTime(m.createdAt || Date.now())}</span>
-          {!isUser && streaming && <span className="msg-streaming-badge"><StreamingDot /> 生成中</span>}
           {!isUser && m.status === "error" && <span className="msg-error-badge">生成失败</span>}
           {/* 中断既要认本地标记，也要认 Run 的终态：刷新/切回会话后本地标记会丢，只有 runStatus 还在 */}
           {!isUser && (m.stopped || runInterrupted) && <span className="msg-stopped-badge">{m.stopped ? "已停止生成" : "本轮已中断"}</span>}
@@ -4720,14 +4786,14 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
               />
             )}
             {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
-            {/* 流式等待首块：思考中 + 耗时 */}
-            {streaming && !hasContent && (
-              <div className="loading-inline">
-                <LoadingDots label={agentPhase || "正在思考"} seconds={waitSec} />
+            {/* 状态固定在消息内容下方：等待首字和持续生成共用同一组四瓣与状态短句 */}
+            {streaming && (
+              <div className="msg-streaming-status" role="status" aria-live="off">
+                <StreamingDot />
+                <StreamingActivityLabel />
+                {!hasContent && waitSec > 0 && <span className="msg-streaming-elapsed">{waitSec}s</span>}
               </div>
             )}
-            {/* 流式收尾：呼吸脉冲圆点 */}
-            {streaming && hasContent && <StreamingDot />}
             {/* 已停止 / 错误标记 */}
             {m.status === "error" && <div className="err-badge" title={m.errorText}>{m.errorText || "处理失败，请重试"}</div>}
           </>
@@ -4756,8 +4822,6 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
 // 不应随每个 token 一起重新渲染。操作回调保持稳定，工作区/线程真正变化时
 // 则仍由 onOpenFile、threadId 等关键属性触发必要更新。
 const MemoMessage = React.memo(Message, (previous, next) => {
-  const phaseChangedWhileWaiting = (previous.m?.status === "streaming" || next.m?.status === "streaming")
-    && previous.agentPhase !== next.agentPhase;
   return previous.m === next.m
     && previous.model === next.model
     && previous.index === next.index
@@ -4765,8 +4829,7 @@ const MemoMessage = React.memo(Message, (previous, next) => {
     && previous.clientId === next.clientId
     && previous.threadId === next.threadId
     && previous.onOpenFile === next.onOpenFile
-    && previous.onOpenSubagent === next.onOpenSubagent
-    && !phaseChangedWhileWaiting;
+    && previous.onOpenSubagent === next.onOpenSubagent;
 });
 
 function ReferenceChips({ references = [], onOpenFile }) {
@@ -4776,7 +4839,7 @@ function ReferenceChips({ references = [], onOpenFile }) {
       {references.map((r) => {
         const label = r.metadata?.name || r.metadata?.relativePath || r.target;
         const canOpen = r.kind === "file" && !!onOpenFile && r.status !== "missing";
-        const content = <><Icon name="file" size={10} /> @{label}</>;
+        const content = <><Icon name="file" size={12} /> @{label}</>;
         return canOpen ? (
           <button type="button" className={`msg-reference-chip ${r.status || ""}`} key={r.id} onClick={() => onOpenFile(r.metadata?.relativePath || r.target)} title={`打开引用：${label}`}>{content}</button>
         ) : (
@@ -4787,18 +4850,28 @@ function ReferenceChips({ references = [], onOpenFile }) {
   );
 }
 
-// ========== 流式指示器：呼吸脉冲圆点（Proma StreamingIndicator） ==========
-function StreamingDot() {
-  return <span className="streaming-dot" title="生成中" />;
+const STREAMING_ACTIVITY_LABELS = [
+  "正在聚合资料", "正在梳理需求", "正在检索规范", "正在调查现状",
+  "正在比对数据", "正在提炼要点", "正在搭建分析框架", "正在开展专题分析",
+  "正在核对关键结论", "正在整理图表", "正在撰写章节", "正在合并稿件",
+  "正在统一口径", "正在校对格式", "正在检查引用", "正在生成成果",
+];
+
+function StreamingActivityLabel() {
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    if (isMotionReduced()) return undefined;
+    const timer = window.setInterval(() => setIndex((value) => (value + 1) % STREAMING_ACTIVITY_LABELS.length), 4200);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <span className="msg-streaming-label" aria-live="off">{STREAMING_ACTIVITY_LABELS[index]}</span>;
 }
 
-// ========== 等待指示器：弹跳点 + 耗时（Proma MessageLoading） ==========
-function LoadingDots({ label, seconds }) {
+// ========== 流式指示器：四瓣依次点亮 ==========
+function StreamingDot() {
   return (
-    <span className="loading-dots">
-      <span className="ldot" /><span className="ldot" /><span className="ldot" />
-      <span className="loading-label">{label}…</span>
-      {seconds > 0 && <span className="loading-elapsed">{seconds}s</span>}
+    <span className="streaming-dot" title="正在处理" aria-hidden="true">
+      <Logo size={16} withBackground={false} markColor="currentColor" className="streaming-dot-mark" />
     </span>
   );
 }
@@ -4821,7 +4894,7 @@ function ThinkingBlock({ text, startTime, streaming, embedded = false }) {
     return (
       <section className={`thinking-process-inline ${streaming ? "is-streaming" : ""}`}>
         <div className="thinking-process-heading">
-          <ToolIdentityIcon name="__thinking__" size={11} />
+          <ToolIdentityIcon name="__thinking__" size={12} />
           <span>思考</span>
           {streaming ? <span>思考中…</span> : duration ? <span>思考了 {duration}s</span> : <span>{String(text || "").length} 字</span>}
         </div>
@@ -4840,7 +4913,7 @@ function ThinkingBlock({ text, startTime, streaming, embedded = false }) {
         onClick={() => setExpanded((v) => !v)}
       >
         <span className="thinking-icon" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
-        <span className="thinking-label"><ToolIdentityIcon name="__thinking__" size={11} /> 思考</span>
+        <span className="thinking-label"><ToolIdentityIcon name="__thinking__" size={12} /> 思考</span>
         {streaming && <span className="thinking-status">思考中…</span>}
         {!streaming && duration && <span className="thinking-status">思考了 {duration}s</span>}
         {!streaming && !duration && <span className="thinking-status">{text.length} 字</span>}
@@ -4874,7 +4947,7 @@ function PipelineCard({ block, onOpenFile }) {
   return (
     <section className={`pipeline-card ${block.status || "running"}`} aria-label={`编辑流水线（${block.format === "pptx" ? "PPT" : "Word"}）`}>
       <button type="button" className="pipeline-card-head" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
-        <span className="pipeline-card-icon"><Icon name={failed ? "x" : block.status === "completed" ? "check" : "flow"} size={13} /></span>
+        <span className="pipeline-card-icon"><Icon name={failed ? "x" : block.status === "completed" ? "check" : "flow"} size={14} /></span>
         <span className="pipeline-card-title">
           <strong>编辑流水线 · {block.format === "pptx" ? "PPT" : "Word"}</strong>
           <small>{stages.length ? stages.map((stage) => stage.label || stage.stage).join(" → ") : "规划 → 撰写 → 排版 → 验收"}</small>
@@ -4886,7 +4959,7 @@ function PipelineCard({ block, onOpenFile }) {
         <ol className="pipeline-stages">
           {stages.map((stage) => (
             <li key={stage.stage} className={`pipeline-stage ${stage.status || "running"}`}>
-              <span className="pipeline-stage-icon"><Icon name={stage.status === "done" || stage.status === "pass" || stage.status === "completed" ? "check" : stage.status === "running" ? "flow" : "x"} size={11} /></span>
+              <span className="pipeline-stage-icon"><Icon name={stage.status === "done" || stage.status === "pass" || stage.status === "completed" ? "check" : stage.status === "running" ? "flow" : "x"} size={12} /></span>
               <div className="pipeline-stage-info">
                 <b>{stage.label || stage.stage}</b>
                 <em>{stage.status === "done" || stage.status === "pass" || stage.status === "completed" ? "完成" : stage.status === "revise" ? "需修订" : stage.status === "failed" ? "失败" : "进行中"}{stage.artifact ? ` · ${stage.artifact}` : ""}</em>
@@ -4920,7 +4993,7 @@ function SubagentCard({ block, onOpenDetail }) {
   return (
     <section className={`subagent-card ${block.status || "running"}`} aria-label={`子 Agent：${roleText}`}>
       <button type="button" className="subagent-card-head" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
-        <span className="subagent-card-icon"><Icon name={block.status === "completed" ? "check" : block.status === "failed" ? "x" : "robot"} size={13} /></span>
+        <span className="subagent-card-icon"><Icon name={block.status === "completed" ? "check" : block.status === "failed" ? "x" : "robot"} size={14} /></span>
         <span className="subagent-card-title"><strong>子 Agent · {roleText}</strong><small>{block.activity || "隔离上下文 · 不继承主对话"}</small></span>
         {tools.length > 0 && <span className="subagent-card-toolcount">{runningTools ? `${tools.length} 个工具 · ${runningTools} 进行中` : `${tools.length} 个工具`}</span>}
         <span className="subagent-card-status">{block.status === "running" && <i />} {statusText}</span>
@@ -4929,7 +5002,7 @@ function SubagentCard({ block, onOpenDetail }) {
       {expanded && <div className="subagent-card-body">
         <div className="subagent-card-actions">
           <button type="button" className="subagent-open-detail" onClick={() => onOpenDetail?.(block)}>
-            <Icon name="file" size={11} /> 在右侧查看完整过程
+            <Icon name="file" size={12} /> 在右侧查看完整过程
           </button>
         </div>
         {block.task && <div className="subagent-task"><b>子任务</b><span>{block.task}</span></div>}
@@ -4939,7 +5012,7 @@ function SubagentCard({ block, onOpenDetail }) {
           <div className="subagent-tool-list">
             {tools.map((tool, index) => (
               <span key={tool.toolCallId || `${tool.name}-${index}`} className={`subagent-tool ${tool.status === "done" ? (tool.isError ? "error" : "done") : tool.status === "planned" ? "planned" : "running"}`}>
-                <Icon name={toolIdentity(tool.name).icon} size={11} />
+                <Icon name={toolIdentity(tool.name).icon} size={12} />
                 <em>{tool.name}</em>
                 <i>{tool.status === "done" ? (tool.isError ? "失败" : "完成") : tool.status === "planned" ? "计划" : "执行中"}</i>
               </span>
@@ -5277,7 +5350,7 @@ function ApprovalModeControl({ mode, saving, onChange }) {
       aria-pressed={automatic}
       title={automatic ? "当前：自动批准。会自动放行原本需要逐次询问的操作，deny 规则仍然生效；该模式保存在本机全局配置，跨会话/项目生效，可在设置中改回" : "当前：每次询问。工具写入或危险操作需要逐次确认。点击启用自动批准（本机全局，可随时关闭）"}
     >
-      <Icon name={automatic ? "check" : "shield"} size={13} />
+      <Icon name={automatic ? "check" : "shield"} size={14} />
       <span>{automatic ? "自动批准" : "每次询问"}</span>
       <i className="approval-mode-dot" />
     </button>
@@ -5370,7 +5443,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
     return (
       <div className={`execution-flow-item ${flowEventTone(event)}`} key={event.key || `${event.seq || event.id || index}:${event.type}`}>
         <span className="execution-flow-dot" />
-        {(event.type === "tool_start" || event.type === "tool_end") && data.name && <ToolIdentityIcon name={data.name} size={11} className="tool-identity-inline" />}
+        {(event.type === "tool_start" || event.type === "tool_end") && data.name && <ToolIdentityIcon name={data.name} size={12} className="tool-identity-inline" />}
         <span className="execution-flow-label">{label}</span>
         {showDetail && <span className="execution-flow-detail" title={detail}>{String(detail).slice(0, 100)}</span>}
         <time>{event.at ? new Date(event.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : ""}</time>
@@ -5438,7 +5511,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
               onClick={() => onLocateApproval?.(pendingApproval)}
               title="定位到需要你审批的工具卡片；任务中心里也能打开同一条运行"
             >
-              <Icon name="shield" size={11} /> 待批准：{pendingApproval.tool || "工具"} · 去处理
+              <Icon name="shield" size={12} /> 待批准：{pendingApproval.tool || "工具"} · 去处理
             </button>
           )}
         </div>
@@ -5446,7 +5519,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
       {/* 只显示当前关键步骤与下一步；详细事件留在可展开的执行轨迹里 */}
       {running && nextStep && (
         <div className="execution-flow-next" role="status" aria-live="polite">
-          <span className="efn-next"><Icon name="arrowRight" size={11} /> {nextStep}</span>
+          <span className="efn-next"><Icon name="arrowRight" size={12} /> {nextStep}</span>
         </div>
       )}
       {/* 进度行：只在运行中出现——"现在到哪一步 / 还要多久 / 最近说了什么" */}
@@ -5462,7 +5535,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
       {notes.length > 0 && (
         <div className={`execution-flow-notes ${notesOpen ? "open" : ""}`}>
           <button type="button" className="efn-toggle" onClick={() => setNotesOpen((value) => !value)} aria-expanded={notesOpen}>
-            <Icon name="info" size={11} />
+            <Icon name="info" size={12} />
             <span>系统提示 {notes.length} 条</span>
             {Number(compaction?.count) > 0 && <span className="efn-chip">上下文压缩 {compaction.count} 次</span>}
             {notes.some((item) => item.kind === "file") && <span className="efn-chip">文件变更</span>}
@@ -5565,7 +5638,7 @@ function TaskProgressCard({ tasks, running = false }) {
           </div>
           {tasks.map((t, i) => (
             <div key={t.id || i} className={`task-item ${t.done || ["completed", "skipped"].includes(t.status) ? "done" : ""} ${t.status === "failed" ? "failed" : ""}`}>
-              <span className="task-status">{t.status === "failed" ? <Icon name="warning" size={11} /> : (t.done || ["completed", "skipped"].includes(t.status) ? <Icon name="check" size={11} /> : <span className="task-pending-dot" />)}</span>
+              <span className="task-status">{t.status === "failed" ? <Icon name="warning" size={12} /> : (t.done || ["completed", "skipped"].includes(t.status) ? <Icon name="check" size={12} /> : <span className="task-pending-dot" />)}</span>
               <span className="task-text">{t.title || t.name || t.text || "执行 Agent 任务"}</span>
               {t.note && <small title={t.note}>{t.note}</small>}
               {t.status === "running" || t.status === "in_progress" ? <small>进行中</small> : null}
@@ -5627,6 +5700,18 @@ function ToolCard({ tool, onToggle }) {
   const fullInput = inputStr.replace(/\s+/g, " ").trim();
   const cmdPreview = isCmd ? `${fullInput.slice(0, 96)}${fullInput.length > 96 ? "…" : ""}` : fullInput.slice(0, 80);
   const outputPreview = output?.length > 300 ? output.slice(0, 300) + "..." : output;
+  // O-P5：browser_screenshot 结果内嵌截图回看（结果 JSON 的 details.file 指向服务端落盘文件）
+  let shotInfo = null;
+  if (done && !isError && name === "browser_screenshot") {
+    const raw = String(output || tool.result || "");
+    const matched = raw.match(/"file"\s*:\s*"([^"]*?(?:shot|page)-[\w-]+\.(?:jpg|pdf))"/i);
+    if (matched) shotInfo = { name: matched[1].split(/[\\/]/).pop() };
+  }
+  // O-P8（OAW_RECONCILE_HINT，默认关）：browser_* 工具报成功但面板帧流仍在重连时，追加对账提示
+  const reconcilePending = done && !isError && flag("reconcileHint")
+    && /^browser_/.test(String(name || ""))
+    && getBrowserStreamState().status === "reconnecting"
+    && Date.now() - getBrowserStreamState().since > 3000;
 
   return (
     <div className={`tool-card ${done ? (isError ? "error" : "success") : "pending"} ${isMapTool ? "tool-card-map" : ""}`} onClick={onToggle}>
@@ -5644,6 +5729,16 @@ function ToolCard({ tool, onToggle }) {
       </div>
       {expanded && (
         <div className="tool-detail">
+          {shotInfo && (
+            <div className="tool-section tool-shot-preview">
+              <div className="tool-section-label">截图回看</div>
+              <img className="tool-shot-thumb" src={`/api/browser/shot?file=${encodeURIComponent(shotInfo.name)}`} alt="浏览器截图" loading="lazy" />
+              <div><a className="btn-xs" href={`/api/browser/shot?file=${encodeURIComponent(shotInfo.name)}`} download={shotInfo.name}>下载截图</a></div>
+            </div>
+          )}
+          {reconcilePending && (
+            <div className="tool-section tool-reconcile-hint" role="status">画面暂不可达（面板重连中），操作已生效。</div>
+          )}
           {/* 输入参数 */}
           {inputStr && (
             <div className="tool-section">

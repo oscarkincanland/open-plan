@@ -92,6 +92,34 @@ body {
 }
 body.resizing { cursor: col-resize; user-select: none; }
 .app { display: flex; height: 100vh; overflow: hidden; }
+.app-refresh-bloom {
+  position: fixed;
+  z-index: 10000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--body-bg) 18%, transparent);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  opacity: 1;
+  transition: opacity 340ms ease;
+}
+.app-refresh-bloom.is-closing { opacity: 0; }
+.app-refresh-bloom-mark { color: var(--accent); filter: drop-shadow(0 5px 18px color-mix(in srgb, var(--accent) 25%, transparent)); }
+.app-refresh-bloom-mark .open-plan-logo-petal {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scale(.7);
+  opacity: .08;
+  transition: transform 620ms cubic-bezier(.2, .75, .25, 1), opacity 380ms ease;
+}
+.app-refresh-bloom.is-open .open-plan-logo-petal { transform: scale(1); opacity: 1; }
+.app-refresh-bloom-mark .petal-ne { transition-delay: 75ms; }
+.app-refresh-bloom-mark .petal-se { transition-delay: 150ms; }
+.app-refresh-bloom-mark .petal-sw { transition-delay: 225ms; }
+.app-refresh-bloom-mark .open-plan-logo-centers { opacity: .08; transition: opacity 320ms ease 300ms; }
+.app-refresh-bloom.is-open .open-plan-logo-centers { opacity: 1; }
 .load-recovery { position: fixed; z-index: 400; top: 10px; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 8px; max-width: min(680px, calc(100vw - 32px)); padding: 7px 12px; border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border)); border-radius: 7px; background: var(--panel-bg); color: var(--warning); box-shadow: 0 12px 30px rgba(0,0,0,.32); font-size: 11px; }
 .load-recovery > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .load-recovery .btn-xs { flex: 0 0 auto; color: var(--text); }
@@ -1144,12 +1172,33 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 .msg-author { font-weight: 600; color: var(--muted); }
 .msg.user .msg-author { color: var(--muted); }
 .msg-time { font-size: 9px; color: var(--dim); font-variant-numeric: tabular-nums; }
-.msg-streaming-badge {
-  display: flex;
+.msg-streaming-status {
+  display: inline-flex;
+  align-self: flex-start;
   align-items: center;
-  gap: 5px;
-  font-size: 9px;
-  color: var(--accent);
+  gap: 7px;
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: 11px;
+  line-height: 1.4;
+  color: color-mix(in srgb, var(--text) 72%, transparent);
+}
+.msg-streaming-label {
+  display: inline-block;
+  font-weight: 500;
+  letter-spacing: .14px;
+  color: color-mix(in srgb, var(--accent) 58%, var(--text));
+  text-shadow: 0 0 8px color-mix(in srgb, var(--accent) 22%, transparent);
+  animation: streaming-label-breathe 4.8s ease-in-out infinite;
+}
+.msg-streaming-elapsed { margin-left: 2px; color: var(--dim); font-size: 9px; font-variant-numeric: tabular-nums; }
+@keyframes streaming-label-breathe {
+  0%, 100% { opacity: .7; transform: translateY(0) scale(.99); }
+  50% { opacity: .88; transform: translateY(-.2px) scale(1); }
 }
 .msg-error-badge { font-size: 9px; color: var(--error); }
 .msg-stopped-badge {
@@ -1171,44 +1220,27 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   background: color-mix(in srgb, var(--accent) 12%, var(--panel-bg));
   border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
 }
-/* 流式指示器：呼吸脉冲圆点（Proma StreamingIndicator） */
+/* 流式指示器：四瓣依次点亮 */
 .streaming-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent);
-  opacity: 0.6;
-  animation: dot-breathe 1.2s ease-in-out infinite;
-  margin: 6px 2px;
-  flex-shrink: 0;
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  flex: 0 0 auto;
+  color: var(--accent);
 }
+.streaming-dot-mark { display: block; overflow: visible; }
+.streaming-dot .open-plan-logo-petal { opacity: .22; animation: pulse-status-soft 1.6s ease-in-out infinite; }
+.streaming-dot .petal-ne { animation-delay: .4s; }
+.streaming-dot .petal-se { animation-delay: .8s; }
+.streaming-dot .petal-sw { animation-delay: 1.2s; }
+.streaming-dot .open-plan-logo-centers { opacity: .95; }
 @keyframes dot-breathe {
   0%, 100% { opacity: 0.25; transform: scale(0.85); }
   50% { opacity: 0.85; transform: scale(1.1); }
 }
-/* 等待指示器：弹跳点 + 耗时（Proma MessageLoading） */
-.loading-dots {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 4px 0;
-}
-.ldot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: ldot-bounce 1s ease-in-out infinite;
-}
-.ldot:nth-child(2) { animation-delay: 0.15s; }
-.ldot:nth-child(3) { animation-delay: 0.3s; }
-@keyframes ldot-bounce {
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
-  30% { transform: translateY(-4px); opacity: 1; }
-}
-.loading-label { font-size: 10px; color: var(--muted); margin-left: 4px; }
-.loading-elapsed { font-size: 9px; color: var(--dim); font-variant-numeric: tabular-nums; }
 /* 思考过程耗时/状态 */
 .thinking-status {
   font-size: 9px;
@@ -2732,6 +2764,11 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   background: var(--accent);
   color: var(--body-bg);
 }
+@keyframes agent-avatar-breathe {
+  0%, 100% { transform: scale(.992); }
+  50% { transform: scale(1.012); }
+}
+.avatar.agent-avatar.is-streaming { animation: agent-avatar-breathe 3.8s ease-in-out infinite; transform-origin: center; }
 
 /* ===== 技能广场分类 ===== */
 .modal-view-switch {
@@ -5231,7 +5268,6 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   flex-shrink: 0;
 }
 .workspace-selector select { flex: 1;  }
-.sidebar-new-session { flex-shrink: 0; padding: 2px 6px; }
 .sidebar-root-btn { flex-shrink: 0; padding: 2px 5px; font-size: 9px; }
 .external-roots { display: block; }
 .external-root-form { display: flex; gap: 4px; }
@@ -5394,7 +5430,9 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .sidebar-root-btn { font-size: 10px; }
 .project-context-strip { padding: 8px 12px; min-height: 34px; }
 .sidebar-project-list, .sidebar-capabilities { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; }
-.sidebar-project-list { display: flex; flex-direction: column; overflow: hidden; }
+/* 项目列表可滚动：此前 overflow:hidden 覆盖了上一行的 overflow-y:auto，
+   项目一多（>9 个）下面的卡片就再也看不到了。保留 flex 纵向布局，滚动交给上一行。 */
+.sidebar-project-list { display: flex; flex-direction: column; }
 .sidebar-view-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; color: var(--muted); font-size: 11px; font-weight: 700; }
 .sidebar-project-heading { margin-bottom: 4px; }
 .sidebar-project-heading > span:first-child { display: inline-flex; align-items: center; gap: 5px; }
@@ -5465,8 +5503,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .preview-panel-tabs button.active { color: var(--accent); background: var(--selected); font-weight: 700; }
 .app-preview-slot > .docview { width: 100%; min-width: 0; height: auto; flex: 1; background: var(--panel-bg); }
 .app-preview-slot > .docview .docview-body { background: var(--panel-bg); }
-.preview-reopen { position: absolute; z-index: 12; right: 12px; top: 64px; display: inline-flex; align-items: center; gap: 5px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); background: var(--panel-bg); cursor: pointer; font: inherit; font-size: 10px; box-shadow: 0 6px 18px rgba(0,0,0,.18); }
-.preview-reopen:hover { color: var(--accent); border-color: var(--accent); }
+/* preview-reopen 浮动按钮已删除（P10 整合）：与顶栏预览开关重复，打开内容统一进右侧画布页签。 */
 .preview-event-stream, .preview-artifact-panel { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; background: var(--panel-bg); }
 
 /* ========== 内置浏览器面板 ========== */
@@ -5687,7 +5724,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .conversation-status i { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
 .conversation-status.working i { background: var(--warning); box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning) 16%, transparent); animation: pulse-status 1.4s ease-in-out infinite; }
 @keyframes pulse-status { 50% { transform: scale(.72); opacity: .58; } }
-.topbar-new-chat, .topbar-preview-toggle { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; }
+.topbar-tools-toggle { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; }
 .center-chat-slot .chat-head, .center-chat-slot .task-status-bar, .center-chat-slot .agent-capability-preview { display: none; }
 .center-chat-slot .chat-body { padding: 34px clamp(28px, 7vw, 104px) 28px; gap: 22px; }
 .center-chat-slot .msg { gap: 10px; }
@@ -6494,7 +6531,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .browser-slot-head { min-height: 54px; }
 .browser-slot-head .preview-panel-actions { display: inline-flex; gap: 4px; }
-.topbar-browser-toggle.active { color: var(--accent); border-color: var(--accent); }
+.topbar-tools-toggle.active { color: var(--accent); border-color: var(--accent); }
 
 .app.browser-fullscreen > .sidebar,
 .app.browser-fullscreen > .center-area,
@@ -8352,13 +8389,61 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .conversation-mode-switch { padding: 3px; }
 .conversation-mode-option { min-width: 72px; height: 31px; padding: 0 12px; }
 .conversation-status { font-size: 10px; }
-/* 问题 5：同一工具栏的图标按钮必须同规格。此前内置浏览器入口约 34.6×24，
-   与旁边的 30×30 不一致（宽高由内容撑开）。这里把三个入口统一成同一容器。 */
-.topbar-new-chat,
-.topbar-preview-toggle,
-.topbar-browser-toggle { width: 30px; height: 30px; padding: 0; }
-.task-center-trigger { width: 30px; height: 30px; padding: 0; justify-content: center; }
-.task-center-trigger-label { display: none; }
+/* 问题 5：同一工具栏的图标按钮必须同规格（宽高由内容撑开导致不一致）。
+   P11 顶栏收敛后仅剩一颗整合入口（新建对话/工作产物/内置浏览器/任务中心）。 */
+.topbar-tools-toggle { width: 30px; height: 30px; padding: 0; }
+/* ===== 顶栏工具整合菜单：四入口合一的下拉 ===== */
+.topbar-tools { position: relative; display: inline-flex; flex-shrink: 0; }
+.topbar-tools-dot { position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--panel-bg); }
+.topbar-tools-toggle:hover { box-shadow: 0 6px 14px rgba(0, 0, 0, 0.30); }
+.topbar-tools-menu {
+  position: absolute;
+  z-index: 320;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 172px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-bg);
+  box-shadow: 0 14px 35px rgba(0, 0, 0, 0.32);
+  animation: oaw-pop-in 170ms ease-out both;
+}
+.topbar-tools-menu button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+.topbar-tools-menu button .icon { color: var(--muted); flex-shrink: 0; }
+.topbar-tools-menu button:hover { background: var(--selected); color: var(--accent); }
+.topbar-tools-menu button:hover .icon { color: var(--accent); }
+.topbar-tools-menu button:disabled { opacity: .5; cursor: default; }
+.topbar-tools-menu button.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.topbar-tools-menu button.on .icon { color: var(--accent); }
+.topbar-tools-menu .browser-activity-dot { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+/* 画布打开时的顶栏挤压态：模式组图标化、状态章隐藏。
+   此前（四入口时代）顶栏在窄窗口+画布打开时会整体溢出，右侧工具钮滑到画布底下不可点。 */
+@media (max-width: 1280px) {
+  .app:has(.app-canvas-slot) .topbar { gap: 8px; }
+  .app:has(.app-canvas-slot) .conversation-mode-option span { display: none; }
+  .app:has(.app-canvas-slot) .conversation-mode-option { min-width: 0; padding: 0 8px; gap: 0; }
+  .app:has(.app-canvas-slot) .conversation-status { display: none; }
+}
 
 .center-chat-slot .chat-head,
 .center-chat-slot .task-status-bar,
@@ -9609,7 +9694,6 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .execution-flow-live i { animation: pulse-status-soft 2.4s ease-in-out infinite; }
 .efp-pulse { animation: dot-breathe-soft 2.6s ease-in-out infinite; }
-.streaming-dot { animation: dot-breathe-soft 1.8s ease-in-out infinite; }
 .session-item.is-running .session-indicator[data-status="running"],
 .session-item:has(.marquee.is-active) .session-indicator[data-status="running"] { animation-duration: 3s; }
 /* 状态栏圆点：去掉外发光扩散，避免整行看起来在闪 */
@@ -9618,14 +9702,18 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 /* 克制档：只保留必要的滚动，关掉所有脉冲与呼吸 */
 [data-motion-level="calm"] .execution-flow-live i,
 [data-motion-level="calm"] .efp-pulse,
-[data-motion-level="calm"] .streaming-dot,
+[data-motion-level="calm"] .streaming-dot .open-plan-logo-petal,
+[data-motion-level="calm"] .msg-streaming-label,
+[data-motion-level="calm"] .avatar.agent-avatar.is-streaming,
 [data-motion-level="calm"] .session-item .session-indicator,
 [data-motion-level="calm"] .project-session-open > i { animation: none; }
 
 /* 关闭动效：静态颜色标识 */
 [data-motion-level="off"] .execution-flow-live i,
 [data-motion-level="off"] .efp-pulse,
-[data-motion-level="off"] .streaming-dot,
+[data-motion-level="off"] .streaming-dot .open-plan-logo-petal,
+[data-motion-level="off"] .msg-streaming-label,
+[data-motion-level="off"] .avatar.agent-avatar.is-streaming,
 [data-motion-level="off"] .session-item .session-indicator,
 [data-motion-level="off"] .project-session-open > i,
 [data-motion-level="off"] .execution-flow-progress .efp-pulse { animation: none; opacity: 1; }
@@ -10299,9 +10387,6 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .msg .markdown-body li { margin: 2px 0; }
 .msg .markdown-body h1, .msg .markdown-body h2, .msg .markdown-body h3,
 .msg .markdown-body h4, .msg .markdown-body h5, .msg .markdown-body h6 { margin: 10px 0 4px; }
-/* 等待首块：无框行内指示（不再用一个气泡框） */
-.loading-inline { display: inline-flex; align-items: center; gap: 6px; padding: 0; background: transparent; border: 0; color: var(--muted); font-size: 11px; }
-.loading-inline .loading-dots { background: transparent; border: 0; padding: 0; }
 /* 消息内空块不占位：避免 Markdown 空段落/空列表项形成大缝隙 */
 .msg .markdown-body p:empty,
 .msg .markdown-body li:empty,
@@ -10339,7 +10424,9 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   .typing,
   .run-summary-dot.running,
   .streaming-dot,
-  .ldot,
+  .streaming-dot .open-plan-logo-petal,
+  .msg-streaming-label,
+  .avatar.agent-avatar.is-streaming,
   .tool-icon.run,
   .brain-core.running .brain-core-dot,
   .browser-status.loading i,
@@ -10691,3 +10778,107 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .plan-models { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow: auto; }
 .plan-model-id { color: var(--dim); font-size: 10px; margin-left: 4px; }
 .plan-access-actions { display: flex; align-items: center; gap: 8px; }
+
+/* ===== 统一反馈基座（Feedback.jsx：toast 队列 + 应用内确认框） ===== */
+.fb-toast-stack { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 10000; max-width: min(420px, calc(100vw - 32px)); }
+.fb-toast { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 6px; background: var(--panel2-bg); border: 1px solid var(--border); color: var(--text); font-size: 12px; box-shadow: 0 6px 24px rgba(0,0,0,0.35); animation: oaw-pop-in 160ms ease-out; }
+.fb-toast-error { border-color: var(--error); }
+.fb-toast-error .icon { color: var(--error); }
+.fb-toast-success { border-color: var(--success); }
+.fb-toast-success .icon { color: var(--success); }
+.fb-toast-warn { border-color: var(--warning); }
+.fb-toast-warn .icon { color: var(--warning); }
+.fb-toast-text { flex: 1; min-width: 0; word-break: break-word; white-space: pre-wrap; }
+.fb-toast-close { display: inline-flex; padding: 2px; border: none; background: none; color: var(--dim); cursor: pointer; border-radius: 4px; }
+.fb-toast-close:hover { color: var(--text); background: var(--surface); }
+.fb-confirm-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 10001; }
+.fb-confirm { width: min(420px, calc(100vw - 48px)); background: var(--panel2-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
+.fb-confirm-body { font-size: 13px; line-height: 1.6; color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 50vh; overflow: auto; }
+.fb-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.fb-btn { padding: 5px 14px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 12px; cursor: pointer; }
+.fb-btn:hover { border-color: var(--accent); }
+.fb-btn-danger { background: var(--error); border-color: var(--error); color: #fff; }
+.fb-btn-danger:hover { filter: brightness(1.1); }
+.fb-btn:focus-visible, .fb-toast-close:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+
+/* ===== 交互优化配套（O-P3 徽标 / O-P5 截图回看 / O-P8 对账提示） ===== */
+.browser-activity-dot { position: absolute; top: 2px; right: 2px; width: 7px; height: 7px; border-radius: 50%; background: var(--warning); box-shadow: 0 0 0 2px var(--panel-bg); }
+.tool-shot-preview .tool-shot-thumb { display: block; max-width: 100%; max-height: 260px; border: 1px solid var(--border); border-radius: 6px; margin: 4px 0 6px; }
+.tool-shot-preview a.btn-xs { display: inline-block; margin-top: 4px; text-decoration: none; }
+.tool-reconcile-hint { color: var(--warning); font-size: 12px; }
+
+/* ==========================================================================
+   P10 工作区画布（proma 式 tab 容器）：工作产物 + 内置浏览器整合为一个画布。
+   —— 顶栏两颗开关 = 画布的两个直达页签；悬浮 preview-reopen 重复入口已删除。
+   —— 槽位不再挂 app-preview-slot / app-browser-slot 类名，因此「一半布局 /
+      最大化 / 浏览器全屏 / 窄屏覆盖层」这些祖先状态规则在本块末尾以同口径重声明，
+      响应式断点的宽度变量（--preview-w / --browser-w）继续生效。
+   ========================================================================== */
+.app-canvas-slot {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+  background: var(--panel-bg);
+  border-left: 1px solid var(--border);
+  animation: oaw-pop-in 170ms ease-out both;
+}
+.app-canvas-slot.canvas-tab-preview { width: var(--preview-w, 420px); max-width: 520px; flex: 0 0 var(--preview-w, 420px); }
+.app-canvas-slot.canvas-tab-browser { width: var(--browser-w, min(48vw, 760px)); max-width: 1100px; min-width: 340px; flex: 0 0 var(--browser-w, min(48vw, 760px)); }
+.app-canvas-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; min-height: 50px; }
+.app-canvas-tabs { display: flex; gap: 6px; }
+.app-canvas-tabs button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.app-canvas-tabs button:hover { color: var(--text); background: var(--selected); box-shadow: 0 6px 14px rgba(0, 0, 0, 0.30); }
+.app-canvas-tabs button.active { color: var(--accent); background: var(--selected); border-color: color-mix(in srgb, var(--accent) 32%, var(--border)); font-weight: 700; }
+.app-canvas-tabs .browser-activity-dot { position: absolute; top: 3px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--panel-bg); }
+.canvas-hidden { display: none !important; }
+.app-canvas-body { display: flex; flex-direction: column; flex: 1; min-height: 0; width: 100%; min-width: 0; }
+/* 旧直接子代选择器桥接：DocViewer 现在位于 canvas-body 一层之下，补齐同样的弹性填充 */
+.app-canvas-body > .docview { width: 100%; min-width: 0; height: auto; flex: 1; background: var(--panel-bg); }
+.app-canvas-body > .docview .docview-body { background: var(--panel-bg); }
+/* 页签 hover 暗色阴影（页内页签与顶栏开关统一手感） */
+.preview-panel-tabs button:hover { box-shadow: 0 6px 14px rgba(0, 0, 0, 0.28); }
+/* 祖先状态（一半布局 / 最大化 / 浏览器全屏）优先级高于页签宽度接管（同特异性、靠后声明） */
+.preview-half .app-canvas-slot, .preview-maximized .app-canvas-slot { width: auto; min-width: 0; max-width: none; flex: 1 1 auto; }
+@media (max-width: 1080px) { .preview-half .app-canvas-slot { flex-basis: 0; } }
+.app.browser-fullscreen .app-canvas-slot { position: fixed; z-index: 260; inset: 0; width: 100vw; min-width: 0; max-width: none; height: 100vh; flex: none; border-left: 0; }
+/* 响应式断点：与旧 app-preview-slot / app-browser-slot 断点同口径 */
+@media (max-width: 1280px) {
+  .app-canvas-slot.canvas-tab-preview { min-width: 260px; }
+  .app-canvas-slot.canvas-tab-browser { min-width: 300px; }
+}
+@media (max-width: 1024px) {
+  .app-canvas-slot.canvas-tab-preview { min-width: 0; }
+  .app-canvas-slot.canvas-tab-browser { min-width: 0; }
+}
+@media (max-width: 768px) {
+  .app-canvas-slot.canvas-tab-preview, .app-canvas-slot.canvas-tab-browser {
+    position: fixed;
+    inset: 0;
+    z-index: 260;
+    flex: 0 0 auto;
+    width: 100vw;
+    max-width: 100vw;
+    border-left: 0;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.45);
+  }
+}
+/* 项目列表细滚动条（项目多时可滑动） */
+.sidebar-project-list::-webkit-scrollbar { width: 8px; }
+.sidebar-project-list::-webkit-scrollbar-track { background: transparent; }
+.sidebar-project-list::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--border) 85%, var(--muted)); border-radius: 4px; }
+.sidebar-project-list::-webkit-scrollbar-thumb:hover { background: var(--muted); }

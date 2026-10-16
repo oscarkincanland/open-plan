@@ -21,7 +21,13 @@ export async function api(path, opts = {}) {
     ...opts,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(data.error || `HTTP ${res.status}`);
+    // 保留服务端结构化错误信息（如 SESSION_BUSY 的占用详情），供界面区分处理
+    if (data.code) error.code = data.code;
+    if (data.detail) error.detail = data.detail;
+    throw error;
+  }
   return data;
 }
 
@@ -137,6 +143,19 @@ export const browserClose = (client, thread, { force = false } = {}) =>
   api("/api/browser/close", { method: "POST", body: JSON.stringify({ client, thread, force }) });
 export const browserReset = (client, thread) =>
   api("/api/browser/reset", { method: "POST", body: JSON.stringify({ client, thread }) });
+export const browserStreamPause = (payload = {}) =>
+  api("/api/browser/stream-pause", { method: "POST", body: JSON.stringify(payload) });
+export const browserFullpage = (payload = {}) =>
+  api("/api/browser/fullpage", { method: "POST", body: JSON.stringify(payload) });
+export const browserPdf = (payload = {}) =>
+  api("/api/browser/pdf", { method: "POST", body: JSON.stringify(payload) });
+export const mapReport = (payload = {}) =>
+  api("/api/map/report", { method: "POST", body: JSON.stringify(payload) });
+// G7：批量导出（flag OAW_MAP_EXPORT，默认关）
+export const mapExportBatch = (payload = {}) =>
+  api("/api/map/export/batch", { method: "POST", body: JSON.stringify(payload) });
+export const mapExportStatus = (id) =>
+  api(`/api/map/export/batch?id=${encodeURIComponent(id)}`);
 
 export const listModels = () => api("/api/models");
 export const refreshModels = () => api("/api/models/refresh", { method: "POST" });

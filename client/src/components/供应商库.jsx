@@ -18,7 +18,7 @@ function 登录方式徽章({ provider }) {
     <span className="prov-login-badges">
       {methods.includes("oauth") && (
         <span className="sp-badge ok" title={provider.auth?.oauth?.name || "支持账号登录（浏览器授权）"}>
-          <Icon name="lock" size={10} /> 账号登录
+          <Icon name="lock" size={12} /> 账号登录
         </span>
       )}
       {methods.includes("apiKey") && (
@@ -150,7 +150,7 @@ export function 供应商库({ catalog, onImported, onEditExisting, refreshing =
                   title={provider.importable ? `添加 ${provider.name}` : provider.importBlockReason || ""}
                   onClick={() => setDetailId(provider.id)}
                 >
-                  <Icon name="plus" size={11} /> {provider.configured ? "补充模型" : "添加"}
+                  <Icon name="plus" size={12} /> {provider.configured ? "补充模型" : "添加"}
                 </button>
               </div>
             </div>

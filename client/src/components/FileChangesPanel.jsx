@@ -2,6 +2,7 @@ import React, { useCallback, useMemo, useState } from "react";
 import Icon from "./Icon.jsx";
 import { getRunChangeDiff } from "../api.js";
 import { openInSystem, revealInSystem } from "../api.js";
+import { notifyError } from "./Feedback.jsx";
 
 /**
  * 本轮文件改动面板（W3/C02 + C03）
@@ -108,11 +109,11 @@ export default function FileChangesPanel({ runId, changes = [], detection = null
 
   const handleOpen = useCallback((change) => {
     if (onOpenFile) onOpenFile(change.relativePath);
-    else openInSystem(change.relativePath).catch((error) => alert(`打开失败：${error.message}`));
+    else openInSystem(change.relativePath).catch((error) => notifyError(`打开失败：${error.message}`));
   }, [onOpenFile]);
 
   const handleReveal = useCallback((change) => {
-    revealInSystem(change.relativePath).catch((error) => alert(`在文件管理器中显示失败：${error.message}`));
+    revealInSystem(change.relativePath).catch((error) => notifyError(`在文件管理器中显示失败：${error.message}`));
   }, []);
 
   return (
@@ -158,8 +159,8 @@ export default function FileChangesPanel({ runId, changes = [], detection = null
                 </button>
                 <span className="file-change-meta">{ROLE_LABEL[change.role] || ""}</span>
                 <span className="file-change-actions">
-                  <button type="button" className="btn-xs" onClick={() => handleOpen(change)} title="在应用内/系统应用打开"><Icon name="externalLink" size={11} /> 打开</button>
-                  <button type="button" className="btn-xs" onClick={() => handleReveal(change)} title="在文件管理器中显示"><Icon name="folderOpen" size={11} /></button>
+                  <button type="button" className="btn-xs" onClick={() => handleOpen(change)} title="在应用内/系统应用打开"><Icon name="externalLink" size={12} /> 打开</button>
+                  <button type="button" className="btn-xs" onClick={() => handleReveal(change)} title="在文件管理器中显示"><Icon name="folderOpen" size={12} /></button>
                 </span>
               </div>
               {open && (

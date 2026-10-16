@@ -840,6 +840,49 @@ class AgentManager extends EventEmitter {
     // 单飞锁避免两个 Pi Runtime 互相覆盖，导致新事件通道被替换。
     this.resumePromises = new Map();
     this.recoveryPromises = new Map();
+    this.startBusyWatchdog();
+  }
+
+  /**
+   * A3 busy 看门狗（OAW_BUSY_WATCHDOG，默认关）：
+   * busy 依赖任务正常收尾清零；若 Runtime 异常退出/流挂起未走收尾分支，busy 会永久卡死，
+   * 表现为"切换任何会话都报任务排队"。看门狗在 busy 期间超过阈值（默认 15 分钟）无任何
+   * Pi 事件活动时强制放行，并把清除时间记录到诊断快照供确认。
+   */
+  startBusyWatchdog() {
+    if (this.busyWatchdogTimer) return;
+    this.busyWatchdogTimer = setInterval(() => {
+      if (!RUNTIME_FLAGS.agentBusyWatchdog) return;
+      const now = Date.now();
+      for (const [key, entry] of this.sessions) {
+        if (!entry?.busy) continue;
+        const lastActivity = Math.max(entry.lastPiEventAt || 0, entry.busyStartedAt || 0);
+        if (lastActivity && now - lastActivity > RUNTIME_FLAGS.agentBusyWatchdogMs) {
+          entry.busy = false;
+          entry.busyWatchdogClearedAt = now;
+          console.warn(`[agent] busy 看门狗放行：${key} 已 ${Math.round((now - lastActivity) / 1000)}s 无事件活动`);
+        }
+      }
+    }, 60_000);
+    if (typeof this.busyWatchdogTimer.unref === "function") this.busyWatchdogTimer.unref();
+  }
+
+  /** A4：per-client 会话占用快照（/api/agent/diagnostics 暴露），区分"正常占用"与"卡死"。 */
+  listSessionStates() {
+    const now = Date.now();
+    return [...this.sessions.entries()].map(([key, entry]) => ({
+      key,
+      clientId: entry.clientId || key,
+      threadId: entry.threadId || null,
+      workspace: entry.workspace || null,
+      busy: Boolean(entry.busy),
+      compacting: Boolean(entry.compacting),
+      queuedCount: entry.queuedCount || 0,
+      activeRunId: entry.activeRunId || null,
+      lastPiEventAt: entry.lastPiEventAt || null,
+      busyForMs: entry.busyStartedAt ? now - entry.busyStartedAt : null,
+      busyWatchdogClearedAt: entry.busyWatchdogClearedAt || null,
+    }));
   }
 
   /** 读取并清除待回答的问题（返回 resolve 函数） */
@@ -2195,16 +2238,80 @@ execute: async (_toolCallId, params) => {
       name: "map_analyze",
       label: "地图分析结果",
       description:
-        "生成并直接显示地图分析结果。用户说‘在义乌生成热力图’、‘生成演示等时圈’、‘生成玉环市与台州各县市区 OD’、‘把分析结果显示在地图中间’时使用。支持 heatmap、od 和 isochrone 三种演示分析；也支持用 dataSource 指向数据源适配器（如 local-file 读工作区里的车流量 CSV、bundled-xinchang 读新昌公交）。结果通过 map_action 事件局部更新前端地图，不重载完整地图样式。没有真实数据时必须明确标记为演示数据。",
+        "生成并直接显示地图分析结果。用户说‘在义乌生成热力图’、‘生成演示等时圈’、‘生成玉环市与台州各县市区 OD’、‘把分析结果显示在地图中间’时使用。支持 heatmap、od 和 isochrone 三种演示分析；也支持用 dataSource 指向数据源适配器（如 local-file 读工作区里的车流量 CSV、bundled-xinchang 读新昌公交）。开启空间分析能力（OAW_SPATIAL_ANALYSIS）后还支持 buffer（缓冲区）、spatial_filter（空间筛选）、bbox_clip（范围裁剪）三种基于工作区 GeoJSON 的真实空间分析——结果为真实几何（非演示），距离单位米，面积/长度为平面近似口径。结果通过 map_action 事件局部更新前端地图，不重载完整地图样式。没有真实数据时必须明确标记为演示数据。",
       parameters: Type.Object({
-        analysis: Type.Union([Type.Literal("heatmap"), Type.Literal("od"), Type.Literal("isochrone")]),
+        analysis: Type.Union([
+          Type.Literal("heatmap"),
+          Type.Literal("od"),
+          Type.Literal("isochrone"),
+          Type.Literal("buffer"),
+          Type.Literal("spatial_filter"),
+          Type.Literal("bbox_clip"),
+        ]),
         region: Type.Optional(Type.String({ description: "区域名称，如义乌市、金华市、新昌县" })),
         project: Type.Optional(Type.String({ description: "地图项目名，默认 zhejiang-map" })),
         count: Type.Optional(Type.Number({ description: "演示点数量，默认 36，最多 120" })),
         dataSource: Type.Optional(Type.String({ description: "数据源适配器 id（如 local-file / bundled-xinchang）；给出时优先用它出图，忽略演示数据" })),
-        path: Type.Optional(Type.String({ description: "dataSource=local-file 时的文件路径（相对工作区）；省略则自动选最新的 CSV/GeoJSON" })),
+        path: Type.Optional(Type.String({ description: "dataSource=local-file 时的文件路径；空间分析（buffer/spatial_filter/bbox_clip）时必填，指向工作区内的 GeoJSON（相对路径）" })),
+        url: Type.Optional(Type.String({ description: "dataSource=live-traffic-api 时的 HTTP(S) 端点（返回行数组或 GeoJSON）" })),
+        db: Type.Optional(Type.String({ description: "dataSource=sql-database 时的工作区内 SQLite 文件相对路径" })),
+        sql: Type.Optional(Type.String({ description: "dataSource=sql-database 时的只读 SELECT 查询" })),
+        distanceMeters: Type.Optional(Type.Number({ description: "buffer 分析的缓冲距离（米），默认 500" })),
+        mode: Type.Optional(Type.String({ description: "spatial_filter 的判定语义：intersects（相交，默认）或 within（包含）" })),
+        clipPath: Type.Optional(Type.String({ description: "spatial_filter 的裁剪参照 GeoJSON（工作区相对路径）" })),
+        clipBbox: Type.Optional(Type.Array(Type.Number(), { description: "bbox_clip 的裁剪范围 [minLng,minLat,maxLng,maxLat]；省略时逐要素自裁（无操作）" })),
       }),
       execute: async (_toolCallId, params) => {
+        // G1 空间分析（OAW_SPATIAL_ANALYSIS，默认关）：基于工作区 GeoJSON 的真实空间算子
+        if (["buffer", "spatial_filter", "bbox_clip"].includes(String(params.analysis))) {
+          if (!RUNTIME_FLAGS.spatialAnalysis) {
+            return { content: [{ type: "text", text: "空间分析能力未开启（OAW_SPATIAL_ANALYSIS=1）。开启后支持缓冲区/空间筛选/范围裁剪。" }], details: {} };
+          }
+          try {
+            const spatial = await import("./空间分析.mjs");
+            const readWorkspaceJson = (relative) => {
+              const root = path.resolve(entry.workspace || getWorkspace());
+              const target = path.resolve(root, String(relative || "").trim());
+              if (!target.startsWith(root)) throw new Error("路径必须位于工作区内");
+              return JSON.parse(fs.readFileSync(target, "utf8"));
+            };
+            const geojson = readWorkspaceJson(params.path);
+            const clipGeojson = params.clipPath ? readWorkspaceJson(params.clipPath) : null;
+            const result = spatial.analyzeGeoJSON({
+              type: params.analysis,
+              geojson,
+              distanceMeters: Number(params.distanceMeters) || 500,
+              clipBbox: Array.isArray(params.clipBbox) && params.clipBbox.length === 4 ? params.clipBbox : null,
+              clipGeojson,
+              mode: params.mode === "within" ? "within" : "intersects",
+            });
+            if (!result.stats.count) {
+              return { content: [{ type: "text", text: `空间分析完成（${params.analysis}），但没有匹配的要素。` }], details: { stats: result.stats } };
+            }
+            const action = {
+              action: "show_analysis",
+              analysis: params.analysis,
+              type: params.analysis,
+              id: `spatial-${Date.now()}`,
+              project: params.project || entry.task?.mapProject || "zhejiang-map",
+              title: params.analysis === "buffer" ? `缓冲区分析（${result.stats.count} 要素）` : params.analysis === "spatial_filter" ? `空间筛选（${result.stats.count}/${result.stats.inputCount}）` : `范围裁剪（${result.stats.count} 要素）`,
+              source: "data",
+              fitBounds: true,
+              geojson: result.geojson,
+              stats: result.stats,
+              updatedAt: Date.now(),
+            };
+            entry.lastMapAnalysis = action;
+            emitChannelSafe(entry, "map_action", action);
+            const statText = result.stats.totalAreaKm2 ? `，合计面积 ≈${result.stats.totalAreaKm2}km²` : "";
+            return {
+              content: [{ type: "text", text: `空间分析完成：${params.analysis}，${result.stats.count}/${result.stats.inputCount} 个要素${statText}，耗时 ${result.stats.elapsedMs}ms。结果为平面近似口径，已发送到地图。` }],
+              details: { mapAction: action, stats: result.stats },
+            };
+          } catch (e) {
+            return { content: [{ type: "text", text: `空间分析失败：${e.message}` }], details: {} };
+          }
+        }
         // 数据源适配器路径（阶段 5）：有真实数据时优先，避免把用户的数据当演示。
         if (params.dataSource) {
           try {
@@ -2214,6 +2321,9 @@ execute: async (_toolCallId, params) => {
               path: params.path,
               kind: params.analysis === "od" ? "od" : params.analysis === "isochrone" ? "isochrone" : "stations",
               workspace: String(entry.workspace || ""),
+              url: params.url,
+              db: params.db,
+              sql: params.sql,
             });
             if (descriptor?.error) {
               return { content: [{ type: "text", text: `数据源加载失败：${descriptor.error}` }], details: {} };
@@ -2251,6 +2361,66 @@ execute: async (_toolCallId, params) => {
           content: [{ type: "text", text: `已生成${action.title}，使用演示数据，结果已发送到中间地图。用户确认后再保存为正式图层。` }],
           details: { mapAction: action },
         };
+      },
+    });
+
+    // GIS G5-v1（OAW_MAP_TEMPLATES，默认关）：场景化分析模板，v1 只提供 OD 通勤分析。
+    const mapTemplateTool = defineTool({
+      name: "map_template",
+      label: "场景化分析模板",
+      description:
+        "运行预置的场景化分析模板（确定性编排，产出图层数据统计 + Word 报告）。用户说‘做一次 OD 通勤分析’、‘把通勤 OD 按流量分带并出报告’时使用。当前仅支持 od-commuter：读取工作区 OD 数据 CSV（起点/终点经纬度 + 流量列），按流量分位数做带宽分级，统计 TOP 流向，并把结论写成 Word 报告落到工作区。需要 OAW_MAP_TEMPLATES 开启。",
+      parameters: Type.Object({
+        template: Type.Literal("od-commuter"),
+        path: Type.String({ description: "工作区内的 OD 数据 CSV（相对路径）" }),
+        title: Type.Optional(Type.String({ description: "报告标题，默认「OD 通勤分析（N 对流向）」" })),
+        bands: Type.Optional(Type.Number({ description: "带宽分级数，2-6，默认 4" })),
+        project: Type.Optional(Type.String({ description: "关联地图项目名（写进报告元数据）" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        if (!RUNTIME_FLAGS.mapTemplates) {
+          return { content: [{ type: "text", text: "场景化分析模板未开启（OAW_MAP_TEMPLATES=1）。开启后可用 od-commuter 模板做 OD 通勤带宽分析并成文。" }], details: {} };
+        }
+        try {
+          const { runOdCommuterTemplate } = await import("./地图模板.mjs");
+          const result = await runOdCommuterTemplate({
+            workspace: entry.workspace || getWorkspace(),
+            path: params.path,
+            title: params.title,
+            bands: params.bands,
+            project: params.project || entry.task?.mapProject || "zhejiang-map",
+          });
+          // 期望线直接上地图（临时层，与 map_analyze 同一条 map_action 通道）
+          const descriptor = await import("./地图可视化.mjs").then((m) => m.loadSource("local-file", { workspace: entry.workspace || getWorkspace(), path: params.path })).catch(() => null);
+          if (descriptor && !descriptor.error && descriptor.lines) {
+            const action = {
+              action: "show_analysis",
+              analysis: "od",
+              type: "flow",
+              id: descriptor.id,
+              project: params.project || entry.task?.mapProject || "zhejiang-map",
+              title: result.title,
+              source: "data",
+              fitBounds: true,
+              geojson: descriptor.geojson,
+              lines: descriptor.lines,
+              stats: descriptor.stats,
+              updatedAt: Date.now(),
+            };
+            entry.lastMapAnalysis = action;
+            emitChannelSafe(entry, "map_action", action);
+          }
+          const top = result.bands.topFlows[0];
+          return {
+            content: [{
+              type: "text",
+              text: `OD 通勤分析完成：${result.bands.count} 对流向，按流量分 ${result.bands.levels.length} 级；最高流量 ${top ? `${top.label}（${Math.round(top.flow)}）` : "—"}。带宽分级与 TOP 流向见报告：${result.report.fileName}（已落工作区根目录）。${descriptor && !descriptor.error ? "期望线已发送到地图。" : ""}`,
+            }],
+            details: { template: result.template, bands: result.bands, report: result.report },
+          };
+        } catch (e) {
+          return { content: [{ type: "text", text: `模板执行失败：${e.message}` }], details: {} };
+        }
       },
     });
 
@@ -2837,8 +3007,8 @@ execute: async (_toolCallId, params) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions],
-        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_datasets", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames],
+        customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions],
+        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_datasets", "map_edit", "map_import", "map_analyze", "map_template", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames],
       }));
     } catch (error) {
       piRuntimeManager.markFailure(runtimeRecord.runtimeId, error, { recovering: true, reason: "session_create_failed" });
@@ -3505,6 +3675,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     const prologueStartedAt = Date.now();
     const isStreaming = entry.busy;
     entry.busy = true;
+    entry.busyStartedAt = Date.now();
     entry.references = Array.isArray(references) ? references : [];
     entry.activeRunId = runContext?.runId || null;
     // 每轮独立计数：上一轮的完成声明、轮次预算与提醒标记都不能串到本轮
@@ -3620,8 +3791,11 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         throw error;
       }
       // 刷新 .agent-context.md（当前工作区路径/记忆/当前文件动态注入）
+      // T3（首字优化）：同一轮内 writeContextFile 与 buildDynamicContext 只读一次记忆目录，
+      // 显式传参复用，消除每轮重复的 memory/*.md 目录扫描与文件拼接 IO。
       const contextFileStartedAt = Date.now();
-      this.writeContextFile(entry, entry.currentFile);
+      const sharedMemCtx = readMemoryContext(entry?.workspace || getWorkspace());
+      this.writeContextFile(entry, entry.currentFile, sharedMemCtx);
       const contextFileMs = Date.now() - contextFileStartedAt;
       // 按 Pi 模型目录归一化推理档位；不支持的 medium 优先降到 low，避免
       // UI 显示标准但 SDK 实际沿用高延迟默认档位。
@@ -3649,7 +3823,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       const dynamicContextStartedAt = Date.now();
       let dynamicContextMs = 0;
       try {
-        const dyn = this.buildDynamicContext(entry, entry.currentFile);
+        const dyn = this.buildDynamicContext(entry, entry.currentFile, sharedMemCtx);
         dynamicContextMs = Date.now() - dynamicContextStartedAt;
         if (dyn) text = dyn + "\n\n" + text;
       } catch { dynamicContextMs = Date.now() - dynamicContextStartedAt; }
@@ -4020,7 +4194,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     if (!workspace) throw new Error("当前工作区不存在或不是文件夹");
     const old = this.sessions.get(clientId);
     if (old) {
-      if (old.busy || old.compacting || old.queuedCount > 0) throw new Error("当前会话仍有任务排队，不能替换活动会话");
+      if (old.busy || old.compacting || old.queuedCount > 0) throw this._sessionBusyError(old);
       piRuntimeManager.dispose(old.runtimeId, old.session);
       this.sessions.delete(clientId);
     }
@@ -4038,11 +4212,12 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
   /** 记录当前工作文件，并同步到 agent 上下文（agent 通过读 .agent-context.md 感知）。 */
   /**
    * 构建每次对话前注入的动态上下文文本（当前工作区绝对路径 + 当前文件 + 记忆摘要）
+   * T3：memCtx 可由调用方传入（同一轮内与 writeContextFile 共享一次记忆读取）。
    */
-  buildDynamicContext(entry, file) {
+  buildDynamicContext(entry, file, sharedMemCtx = null) {
     try {
       const ws = entry?.workspace || getWorkspace();
-      const memCtx = readMemoryContext(ws);
+      const memCtx = sharedMemCtx ?? readMemoryContext(ws);
       const mode = normalizeTaskMode(entry?.mode || "agent");
       const ctxFile = entry?.threadId ? `.agent-context.${entry.threadId}.md` : ".agent-context.md";
       const lines = [
@@ -4084,11 +4259,12 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
   /**
    * 写入当前工作区的 .agent-context.md——每次对话前刷新：
    * 当前工作区路径（跟随 setWorkspace 动态变化）+ 当前工作文件 + 工作区记忆摘要
+   * T3：memCtx 可由调用方传入（同一轮内与 buildDynamicContext 共享一次记忆读取）。
    */
-  writeContextFile(entry, file) {
+  writeContextFile(entry, file, sharedMemCtx = null) {
     try {
       const ws = entry?.workspace || getWorkspace();
-      const memCtx = readMemoryContext(ws);
+      const memCtx = sharedMemCtx ?? readMemoryContext(ws);
       const ctx = [
         "# Open Plan（规聚）Workspace",
         "",

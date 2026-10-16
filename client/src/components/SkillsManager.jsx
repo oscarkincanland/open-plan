@@ -270,7 +270,7 @@ export default function SkillsManager({ open, onClose, onAtMention, clientId, wo
                           className="btn-xs"
                           title="在只读 Chat 中询问此 Skill 的用途和依赖"
                           onClick={() => askSkill(s)}
-                        ><Icon name="comment" size={11} /> 询问</button>
+                        ><Icon name="comment" size={12} /> 询问</button>
                         <button
                           className="btn-xs"
                           title="加入 Agent 任务，让 Agent 调用此技能"
@@ -278,8 +278,8 @@ export default function SkillsManager({ open, onClose, onAtMention, clientId, wo
                             if (onPromoteToAgent) onPromoteToAgent({ text: `请使用 Skill「${s.name}」完成后续任务，并说明读取来源与产出。`, skills: [s.name] });
                             else { onAtMention && onAtMention(s.name); onClose(); }
                           }}
-                        ><Icon name="at" size={11} /> 调用</button>
-                        <button className="btn-xs" title="导出技能" onClick={() => handleExport(s)}><Icon name="download" size={11} /> 导出</button>
+                        ><Icon name="at" size={12} /> 调用</button>
+                        <button className="btn-xs" title="导出技能" onClick={() => handleExport(s)}><Icon name="download" size={12} /> 导出</button>
                       </div>
                     </div>
                   ))}

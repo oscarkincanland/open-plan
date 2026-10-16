@@ -6,6 +6,7 @@ import { useTheme, SKINS } from "../theme.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
 import { ACTIVITY_DISPLAY_OPTIONS, ANSWER_DETAIL_OPTIONS, MARQUEE_COLORS, MARQUEE_SPEEDS, MARQUEE_STYLES, MOTION_LEVELS, PREVIEW_AUTO_OPEN_OPTIONS, useAppearance, useAppearanceSetter } from "../界面外观.js";
 import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentModelConfigs, agentNetworkSettings, agentNetworkSettingsSave, agentPlanApply, agentPlanDisconnect, agentPlanModels, agentPlans, agentProviderCatalog, agentSetDefaultModel, archiveProject, classifyProjects, createProject, deleteAgentModelConfig, fetchAgentModels, getPermissionRules, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, removePermissionRule, saveAgentModelConfig, searchSettings, searchSettingsSave, searchSettingsTest, updateProject, updateProjectSettings } from "../api.js";
+import { notifyError, askConfirm } from "./Feedback.jsx";
 
 /**
  * 设置面板（左侧栏底部 tab）
@@ -349,7 +350,7 @@ const [providerConfigMsg, setProviderConfigMsg] = useState("");
       const result = await removePermissionRule(rule);
       if (Array.isArray(result?.rules)) setPermissionRules((prev) => ({ ...(prev || { mode: "ask", defaults: [] }), user: result.rules }));
     } catch (error) {
-      window.alert(error.message || "撤销规则失败");
+      notifyError(error.message || "撤销规则失败");
     }
     setPermissionBusy(false);
   }, []);
@@ -430,7 +431,7 @@ const [providerConfigMsg, setProviderConfigMsg] = useState("");
   const clearSearchCredentials = useCallback(async () => {
     const backend = searchDraft.backend;
     const label = searchMeta.backends.find((item) => item.id === backend)?.name || backend;
-    if (!window.confirm(`确定清除「${label}」已保存的凭据/地址？清除后需重新配置才能使用该后端。`)) return;
+    if (!(await askConfirm(`确定清除「${label}」已保存的凭据/地址？清除后需重新配置才能使用该后端。`))) return;
     setSearchSaving(true);
     setSearchSaveMsg("");
     try {
@@ -577,7 +578,7 @@ await agentAuthSave(provider, key);
   };
 
   const removeAuth = async (provider) => {
-    if (!confirm(`删除 ${provider} 的 API Key？`)) return;
+    if (!(await askConfirm(`删除 ${provider} 的 API Key？`))) return;
 await agentAuthRemove(provider).catch(() => {});
     const r = await agentAuth();
     setProviders(r.providers || {});
@@ -644,7 +645,7 @@ await agentAuthRemove(provider).catch(() => {});
   };
 
   const disconnectPlanAccess = async (plan) => {
-    if (!confirm(`断开 ${plan.name}？将移除其模型与凭据（不影响其他供应商）。`)) return;
+    if (!(await askConfirm(`断开 ${plan.name}？将移除其模型与凭据（不影响其他供应商）。`))) return;
     try {
       await agentPlanDisconnect(plan.planId);
       await loadPlans();
@@ -664,7 +665,7 @@ await agentAuthRemove(provider).catch(() => {});
     const providerCount = Number(piImport.credentialCount ?? piImport.providers?.length ?? 0);
     const sessionCount = Number(piImport.sessionCount ?? piImport.sessions?.count ?? 0);
     const sessionNotice = piImportSessions ? `，并导入最多 ${sessionCount} 个历史会话` : "；历史会话暂不导入";
-    if (!confirm(`将本地 Pi 的模型配置和 ${providerCount} 个供应商凭据复制为规聚独立快照${sessionNotice}。源配置不会被修改。`)) return;
+    if (!(await askConfirm(`将本地 Pi 的模型配置和 ${providerCount} 个供应商凭据复制为规聚独立快照${sessionNotice}。源配置不会被修改。`))) return;
     setPiImporting(true);
     setPiImportMsg("正在复制配置快照…");
     try {
@@ -832,7 +833,7 @@ const authResult = await agentAuth();
 
   const removeProviderConfig = async (provider) => {
     const target = modelConfigs.find((item) => item.provider === provider);
-    if (!target || !confirm(`删除供应商“${target.name || provider}”及其凭据？`)) return;
+    if (!target || !(await askConfirm(`删除供应商“${target.name || provider}”及其凭据？`))) return;
     try {
       await deleteAgentModelConfig(provider);
       setModelConfigs((items) => items.filter((item) => item.provider !== provider));
@@ -916,8 +917,8 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
     { label: "真实调用", value: probeMsg.startsWith("连接成功") ? "已通过" : "尚未测试", ok: probeMsg.startsWith("连接成功") },
   ];
 
-  const resetAll = () => {
-    if (!confirm("确定恢复默认设置并清空界面状态？将刷新页面。")) return;
+  const resetAll = async () => {
+    if (!(await askConfirm("确定恢复默认设置并清空界面状态？将刷新页面。"))) return;
     try {
       localStorage.removeItem("oaw_settings");
       localStorage.removeItem("oaw_ui_state_v1");
@@ -1219,7 +1220,7 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
               <small>执行中</small>
             </div>
             <details open className="message-process-fold run-activity-fold is-live sp-activity-marquee-preview">
-              <summary><Icon name="flow" size={11} /> 对话执行过程<span>实时</span></summary>
+              <summary><Icon name="flow" size={12} /> 对话执行过程<span>实时</span></summary>
             </details>
           </div>
         </div>
@@ -1300,7 +1301,7 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
               <label className="model-provider-check"><input type="checkbox" checked={providerDraft.clearApiKey} onChange={(event) => setProviderDraft((value) => ({ ...value, clearApiKey: event.target.checked, apiKey: "" }))} /> 清除已保存 Key</label>
               <label className="model-provider-check"><input type="checkbox" checked={providerDraft.enabled} onChange={(event) => setProviderDraft((value) => ({ ...value, enabled: event.target.checked }))} /> 启用供应商</label>
             </div>
-            <div className="model-provider-models-head"><strong>模型</strong><button className="btn-xs" onClick={fetchModelsFromUrl} disabled={modelsFetching} title="调用 {接口地址}/models 拉取模型列表并合并到下方"><Icon name="download" size={11} /> {modelsFetching ? "拉取中…" : "从接口拉取"}</button><button className="btn-xs" onClick={() => setProviderDraft((value) => ({ ...value, models: [...value.models, { id: "", name: "", contextWindow: "", reasoning: true, vision: false, enabled: true }] }))}><Icon name="plus" size={11} /> 添加模型</button></div>
+            <div className="model-provider-models-head"><strong>模型</strong><button className="btn-xs" onClick={fetchModelsFromUrl} disabled={modelsFetching} title="调用 {接口地址}/models 拉取模型列表并合并到下方"><Icon name="download" size={12} /> {modelsFetching ? "拉取中…" : "从接口拉取"}</button><button className="btn-xs" onClick={() => setProviderDraft((value) => ({ ...value, models: [...value.models, { id: "", name: "", contextWindow: "", reasoning: true, vision: false, enabled: true }] }))}><Icon name="plus" size={12} /> 添加模型</button></div>
             <div className="model-provider-models">
               {providerDraft.models.map((model, index) => <div className="model-provider-model-row" key={`${index}-${model.id}`}>
                 <input className="sp-input" value={model.id} onChange={(event) => updateProviderModel(index, { id: event.target.value })} placeholder="模型 ID" />
@@ -1456,7 +1457,7 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
             <button className="btn-sm" onClick={() => probe()} disabled={probeLoading || (!activeModel && !defaultModel)} title="使用已保存的凭据发送最小请求">{probeLoading ? "测试中…" : "测试已保存凭据"}</button>
             {authMsg && <span className="sp-auth-msg">{authMsg}</span>}
           </div>
-          {providers && Object.keys(providers).length > 0 && <div className="sp-auth-list model-auth-list">{Object.entries(providers).map(([p, v]) => <span key={p} className="sp-auth-item"><Icon name="check" size={11} /><code>{PROVIDER_LABELS[p] || p}</code> {v.masked}{authErrors[p] && <span className="sp-badge warn" title={authErrors[p].message}>凭据失效</span>}<button className="btn-xs" onClick={() => removeAuth(p)} title={`删除 ${p} 凭据`}>删除</button>{authErrors[p] && <span className="sp-badge warn">重新保存 Key 可恢复</span>}</span>)}</div>}
+          {providers && Object.keys(providers).length > 0 && <div className="sp-auth-list model-auth-list">{Object.entries(providers).map(([p, v]) => <span key={p} className="sp-auth-item"><Icon name="check" size={12} /><code>{PROVIDER_LABELS[p] || p}</code> {v.masked}{authErrors[p] && <span className="sp-badge warn" title={authErrors[p].message}>凭据失效</span>}<button className="btn-xs" onClick={() => removeAuth(p)} title={`删除 ${p} 凭据`}>删除</button>{authErrors[p] && <span className="sp-badge warn">重新保存 Key 可恢复</span>}</span>)}</div>}
         </div>
         <div className="sp-note">模型目录由规聚独立管理，也可从本地 Pi 一次性导入；连接测试只发送最小请求，不写入会话。若出现“已接收信息”长时间无响应，先在这里刷新目录并测试真实连接，再开始 Agent 任务。</div>
       </div>}

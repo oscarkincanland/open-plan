@@ -1,5 +1,6 @@
 import React, { useRef } from "react";
 import { uploadFile, deleteFile, fileToBase64 } from "../api.js";
+import { notifyError, askConfirm } from "./Feedback.jsx";
 
 const EXT_LABELS = { docx: "W", xlsx: "X", pptx: "P" };
 
@@ -13,13 +14,13 @@ export default function FileSidebar({ files, currentName, onOpen, onRefresh, onU
       const { data } = await fileToBase64(f);
       await uploadFile(f.name, data);
       onUploaded();
-    } catch (err) { alert("上传失败: " + err.message); }
+    } catch (err) { notifyError("上传失败: " + err.message); }
     finally { e.target.value = ""; }
   };
 
   const handleDelete = async (name) => {
-    if (!confirm(`删除 ${name} ?`)) return;
-    try { await deleteFile(name); onRefresh(); } catch (err) { alert("删除失败: " + err.message); }
+    if (!(await askConfirm(`删除 ${name} ?`))) return;
+    try { await deleteFile(name); onRefresh(); } catch (err) { notifyError("删除失败: " + err.message); }
   };
 
   return (

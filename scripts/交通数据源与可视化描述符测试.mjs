@@ -391,13 +391,21 @@ await test("未知数据源给出可用清单", async () => {
 
 console.log("\n▶ 未来接入点（只留桩，不实现）");
 
-await test("声明了三个预留位的形状", async () => {
+await test("预留位形状：gps-trajectory 保留；G2 两适配器已落地（数据源适配器扩展.mjs，flag 门控）", async () => {
   const { PLANNED_SOURCES } = await import("../server/交通数据源.mjs");
   const ids = PLANNED_SOURCES.map((s) => s.id);
-  for (const id of ["live-traffic-api", "sql-database", "gps-trajectory"]) {
+  for (const id of ["gps-trajectory"]) {
     assert.ok(ids.includes(id), `应预留 ${id}`);
   }
   assert.ok(PLANNED_SOURCES.every((s) => s.note), "预留位应说明适配器要做的事");
+  // G2 落地核对：live-traffic-api / sql-database 已实现并被 flag 管道门控（默认关）。
+  const adapterSrc = read("server/数据源适配器扩展.mjs");
+  assert.match(adapterSrc, /id: "live-traffic-api"/, "live-traffic-api 应已实现");
+  assert.match(adapterSrc, /id: "sql-database"/, "sql-database 应已实现");
+  const indexSrc = read("server/index.mjs");
+  assert.match(indexSrc, /OAW_DATA_ADAPTERS/, "适配器注册应挂 OAW_DATA_ADAPTERS 开关");
+  const flagsSrc = read("server/运行开关.mjs");
+  assert.match(flagsSrc, /dataAdapters: readFlag\("OAW_DATA_ADAPTERS"\)/, "运行开关应有 dataAdapters 位");
 });
 
 console.log("\n▶ 接入点：端点与文档");

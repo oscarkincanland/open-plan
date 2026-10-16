@@ -451,7 +451,7 @@ export async function buildDocxFromBlocks(target, blocks = []) {
   for (const block of blocks) {
     const kind = String(block?.type || "paragraph").toLowerCase();
     const text = String(block?.text ?? "").trim();
-    if (!text) continue;
+    if (!text && kind !== "image") continue;
     if (kind === "heading" || kind === "h1" || kind === "h2" || kind === "h3") {
       const level = kind === "h1" || block?.level === 1 ? HeadingLevel.HEADING_1
         : kind === "h3" || block?.level === 3 ? HeadingLevel.HEADING_3 : HeadingLevel.HEADING_2;
@@ -463,6 +463,18 @@ export async function buildDocxFromBlocks(target, blocks = []) {
         })),
       }));
       children.push(new Table({ rows, width: { size: 100, type: WidthType.PERCENTAGE } }));
+    } else if (kind === "image" && block?.path) {
+      // G8：图集嵌入——读取本地图片（相对/绝对路径均可，调用方负责路径安全），
+      // 尺寸由调用方以 transformation 传入（等比缩放由 probeImageSize 提供）。
+      const { ImageRun } = await import("docx");
+      const data = await fs.promises.readFile(block.path);
+      children.push(new Paragraph({
+        children: [new ImageRun({
+          type: block.format === "png" ? "png" : "jpg",
+          data,
+          transformation: { width: Number(block.width) || 480, height: Number(block.height) || 320 },
+        })],
+      }));
     } else {
       children.push(new Paragraph(text));
     }

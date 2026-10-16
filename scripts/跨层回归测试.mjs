@@ -250,7 +250,8 @@ async function 起服务() {
   });
   child.stdout.on("data", (chunk) => { logs += chunk.toString(); });
   child.stderr.on("data", (chunk) => { logs += chunk.toString(); });
-  const deadline = Date.now() + 30_000;
+  // 冷启动实测已漂移到 ~100s（runs/事件数据增长 + Pi 运行时初始化），30s 历史窗口必然超时
+  const deadline = Date.now() + 150_000;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error(`测试服务提前退出：\n${logs}`);
     try {

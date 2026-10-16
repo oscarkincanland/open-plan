@@ -95,19 +95,19 @@ export default function AgentBrainGraph({ trace, running = false, onFocusTool })
               onClick={() => setOpenBranch(openBranch === category ? null : category)}
               title={`${category}类工具 ${tools.length} 次`}
             >
-              <Icon name={CATEGORY_ICON[category] || "flow"} size={11} />
+              <Icon name={CATEGORY_ICON[category] || "flow"} size={12} />
               <span>{category}</span>
               <b>×{tools.length}</b>
             </button>
           ))}
           {(trace.errors || []).length > 0 && (
             <span className="brain-branch static error" title={(trace.errors || []).map((item) => item.message).join("\n")}>
-              <Icon name="x" size={11} /><span>错误</span><b>×{trace.errors.length}</b>
+              <Icon name="x" size={12} /><span>错误</span><b>×{trace.errors.length}</b>
             </span>
           )}
           {(trace.files || []).length > 0 && (
             <span className="brain-branch static ok" title={(trace.files || []).join("\n")}>
-              <Icon name="folder" size={11} /><span>文件</span><b>×{trace.files.length}</b>
+              <Icon name="folder" size={12} /><span>文件</span><b>×{trace.files.length}</b>
             </span>
           )}
         </div>

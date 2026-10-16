@@ -107,6 +107,11 @@ function dispatcherOptions(settings) {
     connect: { autoSelectFamilyAttemptTimeout: settings.connectTimeoutMs },
     headersTimeout: settings.timeoutMs,
     bodyTimeout: settings.bodyTimeoutMs,
+    // T3（首字优化）：默认 keepAliveTimeout 仅 4s——对话间隔常超过它，导致每轮
+    // 重新 TCP+TLS 握手（实测数百毫秒级）。延长空闲保活窗口，让同一供应商域名的
+    // 连接跨轮复用；服务器提前断连时 undici 会自动重建，安全。
+    keepAliveTimeout: 55_000,
+    keepAliveMaxTimeout: 600_000,
   };
 }
 

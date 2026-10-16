@@ -7,6 +7,7 @@ import { getWorkspace } from "./workspace.mjs";
 import { appendEvent } from "./事件存储.mjs";
 import { atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
 import { attachRunTimingSpans } from "./首字延迟.mjs";
+import { RUNTIME_FLAGS } from "./运行开关.mjs";
 import {
   discardStagedRun,
   ensureRunStaging,
@@ -1238,6 +1239,23 @@ function publicRunView(run, { includeEvents = true, eventByteBudget = 0 } = {}) 
   const completed = steps.filter((step) => ["completed", "skipped"].includes(step.status)).length;
   const todos = Array.isArray(publicRun.todos) ? publicRun.todos : [];
   const todoCompleted = todos.filter((item) => ["completed", "skipped"].includes(item.status)).length;
+  // O-P1（OAW_STAGED_VISIBLE，默认关）：运行中的 Run 把已暂存（尚未物化）的写入路径
+  // 以「暂存」临时产物投影出来，让长任务执行期间产物面板就能看到进展；
+  // 非运行态 / flag 关闭时保持基线（artifacts 仅在 run 结束时由 finalizeFileChanges 装配）。
+  if (RUNTIME_FLAGS.stagedVisible && ["running", "queued", "waiting_user", "finishing"].includes(publicRun.status)) {
+    const existing = new Set((publicRun.artifacts || []).map((item) => String(item?.path || "").replace(/\\/g, "/")));
+    const staged = (publicRun.touchedPaths || [])
+      .map((value) => String(value || "").replace(/\\/g, "/"))
+      .filter((value) => value && value !== "." && !existing.has(value))
+      .map((value) => ({
+        artifactId: `staged:${publicRun.id}:${value}`,
+        path: value,
+        source: "staged",
+        status: "staged",
+        staged: true,
+      }));
+    if (staged.length) publicRun.artifacts = [...(publicRun.artifacts || []), ...staged];
+  }
   return {
     ...publicRun,
     actions: {

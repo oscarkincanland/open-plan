@@ -300,7 +300,7 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          {search && <button className="tpl-search-clear" onClick={() => setSearch("")} aria-label="清除搜索"><Icon name="close" size={11} /></button>}
+          {search && <button className="tpl-search-clear" onClick={() => setSearch("")} aria-label="清除搜索"><Icon name="close" size={12} /></button>}
         </div>
         <div className="tpl-sort">
           <label className="tpl-sort-label">排序：</label>
@@ -315,7 +315,7 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
           <button className={"btn-sm" + (viewMode === "list" ? " active" : "")} onClick={() => setViewMode("list")}><Icon name="list" size={14} /></button>
         </div>
         <button className="btn-sm primary tpl-notice-btn" onClick={() => setNoticeOpen(true)} title="按公文规范生成红头会议通知">
-          <Icon name="doc" size={13} /> 生成红头通知
+          <Icon name="doc" size={14} /> 生成红头通知
         </button>
       </div>
 
@@ -459,7 +459,7 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
         <div className="tpl-gen-backdrop" onClick={() => setGenOpen(false)}>
           <div className="tpl-gen" onClick={(e) => e.stopPropagation()}>
             <div className="tpl-gen-head">
-              <span><Icon name="penTool" size={13} /> 用模板生成</span>
+              <span><Icon name="penTool" size={14} /> 用模板生成</span>
               <button className="mp-op" onClick={() => setGenOpen(false)} title="关闭"><Icon name="close" size={14} /></button>
             </div>
             <div className="tpl-gen-body">

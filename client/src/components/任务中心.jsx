@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cancelRun, getRun, getRunAcceptance, listRuns, resumeRun, retryRun } from "../api.js";
 import { verificationLabel } from "../运行轨迹.js";
@@ -98,7 +98,7 @@ function TaskCard({ run, selected, onSelect, projectName = "" }) {
   );
 }
 
-export default function TaskCenter({ sessions = [], projects = [], currentProjectId = "", currentWorkspace = "", currentThreadId = "", currentSessionId = "", eventVersion = 0, unreadCount = 0, onSelectSession, onFocusRun, onOpenRun, fullPage = false, onClose }) {
+function TaskCenterInternal({ sessions = [], projects = [], currentProjectId = "", currentWorkspace = "", currentThreadId = "", currentSessionId = "", eventVersion = 0, unreadCount = 0, onSelectSession, onFocusRun, onOpenRun, fullPage = false, onClose, anchorRef = null, hideTrigger = false }, ref) {
   const [open, setOpen] = useState(false);
   const [runs, setRuns] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -120,7 +120,7 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
   const updateFloatingRect = useCallback(() => {
     if (typeof window === "undefined") return;
     if (window.innerWidth <= 560) { setFloatingRect(null); return; }
-    const rect = triggerRef.current?.getBoundingClientRect();
+    const rect = (anchorRef && anchorRef.current || triggerRef.current)?.getBoundingClientRect();
     if (!rect) return;
     const width = 344;
     const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
@@ -144,8 +144,14 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
     setSelectedId(null);
     setDetail(null);
     // 关闭弹层后把焦点还给触发按钮，键盘用户不丢位置（对应计划 4.2 面板/命令入口）
-    if (returnFocus) requestAnimationFrame(() => triggerRef.current?.focus());
+    if (returnFocus) requestAnimationFrame(() => { const anchor = (anchorRef && anchorRef.current) || triggerRef.current; anchor?.focus?.(); });
   }, []);
+
+  // 顶栏入口整合后触发钮不再常驻：外部菜单通过 ref 直接开合任务中心
+  useImperativeHandle(ref, () => ({
+    open: () => { setOpen(true); setSelectedId(null); setDetail(null); },
+    close: () => closePanel({ returnFocus: false }),
+  }), [closePanel]);
 
   useEffect(() => {
     if (!open || fullPage) return undefined;
@@ -288,7 +294,7 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
 
   const projectNameFor = (run) => projects.find((item) => item.id === run?.projectId)?.name || "";
 
-  const trigger = !fullPage && (
+  const trigger = !fullPage && !hideTrigger && (
     <button
       ref={triggerRef}
       className={`btn-sm task-center-trigger ${open ? "active" : ""}`}
@@ -311,8 +317,8 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
             <div><h2>任务中心</h2><p>并行任务、运行状态与历史会话</p></div>
           </div>}
           <div className="task-center-head">
-            <span><Icon name="list" size={13} /> 并行任务</span>
-            <button className="btn-xs" onClick={refresh} title="刷新任务状态"><Icon name="refresh" size={11} /></button>
+            <span><Icon name="list" size={14} /> 并行任务</span>
+            <button className="btn-xs" onClick={refresh} title="刷新任务状态"><Icon name="refresh" size={12} /></button>
           </div>
           <div className="task-center-filters">
             <select value={projectScope} onChange={(e) => setProjectScope(e.target.value)} title="项目范围">
@@ -343,7 +349,7 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
             </div>
           ) : (
             <div className="task-center-detail">
-              <button className="task-center-back" onClick={() => { setSelectedId(null); setDetail(null); }}><Icon name="back" size={11} /> 返回任务列表</button>
+              <button className="task-center-back" onClick={() => { setSelectedId(null); setDetail(null); }}><Icon name="back" size={12} /> 返回任务列表</button>
               <div className="task-center-detail-title">{taskTitle(detail)}</div>
               <div className="task-center-detail-meta">{taskMetaParts(detail, projectNameFor(detail) || "当前项目").join(" · ")}</div>
               <div className="task-center-status">
@@ -414,3 +420,5 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
     : (open ? panel : null);
   return <div className="task-center-wrap">{trigger}{floatingPanel}</div>;
 }
+
+export default forwardRef(TaskCenterInternal);

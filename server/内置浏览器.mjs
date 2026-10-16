@@ -4,6 +4,7 @@ import net from "node:net";
 import path from "node:path";
 import { PROJECT_DIR } from "./workspace.mjs";
 import { loadNetworkSettings } from "./Pi配置管理.mjs";
+import { RUNTIME_FLAGS } from "./运行开关.mjs";
 
 /**
  * 内置浏览器：Agent 可直接操作的可视化浏览器。
@@ -510,6 +511,26 @@ function normalizeNavUrl(raw) {
   throw new Error(`无效的 URL：${value}（需 http/https 链接，或输入普通关键词搜索）`);
 }
 
+// B5：导航 URL 防护（OAW_BROWSER_URL_GUARD，默认关）。Agent 工具与用户接管共用同一策略：
+// 在 normalizeNavUrl 之上做第二道防线（file:// 等本地协议拒绝）+ 可选域名白名单
+// （OAW_BROWSER_URL_ALLOWLIST，逗号分隔；留空 = 放行全部 http/https）。
+function assertUrlAllowed(url) {
+  if (!RUNTIME_FLAGS.browserUrlGuard) return;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw Object.assign(new Error(`URL 防护：无法解析 ${url}`), { code: "URL_GUARD_REJECTED" });
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw Object.assign(new Error(`URL 防护：已拦截非 http/https 链接（${parsed.protocol}//）`), { code: "URL_GUARD_REJECTED" });
+  }
+  const allowList = RUNTIME_FLAGS.browserUrlAllowlist;
+  if (allowList.length && !allowList.some((domain) => parsed.hostname === domain || parsed.hostname.endsWith(`.${domain}`))) {
+    throw Object.assign(new Error(`URL 防护：域名 ${parsed.hostname} 不在白名单内（OAW_BROWSER_URL_ALLOWLIST）`), { code: "URL_GUARD_REJECTED" });
+  }
+}
+
 class BrowserSession {
   constructor(key) {
     this.key = key;
@@ -532,6 +553,7 @@ class BrowserSession {
     this.watchdogTimer = null;
     this.firstFrameTimer = null;
     this.lastUserInputAt = 0;
+    this.streamPausedByVisibility = false; // B3：面板不可见时暂停推流的标记
     // 接管仲裁：owner = agent | user，user 时带短期 lease
     this.ownership = { owner: "agent", leaseExpiresAt: 0, reason: "", updatedAt: new Date().toISOString() };
     this.activeTargetId = null;
@@ -628,12 +650,27 @@ class BrowserSession {
     this.subscriberCount = Number(count) || 0;
     if (this.subscriberCount > 0) {
       this.ensureWatching();
-      if (!this.screencastOn) this.startScreencast().catch(() => {});
+      if (!this.screencastOn && !this.streamPausedByVisibility) this.startScreencast().catch(() => {});
       if (!this.frame) this.captureFrame().catch(() => {});
       return;
     }
     this.stopWatching();
     await this.stopScreencast();
+  }
+
+  /**
+   * B3（OAW_BROWSER_ADAPTIVE_STREAM，默认关）：面板所在页面不可见时暂停 screencast 推流，
+   * 回到可见即恢复。订阅者看门狗与 noteSubscribers 都尊重该标记，避免暂停被自动重启抵消。
+   */
+  async setStreamPaused(paused) {
+    const wantPaused = Boolean(paused) && RUNTIME_FLAGS.browserAdaptiveStream;
+    if (this.streamPausedByVisibility === wantPaused) return;
+    this.streamPausedByVisibility = wantPaused;
+    if (wantPaused) {
+      await this.stopScreencast();
+      return;
+    }
+    if (this.subscriberCount > 0 && !this.screencastOn) await this.startScreencast().catch(() => {});
   }
 
   /** 空白画面巡检：只要面板还开着且没有画面，就持续尝试恢复，确保一定会渲染。 */
@@ -643,11 +680,11 @@ class BrowserSession {
       if (!this.state.active || this.subscriberCount <= 0) return;
       const now = Date.now();
       if (!this.frame) {
-        if (!this.screencastOn && now - this.lastScreencastAttemptAt > SCREENCAST_RETRY_MS) this.startScreencast().catch(() => {});
+        if (!this.screencastOn && !this.streamPausedByVisibility && now - this.lastScreencastAttemptAt > SCREENCAST_RETRY_MS) this.startScreencast().catch(() => {});
         this.captureFrame().catch(() => {});
         return;
       }
-      if (!this.screencastOn && now - this.lastScreencastAttemptAt > SCREENCAST_RETRY_MS) this.startScreencast().catch(() => {});
+      if (!this.screencastOn && !this.streamPausedByVisibility && now - this.lastScreencastAttemptAt > SCREENCAST_RETRY_MS) this.startScreencast().catch(() => {});
     }, SUBSCRIBER_WATCHDOG_MS);
   }
 
@@ -1163,6 +1200,7 @@ class BrowserSession {
 
   async navigate(rawUrl) {
     const url = normalizeNavUrl(rawUrl);
+    assertUrlAllowed(url);
     await this.ensureStarted();
     this.state.loading = true;
     this.state.url = url;
@@ -1261,17 +1299,43 @@ class BrowserSession {
     return value || {};
   }
 
-  async screenshot() {
+  async screenshot(options = {}) {
+    // G7：支持 png（地图导出需要无损位图）；缺省 jpeg 保持既有行为零变化。
+    const format = options.format === "png" ? "png" : "jpeg";
     await this.ensureStarted();
-    const result = await this.cdp.send("Page.captureScreenshot", { format: "jpeg", quality: 90 });
+    const result = await this.cdp.send("Page.captureScreenshot", format === "png" ? { format: "png" } : { format: "jpeg", quality: 90 });
     const data = result.data || "";
     fs.mkdirSync(SHOT_DIR, { recursive: true });
-    const file = path.join(SHOT_DIR, `shot-${Date.now()}.jpg`);
+    const file = path.join(SHOT_DIR, `shot-${Date.now()}${format === "png" ? ".png" : ".jpg"}`);
     try { fs.writeFileSync(file, Buffer.from(data, "base64")); } catch {}
     this.lastFrameAt = Date.now();
     this.frame = { data, at: this.lastFrameAt, width: this.state.viewport.width, height: this.state.viewport.height };
     this.queueFrameBroadcast({ data, at: this.frame.at, width: this.frame.width, height: this.frame.height });
-    return { file, bytes: Buffer.byteLength(data, "base64"), url: this.state.url };
+    return { file, base64: data, bytes: Buffer.byteLength(data, "base64"), url: this.state.url };
+  }
+
+  /** B4（OAW_BROWSER_FULLPAGE，默认关）：整页截图（captureBeyondViewport），落盘并返回 base64。 */
+  async fullpageScreenshot() {
+    await this.ensureStarted();
+    const result = await this.cdp.send("Page.captureScreenshot", { format: "jpeg", quality: 90, captureBeyondViewport: true });
+    const data = result.data || "";
+    if (!data) throw new Error("整页截图失败：浏览器未返回图像数据");
+    fs.mkdirSync(SHOT_DIR, { recursive: true });
+    const file = path.join(SHOT_DIR, `shot-full-${Date.now()}.jpg`);
+    try { fs.writeFileSync(file, Buffer.from(data, "base64")); } catch {}
+    return { file, base64: data, bytes: Buffer.byteLength(data, "base64"), url: this.state.url };
+  }
+
+  /** B4（OAW_BROWSER_FULLPAGE，默认关）：整页 PDF（Page.printToPDF），落盘并返回 base64。 */
+  async printToPdf() {
+    await this.ensureStarted();
+    const result = await this.cdp.send("Page.printToPDF", { printBackground: true, preferCSSPageSize: true });
+    const data = result.data || "";
+    if (!data) throw new Error("PDF 导出失败：浏览器未返回数据");
+    fs.mkdirSync(SHOT_DIR, { recursive: true });
+    const file = path.join(SHOT_DIR, `page-${Date.now()}.pdf`);
+    try { fs.writeFileSync(file, Buffer.from(data, "base64")); } catch {}
+    return { file, base64: data, bytes: Buffer.byteLength(data, "base64"), url: this.state.url };
   }
 
   async back() {
@@ -1427,8 +1491,74 @@ export async function browserScroll(key, direction, amount) {
   return result;
 }
 
-export async function browserScreenshot(key) {
-  return (await requireActiveSession(key)).screenshot();
+export async function browserScreenshot(key, options = {}) {
+  return (await requireActiveSession(key)).screenshot(options);
+}
+
+/** B4：整页截图（开关 OAW_BROWSER_FULLPAGE）。 */
+export async function browserFullpageScreenshot(key) {
+  if (!RUNTIME_FLAGS.browserFullpage) {
+    throw Object.assign(new Error("整页截图未开启（OAW_BROWSER_FULLPAGE=1）"), { code: "FLAG_DISABLED" });
+  }
+  return (await requireActiveSession(key)).fullpageScreenshot();
+}
+
+/** B4：整页 PDF 导出（开关 OAW_BROWSER_FULLPAGE）。 */
+export async function browserPrintToPdf(key) {
+  if (!RUNTIME_FLAGS.browserFullpage) {
+    throw Object.assign(new Error("PDF 导出未开启（OAW_BROWSER_FULLPAGE=1）"), { code: "FLAG_DISABLED" });
+  }
+  return (await requireActiveSession(key)).printToPdf();
+}
+
+/** B3：面板可见性联动暂停/恢复推流（开关 OAW_BROWSER_ADAPTIVE_STREAM）。 */
+export async function browserSetStreamPaused(key, paused) {
+  const session = getBrowserSession(key);
+  if (!session) return;
+  await session.setStreamPaused(paused);
+}
+
+// ---- G7 批量导出所需的底座包装（仅服务端编排使用，不暴露 HTTP 路由） ----
+
+/** 调整视口尺寸（Emulation.setDeviceMetricsOverride，上限 MAX_CAPTURE）。 */
+export async function browserResize(key, width, height) {
+  const session = await sessionFor(key);
+  return session.resize(width, height);
+}
+
+/** 轮询等待页面表达式为真（G7 导出视图就绪信号 window.__OAW_EXPORT_READY）。 */
+export async function browserWaitForExpression(key, expression, { timeoutMs = 30000, intervalMs = 300 } = {}) {
+  const session = await requireActiveSession(key);
+  const deadline = Date.now() + Math.max(1000, Number(timeoutMs) || 30000);
+  let lastError = "";
+  while (Date.now() < deadline) {
+    try {
+      const value = await session.evaluate(`Boolean(${expression})`);
+      if (value === true) return true;
+    } catch (e) {
+      lastError = String(e?.message || e);
+    }
+    await sleep(Number(intervalMs) || 300);
+  }
+  throw new Error(`等待页面就绪超时（${Math.round((Date.now() - deadline + timeoutMs) / 1000)}s）${lastError ? `：${lastError}` : ""}`);
+}
+
+/** 只读取值（G7 执行器读取页面状态标记用；不做写入型 evaluate，不暴露 HTTP 路由）。 */
+export async function browserEvaluateValue(key, expression) {
+  const session = await requireActiveSession(key);
+  return session.evaluate(String(expression));
+}
+
+const SHOT_FILE_PATTERN = /^[\w-]+\.(jpg|png|pdf)$/;
+
+/** 校验并解析截图/导出文件名 → 绝对路径；防目录穿越，只允许 SHOT_DIR 下的合法产物。 */
+export function browserShotFile(name) {
+  const clean = String(name || "").trim();
+  if (!SHOT_FILE_PATTERN.test(clean)) throw Object.assign(new Error("非法的截图文件名"), { code: "INVALID_SHOT_NAME" });
+  const file = path.join(SHOT_DIR, clean);
+  if (!file.startsWith(SHOT_DIR)) throw Object.assign(new Error("非法的截图文件名"), { code: "INVALID_SHOT_NAME" });
+  if (!fs.existsSync(file)) throw Object.assign(new Error("截图文件不存在或已被清理"), { code: "SHOT_NOT_FOUND" });
+  return file;
 }
 
 export async function browserBack(key) {
