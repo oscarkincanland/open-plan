@@ -1551,7 +1551,7 @@ export default function MapPanel({
     };
     const timer = setInterval(render, 250);
     render();
-    const title = action.title || (action.analysis === "isochrone" ? "等时圈" : action.analysis === "od" ? "出行 OD" : "热力图");
+    const title = action.title || (action.analysis === "isochrone" ? "等时圈" : action.analysis === "od" ? "出行 OD" : action.analysis === "buffer" ? "缓冲区分析" : action.analysis === "spatial_filter" ? "空间筛选" : action.analysis === "bbox_clip" ? "范围裁剪" : "热力图");
     const source = action.source === "demo" ? " · 演示数据" : "";
     flash(`${title}${source}已显示`);
   }, [project, regionOptions, selectRegion, flash, syncTempLayers]);
