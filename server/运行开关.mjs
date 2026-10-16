@@ -63,6 +63,14 @@ export const RUNTIME_FLAGS = Object.freeze({
   browserUrlGuard: readFlag("OAW_BROWSER_URL_GUARD"),
   /** B5 白名单配置：域名列表（留空 = 放行全部 http/https；子域名自动匹配） */
   browserUrlAllowlist: readStringList("OAW_BROWSER_URL_ALLOWLIST"),
+  /** 会话恢复 A3：busy 看门狗（busy 期间超时无 Pi 事件活动则强制放行，默认关） */
+  agentBusyWatchdog: readFlag("OAW_BUSY_WATCHDOG"),
+  /** A3 阈值：busy 无事件活动多久后放行（毫秒，默认 15 分钟） */
+  agentBusyWatchdogMs: readPositiveInt("OAW_BUSY_WATCHDOG_MS", 15 * 60 * 1000),
+  /** 会话恢复 A2：恢复遇忙时前端自动等待任务结束后重试（默认关） */
+  resumeAutoRetry: readFlag("OAW_RESUME_AUTO_RETRY"),
+  /** GIS G1：空间分析算子（buffer/spatial_filter/bbox_clip，默认关） */
+  spatialAnalysis: readFlag("OAW_SPATIAL_ANALYSIS"),
 });
 
 /** /api/status 下发形态：布尔与数值分开，前端只读布尔位。 */
@@ -82,5 +90,8 @@ export function runtimeFlagsSnapshot() {
     browserAdaptiveStream: RUNTIME_FLAGS.browserAdaptiveStream,
     browserFullpage: RUNTIME_FLAGS.browserFullpage,
     browserUrlGuard: RUNTIME_FLAGS.browserUrlGuard,
+    agentBusyWatchdog: RUNTIME_FLAGS.agentBusyWatchdog,
+    resumeAutoRetry: RUNTIME_FLAGS.resumeAutoRetry,
+    spatialAnalysis: RUNTIME_FLAGS.spatialAnalysis,
   };
 }

@@ -21,7 +21,13 @@ export async function api(path, opts = {}) {
     ...opts,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(data.error || `HTTP ${res.status}`);
+    // 保留服务端结构化错误信息（如 SESSION_BUSY 的占用详情），供界面区分处理
+    if (data.code) error.code = data.code;
+    if (data.detail) error.detail = data.detail;
+    throw error;
+  }
   return data;
 }
 

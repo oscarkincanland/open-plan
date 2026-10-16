@@ -22,7 +22,7 @@ import MemoryTab from "./components/MemoryTab.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
 import { acquireStream } from "./长连接预算.js";
-import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession } from "./api.js";
+import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun } from "./api.js";
 import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
 import FeedbackHost, { notifyError } from "./components/Feedback.jsx";
 import { initRuntimeFlags, flag } from "./运行开关.js";
@@ -1089,19 +1089,46 @@ export default function App() {
   }, [clientId, currentWorkspace, open, refreshProjects]);
 
   // 重试恢复当前历史会话的 Agent：成功后才允许继续对话。
-  const retrySessionResume = useCallback(async () => {
+  const retrySessionResume = useCallback(async (silentFlag) => {
+    const silent = silentFlag === true; // onClick 会把事件对象当首参传入，仅显式 true 才算静默
     const targetId = sessionResumeError?.sessionId || currentSessionId;
     if (!targetId) return;
     const conversationId = threadId || targetId;
-    setSessionResumeRetrying(true);
+    if (!silent) setSessionResumeRetrying(true);
     try {
       await resumeAgentThread(clientId, conversationId, targetId, currentWorkspace);
       setSessionResumeError(null);
     } catch (error) {
-      setSessionResumeError({ sessionId: targetId, message: error.message || "Agent 会话恢复失败" });
+      setSessionResumeError({
+        sessionId: targetId,
+        message: error.message || "Agent 会话恢复失败",
+        code: error.code || "",
+        detail: error.detail || null,
+      });
     }
-    setSessionResumeRetrying(false);
+    if (!silent) setSessionResumeRetrying(false);
   }, [clientId, currentSessionId, currentWorkspace, sessionResumeError, threadId]);
+
+  // A2（OAW_RESUME_AUTO_RETRY，默认关）：恢复遇忙（SESSION_BUSY）时自动等待任务结束后重试，
+  // 上限 10 分钟；等待时长在横幅展示，并提供"取消当前任务"直达入口。
+  const resumeWaitStartRef = useRef(0);
+  const [resumeWaitSec, setResumeWaitSec] = useState(0);
+  useEffect(() => {
+    const busy = flag("resumeAutoRetry") && sessionResumeError?.code === "SESSION_BUSY";
+    if (!busy) {
+      resumeWaitStartRef.current = 0;
+      setResumeWaitSec(0);
+      return undefined;
+    }
+    if (!resumeWaitStartRef.current) resumeWaitStartRef.current = Date.now();
+    const timer = window.setInterval(() => {
+      const elapsed = Math.floor((Date.now() - resumeWaitStartRef.current) / 1000);
+      setResumeWaitSec(elapsed);
+      if (elapsed > 600) { window.clearInterval(timer); return; }
+      void retrySessionResume(true);
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [sessionResumeError?.code, sessionResumeError?.sessionId, retrySessionResume]);
 
   const handleForkSession = useCallback(async (id, label) => {
     const source = sessions.find((item) => item.id === id);
@@ -1632,8 +1659,16 @@ export default function App() {
             {!activeModule && sessionResumeError && (
               <div className="session-resume-warning" role="alert">
                 <Icon name="warning" size={14} />
-                <span>历史已加载为只读：Agent 会话恢复失败（{sessionResumeError.message}），继续对话前请先重试恢复。</span>
-                <button className="btn-xs" onClick={retrySessionResume} disabled={sessionResumeRetrying}>{sessionResumeRetrying ? "恢复中…" : "重试恢复"}</button>
+                <span>
+                  历史已加载为只读：Agent 会话恢复失败（{sessionResumeError.message}），继续对话前请先重试恢复。
+                  {sessionResumeError.code === "SESSION_BUSY" && flag("resumeAutoRetry") && (
+                    <> 已等待 {resumeWaitSec}s，当前任务结束后将自动恢复{sessionResumeError.detail?.busyForMs ? `（任务已运行 ${Math.round(sessionResumeError.detail.busyForMs / 1000)}s）` : ""}。</>
+                  )}
+                </span>
+                {sessionResumeError.code === "SESSION_BUSY" && sessionResumeError.detail?.activeRunId && (
+                  <button className="btn-xs" onClick={async () => { try { await cancelRun(sessionResumeError.detail.activeRunId, "用户请求取消以恢复会话"); } catch {}}}>取消当前任务</button>
+                )}
+                <button className="btn-xs" onClick={() => retrySessionResume()} disabled={sessionResumeRetrying}>{sessionResumeRetrying ? "恢复中…" : "重试恢复"}</button>
               </div>
             )}
             {/* 交互 2：新建失败必须可见。旧实现只 console.warn，界面照常清空，

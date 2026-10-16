@@ -778,7 +778,7 @@ app.post("/api/map/route", async (req, res) => {
 app.get("/api/map/demo-analysis", (req, res) => {
   try {
     res.json(mapAnalysis.createDemoAnalysis({ analysis: req.query.analysis, region: req.query.region, project: req.query.project, count: req.query.count }));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
 
 app.get("/api/demo/cambodia-od", (req, res) => {
@@ -1877,6 +1877,8 @@ app.get("/api/agent/diagnostics", async (req, res) => {
     requestId: req.requestId,
     model: { ... (catalog || { selected: loadSettingsDefault(), selectedInCatalog: null, selectedAvailable: null }), authProvider: selectedProvider, authConfigured: Boolean(selectedProvider && auth[selectedProvider]), catalogError },
     runtime,
+    // A4：per-client 会话占用快照（busy/queuedCount/compacting），区分"正常占用"与"卡死"
+    sessions: agentManager.listSessionStates(),
     scheduler: runtimeList.scheduler,
     recentFailures: readRecentAgentDiagnostics({ client, thread, runId: req.query.runId, limit: req.query.limit }).map((item) => ({ ...item, hint: agentFailureHint(item) })),
     authProviders,
@@ -3292,7 +3294,7 @@ app.post("/api/sessions/:id/fork", (req, res) => {
     const fileName = `${id}.jsonl`;
     atomicWriteFile(path.join(SESSIONS_DIR, fileName), lines.join("\n") + "\n", "utf8");
     res.json({ ok: true, id, fileName, parentSessionId: nextHeader.parentSessionId, cwd: nextHeader.cwd, threadId: id, label, projectId: nextHeader.projectId || null });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
 
 let workspacesCache = null;
@@ -4579,7 +4581,7 @@ app.post("/api/agent/new", async (req, res) => {
     const project = projectManager.getProject(projectId) || projectManager.getProjectForWorkspace(workspace);
     updateSessionHeader(result.sessionId, { projectId: project?.id || null, label: String(label || "").trim() });
     res.json(result);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
 
 app.post("/api/agent/resume", async (req, res) => {
@@ -4602,7 +4604,7 @@ app.post("/api/agent/resume", async (req, res) => {
     const result = await agentManager.resumeThread(agentKey(client, thread), thread, found.fullPath, workspace);
     annotateSessionThread(result.sessionId, thread);
     res.json(result);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
 
 // SSE stream per client
@@ -4869,7 +4871,7 @@ app.get("/api/memory", (_req, res) => {
   try {
     const files = listMemoryFiles();
     res.json({ files, memoryDir: getMemoryDir() });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
 
 app.get("/api/memory/stream", (req, res) => {
@@ -4919,7 +4921,7 @@ app.post("/api/memory/init", (_req, res) => {
     appendEvent({ type: "memory_initialized", data: { workspace: ws } });
     startMemoryWatcher();
     res.json({ ok: true, files: listMemoryFiles() });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
 
 app.get("/api/memory/proposals", (req, res) => {
@@ -4984,7 +4986,7 @@ app.post(/^\/api\/memory\/([^/]+)$/, (req, res) => {
     atomicWriteFile(fp, req.body?.content || "", "utf8");
     appendEvent({ clientId: String(req.body?.client || "") || null, threadId: String(req.body?.thread || "") || null, type: "memory_file_edited", data: { workspace: getWorkspace(), path: req.params[0], source: "memory-panel" } });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
 
 // ---------- 地图项目（MapLibre 可视化） ----------

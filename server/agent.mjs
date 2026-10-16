@@ -840,6 +840,49 @@ class AgentManager extends EventEmitter {
     // 单飞锁避免两个 Pi Runtime 互相覆盖，导致新事件通道被替换。
     this.resumePromises = new Map();
     this.recoveryPromises = new Map();
+    this.startBusyWatchdog();
+  }
+
+  /**
+   * A3 busy 看门狗（OAW_BUSY_WATCHDOG，默认关）：
+   * busy 依赖任务正常收尾清零；若 Runtime 异常退出/流挂起未走收尾分支，busy 会永久卡死，
+   * 表现为"切换任何会话都报任务排队"。看门狗在 busy 期间超过阈值（默认 15 分钟）无任何
+   * Pi 事件活动时强制放行，并把清除时间记录到诊断快照供确认。
+   */
+  startBusyWatchdog() {
+    if (this.busyWatchdogTimer) return;
+    this.busyWatchdogTimer = setInterval(() => {
+      if (!RUNTIME_FLAGS.agentBusyWatchdog) return;
+      const now = Date.now();
+      for (const [key, entry] of this.sessions) {
+        if (!entry?.busy) continue;
+        const lastActivity = Math.max(entry.lastPiEventAt || 0, entry.busyStartedAt || 0);
+        if (lastActivity && now - lastActivity > RUNTIME_FLAGS.agentBusyWatchdogMs) {
+          entry.busy = false;
+          entry.busyWatchdogClearedAt = now;
+          console.warn(`[agent] busy 看门狗放行：${key} 已 ${Math.round((now - lastActivity) / 1000)}s 无事件活动`);
+        }
+      }
+    }, 60_000);
+    if (typeof this.busyWatchdogTimer.unref === "function") this.busyWatchdogTimer.unref();
+  }
+
+  /** A4：per-client 会话占用快照（/api/agent/diagnostics 暴露），区分"正常占用"与"卡死"。 */
+  listSessionStates() {
+    const now = Date.now();
+    return [...this.sessions.entries()].map(([key, entry]) => ({
+      key,
+      clientId: entry.clientId || key,
+      threadId: entry.threadId || null,
+      workspace: entry.workspace || null,
+      busy: Boolean(entry.busy),
+      compacting: Boolean(entry.compacting),
+      queuedCount: entry.queuedCount || 0,
+      activeRunId: entry.activeRunId || null,
+      lastPiEventAt: entry.lastPiEventAt || null,
+      busyForMs: entry.busyStartedAt ? now - entry.busyStartedAt : null,
+      busyWatchdogClearedAt: entry.busyWatchdogClearedAt || null,
+    }));
   }
 
   /** 读取并清除待回答的问题（返回 resolve 函数） */
@@ -2195,16 +2238,77 @@ execute: async (_toolCallId, params) => {
       name: "map_analyze",
       label: "地图分析结果",
       description:
-        "生成并直接显示地图分析结果。用户说‘在义乌生成热力图’、‘生成演示等时圈’、‘生成玉环市与台州各县市区 OD’、‘把分析结果显示在地图中间’时使用。支持 heatmap、od 和 isochrone 三种演示分析；也支持用 dataSource 指向数据源适配器（如 local-file 读工作区里的车流量 CSV、bundled-xinchang 读新昌公交）。结果通过 map_action 事件局部更新前端地图，不重载完整地图样式。没有真实数据时必须明确标记为演示数据。",
+        "生成并直接显示地图分析结果。用户说‘在义乌生成热力图’、‘生成演示等时圈’、‘生成玉环市与台州各县市区 OD’、‘把分析结果显示在地图中间’时使用。支持 heatmap、od 和 isochrone 三种演示分析；也支持用 dataSource 指向数据源适配器（如 local-file 读工作区里的车流量 CSV、bundled-xinchang 读新昌公交）。开启空间分析能力（OAW_SPATIAL_ANALYSIS）后还支持 buffer（缓冲区）、spatial_filter（空间筛选）、bbox_clip（范围裁剪）三种基于工作区 GeoJSON 的真实空间分析——结果为真实几何（非演示），距离单位米，面积/长度为平面近似口径。结果通过 map_action 事件局部更新前端地图，不重载完整地图样式。没有真实数据时必须明确标记为演示数据。",
       parameters: Type.Object({
-        analysis: Type.Union([Type.Literal("heatmap"), Type.Literal("od"), Type.Literal("isochrone")]),
+        analysis: Type.Union([
+          Type.Literal("heatmap"),
+          Type.Literal("od"),
+          Type.Literal("isochrone"),
+          Type.Literal("buffer"),
+          Type.Literal("spatial_filter"),
+          Type.Literal("bbox_clip"),
+        ]),
         region: Type.Optional(Type.String({ description: "区域名称，如义乌市、金华市、新昌县" })),
         project: Type.Optional(Type.String({ description: "地图项目名，默认 zhejiang-map" })),
         count: Type.Optional(Type.Number({ description: "演示点数量，默认 36，最多 120" })),
         dataSource: Type.Optional(Type.String({ description: "数据源适配器 id（如 local-file / bundled-xinchang）；给出时优先用它出图，忽略演示数据" })),
-        path: Type.Optional(Type.String({ description: "dataSource=local-file 时的文件路径（相对工作区）；省略则自动选最新的 CSV/GeoJSON" })),
+        path: Type.Optional(Type.String({ description: "dataSource=local-file 时的文件路径；空间分析（buffer/spatial_filter/bbox_clip）时必填，指向工作区内的 GeoJSON（相对路径）" })),
+        distanceMeters: Type.Optional(Type.Number({ description: "buffer 分析的缓冲距离（米），默认 500" })),
+        mode: Type.Optional(Type.String({ description: "spatial_filter 的判定语义：intersects（相交，默认）或 within（包含）" })),
+        clipPath: Type.Optional(Type.String({ description: "spatial_filter 的裁剪参照 GeoJSON（工作区相对路径）" })),
+        clipBbox: Type.Optional(Type.Array(Type.Number(), { description: "bbox_clip 的裁剪范围 [minLng,minLat,maxLng,maxLat]；省略时逐要素自裁（无操作）" })),
       }),
       execute: async (_toolCallId, params) => {
+        // G1 空间分析（OAW_SPATIAL_ANALYSIS，默认关）：基于工作区 GeoJSON 的真实空间算子
+        if (["buffer", "spatial_filter", "bbox_clip"].includes(String(params.analysis))) {
+          if (!RUNTIME_FLAGS.spatialAnalysis) {
+            return { content: [{ type: "text", text: "空间分析能力未开启（OAW_SPATIAL_ANALYSIS=1）。开启后支持缓冲区/空间筛选/范围裁剪。" }], details: {} };
+          }
+          try {
+            const spatial = await import("./空间分析.mjs");
+            const readWorkspaceJson = (relative) => {
+              const root = path.resolve(entry.workspace || getWorkspace());
+              const target = path.resolve(root, String(relative || "").trim());
+              if (!target.startsWith(root)) throw new Error("路径必须位于工作区内");
+              return JSON.parse(fs.readFileSync(target, "utf8"));
+            };
+            const geojson = readWorkspaceJson(params.path);
+            const clipGeojson = params.clipPath ? readWorkspaceJson(params.clipPath) : null;
+            const result = spatial.analyzeGeoJSON({
+              type: params.analysis,
+              geojson,
+              distanceMeters: Number(params.distanceMeters) || 500,
+              clipBbox: Array.isArray(params.clipBbox) && params.clipBbox.length === 4 ? params.clipBbox : null,
+              clipGeojson,
+              mode: params.mode === "within" ? "within" : "intersects",
+            });
+            if (!result.stats.count) {
+              return { content: [{ type: "text", text: `空间分析完成（${params.analysis}），但没有匹配的要素。` }], details: { stats: result.stats } };
+            }
+            const action = {
+              action: "show_analysis",
+              analysis: params.analysis,
+              type: params.analysis,
+              id: `spatial-${Date.now()}`,
+              project: params.project || entry.task?.mapProject || "zhejiang-map",
+              title: params.analysis === "buffer" ? `缓冲区分析（${result.stats.count} 要素）` : params.analysis === "spatial_filter" ? `空间筛选（${result.stats.count}/${result.stats.inputCount}）` : `范围裁剪（${result.stats.count} 要素）`,
+              source: "data",
+              fitBounds: true,
+              geojson: result.geojson,
+              stats: result.stats,
+              updatedAt: Date.now(),
+            };
+            entry.lastMapAnalysis = action;
+            emitChannelSafe(entry, "map_action", action);
+            const statText = result.stats.totalAreaKm2 ? `，合计面积 ≈${result.stats.totalAreaKm2}km²` : "";
+            return {
+              content: [{ type: "text", text: `空间分析完成：${params.analysis}，${result.stats.count}/${result.stats.inputCount} 个要素${statText}，耗时 ${result.stats.elapsedMs}ms。结果为平面近似口径，已发送到地图。` }],
+              details: { mapAction: action, stats: result.stats },
+            };
+          } catch (e) {
+            return { content: [{ type: "text", text: `空间分析失败：${e.message}` }], details: {} };
+          }
+        }
         // 数据源适配器路径（阶段 5）：有真实数据时优先，避免把用户的数据当演示。
         if (params.dataSource) {
           try {
@@ -3505,6 +3609,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     const prologueStartedAt = Date.now();
     const isStreaming = entry.busy;
     entry.busy = true;
+    entry.busyStartedAt = Date.now();
     entry.references = Array.isArray(references) ? references : [];
     entry.activeRunId = runContext?.runId || null;
     // 每轮独立计数：上一轮的完成声明、轮次预算与提醒标记都不能串到本轮
@@ -4023,7 +4128,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     if (!workspace) throw new Error("当前工作区不存在或不是文件夹");
     const old = this.sessions.get(clientId);
     if (old) {
-      if (old.busy || old.compacting || old.queuedCount > 0) throw new Error("当前会话仍有任务排队，不能替换活动会话");
+      if (old.busy || old.compacting || old.queuedCount > 0) throw this._sessionBusyError(old);
       piRuntimeManager.dispose(old.runtimeId, old.session);
       this.sessions.delete(clientId);
     }
