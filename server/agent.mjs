@@ -2253,6 +2253,9 @@ execute: async (_toolCallId, params) => {
         count: Type.Optional(Type.Number({ description: "演示点数量，默认 36，最多 120" })),
         dataSource: Type.Optional(Type.String({ description: "数据源适配器 id（如 local-file / bundled-xinchang）；给出时优先用它出图，忽略演示数据" })),
         path: Type.Optional(Type.String({ description: "dataSource=local-file 时的文件路径；空间分析（buffer/spatial_filter/bbox_clip）时必填，指向工作区内的 GeoJSON（相对路径）" })),
+        url: Type.Optional(Type.String({ description: "dataSource=live-traffic-api 时的 HTTP(S) 端点（返回行数组或 GeoJSON）" })),
+        db: Type.Optional(Type.String({ description: "dataSource=sql-database 时的工作区内 SQLite 文件相对路径" })),
+        sql: Type.Optional(Type.String({ description: "dataSource=sql-database 时的只读 SELECT 查询" })),
         distanceMeters: Type.Optional(Type.Number({ description: "buffer 分析的缓冲距离（米），默认 500" })),
         mode: Type.Optional(Type.String({ description: "spatial_filter 的判定语义：intersects（相交，默认）或 within（包含）" })),
         clipPath: Type.Optional(Type.String({ description: "spatial_filter 的裁剪参照 GeoJSON（工作区相对路径）" })),
@@ -2318,6 +2321,9 @@ execute: async (_toolCallId, params) => {
               path: params.path,
               kind: params.analysis === "od" ? "od" : params.analysis === "isochrone" ? "isochrone" : "stations",
               workspace: String(entry.workspace || ""),
+              url: params.url,
+              db: params.db,
+              sql: params.sql,
             });
             if (descriptor?.error) {
               return { content: [{ type: "text", text: `数据源加载失败：${descriptor.error}` }], details: {} };
@@ -2355,6 +2361,66 @@ execute: async (_toolCallId, params) => {
           content: [{ type: "text", text: `已生成${action.title}，使用演示数据，结果已发送到中间地图。用户确认后再保存为正式图层。` }],
           details: { mapAction: action },
         };
+      },
+    });
+
+    // GIS G5-v1（OAW_MAP_TEMPLATES，默认关）：场景化分析模板，v1 只提供 OD 通勤分析。
+    const mapTemplateTool = defineTool({
+      name: "map_template",
+      label: "场景化分析模板",
+      description:
+        "运行预置的场景化分析模板（确定性编排，产出图层数据统计 + Word 报告）。用户说‘做一次 OD 通勤分析’、‘把通勤 OD 按流量分带并出报告’时使用。当前仅支持 od-commuter：读取工作区 OD 数据 CSV（起点/终点经纬度 + 流量列），按流量分位数做带宽分级，统计 TOP 流向，并把结论写成 Word 报告落到工作区。需要 OAW_MAP_TEMPLATES 开启。",
+      parameters: Type.Object({
+        template: Type.Literal("od-commuter"),
+        path: Type.String({ description: "工作区内的 OD 数据 CSV（相对路径）" }),
+        title: Type.Optional(Type.String({ description: "报告标题，默认「OD 通勤分析（N 对流向）」" })),
+        bands: Type.Optional(Type.Number({ description: "带宽分级数，2-6，默认 4" })),
+        project: Type.Optional(Type.String({ description: "关联地图项目名（写进报告元数据）" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        if (!RUNTIME_FLAGS.mapTemplates) {
+          return { content: [{ type: "text", text: "场景化分析模板未开启（OAW_MAP_TEMPLATES=1）。开启后可用 od-commuter 模板做 OD 通勤带宽分析并成文。" }], details: {} };
+        }
+        try {
+          const { runOdCommuterTemplate } = await import("./地图模板.mjs");
+          const result = await runOdCommuterTemplate({
+            workspace: entry.workspace || getWorkspace(),
+            path: params.path,
+            title: params.title,
+            bands: params.bands,
+            project: params.project || entry.task?.mapProject || "zhejiang-map",
+          });
+          // 期望线直接上地图（临时层，与 map_analyze 同一条 map_action 通道）
+          const descriptor = await import("./地图可视化.mjs").then((m) => m.loadSource("local-file", { workspace: entry.workspace || getWorkspace(), path: params.path })).catch(() => null);
+          if (descriptor && !descriptor.error && descriptor.lines) {
+            const action = {
+              action: "show_analysis",
+              analysis: "od",
+              type: "flow",
+              id: descriptor.id,
+              project: params.project || entry.task?.mapProject || "zhejiang-map",
+              title: result.title,
+              source: "data",
+              fitBounds: true,
+              geojson: descriptor.geojson,
+              lines: descriptor.lines,
+              stats: descriptor.stats,
+              updatedAt: Date.now(),
+            };
+            entry.lastMapAnalysis = action;
+            emitChannelSafe(entry, "map_action", action);
+          }
+          const top = result.bands.topFlows[0];
+          return {
+            content: [{
+              type: "text",
+              text: `OD 通勤分析完成：${result.bands.count} 对流向，按流量分 ${result.bands.levels.length} 级；最高流量 ${top ? `${top.label}（${Math.round(top.flow)}）` : "—"}。带宽分级与 TOP 流向见报告：${result.report.fileName}（已落工作区根目录）。${descriptor && !descriptor.error ? "期望线已发送到地图。" : ""}`,
+            }],
+            details: { template: result.template, bands: result.bands, report: result.report },
+          };
+        } catch (e) {
+          return { content: [{ type: "text", text: `模板执行失败：${e.message}` }], details: {} };
+        }
       },
     });
 
@@ -2941,8 +3007,8 @@ execute: async (_toolCallId, params) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions],
-        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_datasets", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames],
+        customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions],
+        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_datasets", "map_edit", "map_import", "map_analyze", "map_template", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames],
       }));
     } catch (error) {
       piRuntimeManager.markFailure(runtimeRecord.runtimeId, error, { recovering: true, reason: "session_create_failed" });

@@ -1299,17 +1299,19 @@ class BrowserSession {
     return value || {};
   }
 
-  async screenshot() {
+  async screenshot(options = {}) {
+    // G7：支持 png（地图导出需要无损位图）；缺省 jpeg 保持既有行为零变化。
+    const format = options.format === "png" ? "png" : "jpeg";
     await this.ensureStarted();
-    const result = await this.cdp.send("Page.captureScreenshot", { format: "jpeg", quality: 90 });
+    const result = await this.cdp.send("Page.captureScreenshot", format === "png" ? { format: "png" } : { format: "jpeg", quality: 90 });
     const data = result.data || "";
     fs.mkdirSync(SHOT_DIR, { recursive: true });
-    const file = path.join(SHOT_DIR, `shot-${Date.now()}.jpg`);
+    const file = path.join(SHOT_DIR, `shot-${Date.now()}${format === "png" ? ".png" : ".jpg"}`);
     try { fs.writeFileSync(file, Buffer.from(data, "base64")); } catch {}
     this.lastFrameAt = Date.now();
     this.frame = { data, at: this.lastFrameAt, width: this.state.viewport.width, height: this.state.viewport.height };
     this.queueFrameBroadcast({ data, at: this.frame.at, width: this.frame.width, height: this.frame.height });
-    return { file, bytes: Buffer.byteLength(data, "base64"), url: this.state.url };
+    return { file, base64: data, bytes: Buffer.byteLength(data, "base64"), url: this.state.url };
   }
 
   /** B4（OAW_BROWSER_FULLPAGE，默认关）：整页截图（captureBeyondViewport），落盘并返回 base64。 */
@@ -1489,8 +1491,8 @@ export async function browserScroll(key, direction, amount) {
   return result;
 }
 
-export async function browserScreenshot(key) {
-  return (await requireActiveSession(key)).screenshot();
+export async function browserScreenshot(key, options = {}) {
+  return (await requireActiveSession(key)).screenshot(options);
 }
 
 /** B4：整页截图（开关 OAW_BROWSER_FULLPAGE）。 */
@@ -1516,7 +1518,38 @@ export async function browserSetStreamPaused(key, paused) {
   await session.setStreamPaused(paused);
 }
 
-const SHOT_FILE_PATTERN = /^[\w-]+\.(jpg|pdf)$/;
+// ---- G7 批量导出所需的底座包装（仅服务端编排使用，不暴露 HTTP 路由） ----
+
+/** 调整视口尺寸（Emulation.setDeviceMetricsOverride，上限 MAX_CAPTURE）。 */
+export async function browserResize(key, width, height) {
+  const session = await sessionFor(key);
+  return session.resize(width, height);
+}
+
+/** 轮询等待页面表达式为真（G7 导出视图就绪信号 window.__OAW_EXPORT_READY）。 */
+export async function browserWaitForExpression(key, expression, { timeoutMs = 30000, intervalMs = 300 } = {}) {
+  const session = await requireActiveSession(key);
+  const deadline = Date.now() + Math.max(1000, Number(timeoutMs) || 30000);
+  let lastError = "";
+  while (Date.now() < deadline) {
+    try {
+      const value = await session.evaluate(`Boolean(${expression})`);
+      if (value === true) return true;
+    } catch (e) {
+      lastError = String(e?.message || e);
+    }
+    await sleep(Number(intervalMs) || 300);
+  }
+  throw new Error(`等待页面就绪超时（${Math.round((Date.now() - deadline + timeoutMs) / 1000)}s）${lastError ? `：${lastError}` : ""}`);
+}
+
+/** 只读取值（G7 执行器读取页面状态标记用；不做写入型 evaluate，不暴露 HTTP 路由）。 */
+export async function browserEvaluateValue(key, expression) {
+  const session = await requireActiveSession(key);
+  return session.evaluate(String(expression));
+}
+
+const SHOT_FILE_PATTERN = /^[\w-]+\.(jpg|png|pdf)$/;
 
 /** 校验并解析截图/导出文件名 → 绝对路径；防目录穿越，只允许 SHOT_DIR 下的合法产物。 */
 export function browserShotFile(name) {

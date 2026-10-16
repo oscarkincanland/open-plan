@@ -71,6 +71,20 @@ export const RUNTIME_FLAGS = Object.freeze({
   resumeAutoRetry: readFlag("OAW_RESUME_AUTO_RETRY"),
   /** GIS G1：空间分析算子（buffer/spatial_filter/bbox_clip，默认关） */
   spatialAnalysis: readFlag("OAW_SPATIAL_ANALYSIS"),
+  /** GIS G8：地图分析报告一键成文（/api/map/report + 面板按钮，默认关） */
+  mapReport: readFlag("OAW_MAP_REPORT"),
+  /** GIS G7：批量导出队列（多项目×多图层×多尺寸×PNG/PDF，默认关；PDF/截图复用 B4 底座） */
+  mapExport: readFlag("OAW_MAP_EXPORT"),
+  /** GIS G2：外部数据适配器（live-traffic-api / sql-database，默认关） */
+  dataAdapters: readFlag("OAW_DATA_ADAPTERS"),
+  /** GIS G3：高德 MCP 桥（mcp.amap.com 官方 ?key= 协议豁免 + 预置模板，默认关） */
+  amapMcpBridge: readFlag("OAW_AMAP_MCP_BRIDGE"),
+  /** GIS G9：地图项目打包 zip 归档导出（默认关） */
+  mapPack: readFlag("OAW_MAP_PACK"),
+  /** GIS G5：场景化分析模板（v1 仅 OD 通勤分析，默认关） */
+  mapTemplates: readFlag("OAW_MAP_TEMPLATES"),
+  /** GIS G10-v1：视图书签（视角收藏与一键恢复，默认关） */
+  mapBookmarks: readFlag("OAW_MAP_BOOKMARKS"),
 });
 
 /** /api/status 下发形态：布尔与数值分开，前端只读布尔位。 */
@@ -93,5 +107,12 @@ export function runtimeFlagsSnapshot() {
     agentBusyWatchdog: RUNTIME_FLAGS.agentBusyWatchdog,
     resumeAutoRetry: RUNTIME_FLAGS.resumeAutoRetry,
     spatialAnalysis: RUNTIME_FLAGS.spatialAnalysis,
+    mapReport: RUNTIME_FLAGS.mapReport,
+    mapExport: RUNTIME_FLAGS.mapExport,
+    dataAdapters: RUNTIME_FLAGS.dataAdapters,
+    amapMcpBridge: RUNTIME_FLAGS.amapMcpBridge,
+    mapPack: RUNTIME_FLAGS.mapPack,
+    mapTemplates: RUNTIME_FLAGS.mapTemplates,
+    mapBookmarks: RUNTIME_FLAGS.mapBookmarks,
   };
 }

@@ -149,6 +149,13 @@ export const browserFullpage = (payload = {}) =>
   api("/api/browser/fullpage", { method: "POST", body: JSON.stringify(payload) });
 export const browserPdf = (payload = {}) =>
   api("/api/browser/pdf", { method: "POST", body: JSON.stringify(payload) });
+export const mapReport = (payload = {}) =>
+  api("/api/map/report", { method: "POST", body: JSON.stringify(payload) });
+// G7：批量导出（flag OAW_MAP_EXPORT，默认关）
+export const mapExportBatch = (payload = {}) =>
+  api("/api/map/export/batch", { method: "POST", body: JSON.stringify(payload) });
+export const mapExportStatus = (id) =>
+  api(`/api/map/export/batch?id=${encodeURIComponent(id)}`);
 
 export const listModels = () => api("/api/models");
 export const refreshModels = () => api("/api/models/refresh", { method: "POST" });

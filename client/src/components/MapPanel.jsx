@@ -15,7 +15,9 @@ import {
   mapProjects, mapCreateProject, mapProject, mapSaveStyle, mapSaveConfig,
   mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute, mapDemoAnalysis,
   mapDuplicateProject, mapRenameProject, mapArchiveProject, mapDeleteProject,
+  mapExportBatch, mapExportStatus,
 } from "../api.js";
+import { flag } from "../运行开关.js";
 
 // 底图按钮兜底（服务端未返回元信息时）：服务端按 Key 配置动态生成底图列表
 const BASEMAP_FALLBACK = [
@@ -897,6 +899,60 @@ export default function MapPanel({
     }
   };
 
+  // ---- G7 批量导出（flag OAW_MAP_EXPORT，默认关）：多项目×多尺寸×PNG/PDF 后台队列 ----
+  const [batch, setBatch] = useState({ projects: [], sizes: ["a4l"], formats: ["png"], busy: false, progress: "", result: "" });
+  const batchPollRef = useRef(null);
+
+  const toggleBatchItem = (key, value) => {
+    setBatch((p) => {
+      const list = p[key].includes(value) ? p[key].filter((v) => v !== value) : [...p[key], value];
+      return { ...p, [key]: list };
+    });
+  };
+
+  const runBatchExport = async () => {
+    if (batch.busy) return;
+    if (!batch.projects.length) return flash("批量导出：请至少选择一个地图项目");
+    if (!batch.sizes.length) return flash("批量导出：请至少选择一个尺寸");
+    if (!batch.formats.length) return flash("批量导出：请至少选择一种格式");
+    setBatch((p) => ({ ...p, busy: true, progress: "提交队列…", result: "" }));
+    try {
+      const started = await mapExportBatch({
+        projects: batch.projects,
+        sizes: batch.sizes,
+        formats: batch.formats,
+        title: exp.title || undefined,
+      });
+      flash(`批量导出已入队（${started.total} 个任务${started.skipped ? `，超出上限跳过 ${started.skipped} 个` : ""}），后台执行中`);
+      // 轮询进度（1.5s）：跑完或失败即停；组件卸载由 batchPollRef 清理。
+      const poll = async () => {
+        try {
+          const status = await mapExportStatus(started.batchId);
+          const { done, failed, total } = status.summary || {};
+          if (status.status === "running") {
+            setBatch((p) => ({ ...p, progress: `执行中 ${done + failed}/${total}（失败 ${failed}）` }));
+            batchPollRef.current = setTimeout(poll, 1500);
+            return;
+          }
+          setBatch((p) => ({
+            ...p,
+            busy: false,
+            progress: "",
+            result: `${done} 个成功${failed ? `，${failed} 个失败` : ""}；产物位于工作区「地图导出」目录`,
+          }));
+          flash(`批量导出完成：${done} 成功${failed ? ` / ${failed} 失败` : ""}`);
+        } catch (e) {
+          setBatch((p) => ({ ...p, busy: false, progress: "", result: `状态查询失败：${e.message}` }));
+        }
+      };
+      batchPollRef.current = setTimeout(poll, 1200);
+    } catch (e) {
+      setBatch((p) => ({ ...p, busy: false, progress: "", result: `提交失败：${e.message}` }));
+    }
+  };
+
+  useEffect(() => () => { if (batchPollRef.current) clearTimeout(batchPollRef.current); }, []);
+
   // ---- 数据导入（批量文件 / 目录一键生成） ----
   const handleBatchImport = useCallback(async (files) => {
     if (!files || !files.length) return;
@@ -1523,6 +1579,54 @@ export default function MapPanel({
     flash(next ? "已切换为地球视图" : "已切换为平面地图");
   }, [globeMode, flash]);
 
+  // ---- GIS G10-v1 视图书签（flag OAW_MAP_BOOKMARKS，默认关）：视角收藏与一键恢复 ----
+  const [bookmarkName, setBookmarkName] = useState("");
+  const bookmarks = cfg?.bookmarks || [];
+
+  const addBookmark = useCallback(async () => {
+    const m = mapRef.current?.getMap?.();
+    if (!m) return flash("地图尚未就绪，请稍后再保存视角");
+    const c = m.getCenter();
+    const name = bookmarkName.trim().slice(0, 30) || `视角 ${bookmarks.length + 1}`;
+    const bookmark = {
+      id: `bm-${Date.now()}`,
+      name,
+      center: [Number(c.lng.toFixed(6)), Number(c.lat.toFixed(6))],
+      zoom: Number(m.getZoom().toFixed(2)),
+      bearing: Number((m.getBearing?.() || 0).toFixed(1)),
+      pitch: Number((m.getPitch?.() || 0).toFixed(1)),
+      createdAt: new Date().toISOString(),
+    };
+    const next = { ...cfg, bookmarks: [...bookmarks, bookmark].slice(-20) }; // 上限 20，超出挤掉最旧的
+    try {
+      await mapSaveConfig(project, next);
+      setCfg(next);
+      setBookmarkName("");
+      flash(`已保存视角「${name}」`);
+    } catch (e) {
+      flash("保存视角失败: " + e.message);
+    }
+  }, [mapRef, bookmarkName, bookmarks, cfg, project, flash]);
+
+  const goToBookmark = useCallback((bookmark) => {
+    const m = mapRef.current?.getMap?.();
+    if (!m) return flash("地图尚未就绪");
+    m.flyTo({ center: bookmark.center, zoom: bookmark.zoom, bearing: bookmark.bearing || 0, pitch: bookmark.pitch || 0, duration: 800 });
+    setViewMenuOpen(false);
+    flash(`已回到视角「${bookmark.name}」`);
+  }, [mapRef, flash]);
+
+  const removeBookmark = useCallback(async (id) => {
+    const next = { ...cfg, bookmarks: bookmarks.filter((b) => b.id !== id) };
+    try {
+      await mapSaveConfig(project, next);
+      setCfg(next);
+      flash("已删除视角");
+    } catch (e) {
+      flash("删除视角失败: " + e.message);
+    }
+  }, [cfg, bookmarks, project, flash]);
+
   // Agent 地图动作只更新临时分析图层，避免对话结束时再次整体 reloadStyle。
   const handleMapAction = useCallback((action) => {
     if (!action || action.project && action.project !== project) return;
@@ -1807,6 +1911,45 @@ export default function MapPanel({
                 <button onClick={() => { onToggleChat?.(); setViewMenuOpen(false); }}>
                   <Icon name="comment" size={14} /> {chatVisible ? "隐藏 Agent 对话" : "显示 Agent 对话"}
                 </button>
+              )}
+              {flag("mapBookmarks") && (
+                <>
+                  <div style={{ borderTop: "1px solid #d6dce5", margin: "6px 0" }} />
+                  <div style={{ display: "flex", gap: 6, padding: "0 4px 4px" }}>
+                    <input
+                      aria-label="视角名称"
+                      value={bookmarkName}
+                      onChange={(e) => setBookmarkName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") addBookmark(); }}
+                      placeholder="视角名称（可留空）"
+                      style={{ flex: 1, minWidth: 0, fontSize: 12, padding: "4px 8px", border: "1px solid #d6dce5", borderRadius: 6 }}
+                    />
+                    <button className="btn-sm" onClick={addBookmark} title="把当前中心/缩放/旋转/倾角存为书签（存进项目配置）">
+                      <Icon name="star" size={12} /> 收藏当前
+                    </button>
+                  </div>
+                  {bookmarks.length === 0 ? (
+                    <div style={{ padding: "2px 6px 6px", fontSize: 12, color: "#5a6b84" }}>还没有视角书签。</div>
+                  ) : bookmarks.map((b) => (
+                    <div key={b.id} style={{ display: "flex", alignItems: "center" }}>
+                      <button
+                        onClick={() => goToBookmark(b)}
+                        title={`center=${b.center.join(",")} zoom=${b.zoom}`}
+                        style={{ flex: 1, textAlign: "left" }}
+                      >
+                        <Icon name="locate" size={14} /> {b.name}
+                      </button>
+                      <button
+                        onClick={() => removeBookmark(b.id)}
+                        title="删除该视角"
+                        aria-label={`删除视角 ${b.name}`}
+                        style={{ padding: "6px 10px", color: "#8a94a6" }}
+                      >
+                        <Icon name="trash" size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </>
               )}
             </div>
           )}
@@ -2202,6 +2345,60 @@ export default function MapPanel({
               <div className="mp-iso-hint">
                 输出 150-300dpi 报告插图：地图 + 标题 + 比例尺 + 指北针 + 图例（图例取当前可见图层）。
               </div>
+              {flag("mapExport") && (
+                <div className="mp-iso-batch" style={{ borderTop: "1px solid #d6dce5", marginTop: 14, paddingTop: 12 }}>
+                  <div className="mp-iso-label" style={{ fontWeight: 600, marginBottom: 8 }}>批量导出（后台队列）</div>
+                  <div className="mp-iso-row" style={{ alignItems: "flex-start" }}>
+                    <span className="mp-iso-label">项目</span>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, maxHeight: 96, overflowY: "auto" }}>
+                      {(projects || []).filter((p) => !p.archived).map((p) => (
+                        <label key={p.project} className="mp-iso-check" style={{ marginRight: 8 }}>
+                          <input
+                            type="checkbox"
+                            checked={batch.projects.includes(p.project)}
+                            onChange={() => toggleBatchItem("projects", p.project)}
+                          />
+                          {p.name || p.project}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="mp-iso-row">
+                    <span className="mp-iso-label">尺寸</span>
+                    <div className="mp-iso-modes">
+                      {["a4l", "a4p", "square"].map((id) => (
+                        <button
+                          key={id}
+                          className={`mp-iso-mode ${batch.sizes.includes(id) ? "active" : ""}`}
+                          onClick={() => toggleBatchItem("sizes", id)}
+                        >{{ a4l: "A4 横向", a4p: "A4 纵向", square: "方形" }[id]}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="mp-iso-row">
+                    <span className="mp-iso-label">格式</span>
+                    <div className="mp-iso-modes">
+                      {["png", "pdf"].map((id) => (
+                        <button
+                          key={id}
+                          className={`mp-iso-mode ${batch.formats.includes(id) ? "active" : ""}`}
+                          onClick={() => toggleBatchItem("formats", id)}
+                        >{id.toUpperCase()}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="mp-iso-actions">
+                    <button className="btn primary" onClick={runBatchExport} disabled={batch.busy}>
+                      {batch.busy ? "队列执行中…" : "发起批量导出"}
+                    </button>
+                    {batch.progress && <span style={{ alignSelf: "center", fontSize: 12, color: "#5a6b84" }}>{batch.progress}</span>}
+                  </div>
+                  {batch.result && <div className="mp-iso-hint">{batch.result}</div>}
+                  <div className="mp-iso-hint">
+                    服务端后台逐项导出（不阻塞界面）；按所选项目×尺寸×格式展开队列，上限 24 个任务；产物落工作区「地图导出」目录。
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

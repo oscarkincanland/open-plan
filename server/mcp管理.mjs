@@ -5,11 +5,19 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/client/stdio";
 import { APP_DATA_DIR } from "./Pi配置管理.mjs";
 import { atomicWriteJson, ensureDirectory, readJsonFile } from "./持久化工具.mjs";
+import { RUNTIME_FLAGS } from "./运行开关.mjs";
 
 const CONFIG_FILE = path.join(APP_DATA_DIR, "集成", "mcp-servers.json");
 const connections = new Map();
 const MAX_TOOLS_PER_SERVER = 100;
 const MAX_TOOL_SCHEMA_BYTES = 128 * 1024;
+
+/**
+ * GIS G3（OAW_AMAP_MCP_BRIDGE，默认关）：官方协议要求凭据放在 URL query 的已知厂商白名单。
+ * 高德 MCP Server 的接入契约是 https://mcp.amap.com/mcp?key=...（官方文档口径），
+ * 通用规则（凭据一律走请求头）对其不适用；这里只对白名单主机放行 key 型 query 参数。
+ */
+const KNOWN_QUERY_KEY_HOSTS = new Set(["mcp.amap.com"]);
 
 function readConfig() {
   const value = readJsonFile(CONFIG_FILE, { version: 1, servers: [] });
@@ -97,7 +105,12 @@ function validateServer(input = {}, previous = null) {
     let url;
     try { url = new URL(endpoint); } catch { throw new Error("请填写有效的 MCP 服务 URL"); }
     if (!new Set(["https:", "http:"]).has(url.protocol)) throw new Error("MCP URL 只支持 HTTP 或 HTTPS");
-    if (url.username || url.password || [...url.searchParams.keys()].some((key) => /token|secret|key|auth|credential/i.test(key))) {
+    // GIS G3：白名单厂商（mcp.amap.com）+ flag 开启时允许官方协议要求的 ?key= 参数；
+    // 其余端点维持"凭据不进 URL"的既有规则（userinfo 基本凭据任何情况都拒绝）。
+    if (url.username || url.password) throw new Error("请不要把凭据写在 URL 中，改用 HTTP 请求头配置；凭据才可保持隐藏。");
+    const credentialInQuery = [...url.searchParams.keys()].some((key) => /token|secret|key|auth|credential/i.test(key));
+    const knownVendorQueryKey = KNOWN_QUERY_KEY_HOSTS.has(url.hostname.toLowerCase());
+    if (credentialInQuery && !(RUNTIME_FLAGS.amapMcpBridge && knownVendorQueryKey)) {
       throw new Error("请不要把凭据写在 URL 中，改用 HTTP 请求头配置；凭据才可保持隐藏。");
     }
     url.hash = "";

@@ -15,6 +15,7 @@ import {
   updatePiExtension,
 } from "../api.js";
 import { askConfirm } from "./Feedback.jsx";
+import { flag } from "../运行开关.js";
 
 const PI_CANDIDATES_KEY = "oaw_pi_package_candidates_v1";
 
@@ -253,7 +254,23 @@ export default function IntegrationsCenter({ kind = "mcp", open = false, onClose
               )}
             </section>
             <section className="integration-panel integration-form-panel">
-              <div className="integration-section-head"><span><h3>添加 MCP 服务</h3><p>stdio 适合本机 MCP 程序；HTTP 适合远程 Streamable HTTP 端点。</p></span></div>
+              <div className="integration-section-head">
+                <span><h3>添加 MCP 服务</h3><p>stdio 适合本机 MCP 程序；HTTP 适合远程 Streamable HTTP 端点。</p></span>
+                {/* GIS G3：高德 MCP 桥预置模板（flag OAW_AMAP_MCP_BRIDGE，默认关） */}
+                {kind === "mcp" && flag("amapMcpBridge") && (
+                  <button
+                    type="button"
+                    className="btn-xs"
+                    onClick={() => {
+                      setTransport("http");
+                      setMcpForm((p) => ({ ...p, name: "高德地图 MCP", endpoint: "https://mcp.amap.com/mcp", headers: "" }));
+                    }}
+                    title="自动填入高德 MCP Server 地址，补全 ?key= 即可"
+                  >
+                    <Icon name="locate" size={12} /> 高德地图预置
+                  </button>
+                )}
+              </div>
               <form className="integration-form" onSubmit={saveMcp}>
                 <label>服务名称<input value={mcpForm.name} onChange={(e) => setMcpForm({ ...mcpForm, name: e.target.value })} placeholder="例如：本地文件检索" required /></label>
                 <div className="integration-field-row"><label>传输方式<select value={transport} onChange={(e) => setTransport(e.target.value)}><option value="stdio">本地 stdio</option><option value="http">Streamable HTTP</option></select></label></div>
@@ -264,6 +281,11 @@ export default function IntegrationsCenter({ kind = "mcp", open = false, onClose
                   <label>环境变量 JSON（可选）<small>敏感值仅保存在本机，不会回显；格式如 {`{"API_KEY":"…"}`}</small><textarea rows={4} value={mcpForm.env} onChange={(e) => setMcpForm({ ...mcpForm, env: e.target.value })} placeholder={'{"API_KEY":"在此粘贴密钥"}'} /></label>
                 </> : <>
                   <label>服务地址<input type="url" value={mcpForm.endpoint} onChange={(e) => setMcpForm({ ...mcpForm, endpoint: e.target.value })} placeholder="https://example.com/mcp" required /></label>
+                  {flag("amapMcpBridge") && (
+                    <small className="integration-field-hint">
+                      高德地图：地址补全为 https://mcp.amap.com/mcp?key=你的Key（高德开放平台 → 应用管理 → Web 服务 Key），测试通过后即可让 Agent 使用 geocode / POI / 路线规划。
+                    </small>
+                  )}
                   <label>请求头 JSON（可选）<small>适用于 API Key/Bearer Token；保存后不会回显。</small><textarea rows={4} value={mcpForm.headers} onChange={(e) => setMcpForm({ ...mcpForm, headers: e.target.value })} placeholder={'{"Authorization":"Bearer …"}'} /></label>
                 </>}
                 <div className="integration-security-note"><Icon name="shield" size={14} /> 添加后默认停用。测试会启动本地程序或连接远端服务。MCP 工具的“只读”注解来自服务端，仅作提示；每次调用都按规聚的审批策略处理。</div>
