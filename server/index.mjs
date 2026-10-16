@@ -2097,7 +2097,8 @@ app.get("/api/browser/shot", (req, res) => {
   try {
     const file = browserModule.browserShotFile(String(req.query.file || ""));
     res.setHeader("Cache-Control", "private, max-age=3600");
-    res.sendFile(file);
+    // dotfiles 必须放行：SHOT_DIR 位于 .oaw 点目录下，send 默认会把点路径当隐藏文件直接 404。
+    res.sendFile(file, { dotfiles: "allow" });
   } catch (error) {
     res.status(error?.code === "SHOT_NOT_FOUND" ? 404 : 400).json({ ok: false, error: String(error?.message || error) });
   }
