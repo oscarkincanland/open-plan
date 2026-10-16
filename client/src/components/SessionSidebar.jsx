@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { Document, Packer, Paragraph } from "docx";
-import { uploadFile, deleteFile, fileToBase64, searchFiles, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, pickWorkspace, cancelWorkspacePick, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace, pickNativeFiles, openInSystem, revealInSystem } from "../api.js";
+import { uploadFile, deleteFile, fileToBase64, searchFiles, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, pickWorkspace, cancelWorkspacePick, listFileRoots, addFileRoot, removeFileRoot, pickNativeFiles, openInSystem, revealInSystem } from "../api.js";
 import { sortFiles } from "./文件排序.js";
 import { artifactTypeInfo } from "../产物类型.js";
 import ContextMenu from "./ContextMenu.jsx";
@@ -301,7 +301,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   );
 }
 
-export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onAtMention, onNewSession, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onBatchDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenMcp, onOpenPiPlugins, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, theme = "dark", loadStatus = {}, changedFiles = NO_CHANGED_FILES }) {
+export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onAtMention, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onBatchDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenMcp, onOpenPiPlugins, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, theme = "dark", loadStatus = {}, changedFiles = NO_CHANGED_FILES }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
@@ -675,7 +675,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           onClick={() => setSwitcherOpen(true)}
           title="选择项目和工作区"
         >
-          <Icon name="folder" size={14} />
+          <Icon name="folderOpen" size={14} />
           <span>{currentProject?.name || "选择项目"}</span>
           <small>{currentWorkspace ? shortenCwd(currentWorkspace) : "默认工作区"}</small>
           <Icon name="chevronDown" size={12} />
@@ -718,21 +718,6 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           ))}
           <option value="__custom__">自定义路径…</option>
         </select>
-         <button className="btn-sm sidebar-new-session" onClick={() => onNewSession && onNewSession()} title="新建会话">
-           <Icon name="plus" size={14} />
-         </button>
-         {!customMode && currentWorkspace && currentWorkspace !== workspaces[0]?.path && (
-           <button
-             className="btn-sm sidebar-del-ws"
-             title="从列表移除该工作区"
-             onClick={async () => {
-               if (await askConfirm("从列表中移除该工作区路径？（不删除文件）")) {
-                 try { await deleteWorkspace(currentWorkspace); onWorkspaceRemove && onWorkspaceRemove(currentWorkspace); } catch (e) { notifyError("移除失败: " + e.message); }
-               }
-             }}
-             aria-label="从列表移除该工作区"
-           ><Icon name="close" size={12} /></button>
-         )}
          {primaryTab === "file" && <button className={`btn-sm sidebar-root-btn ${rootOpen ? "active" : ""}`} onClick={() => setRootOpen((v) => !v)} title="登记工作区外的本地目录">外部目录</button>}
       </div>
       {primaryTab === "file" && rootOpen && (
@@ -838,7 +823,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
             className="project-memory-btn"
             onClick={() => { if (onOpenSettings) onOpenSettings("memory"); else { onBeforeOpenModal?.(); setModal("settings"); setModalTab("memory"); } }}
             title="打开当前工作区的记忆与沉淀"
-          ><Icon name="book" size={12} /> 记忆</button>
+          ><Icon name="bookmark" size={12} /> 记忆</button>
         </div>
       )}
 
@@ -1014,7 +999,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       {/* 底部：产物 / 设置（弹窗） */}
       <div className="sidebar-bottom-tabs">
         <button className={`bt-btn ${modal === "artifacts" ? "active" : ""}`} onClick={() => { if (onOpenArtifacts) onOpenArtifacts(); else { if (modal !== "artifacts") onBeforeOpenModal?.(); setModal(modal === "artifacts" ? null : "artifacts"); } }} title="产物（agent 生成的文件）">
-          <Icon name="file" size={14} /> 产物
+          <Icon name="package" size={14} /> 产物
         </button>
         <button className={`bt-btn ${modal === "settings" ? "active" : ""}`} onClick={() => { if (onOpenSettings) onOpenSettings("settings"); else { if (modal !== "settings") onBeforeOpenModal?.(); setModal(modal === "settings" ? null : "settings"); } }} title="设置（含记忆）">
           <Icon name="gear" size={14} /> 设置
@@ -1054,7 +1039,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
         <div className="sb-modal-backdrop" onClick={() => setModal(null)}>
           <div className="sb-modal" onClick={(e) => e.stopPropagation()}>
             <div className="sb-modal-head">
-              <Icon name="file" size={14} />
+              <Icon name="package" size={14} />
               <span className="sb-modal-title">成果（{artifactEntries.length}）</span>
               <span className="sb-modal-sub">按 Run manifest 展示，可固定为项目正式成果</span>
               <button className="mp-op" onClick={() => setModal(null)} title="关闭"><Icon name="close" size={14} /></button>

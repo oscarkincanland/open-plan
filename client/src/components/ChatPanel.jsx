@@ -3968,7 +3968,7 @@ case "runtime_connecting":
             <span className="chat-toolbar-spacer" />
             <div className="chat-toolbar-group toolbar-session-group">
               <button className="ct-btn" onClick={handleNewSession} title="新建会话">
-                <Icon name="plus" size={14} />
+                <Icon name="chatPlus" size={14} />
               </button>
             </div>
             {modelMsg && <span className={`model-msg${pendingModel ? " pending" : ""}`} title={pendingModel ? `已排队：本轮结束后切换为 ${pendingModel}` : undefined}>{modelMsg}</span>}

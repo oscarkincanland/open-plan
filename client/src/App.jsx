@@ -22,7 +22,7 @@ import MemoryTab from "./components/MemoryTab.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
 import { acquireStream } from "./长连接预算.js";
-import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun } from "./api.js";
+import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun } from "./api.js";
 import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
 import FeedbackHost, { notifyError } from "./components/Feedback.jsx";
 import { initRuntimeFlags, flag, flagsReady } from "./运行开关.js";
@@ -241,6 +241,7 @@ export default function App() {
       previewOpenBeforeBrowserRef.current = true;
     }
     setBrowserActivityPing(0);
+    setWorkspaceTabPref("browser");
     setBrowserPanelOpen(true);
   }, []);
   const closeBrowserPanel = useCallback(() => {
@@ -251,6 +252,15 @@ export default function App() {
       if (flag("narrowRestore") && typeof window !== "undefined" && window.innerWidth <= 1024) setPreviewOpen(true);
     }
   }, []);
+
+  // P10 工作区画布：工作产物与内置浏览器合并为一个 tab 化容器（proma 式画布）。
+  // 两个 open flag 语义保持不变（自动打开 / 窄屏恢复 / 徽标逻辑零改动），
+  // 只新增「当前激活页签」偏好：打开谁就激活谁；关闭激活页签时自动回退到另一个仍打开的面板。
+  const [workspaceTabPref, setWorkspaceTabPref] = useState("preview");
+  const workspaceOpen = previewOpen || browserPanelOpen;
+  const workspaceTab = workspaceTabPref === "browser" && browserPanelOpen ? "browser"
+    : workspaceTabPref === "preview" && previewOpen ? "preview"
+      : browserPanelOpen ? "browser" : "preview";
 
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
@@ -311,6 +321,9 @@ export default function App() {
   const autoOpenedRunRef = useRef(new Set());
   const changedFilesTimerRef = useRef(null);
   const previewToggleRef = useRef(null);
+  const taskCenterRef = useRef(null);
+  const topbarToolsRef = useRef(null);
+  const [topbarMenuOpen, setTopbarMenuOpen] = useState(false);
   const pendingChatInsertRef = useRef([]);
   const { theme, toggleTheme } = useTheme();
 
@@ -773,19 +786,6 @@ export default function App() {
     if (project?.rootPath) handleWorkspaceChange(project.rootPath);
   }, [projects, handleWorkspaceChange]);
 
-  // 移除工作区路径（从下拉列表隐藏，不删文件）
-  const handleWorkspaceRemove = useCallback(async (dir) => {
-    try {
-      await deleteWorkspace(dir);
-      setWorkspaces((prev) => prev.filter((w) => w.path !== dir));
-      // 若移除的是当前工作区，切回默认
-      if (dir === currentWorkspace) {
-        const def = workspaces.find((w) => w.name === "默认工作区");
-        if (def) handleWorkspaceChange(def.path);
-      }
-    } catch (e) { notifyError("移除失败: " + e.message); }
-  }, [currentWorkspace, workspaces, handleWorkspaceChange]);
-
 // 进入/返回子目录
   const handleDirChange = useCallback((dir) => {
     const nextDir = String(dir || "");
@@ -831,6 +831,7 @@ export default function App() {
       // 文件从“本轮产物”或 Agent 自动产出打开时，直接切到文档预览，
       // 避免用户还停留在产物列表而误以为文件没有打开。
       setPreviewOpen(true);
+      setWorkspaceTabPref("preview");
       setPreviewTab("document");
       // 单次 setTabs：按「工作区 + 相对路径」去重，不同工作区的同名文件是不同标签。
       setTabs((prev) => {
@@ -868,6 +869,7 @@ export default function App() {
   const openSubagentDetail = useCallback((block) => {
     setSubagentDetail(block || null);
     setPreviewOpen(true);
+    setWorkspaceTabPref("preview");
     setPreviewTab("subagent");
   }, []);
 
@@ -1244,12 +1246,14 @@ export default function App() {
   const openChangesForRun = useCallback((runId = "") => {
     setChangesRunId(String(runId || ""));
     setPreviewOpen(true);
+    setWorkspaceTabPref("preview");
     setPreviewTab("changes");
   }, []);
   const openArtifactsForRun = useCallback((runId = "") => {
     setChangesRunId(String(runId || ""));
     setArtifactScope(runId ? "run" : "session");
     setPreviewOpen(true);
+    setWorkspaceTabPref("preview");
     setPreviewTab("artifacts");
   }, []);
 
@@ -1292,6 +1296,7 @@ export default function App() {
       if (!["passed", "warning", "manual_review"].includes(acceptanceStatus)) return;
     }
     setPreviewOpen(true);
+    setWorkspaceTabPref("preview");
     setPreviewTab("document");
     void open(firstArtifact.path, result.threadId || threadId, result.cwd || currentWorkspace);
   }, [currentWorkspace, open, previewAutoOpen, threadId]);
@@ -1302,6 +1307,20 @@ export default function App() {
     setPreviewOpen(false);
     requestAnimationFrame(() => previewToggleRef.current?.focus());
   }, []);
+  // 顶栏整合菜单：点击外部 / Escape 关闭
+  useEffect(() => {
+    if (!topbarMenuOpen) return undefined;
+    const onPointerDown = (event) => {
+      if (!topbarToolsRef.current?.contains(event.target)) setTopbarMenuOpen(false);
+    };
+    const onKeyDown = (event) => { if (event.key === "Escape") setTopbarMenuOpen(false); };
+    document.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [topbarMenuOpen]);
   useEffect(() => () => { if (changedFilesTimerRef.current) window.clearTimeout(changedFilesTimerRef.current); }, []);
 
   // ChatPanel 上报 pi 会话 id → 持久化（刷新后恢复当前对话）
@@ -1573,13 +1592,11 @@ export default function App() {
               workspaces={workspaces}
               currentWorkspace={currentWorkspace}
               onWorkspaceChange={handleWorkspaceChange}
-              onWorkspaceRemove={handleWorkspaceRemove}
               currentDir={currentDir}
               onDirChange={handleDirChange}
               onAtMention={handleAtMention}
               loadStatus={loadStatus}
               changedFiles={changedFiles}
-              onNewSession={() => handleNewSession()}
               onProjectUpdated={refreshProjects}
               models={models}
               clientId={clientId}
@@ -1672,10 +1689,37 @@ export default function App() {
               </button>
             </div>
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
-            <button className="btn-sm topbar-new-chat" onClick={() => handleNewSession()} disabled={creatingSession} title="新建对话"><Icon name="plus" size={14} /></button>
-            <button ref={previewToggleRef} className="btn-sm topbar-preview-toggle" onClick={() => { if (previewOpen) setPreviewLayout(0); setPreviewOpen((v) => !v); }} title={previewOpen ? "隐藏右侧预览" : "显示右侧预览"} aria-label={previewOpen ? "隐藏右侧预览" : "显示右侧预览"} aria-expanded={previewOpen}><Icon name="layers" size={14} /></button>
-            <button className={`btn-sm topbar-browser-toggle ${browserPanelOpen ? "active" : ""}`} onClick={() => { if (browserPanelOpen) closeBrowserPanel(); else { browserAutoOpenBlockedRef.current = false; if (flag("narrowRestore") && typeof window !== "undefined" && window.innerWidth <= 1024 && previewOpenRef.current) previewOpenBeforeBrowserRef.current = true; setBrowserActivityPing(0); setBrowserPanelOpen(true); } }} title={browserPanelOpen ? "隐藏内置浏览器" : "显示内置浏览器"} aria-label="内置浏览器"><Icon name="globe" size={14} />{browserActivityPing > 0 && !browserPanelOpen && <i className="browser-activity-dot" aria-hidden="true" />}</button>
+            <div className="topbar-tools" ref={topbarToolsRef}>
+              <button
+                ref={previewToggleRef}
+                className={`btn-sm topbar-tools-toggle ${topbarMenuOpen ? "active" : ""}`}
+                onClick={() => setTopbarMenuOpen((v) => !v)}
+                title="工作区工具：新建对话 / 工作产物 / 内置浏览器 / 任务中心"
+                aria-label="工作区工具"
+                aria-expanded={topbarMenuOpen}
+                aria-haspopup="menu"
+              >
+                <Icon name="more" size={14} />
+                {Object.values(unreadByThread).reduce((sum, count) => sum + Number(count || 0), 0) > 0 && <i className="topbar-tools-dot" aria-hidden="true" />}
+              </button>
+              {topbarMenuOpen && (
+                <div className="topbar-tools-menu" role="menu" aria-label="工作区工具菜单">
+                  <button role="menuitem" onClick={() => { setTopbarMenuOpen(false); handleNewSession(); }} disabled={creatingSession} title="新建对话">
+                    <Icon name="chatPlus" size={14} /><span>新建对话</span>
+                  </button>
+                  <button role="menuitemcheckbox" aria-checked={previewOpen && workspaceTab === "preview"} className={previewOpen && workspaceTab === "preview" ? "on" : ""} onClick={() => { if (previewOpen) setPreviewLayout(0); else setWorkspaceTabPref("preview"); setPreviewOpen((v) => !v); }} title={previewOpen && workspaceTab === "preview" ? "隐藏工作产物画布" : "显示工作产物画布"}>
+                    <Icon name="package" size={14} /><span>工作产物</span>
+                  </button>
+                  <button role="menuitemcheckbox" aria-checked={browserPanelOpen} className={browserPanelOpen ? "on" : ""} onClick={() => { if (browserPanelOpen) closeBrowserPanel(); else { browserAutoOpenBlockedRef.current = false; if (flag("narrowRestore") && typeof window !== "undefined" && window.innerWidth <= 1024 && previewOpenRef.current) previewOpenBeforeBrowserRef.current = true; setBrowserActivityPing(0); setWorkspaceTabPref("browser"); setBrowserPanelOpen(true); } }} title={browserPanelOpen ? "隐藏内置浏览器" : "显示内置浏览器"}>
+                    <Icon name="globe" size={14} /><span>内置浏览器</span>{browserActivityPing > 0 && !browserPanelOpen && <i className="browser-activity-dot" aria-hidden="true" />}
+                  </button>
+                  <button role="menuitem" onClick={() => { setTopbarMenuOpen(false); taskCenterRef.current?.open(); }} title="任务中心：并行任务、运行状态与历史会话">
+                    <Icon name="list" size={14} /><span>任务中心</span>
+                  </button>
+                </div>
+              )}
               <TaskCenter
+                ref={taskCenterRef}
                 sessions={visibleSessions}
                 projects={projects}
                 currentProjectId={currentProject?.id || ""}
@@ -1687,7 +1731,10 @@ export default function App() {
                 onFocusRun={(run) => chatInputRef.current?.focusRun?.(run?.id)}
                 onOpenRun={handleOpenRun}
                 eventVersion={eventVersion}
+                anchorRef={previewToggleRef}
+                hideTrigger
               />
+            </div>
             </div>
             {!activeModule && sessionResumeError && (
               <div className="session-resume-warning" role="alert">
@@ -1739,78 +1786,105 @@ export default function App() {
             <div className="center-chat-slot">{!activeModule && sharedChatPanel}</div>
           </div>
         </div>
-        {previewOpen && <Resizer side="right" min={280} max={680} cssVar="--preview-w" />}
-        {previewOpen && (
-          <aside className="app-preview-slot">
-            <div className="preview-panel-head">
-              <span><Icon name="file" size={15} /> 当前工作产物</span>
-              <span className="preview-panel-actions">
+        {previewOpen && workspaceTab === "preview" && <Resizer side="right" min={280} max={680} cssVar="--preview-w" />}
+        {(previewOpen || browserPanelOpen) && (
+          <aside className={`app-canvas-slot ${workspaceTab === "browser" ? "canvas-tab-browser" : "canvas-tab-preview"}`}>
+            <div className="preview-panel-head app-canvas-head">
+              <div className="app-canvas-tabs" role="tablist" aria-label="工作区画布">
                 <button
-                  className="btn-icon preview-layout-button"
-                  onClick={() => setPreviewLayout((value) => (value + 1) % 3)}
-                  title={`工作产物布局：${previewLayout === 0 ? "默认" : previewLayout === 1 ? "50%" : "100%"}，点击切换`}
-                  aria-label={`工作产物布局：${previewLayout === 0 ? "默认" : previewLayout === 1 ? "50%" : "100%"}，点击切换`}
+                  role="tab"
+                  aria-selected={workspaceTab === "preview"}
+                  className={workspaceTab === "preview" ? "active" : ""}
+                  onClick={() => { previewTabManualAtRef.current = Date.now(); setPreviewOpen(true); setWorkspaceTabPref("preview"); }}
+                  title="工作产物：文件预览 / 改动 / 产物"
                 >
-                  <Icon name={previewLayout === 2 ? "minimize" : "maximize"} size={14} />
-                  <span className="preview-layout-label">{previewLayout === 0 ? "默认" : `${previewLayout * 50}%`}</span>
+                  <Icon name="package" size={13} /> 工作产物
                 </button>
-                <button className="btn-icon" onClick={closePreview} title="隐藏右侧预览" aria-label="隐藏右侧预览"><Icon name="close" size={14} /></button>
+                <button
+                  role="tab"
+                  aria-selected={workspaceTab === "browser"}
+                  className={workspaceTab === "browser" ? "active" : ""}
+                  onClick={() => { setBrowserActivityPing(0); setBrowserPanelOpen(true); setWorkspaceTabPref("browser"); }}
+                  title="内置浏览器"
+                >
+                  <Icon name="globe" size={13} /> 浏览器
+                  {browserActivityPing > 0 && workspaceTab !== "browser" && <i className="browser-activity-dot" aria-hidden="true" />}
+                </button>
+              </div>
+              <span className="preview-panel-actions">
+                {workspaceTab === "preview" ? (
+                  <>
+                    <button
+                      className="btn-icon preview-layout-button"
+                      onClick={() => setPreviewLayout((value) => (value + 1) % 3)}
+                      title={`工作产物布局：${previewLayout === 0 ? "默认" : previewLayout === 1 ? "50%" : "100%"}，点击切换`}
+                      aria-label={`工作产物布局：${previewLayout === 0 ? "默认" : previewLayout === 1 ? "50%" : "100%"}，点击切换`}
+                    >
+                      <Icon name={previewLayout === 2 ? "minimize" : "maximize"} size={14} />
+                      <span className="preview-layout-label">{previewLayout === 0 ? "默认" : `${previewLayout * 50}%`}</span>
+                    </button>
+                    <button className="btn-icon" onClick={closePreview} title="隐藏工作产物" aria-label="隐藏工作产物"><Icon name="close" size={14} /></button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      className="btn-icon"
+                      onClick={() => setBrowserFullscreen((value) => !value)}
+                      title={browserFullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
+                      aria-label={browserFullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
+                    >
+                      <Icon name={browserFullscreen ? "minimize" : "maximize"} size={14} />
+                    </button>
+                    <button className="btn-icon" onClick={closeBrowserPanel} title="隐藏内置浏览器" aria-label="隐藏内置浏览器"><Icon name="close" size={14} /></button>
+                  </>
+                )}
               </span>
             </div>
-            <div className="preview-panel-tabs">
-              {[['document', '预览'], ['changes', '改动'], ['artifacts', '产物'], ...(subagentDetail ? [['subagent', '子代理']] : [])].map(([id, label]) => (
-                <button key={id} className={previewTab === id ? "active" : ""} onClick={() => { previewTabManualAtRef.current = Date.now(); setPreviewTab(id); }}>{label}</button>
-              ))}
-            </div>
-            <WorkProductPanel
-              tab={previewTab === "document" ? "document" : previewTab}
-              clientId={clientId}
-              threadId={threadId}
-              workspace={currentWorkspace}
-              projectId={currentProject?.id || ""}
-              currentSessionId={currentSessionId}
-              selectedRunId={changesRunId}
-              artifactScope={artifactScope}
-              onArtifactScopeChange={setArtifactScope}
-              refreshToken={artifactVersion}
-              onOpenFile={open}
-              subagentBlock={subagentDetail}
-            >
-              <Suspense fallback={<div className="module-loading">正在加载文档预览…</div>}>
-                <DocViewer
-                  tabs={tabs}
-                  activeTab={activeTab}
-                  onSwitchTab={(n) => setActiveTab(n)}
-                  onCloseTab={closeTab}
+            {/* 两个页签体都保持挂载、用 CSS 显隐：切换不卸载，DocViewer/浏览器状态零丢失 */}
+            {previewOpen && (
+              <div className={`app-canvas-body canvas-body-preview ${workspaceTab === "preview" ? "" : "canvas-hidden"}`}>
+                <div className="preview-panel-tabs">
+                  {[['document', '预览'], ['changes', '改动'], ['artifacts', '产物'], ...(subagentDetail ? [['subagent', '子代理']] : [])].map(([id, label]) => (
+                    <button key={id} className={previewTab === id ? "active" : ""} onClick={() => { previewTabManualAtRef.current = Date.now(); setPreviewTab(id); }}>{label}</button>
+                  ))}
+                </div>
+                <WorkProductPanel
+                  tab={previewTab === "document" ? "document" : previewTab}
+                  clientId={clientId}
+                  threadId={threadId}
+                  workspace={currentWorkspace}
+                  projectId={currentProject?.id || ""}
+                  currentSessionId={currentSessionId}
+                  selectedRunId={changesRunId}
+                  artifactScope={artifactScope}
+                  onArtifactScopeChange={setArtifactScope}
+                  refreshToken={artifactVersion}
                   onOpenFile={open}
-                  loading={docLoading}
-                  onSendToAgent={insertChatText}
-                  onInsertContext={(t) => chatInputRef.current?.insertContext(t)}
-                />
-              </Suspense>
-            </WorkProductPanel>
-          </aside>
-        )}
-        {browserPanelOpen && <Resizer side="right" min={340} max={960} cssVar="--browser-w" />}
-        {browserPanelOpen && (
-          <aside className="app-browser-slot">
-            <div className="preview-panel-head browser-slot-head">
-              <span><Icon name="globe" size={15} /> 内置浏览器</span>
-              <span className="preview-panel-actions">
-                <button
-                  className="btn-icon"
-                  onClick={() => setBrowserFullscreen((value) => !value)}
-                  title={browserFullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
-                  aria-label={browserFullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
+                  subagentBlock={subagentDetail}
                 >
-                  <Icon name={browserFullscreen ? "minimize" : "maximize"} size={14} />
-                </button>
-                <button className="btn-icon" onClick={closeBrowserPanel} title="隐藏内置浏览器" aria-label="隐藏内置浏览器"><Icon name="close" size={14} /></button>
-              </span>
-            </div>
-            <BrowserPanel clientId={clientId} threadId={threadId} fullscreen={browserFullscreen} onToggleFullscreen={() => setBrowserFullscreen((value) => !value)} />
+                  <Suspense fallback={<div className="module-loading">正在加载文档预览…</div>}>
+                    <DocViewer
+                      tabs={tabs}
+                      activeTab={activeTab}
+                      onSwitchTab={(n) => setActiveTab(n)}
+                      onCloseTab={closeTab}
+                      onOpenFile={open}
+                      loading={docLoading}
+                      onSendToAgent={insertChatText}
+                      onInsertContext={(t) => chatInputRef.current?.insertContext(t)}
+                    />
+                  </Suspense>
+                </WorkProductPanel>
+              </div>
+            )}
+            {browserPanelOpen && (
+              <div className={`app-canvas-body canvas-body-browser ${workspaceTab === "browser" ? "" : "canvas-hidden"}`}>
+                <BrowserPanel clientId={clientId} threadId={threadId} fullscreen={browserFullscreen} onToggleFullscreen={() => setBrowserFullscreen((value) => !value)} />
+              </div>
+            )}
           </aside>
         )}
+        {browserPanelOpen && workspaceTab === "browser" && <Resizer side="right" min={340} max={960} cssVar="--browser-w" />}
         <DeferredModule label="技能管理">
         <SkillsManager
           open={activeModule === "skills"}
@@ -1842,9 +1916,7 @@ export default function App() {
         </DeferredModule>
         </>
         )}
-         {!["knowledge", "templates", "map"].includes(activeModule) && !previewOpen && (
-          <button className="preview-reopen" onClick={() => setPreviewOpen(true)} title="显示右侧预览"><Icon name="file" size={14} /> 预览</button>
-        )}
+        {/* 重复入口已整合：预览/浏览器的唯一开关在顶栏，打开内容统一进入右侧画布页签 */}
          <DeferredModule label="命令面板">
         <CommandPalette
           open={paletteOpen}
