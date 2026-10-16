@@ -4764,9 +4764,28 @@ try {
   }
   // 首次连接（无游标）只回放最近 300 条：聊天正文由会话 JSONL 恢复，
   // 全量回放（可达数千条 token/thinking 事件）会明显拖慢刷新。
-  const replayHistory = lastId === 0 && entry.channel.history.length > 300
-    ? entry.channel.history.slice(-300)
-    : entry.channel.history;
+  let replayHistory;
+  if (lastId === 0 && entry.channel.history.length > 300) {
+    replayHistory = entry.channel.history.slice(-300);
+    // OAW_REPLAY_RECOVER：首连时若通道里存在尚未终结的 Run（最近的建档事件之后
+    // 没有 run_finished），从该 Run 建档起整段回放，让刷新后的客户端能重建当前
+    // Run 的完整流式内容；无活跃 Run 维持 300 条现状（flag 关 = 基线不变）。
+    if (RUNTIME_FLAGS.replayRecover) {
+      const history = entry.channel.history;
+      let runStartIdx = -1;
+      for (let i = history.length - 1; i >= 0; i -= 1) {
+        const historyType = history[i]?.type;
+        if (historyType === "run_finished") break;
+        if (historyType === "run_admitted" || historyType === "run_admitting") { runStartIdx = i; break; }
+      }
+      if (runStartIdx >= 0) {
+        // 硬上限 4000 条：极端超长 Run 只回放最近 4000 条，防止拖慢首屏。
+        replayHistory = history.slice(Math.max(runStartIdx, history.length - 4000));
+      }
+    }
+  } else {
+    replayHistory = entry.channel.history;
+  }
   for (const ev of replayHistory) if (ev.id > lastId) send(ev);
   write(`event: open\ndata: ${JSON.stringify({ historyId: entry.channel.seq, streamId: channelStreamId })}\n\n`);
 } catch (error) {

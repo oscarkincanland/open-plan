@@ -7,6 +7,10 @@
 
 let snapshot = {};
 
+let flagsReadyResolve;
+/** 快照就绪信号：initRuntimeFlags 完成（成功或失败）后 resolve，供 mount 期依赖开关的逻辑重试。 */
+export const flagsReady = new Promise((resolve) => { flagsReadyResolve = resolve; });
+
 export async function initRuntimeFlags() {
   try {
     const r = await fetch("/api/status", { cache: "no-store" }).then((x) => x.json());
@@ -15,6 +19,8 @@ export async function initRuntimeFlags() {
     }
   } catch {
     // 拉取失败保持全关 = 基线行为，无需降级逻辑
+  } finally {
+    try { flagsReadyResolve?.(); } catch {}
   }
 }
 

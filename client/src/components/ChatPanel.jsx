@@ -18,7 +18,7 @@ import { isMotionReduced, motionScrollBehavior, useAppearance, useAppearanceSett
 import { startLatencyProbe, markLatency, patchLatencyMeta, markFirstDomText, finalizeLatencyProbe } from "../首字延迟埋点.js";
 import { acquireStream } from "../长连接预算.js";
 import { notifyError, askConfirm } from "./Feedback.jsx";
-import { flag } from "../运行开关.js";
+import { flag, flagsReady } from "../运行开关.js";
 import { getBrowserStreamState } from "../浏览器联动.js";
 
 // O-P3：浏览器"写操作类"工具白名单 —— 只有这些会拉起内置浏览器侧栏；
@@ -782,6 +782,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const streamGenerationRef = useRef(0);
   const eventHandlerRef = useRef(null);
   const reconciledRunIdsRef = useRef(new Set());
+  // OAW_REPLAY_RECOVER：冷启动 Run 探测与回放缓冲（恢复差异报告 F1/F4，默认关）
+  const replayProbeRef = useRef({ pending: false, thread: null });
+  const replayBufferRef = useRef([]);
+  const replayProbedThreadsRef = useRef(new Set());
+  const [replayFlagsTick, setReplayFlagsTick] = useState(0); // 开关快照就绪后重跑一次探测
   // ChatPanel 本身持续挂载时，按 thread 保存界面状态，切换子对话不会把原对话的流式内容丢掉。
   const threadCacheRef = useRef(new Map());
   const previousThreadRef = useRef(threadId);
@@ -1049,7 +1054,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         stopRequestedRef.current = false;
         roundStoppedRef.current = false;
         setStopping(false);
-      assistantIdRef.current = isLiveRun ? latestAssistant?.id || null : null;
+      // OAW_REPLAY_RECOVER（F4）：恢复水合场景不锚定历史最后一条 assistant 气泡——
+      // 运行中那条消息尚未落盘，锚定会把回放 token 拼进上一轮气泡；改为由
+      // ensureAssistant 新建气泡承载恢复的流式内容（flag 关 = 基线锚定）。
+      assistantIdRef.current = isLiveRun ? (flag("replayRecover") ? null : (latestAssistant?.id || null)) : null;
       lastAssistantIdRef.current = latestAssistant?.id || null;
       streamBufRef.current = null;
       streamingMsgIdRef.current = assistantIdRef.current;
@@ -1102,7 +1110,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       stoppingRef.current = false;
       stopRequestedRef.current = false;
       roundStoppedRef.current = false;
-      assistantIdRef.current = hydratedIsLive ? hydratedAssistant?.id || null : null;
+      // OAW_REPLAY_RECOVER（F4）：同上，恢复水合时不锚定历史气泡（flag 关 = 基线锚定）。
+      assistantIdRef.current = hydratedIsLive ? (flag("replayRecover") ? null : (hydratedAssistant?.id || null)) : null;
     lastAssistantIdRef.current = hydratingHistory ? hydratedAssistant?.id || null : null;
     streamBufRef.current = null;
     streamingMsgIdRef.current = assistantIdRef.current;
@@ -1689,12 +1698,51 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   // 这里在拿到 runId 后立即拉取，并在执行期间短轮询，避免 Todo 只存在于任务中心。
   // 同时覆盖“后端已完成但 SSE 终结事件丢失”的情况：用当前 thread 找回 Run，
   // 再注入一个幂等的 run_finished，让输入框和状态栏恢复可用。
+  // OAW_REPLAY_RECOVER：开关快照异步到达（初始全关），就绪后重跑一次冷启动探测。
+  useEffect(() => {
+    let active = true;
+    flagsReady.then(() => { if (active) setReplayFlagsTick((t) => t + 1); });
+    return () => { active = false; };
+  }, []);
   useEffect(() => {
     const runId = runState.runId;
     const activeStatuses = ["running", "queued", "waiting_user", "recovering", "cancel_requested", "finishing"];
     const shouldReconcile = busy || activeStatuses.includes(runState.status);
     if (!runId && !shouldReconcile) {
-      setTodoItems([]);
+      // OAW_REPLAY_RECOVER（F1）：冷启动（无历史水合、本地 idle）时探测本 thread 是否
+      // 仍有执行中的 Run；命中则恢复运行上下文并冲刷探测期间缓冲的回放事件，使刷新后
+      // 的对话能重建“运行中”的实时内容。探测每 thread 仅一次，flag 关 = 基线行为。
+      if (flag("replayRecover") && threadId && !replayProbedThreadsRef.current.has(threadId)) {
+        replayProbedThreadsRef.current.add(threadId);
+        replayProbeRef.current = { pending: true, thread: threadId };
+        replayBufferRef.current = [];
+        const probeThread = threadId;
+        void (async () => {
+          try {
+            const result = await listRuns(probeThread, 12, { cwd: workspace });
+            if (replayProbeRef.current.thread !== probeThread) return; // 已切走：新探测接管
+            const live = (result?.runs || [])
+              .filter((item) => item?.clientId === clientId && activeStatuses.includes(item.status))
+              .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))[0] || null;
+            if (live) {
+              // F4：恢复的流式内容进新气泡，不续写历史最后一条 assistant（防跨轮拼接）
+              assistantIdRef.current = null;
+              runInProgressRef.current = true;
+              activeRunIdRef.current = live.id;
+              setBusy(true);
+              setRunState((s) => ({ ...s, status: live.status, runId: live.id, task: live.task || s.task, artifacts: live.artifacts || s.artifacts, references: live.references || s.references, mode: normalizeUiMode(live.task?.mode) }));
+              const nextTodos = live.todoVersion === 1 && Array.isArray(live.todos) ? live.todos : (Array.isArray(live.steps) ? live.steps : []);
+              if (nextTodos.length) setTodoItems(nextTodos);
+            }
+          } catch {}
+          replayProbeRef.current = { pending: false, thread: null };
+          const buffered = replayBufferRef.current;
+          replayBufferRef.current = [];
+          for (const ev of buffered) eventHandlerRef.current?.(ev);
+        })();
+      } else {
+        setTodoItems([]);
+      }
       return undefined;
     }
     let cancelled = false;
@@ -1760,7 +1808,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       window.removeEventListener("oaw:force-reconcile", onForceReconcile);
       if (timer) window.clearInterval(timer);
     };
-  }, [clientId, threadId, workspace, runState.runId, runState.status, busy]);
+  }, [clientId, threadId, workspace, runState.runId, runState.status, busy, replayFlagsTick]);
 
   const acceptSystemEvent = useCallback((key) => {
     const value = String(key || "");
@@ -1778,6 +1826,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   function handleEvent(ev) {
     const envelope = ev?.event || ev || {};
     const { type, data = {} } = envelope;
+    // OAW_REPLAY_RECOVER：冷启动探测期间缓冲通道回放事件，探测完成后统一冲刷落点，
+    // 避免探测竞态窗口内到达的 token/tool 事件因 busy/idle 门闩被静默丢弃。
+    if (flag("replayRecover") && replayProbeRef.current.pending && replayProbeRef.current.thread === threadId && type !== "connected") {
+      if (replayBufferRef.current.length < 6000) replayBufferRef.current.push(ev);
+      return;
+    }
     const eventRunId = data?.runId || null;
     // 重连会回放历史事件。已知当前 Run 时，旧 Run 的事件不能污染当前对话。
     if (eventRunId && activeRunIdRef.current && eventRunId !== activeRunIdRef.current) return;
@@ -1810,7 +1864,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         lastAssistantIdRef.current = assistantIdRef.current;
         return assistantIdRef.current;
       }
-      if (!force && !busy && !LIVE_RUN_STATUSES.has(runState.status)) return null;
+      // OAW_REPLAY_RECOVER：探测恢复的运行上下文经 ref 同步生效（state 可能尚未提交），
+      // 故 runInProgressRef 也放行；flag 关时与基线判定完全一致。
+      const replayRecoverGate = flag("replayRecover") && runInProgressRef.current;
+      if (!force && !busy && !LIVE_RUN_STATUSES.has(runState.status) && !replayRecoverGate) return null;
       const recoveredId = newId();
       assistantIdRef.current = recoveredId;
       lastAssistantIdRef.current = recoveredId;

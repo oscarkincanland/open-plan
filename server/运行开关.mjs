@@ -85,6 +85,8 @@ export const RUNTIME_FLAGS = Object.freeze({
   mapTemplates: readFlag("OAW_MAP_TEMPLATES"),
   /** GIS G10-v1：视图书签（视角收藏与一键恢复，默认关） */
   mapBookmarks: readFlag("OAW_MAP_BOOKMARKS"),
+  /** 会话恢复 A4：运行中刷新恢复（冷启动探测 LIVE Run + Run 起点整段回放 + 恢复内容新建气泡，默认关） */
+  replayRecover: readFlag("OAW_REPLAY_RECOVER"),
 });
 
 /** /api/status 下发形态：布尔与数值分开，前端只读布尔位。 */
@@ -114,5 +116,6 @@ export function runtimeFlagsSnapshot() {
     mapPack: RUNTIME_FLAGS.mapPack,
     mapTemplates: RUNTIME_FLAGS.mapTemplates,
     mapBookmarks: RUNTIME_FLAGS.mapBookmarks,
+    replayRecover: RUNTIME_FLAGS.replayRecover,
   };
 }

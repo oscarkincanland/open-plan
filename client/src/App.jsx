@@ -25,7 +25,7 @@ import { acquireStream } from "./长连接预算.js";
 import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun } from "./api.js";
 import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
 import FeedbackHost, { notifyError } from "./components/Feedback.jsx";
-import { initRuntimeFlags, flag } from "./运行开关.js";
+import { initRuntimeFlags, flag, flagsReady } from "./运行开关.js";
 
 function historyReferences(text = "") {
   const refs = [];
@@ -270,6 +270,10 @@ export default function App() {
   const [changedFiles, setChangedFiles] = useState(() => new Set()); // 本轮刚被改动的文件名（短时高亮文件树）
   const [historyMessages, setHistoryMessages] = useState(null); // 加载的历史会话消息
   const [historyThreadId, setHistoryThreadId] = useState(null); // 当前历史消息对应的 thread，避免切换 effect 覆盖恢复内容
+  // OAW_REPLAY_RECOVER（F2，默认关）：冷启动探测到保存的 thread 仍有执行中的 Run 时，
+  // 提示用户可加载该会话完整历史（不改动「刷新不自动恢复会话」的已批准规则，仅补运行中例外入口）。
+  const [restoredRunHint, setRestoredRunHint] = useState(null);
+  const restoredRunProbedRef = useRef(false);
   const [historyWindow, setHistoryWindow] = useState(null); // 服务端为长会话返回的展示窗口信息
   const [sessionResumeError, setSessionResumeError] = useState(null); // { sessionId, message } Agent 恢复失败时历史只读
   // 新建会话的进行中/失败状态（交互 2）：失败必须可见，且不得清空旧会话。
@@ -1351,6 +1355,35 @@ export default function App() {
     lastSessionIdRef.current = null;
   }, [sessions]);
 
+  // OAW_REPLAY_RECOVER（F2，默认关）：冷启动探测保存的 thread 是否仍有执行中的 Run。
+  // 只提示 + 提供加载完整历史的入口，不自动恢复，符合已批准规则的语义边界。
+  useEffect(() => {
+    if (!uiRestored || !sessions.length) return undefined;
+    let cancelled = false;
+    const probe = async () => {
+      if (cancelled || restoredRunProbedRef.current || !flag("replayRecover")) return;
+      restoredRunProbedRef.current = true;
+      const savedThreadId = localStorage.getItem("oaw_thread_id") || "";
+      if (!savedThreadId) return;
+      try {
+        const result = await listRuns(savedThreadId, 5, { cwd: currentWorkspace || undefined });
+        if (cancelled) return;
+        const live = (result?.runs || []).find((item) => ["running", "queued", "waiting_user", "recovering", "cancel_requested", "finishing"].includes(item?.status));
+        if (live) setRestoredRunHint({ threadId: savedThreadId });
+      } catch {}
+    };
+    void probe();
+    // 开关快照异步到达（初始全关）：就绪后再探测一次
+    let off = false;
+    flagsReady.then(() => { if (!off && !cancelled) void probe(); });
+    return () => { cancelled = true; off = true; };
+  }, [uiRestored, sessions.length, currentWorkspace]);
+
+  // 用户已通过任意入口加载该会话历史后，提示自动消失
+  useEffect(() => {
+    if (restoredRunHint && historyThreadId === restoredRunHint.threadId) setRestoredRunHint(null);
+  }, [historyThreadId, restoredRunHint]);
+
   // 保存：界面状态变化时写入 localStorage。
   // 只持久化工作区、目录与侧栏开关；不再写入 lastSessionId —— 刷新后必须进入
   // 空白新会话，旧会话只从历史列表手动打开（交接文档交互 4）。
@@ -1688,6 +1721,19 @@ export default function App() {
                 <span>切换工作区失败：{workspaceSwitchError.message}（已保留原工作区与文件列表）</span>
                 <button className="btn-xs" onClick={() => { const target = workspaceSwitchError.workspace; setWorkspaceSwitchError(null); handleWorkspaceChange(target); }}>重试切换</button>
                 <button className="btn-xs" onClick={() => setWorkspaceSwitchError(null)}>忽略</button>
+              </div>
+            )}
+            {/* OAW_REPLAY_RECOVER（F2，默认关）：运行中刷新后提示可加载完整历史（复用现有横幅样式，零新样式） */}
+            {!activeModule && restoredRunHint && (
+              <div className="session-resume-warning" role="status">
+                <Icon name="warning" size={14} />
+                <span>检测到该会话仍有任务在执行，实时进度已恢复；可加载该会话的完整历史上下文。</span>
+                <button className="btn-xs" onClick={() => {
+                  const target = sessions.find((s) => (s.threadId || s.id) === restoredRunHint.threadId);
+                  setRestoredRunHint(null);
+                  if (target) handleSelectSession(target);
+                }}>加载完整历史</button>
+                <button className="btn-xs" onClick={() => setRestoredRunHint(null)}>忽略</button>
               </div>
             )}
             <div className="center-chat-slot">{!activeModule && sharedChatPanel}</div>
