@@ -3,8 +3,9 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
+import { RUNTIME_FLAGS } from "./运行开关.mjs";
 import { appendJsonLine, atomicWriteJson, ensureDirectory, readJsonFile } from "./持久化工具.mjs";
-import { PERSISTED_TYPES as PERSISTED_REGISTRY } from "./事件注册表.mjs";
+import { PERSISTED_TYPES as PERSISTED_REGISTRY, validateEventPayload } from "./事件注册表.mjs";
 
 const PROJECT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const EVENT_DIR = path.resolve(process.env.OAW_EVENT_DIR || path.join(PROJECT_DIR, ".oaw", "events"));
@@ -221,7 +222,12 @@ export function shouldPersistEvent(type) {
 }
 
 export function appendEvent({ clientId = null, threadId = null, runId = null, type, data = {}, at = new Date().toISOString() } = {}) {
-  if (!shouldPersistEvent(type)) return null;
+  // Qoder P1-2（开关 eventSchemaCheck，默认关）：只对「在注册表里声明了 schema 的事件」做结构校验。
+  // 打开后仅告警 + 计数，不改变落盘与投递行为；默认关时该分支不进入，行为与基线完全一致。
+  if (RUNTIME_FLAGS.eventSchemaCheck) noteEventSchemaCheck(type, data);
+  // Qoder P2-5：先记量级（含未落盘的增量事件），再走原有落盘判定。
+  if (!shouldPersistEvent(type)) { noteEventTypeStat(type, false); return null; }
+  noteEventTypeStat(type, true);
   loadStore();
   let lockFd;
   try {
@@ -303,6 +309,60 @@ export function markReadCursor(clientId = "", seq = 0) {
   return { ok: true, clientId, seq: cursors[clientId] };
 }
 
+/**
+ * Qoder P1-2：事件负载结构校验的告警计数（进程内诊断，不落盘、不改变任何事件语义）。
+ * 每种类型最多告警一次，避免高频事件在控制台刷屏；计数经 eventStoreInfo() 暴露。
+ */
+const eventSchemaViolations = new Map();
+
+function noteEventSchemaCheck(type, data) {
+  let result;
+  try { result = validateEventPayload(type, data); } catch { return; }
+  if (result.ok) return;
+  const key = String(type || "unknown");
+  const current = eventSchemaViolations.get(key) || { count: 0, warned: false, missing: [], wrongType: [] };
+  current.count += 1;
+  current.missing = result.missing;
+  current.wrongType = result.wrongType;
+  if (!current.warned) {
+    current.warned = true;
+    console.warn(`[events] 事件负载不符合 schema：${key}｜缺失 ${result.missing.join(",") || "无"}｜类型不符 ${result.wrongType.join(",") || "无"}`);
+  }
+  eventSchemaViolations.set(key, current);
+}
+
+/** 事件负载校验告警快照（诊断面板用，按次数倒序）。 */
+export function eventSchemaViolationsSnapshot() {
+  return [...eventSchemaViolations.entries()]
+    .map(([type, value]) => ({ type, ...value }))
+    .sort((a, b) => b.count - a.count);
+}
+
+/**
+ * Qoder P2-5：按事件类型累计「投递量 / 落盘量 / 未落盘量」。
+ * 进程内诊断计数，只读暴露给 /api/agent/events/state，不落盘、不参与任何业务判定，
+ * 因此不会改变事件语义与回放行为。
+ */
+const eventTypeStats = new Map();
+
+function noteEventTypeStat(type, persisted) {
+  const key = String(type || "unknown");
+  const current = eventTypeStats.get(key) || { total: 0, persisted: 0, skipped: 0 };
+  current.total += 1;
+  if (persisted) current.persisted += 1;
+  else current.skipped += 1;
+  eventTypeStats.set(key, current);
+}
+
+/** 按投递量倒序返回各事件类型的量级统计（诊断面板用）。 */
+export function eventTypeStatsSnapshot({ limit = 60 } = {}) {
+  const size = Number.isFinite(limit) && limit > 0 ? limit : 60;
+  return [...eventTypeStats.entries()]
+    .map(([type, value]) => ({ type, total: value.total, persisted: value.persisted, skipped: value.skipped }))
+    .sort((a, b) => b.total - a.total || a.type.localeCompare(b.type))
+    .slice(0, size);
+}
+
 export function eventStoreInfo() {
   loadStore();
   const index = readEventIndex();
@@ -314,5 +374,9 @@ export function eventStoreInfo() {
     rotateBytes: MAX_ACTIVE_BYTES,
     archives: index.files.length,
     latestArchive: index.files[index.files.length - 1]?.file || null,
+    // P2-5：事件量级遥测（按类型统计投递/落盘/未落盘），只读诊断字段。
+    typeStats: eventTypeStatsSnapshot(),
+    // P1-2：事件负载校验告警（仅在开关 eventSchemaCheck 打开时才会累积），只读诊断字段。
+    schemaViolations: eventSchemaViolationsSnapshot(),
   };
 }

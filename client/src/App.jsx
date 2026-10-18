@@ -19,6 +19,8 @@ import WorkProductPanel from "./components/工作产物面板.jsx";
 import BrowserPanel from "./components/内置浏览器面板.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 import MemoryTab from "./components/MemoryTab.jsx";
+import 对象栏 from "./components/对象栏.jsx";
+import 工作流启动器 from "./components/工作流启动器.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
 import { acquireStream } from "./长连接预算.js";
@@ -182,10 +184,25 @@ export default function App() {
   const [subagentDetail, setSubagentDetail] = useState(null); // 点开子代理卡片后，右栏展示的该子代理完整过程
   // 用户手动关掉浏览器侧栏后，本轮不再自动弹开（否则每个 browser_* 工具都会把它重新拉起来）。
   const browserAutoOpenBlockedRef = useRef(false);
+  // 运行开关快照到达后的重渲染触发器（值本身不参与渲染，只用来让 flag() 派生的状态重算）。
+  const [, setFlagsTick] = useState(0);
 
   // 反馈基座/运行开关：挂载即拉取 /api/status 的 runtimeFlags 快照；拉取失败保持全关（= 基线行为）。
   useEffect(() => {
-    initRuntimeFlags();
+    initRuntimeFlags().then(() => {
+      // Qoder P0-4（开关 qoderStyle，默认关）：仅在开关打开时给 <html> 打标，
+      // 由 styles.css 末尾的 opt-in 令牌层接管配色；关掉即移除标记，外观立即回到 pi-dark 基线。
+      const root = document.documentElement;
+      if (flag("qoderStyle")) root.setAttribute("data-oaw-style", "qoder");
+      else root.removeAttribute("data-oaw-style");
+      // P2-4（开关 visualEffectsOff，默认关）：打开时给 <html> 打标，
+      // 由 styles.css 末尾的特效降级块去掉背景模糊与长动效；关掉即移除标记、特效立即恢复。
+      if (flag("visualEffectsOff")) root.setAttribute("data-visual-effects", "off");
+      else root.removeAttribute("data-visual-effects");
+      // 快照到达后触发一次重渲染：P1-8 对象栏等由 flag() 派生出的 React 状态需要重算
+      // （快照到达前 flag() 一律为关，不重算就会一直停在「关闭」分支）。
+      setFlagsTick((value) => value + 1);
+    });
   }, []);
 
   useEffect(() => {
@@ -258,9 +275,19 @@ export default function App() {
   // 只新增「当前激活页签」偏好：打开谁就激活谁；关闭激活页签时自动回退到另一个仍打开的面板。
   const [workspaceTabPref, setWorkspaceTabPref] = useState("preview");
   const workspaceOpen = previewOpen || browserPanelOpen;
-  const workspaceTab = workspaceTabPref === "browser" && browserPanelOpen ? "browser"
-    : workspaceTabPref === "preview" && previewOpen ? "preview"
-      : browserPanelOpen ? "browser" : "preview";
+  // P1-8 对象栏：作为画布第三个页签接入（开关关闭时 objectsOpen 恒为 false，
+  // 下面 workspaceTab 的取值与基线逐字一致——`x || false === x`）。
+  const [objectsOpenState, setObjectsOpenState] = useState(false);
+  const objectsOpen = flag("qoderObjectBar") ? objectsOpenState : false;
+  // M4.4 领域工作流：作为画布第四个页签接入（同样的门控手法——开关关闭时
+  // workflowsOpen 恒为 false，下面 workspaceTab 的取值与接入前逐字一致）。
+  const [workflowsOpenState, setWorkflowsOpenState] = useState(false);
+  const workflowsOpen = flag("domainWorkflows") ? workflowsOpenState : false;
+  const workspaceTab = workspaceTabPref === "workflows" && workflowsOpen ? "workflows"
+    : workspaceTabPref === "objects" && objectsOpen ? "objects"
+      : workspaceTabPref === "browser" && browserPanelOpen ? "browser"
+        : workspaceTabPref === "preview" && previewOpen ? "preview"
+          : objectsOpen ? "objects" : workflowsOpen ? "workflows" : browserPanelOpen ? "browser" : "preview";
 
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
@@ -1307,6 +1334,16 @@ export default function App() {
     setPreviewOpen(false);
     requestAnimationFrame(() => previewToggleRef.current?.focus());
   }, []);
+  // P1-8 对象栏关闭：与关闭预览同样把焦点还给顶栏入口，键盘用户不丢位置。
+  const closeObjects = useCallback(() => {
+    setObjectsOpenState(false);
+    requestAnimationFrame(() => previewToggleRef.current?.focus());
+  }, []);
+  // M4.4 领域工作流面板关闭：同上，焦点还给顶栏入口。
+  const closeWorkflows = useCallback(() => {
+    setWorkflowsOpenState(false);
+    requestAnimationFrame(() => previewToggleRef.current?.focus());
+  }, []);
   // 顶栏整合菜单：点击外部 / Escape 关闭
   useEffect(() => {
     if (!topbarMenuOpen) return undefined;
@@ -1713,6 +1750,16 @@ export default function App() {
                   <button role="menuitemcheckbox" aria-checked={browserPanelOpen} className={browserPanelOpen ? "on" : ""} onClick={() => { if (browserPanelOpen) closeBrowserPanel(); else { browserAutoOpenBlockedRef.current = false; if (flag("narrowRestore") && typeof window !== "undefined" && window.innerWidth <= 1024 && previewOpenRef.current) previewOpenBeforeBrowserRef.current = true; setBrowserActivityPing(0); setWorkspaceTabPref("browser"); setBrowserPanelOpen(true); } }} title={browserPanelOpen ? "隐藏内置浏览器" : "显示内置浏览器"}>
                     <Icon name="globe" size={14} /><span>内置浏览器</span>{browserActivityPing > 0 && !browserPanelOpen && <i className="browser-activity-dot" aria-hidden="true" />}
                   </button>
+                  {flag("qoderObjectBar") && (
+                    <button role="menuitemcheckbox" aria-checked={objectsOpen} className={objectsOpen ? "on" : ""} onClick={() => { setWorkspaceTabPref("objects"); setObjectsOpenState((value) => !value); }} title={objectsOpen ? "隐藏对象栏" : "显示对象栏：本轮产出 / 来源 / 技能 / 记忆汇总"}>
+                      <Icon name="layers" size={14} /><span>对象栏</span>
+                    </button>
+                  )}
+                  {flag("domainWorkflows") && (
+                    <button role="menuitemcheckbox" aria-checked={workflowsOpen} className={workflowsOpen ? "on" : ""} onClick={() => { setWorkspaceTabPref("workflows"); setWorkflowsOpenState((value) => !value); }} title={workflowsOpen ? "隐藏领域工作流" : "显示领域工作流：交通规划工作流的阶段 / 工具白名单 / 预算 / 产物契约与预检试算"}>
+                      <Icon name="flow" size={14} /><span>领域工作流</span>
+                    </button>
+                  )}
                   <button role="menuitem" onClick={() => { setTopbarMenuOpen(false); taskCenterRef.current?.open(); }} title="任务中心：并行任务、运行状态与历史会话">
                     <Icon name="list" size={14} /><span>任务中心</span>
                   </button>
@@ -1787,8 +1834,10 @@ export default function App() {
           </div>
         </div>
         {previewOpen && workspaceTab === "preview" && <Resizer side="right" min={280} max={680} cssVar="--preview-w" />}
-        {(previewOpen || browserPanelOpen) && (
-          <aside className={`app-canvas-slot ${workspaceTab === "browser" ? "canvas-tab-browser" : "canvas-tab-preview"}`}>
+        {objectsOpen && workspaceTab === "objects" && <Resizer side="right" min={260} max={620} cssVar="--objects-w" />}
+        {workflowsOpen && workspaceTab === "workflows" && <Resizer side="right" min={280} max={720} cssVar="--workflows-w" />}
+        {(previewOpen || browserPanelOpen || objectsOpen || workflowsOpen) && (
+          <aside className={`app-canvas-slot ${workspaceTab === "browser" ? "canvas-tab-browser" : workspaceTab === "objects" ? "canvas-tab-objects" : workspaceTab === "workflows" ? "canvas-tab-workflows" : "canvas-tab-preview"}`}>
             <div className="preview-panel-head app-canvas-head">
               <div className="app-canvas-tabs" role="tablist" aria-label="工作区画布">
                 <button
@@ -1810,6 +1859,28 @@ export default function App() {
                   <Icon name="globe" size={13} /> 浏览器
                   {browserActivityPing > 0 && workspaceTab !== "browser" && <i className="browser-activity-dot" aria-hidden="true" />}
                 </button>
+                {flag("qoderObjectBar") && (
+                  <button
+                    role="tab"
+                    aria-selected={workspaceTab === "objects"}
+                    className={workspaceTab === "objects" ? "active" : ""}
+                    onClick={() => { setWorkspaceTabPref("objects"); setObjectsOpenState(true); }}
+                    title="对象栏：本轮产出 / 来源 / 技能 / 记忆汇总"
+                  >
+                    <Icon name="layers" size={13} /> 对象
+                  </button>
+                )}
+                {flag("domainWorkflows") && (
+                  <button
+                    role="tab"
+                    aria-selected={workspaceTab === "workflows"}
+                    className={workspaceTab === "workflows" ? "active" : ""}
+                    onClick={() => { setWorkspaceTabPref("workflows"); setWorkflowsOpenState(true); }}
+                    title="领域工作流：阶段 / 工具白名单 / 预算 / 产物契约与预检试算"
+                  >
+                    <Icon name="flow" size={13} /> 工作流
+                  </button>
+                )}
               </div>
               <span className="preview-panel-actions">
                 {workspaceTab === "preview" ? (
@@ -1825,6 +1896,10 @@ export default function App() {
                     </button>
                     <button className="btn-icon" onClick={closePreview} title="隐藏工作产物" aria-label="隐藏工作产物"><Icon name="close" size={14} /></button>
                   </>
+                ) : workspaceTab === "objects" ? (
+                  <button className="btn-icon" onClick={closeObjects} title="隐藏对象栏" aria-label="隐藏对象栏"><Icon name="close" size={14} /></button>
+                ) : workspaceTab === "workflows" ? (
+                  <button className="btn-icon" onClick={closeWorkflows} title="隐藏领域工作流" aria-label="隐藏领域工作流"><Icon name="close" size={14} /></button>
                 ) : (
                   <>
                     <button
@@ -1880,6 +1955,24 @@ export default function App() {
             {browserPanelOpen && (
               <div className={`app-canvas-body canvas-body-browser ${workspaceTab === "browser" ? "" : "canvas-hidden"}`}>
                 <BrowserPanel clientId={clientId} threadId={threadId} fullscreen={browserFullscreen} onToggleFullscreen={() => setBrowserFullscreen((value) => !value)} />
+              </div>
+            )}
+            {objectsOpen && (
+              <div className={`app-canvas-body canvas-body-objects ${workspaceTab === "objects" ? "" : "canvas-hidden"}`}>
+                <对象栏
+                  workspace={currentWorkspace}
+                  projectId={currentProject?.id || ""}
+                  model={selectedModel || defaultModel}
+                  references={tabs.map((tab) => ({ label: tab.name, kind: "文件" }))}
+                  clientId={clientId}
+                  threadId={threadId}
+                  onClose={closeObjects}
+                />
+              </div>
+            )}
+            {workflowsOpen && (
+              <div className={`app-canvas-body canvas-body-workflows ${workspaceTab === "workflows" ? "" : "canvas-hidden"}`}>
+                <工作流启动器 onClose={closeWorkflows} />
               </div>
             )}
           </aside>

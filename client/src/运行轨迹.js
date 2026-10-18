@@ -189,7 +189,10 @@ export function applyRunTraceEvent(trace, event) {
       });
       break;
     }
-    case "tool_output": {
+    // tool_output_delta 为 P0-2 单帧护栏的增量帧（服务端开关打开时才出现）：
+    // 不带 replace，走到下面的 `data.replace ? ... : 追加` 分支即「纯追加」，与 tool_output 同义。
+    case "tool_output":
+    case "tool_output_delta": {
       const tool = findTool(trace, data);
       if (!tool) break;
       const chunk = runToolDetailText({ output: data.output ?? data.text });

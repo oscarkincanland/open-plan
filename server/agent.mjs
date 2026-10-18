@@ -18,6 +18,8 @@ import {
 import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { RUNTIME_FLAGS } from "./运行开关.mjs";
+// Qoder P0-2：单帧体积护栏（纯函数；开关关闭时不参与任何逻辑）
+import { 工具输出分片, 工具输出帧上限 } from "./流连接.mjs";
 import { canonicalFromEnvelope } from "./事件规范化.mjs";
 import { isToolGateRejection } from "./pi-extensions/工作台把关.mjs";
 import { getBashSidecar } from "./内核侧车.mjs";
@@ -432,6 +434,13 @@ const MODEL_FIRST_EVENT_TIMEOUT_MS = Math.max(10000, Number.parseInt(process.env
 // 首个事件之后仍可能出现供应商流中途静默；工具正在执行时不计入该保护，
 // 避免长时间 Office/脚本任务被误中止。可通过环境变量按供应商特性调整。
 const MODEL_IDLE_TIMEOUT_MS = Math.max(30000, Number.parseInt(process.env.OAW_MODEL_IDLE_TIMEOUT_MS || "120000", 10) || 120000);
+// ask_user 阻塞等待用户回答的时间窗口：到期后按专业判断继续。
+// 前端凭事件里的 expiresAt 把卡片置为"已超时"，避免留下点得动、一发就报 no pending question 的死卡片。
+export const ASK_TIMEOUT_MS = 300_000;
+// 编辑流水线的 Writer 要输出整篇正文 JSON，远超 planner 只读角色的 60s 预算与
+// 子代理默认 12000 字符文本上限，因此这两个限制在流水线侧单独放宽。
+const PIPELINE_WRITER_TIMEOUT_MS = Math.max(60_000, Number.parseInt(process.env.OAW_PIPELINE_WRITER_TIMEOUT_MS || "240000", 10) || 240_000);
+const PIPELINE_TEXT_LIMIT = 60_000;
 const TERMINAL_AGENT_ERROR_PATTERN = /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied|model not found|no model selected|insufficient(?:[_\s-]?user)?[_\s-]?quota|quota exceeded|available balance|credit\s+insufficient|balance\s*=\s*0|out of budget|billing|usage limit|monthly usage|invalid request|bad request|context length|content policy|abort(?:ed|ing)?|cancel(?:led|ed)?)/i;
 const TRANSIENT_AGENT_ERROR_PATTERN = /(?:429|408|425|500|501|502|503|504|529|rate.?limit|overloaded|service.?unavailable|internal.?error|provider.?returned.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|timed?.?out|timeout|terminated|websocket.?closed|temporar(?:y|ily)|try again|模型连接超过|模型流式输出超过|没有响应|已自动中止)/i;
 // 供应商流被截断：请求本身没报错，只是流在没有 finish_reason 的情况下结束。
@@ -2609,6 +2618,7 @@ execute: async (_toolCallId, params) => {
         // 阻塞等待用户回答（最长 5 分钟），期间 SSE 推送 ask_user 事件
         return await new Promise((resolve) => {
           const pendingAskId = `ask_${crypto.randomUUID()}`;
+          const expiresAt = new Date(Date.now() + ASK_TIMEOUT_MS).toISOString();
           persistPendingAsk({
             id: pendingAskId,
             clientId,
@@ -2617,14 +2627,15 @@ execute: async (_toolCallId, params) => {
             options: opts,
             status: "pending",
             createdAt: new Date().toISOString(),
+            expiresAt,
           });
           const timer = setTimeout(() => {
             this.pendingAsks.delete(clientId);
             resolvePendingAsk(clientId, null, "expired");
             resolve({
-              content: [{ type: "text", text: "(用户未在 5 分钟内回答，请按专业判断继续，并在最终结果中注明你的假设)" }],
+              content: [{ type: "text", text: `(用户未在 ${Math.round(ASK_TIMEOUT_MS / 60000)} 分钟内回答，请按专业判断继续，并在最终结果中注明你的假设)` }],
             });
-          }, 300000);
+          }, ASK_TIMEOUT_MS);
           const done = (answer) => {
             clearTimeout(timer);
             resolvePendingAsk(clientId, String(answer || ""), "answered");
@@ -2643,11 +2654,22 @@ execute: async (_toolCallId, params) => {
           this.pendingAsks.set(clientId, done);
           const reviewConfirmation = entry.mode === "review" && /写回|原文|批注副本|确认/.test(String(params.question || ""));
           entry.reviewAwaitingConfirmation = reviewConfirmation;
-          emitChannelSafe(entry, "ask_user", {
+          const askPayload = {
             askId: pendingAskId,
             question: params.question,
             options: opts,
-          });
+            // 前端据此显示/收起"待回答"卡片：到期后服务端不再接受回答，卡片必须同步失效。
+            expiresAt,
+          };
+          // Qoder P1-4（开关 qoderInteractionOwner，默认关）：标记提问归属。
+          // ask_user 目前只对父会话开放（子代理角色工具集不含它），因此归属是「本轮」；
+          // 若该会话尚未绑定 Run，则降级为「会话」归属。
+          if (RUNTIME_FLAGS.qoderInteractionOwner) {
+            askPayload.owner = entry.activeRunId
+              ? { kind: "turn", id: entry.activeRunId }
+              : { kind: "session", id: entry.clientId || entry.threadId || null };
+          }
+          emitChannelSafe(entry, "ask_user", askPayload);
           if (reviewConfirmation) {
             emitChannelSafe(entry, "review_waiting_confirmation", {
               runId: entry.activeRunId,
@@ -2662,10 +2684,13 @@ execute: async (_toolCallId, params) => {
 
     // SubagentProvider seam（§3.2）：Pi 子会话执行器工厂。
     // run_subagent 与 editorial_pipeline 共用同一执行器——隔离会话、角色分级、事件契约一致。
-    const createSubagentRunner = ({ toolKey, parentToolCallId = null, defaultRole = "scout", multiple = false, signal: parentSignal = null }) => async (taskText, ctx = {}) => {
+    const createSubagentRunner = ({ toolKey, parentToolCallId = null, defaultRole = "scout", multiple = false, signal: parentSignal = null, timeoutMs = 0, textLimit = 0 }) => async (taskText, ctx = {}) => {
         const { index = 0, childId: ctxChildId = null, roleOverride = null, promptSuffix = "" } = ctx;
         const effRole = roleOverride && SUBAGENT_ROLES[roleOverride] ? roleOverride : defaultRole;
         const effRoleSpec = SUBAGENT_ROLES[effRole] || SUBAGENT_ROLES.scout;
+        // 调用方可按任务性质覆盖角色的默认预算（如编辑流水线 Writer 的长正文输出）。
+        const effTimeoutMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : effRoleSpec.timeoutMs;
+        const effTextLimit = Number(textLimit) > 0 ? Number(textLimit) : 12000;
         const childId = ctxChildId || `subagent_${String(toolKey || crypto.randomUUID()).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 48)}${multiple ? `_${index + 1}` : ""}`;
         let childSession = null;
         let liveText = "";
@@ -2709,6 +2734,11 @@ execute: async (_toolCallId, params) => {
         const parentAbort = () => abortChild();
         parentSignal?.addEventListener("abort", parentAbort, { once: true });
         emitChild("subagent_start", { status: "running", readOnly: effRoleSpec.readOnly, roleLabel: effRoleSpec.label });
+        // Qoder P1-4（开关 qoderInteractionOwner，默认关）：子代理启动即声明「当前交互归属」，
+        // 前端据此知道此后带 owner 的 HITL 卡片属于哪个子代理节点（多子代理并发时不串台）。
+        if (RUNTIME_FLAGS.qoderInteractionOwner) {
+          emitChild("interaction_owner_changed", { owner: { kind: "subagent", id: childId }, status: "running" });
+        }
         try {
           const childLoader = new DefaultResourceLoader({
             cwd: workspace,
@@ -2760,7 +2790,10 @@ execute: async (_toolCallId, params) => {
               writeFile: async (absolutePath, content) => {
                 const target = resolveSubagentWritablePath(absolutePath);
                 const ctx = activeWriteContext("write");
-                await requireToolApproval({ entry, tool: "write", input: String(target || ""), runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent });
+                await requireToolApproval({ entry, tool: "write", input: String(target || ""), runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+                  // Qoder P1-4（开关 qoderInteractionOwner，默认关）：这条写回审批由该子代理发起，
+                  // 前端据此把审批卡片归到子代理节点，而不是与父会话的审批混在一起。
+                  owner: RUNTIME_FLAGS.qoderInteractionOwner ? { kind: "subagent", id: childId } : null });
                 return stageWrite({ ...ctx, targetPath: target, content, onEvent: writeEvent });
               },
             },
@@ -2846,10 +2879,10 @@ execute: async (_toolCallId, params) => {
           const timeoutPromise = new Promise((_, reject) => {
             timeoutTimer = setTimeout(() => {
               void childSession.abort().catch(() => {});
-              const error = new Error(`子 Agent 执行超过 ${Math.round(effRoleSpec.timeoutMs / 1000)} 秒，已自动停止`);
+              const error = new Error(`子 Agent 执行超过 ${Math.round(effTimeoutMs / 1000)} 秒，已自动停止`);
               error.code = "SUBAGENT_TIMEOUT";
               reject(error);
-            }, effRoleSpec.timeoutMs);
+            }, effTimeoutMs);
           });
           await Promise.race([promptPromise, timeoutPromise]);
           if (parentSignal?.aborted) {
@@ -2861,7 +2894,7 @@ execute: async (_toolCallId, params) => {
           const finalText = (assistant?.content || []).filter((item) => item?.type === "text").map((item) => item.text).join("\n").trim() || liveText.trim();
           if (!finalText) throw new Error("子 Agent 没有返回可用的文本结果");
           emitChild("subagent_end", { status: "completed", summary: finalText.slice(0, 9000), transcript: boundedTranscript() });
-          return { text: finalText.slice(0, 12000), isError: false, childId };
+          return { text: finalText.slice(0, effTextLimit), isError: false, childId };
         } catch (error) {
           const message = String(error?.message || error).slice(0, 1200);
           emitChild("subagent_end", { status: parentSignal?.aborted ? "cancelled" : "failed", error: message, summary: liveText.slice(-1200), transcript: boundedTranscript() });
@@ -2959,13 +2992,23 @@ execute: async (_toolCallId, params) => {
         try {
           // Planner/Writer/Evaluator 是只读模型会话：复用 SubagentProvider seam（planner 只读角色）
           const runPipelineModelTask = async (prompt, { stage } = {}) => {
+            const writer = stage === "writer";
             const runner = createSubagentRunner({
               toolKey: `pipeline_${stage}_${Date.now().toString(36)}`,
               parentToolCallId: _toolCallId ? String(_toolCallId) : null,
               defaultRole: "planner",
               signal,
+              // Writer 要一次性产出整篇正文 JSON：planner 角色的 60s 只读预算与 12000 字符
+              // 文本上限都会把正常输出掐断，进而被误报成"未返回可解析的内容 JSON"。
+              timeoutMs: writer ? PIPELINE_WRITER_TIMEOUT_MS : 0,
+              textLimit: writer ? PIPELINE_TEXT_LIMIT : 0,
             });
             const outcome = await runner(prompt, { index: 0 });
+            if (outcome?.isError) {
+              // 子会话失败/超时的返回是一句错误文案，不是内容：必须显式抛出，
+              // 否则会被下游 parseLooseJson 判成"不可解析"，把真实原因（超时/取消/模型报错）掩盖掉。
+              throw new Error(`流水线 ${stage || "模型"} 阶段子会话未完成：${String(outcome.text || "").slice(0, 300)}`);
+            }
             return outcome?.text || "";
           };
           const result = await runEditorialPipeline({
@@ -3190,7 +3233,7 @@ execute: async (_toolCallId, params) => {
         case "tool_execution_update":
           // 工具执行过程中的输出流
           if (ev.partialResult !== undefined || ev.output || ev.delta) {
-            emit("tool_output", {
+            emitToolOutput(emit, {
               toolCallId: ev.toolCallId || null,
               name: ev.toolName,
               output: eventValueText(ev.partialResult ?? ev.output ?? ev.delta),
@@ -3314,7 +3357,7 @@ execute: async (_toolCallId, params) => {
           });
           break;
         case "bash_execution_update":
-          emit("tool_output", {
+          emitToolOutput(emit, {
             toolCallId: ev.id || null,
             name: "bash",
             output: eventValueText(ev.output ?? ev.delta),
@@ -4648,11 +4691,30 @@ function emitChannelSafe(entry, type, data, { persist = true } = {}) {
     const ev = { id, type, at, streamId: entry.channel.streamId, protocolVersion: PROTOCOL_VERSION, data: eventData };
     if (!entry.channel.historyLimit) entry.channel.historyLimit = CHANNEL_HISTORY_LIMIT;
     pushChannelEvent(entry.channel, ev);
+    // Qoder P0-3：记录通道最近一次事件投递时刻，供中断排空判定「在途消息是否已静默」。
+    entry.channel.lastEmitAt = Date.now();
     entry.channel.emitter.emit("event", ev);
     if (persist && entry.activeRunId) {
       try { recordRunEvent(entry.activeRunId, type, data || {}); } catch {}
     }
   } catch {}
+}
+
+/**
+ * Qoder P0-2（开关 qoderToolOutputSplit，默认关）：工具输出「单帧体积护栏」。
+ *
+ * 开关关闭时执行的就是基线那一句 `emit("tool_output", payload)`（逐字未变）；
+ * 打开且输出超过单帧上限时，首片仍是 tool_output（保留 replace 语义），
+ * 其余切为 tool_output_delta 增量帧——避免一整帧超大输出把 SSE 通路与客户端内存顶爆。
+ */
+function emitToolOutput(emit, payload) {
+  if (!RUNTIME_FLAGS.qoderToolOutputSplit) {
+    emit("tool_output", payload);
+    return 1;
+  }
+  const 帧列表 = 工具输出分片(payload, 工具输出帧上限(RUNTIME_FLAGS.qoderToolOutputFrameMaxBytes));
+  帧列表.forEach((帧) => emit(帧.type, 帧.data));
+  return 帧列表.length;
 }
 
 /**
@@ -4666,7 +4728,32 @@ function emitAbortedOnce(entry, reason = "") {
   const token = runId || `no-run:${entry.abortRequestedAt || 0}`;
   if (entry.abortedEmittedRunId === token) return false;
   entry.abortedEmittedRunId = token;
-  emitChannelSafe(entry, "aborted", { runId, reason });
+  // Qoder P0-3（开关 qoderDrainOnAbort，默认关）：
+  // 基线立即发 aborted；此时仍在途的 token/tool_output 会晚于终态到达，被前端 generation
+  // 守卫丢弃——表现为「半句话丢失」或被下一轮吞并。
+  // 打开后先发 run_draining 并做有界排空：等到通道静默（默认 300ms 无新事件）或达到上限
+  // （默认 1500ms）再发 aborted，让在途消息先落进当前轮次。幂等令牌在上方已置位，
+  // 因此排空期间若有第二条收尾路径调用本函数，不会重复排空或重复发终态。
+  if (!RUNTIME_FLAGS.qoderDrainOnAbort) {
+    emitChannelSafe(entry, "aborted", { runId, reason });
+    return true;
+  }
+  const drainMaxMs = Math.max(100, Number(RUNTIME_FLAGS.qoderDrainMaxMs) || 1500);
+  const drainQuietMs = Math.max(50, Number(RUNTIME_FLAGS.qoderDrainQuietMs) || 300);
+  emitChannelSafe(entry, "run_draining", { runId, reason, quietMs: drainQuietMs, maxMs: drainMaxMs });
+  const startedAt = Date.now();
+  const settle = () => {
+    entry.drainTimer = null;
+    const lastEmitAt = Number(entry.channel?.lastEmitAt || 0);
+    const idleFor = Date.now() - Math.max(lastEmitAt, startedAt);
+    const elapsed = Date.now() - startedAt;
+    if (idleFor < drainQuietMs && elapsed < drainMaxMs) {
+      entry.drainTimer = setTimeout(settle, 100);
+      return;
+    }
+    emitChannelSafe(entry, "aborted", { runId, reason, drained: idleFor >= drainQuietMs });
+  };
+  entry.drainTimer = setTimeout(settle, drainQuietMs);
   return true;
 }
 

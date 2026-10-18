@@ -243,6 +243,7 @@ export function flowEventLabel(event) {
     case "run_recovery_started": return "正在恢复任务";
     case "run_recovered": return "任务已恢复";
     case "run_cancel_requested": return "已请求取消任务";
+    case "run_draining": return "正在收尾（等待在途消息投递）";
     case "step_updated": return `步骤已更新${data.title || data.name ? `：${String(data.title || data.name).slice(0, 40)}` : ""}`;
     case "artifact_rolled_back": return "产物已回滚";
     case "map_action": return `地图操作${data.action ? `：${String(data.action).slice(0, 30)}` : ""}`;

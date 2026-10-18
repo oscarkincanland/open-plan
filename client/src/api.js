@@ -245,8 +245,20 @@ export const resolveContext = (references, text) => api("/api/context/resolve", 
 export const readContext = (reference, query, range) => api("/api/context/read", { method: "POST", body: JSON.stringify({ reference, query, range }) });
 
 export const listSkills = () => api("/api/skills");
+// P1-8 对象栏自取数用（均为既有只读端点，无新增后端接口）
+export const listArtifacts = (options = {}) => {
+  const params = new URLSearchParams();
+  if (options.cwd) params.set("cwd", options.cwd);
+  if (options.projectId) params.set("projectId", options.projectId);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return api(`/api/artifacts${suffix}`);
+};
+export const getStatus = () => api("/api/status");
+export const listAgentRuntimes = () => api("/api/agent/runtimes");
 export const preflightSkills = (workflowId, skills = []) => api("/api/skills/preflight", { method: "POST", body: JSON.stringify({ workflowId, skills }) });
 export const listWorkflows = () => api("/api/workflows");
+// M4.4 领域工作流（开关 domainWorkflows）：只读 preflight 试算，不产生任何副作用
+export const preflightDomainWorkflow = (payload = {}) => api("/api/domain-workflows/preflight", { method: "POST", body: JSON.stringify(payload) });
 export const validateWorkflow = (id) => api(`/api/workflows/${encodeURIComponent(id)}/validate`);
 export const listAgents = () => api("/api/agents");
 export const createAgent = (payload) => api("/api/agents", { method: "POST", body: JSON.stringify(payload || {}) });

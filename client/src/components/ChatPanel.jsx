@@ -16,9 +16,9 @@ import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
 import { isMotionReduced, motionScrollBehavior, useAppearance, useAppearanceSetter } from "../界面外观.js";
 import { startLatencyProbe, markLatency, patchLatencyMeta, markFirstDomText, finalizeLatencyProbe } from "../首字延迟埋点.js";
-import { acquireStream } from "../长连接预算.js";
+import { acquireStream, closeEventSourceQuietly, noteCursorGap } from "../长连接预算.js";
 import { notifyError, askConfirm } from "./Feedback.jsx";
-import { flag, flagsReady } from "../运行开关.js";
+import { flag, flagsReady, numberFlag } from "../运行开关.js";
 import { getBrowserStreamState } from "../浏览器联动.js";
 
 // O-P3：浏览器"写操作类"工具白名单 —— 只有这些会拉起内置浏览器侧栏；
@@ -70,6 +70,9 @@ const DEFAULT_CONTEXT_WINDOW = 128000;
 const PI_COMPACTION_RESERVE_TOKENS = 16384;
 const PI_COMPACTION_KEEP_RECENT_TOKENS = 20000;
 const LIVE_RUN_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested", "finishing"]);
+// 提问卡片的时间窗口兜底（服务端 ASK_TIMEOUT_MS = 5 分钟，正常由事件里的 expiresAt 给出）：
+// 缺少 expiresAt 时按同一口径计时，到期把卡片置为已超时，不再留下点得动却必然 404 的死卡片。
+const ASK_TIMEOUT_FALLBACK_MS = 5 * 60 * 1000;
 const MAX_VISIBLE_MESSAGES = 120;
 const MESSAGE_PAGE_SIZE = 80;
 const COMPOSER_COMMANDS = [
@@ -1516,7 +1519,20 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     let reconnectTimer = null;
     let stopped = false;
     let retryDelay = 500;
+    let retryAttempt = 0;
     let connectionSerial = 0;
+    // Qoder P0-1（开关 qoderSseBackoff，默认关）：
+    // 基线为固定倍增 500ms → 5s 封顶且无抖动，服务端重启时 N 个标签页会同相位重连形成风暴。
+    // 打开后改为指数退避 800ms → 30s 封顶 + 0.5~1.0× 抖动：失败次数越多退避越久，且各标签页错峰。
+    // 关闭时走下方原基线分支（逐字保持历史行为），因此开关关闭 = 与优化前完全一致。
+    const computeRetryDelay = () => {
+      if (!flag("qoderSseBackoff")) return Math.min(5000, retryDelay * 2);
+      const BASE = 800;
+      const MAX = 30000;
+      const exponential = Math.min(MAX, BASE * (2 ** retryAttempt));
+      const jitter = 0.5 + Math.random() * 0.5;
+      return Math.max(1, Math.round(exponential * jitter));
+    };
     let watchdogTimer = null;
     // 对话流是核心长连接（必需）：申请槽位时若超预算会顶掉可放弃的面板流，
     // 保证"切工作区/切会话"这类控制面请求永远有槽位可用。
@@ -1544,7 +1560,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       if (!isCurrentGeneration() || !source || source !== es) return;
       setConnected(false);
       markReady(false);
-      source.close();
+      closeEventSourceQuietly(source, { client: clientId, thread: threadId || "" });
       es = null;
       if (watchdogTimer) {
         clearInterval(watchdogTimer);
@@ -1555,7 +1571,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         reconnectTimer = null;
         connect();
       }, retryDelay);
-      retryDelay = Math.min(5000, retryDelay * 2);
+      retryDelay = computeRetryDelay();
+      retryAttempt += 1;
     };
     
     const connect = () => {
@@ -1572,7 +1589,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       const streamQuery = knownStreamId ? `&stream=${encodeURIComponent(knownStreamId)}` : "";
       const nextSource = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId || "")}${workspaceQuery}${cursorQuery}${streamQuery}`);
       es = nextSource;
-      slot?.attach(() => nextSource.close());
+      slot?.attach(() => closeEventSourceQuietly(nextSource, { client: clientId, thread: threadId || "" }));
       
       nextSource.onopen = () => {
         // 仅表示 HTTP/SSE 通道打开；Agent 是否已就绪由服务端 connected 握手确认。
@@ -1596,6 +1613,15 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         if (!isCurrentGeneration() || serial !== connectionSerial || es !== nextSource) return;
         lastSignalAt = Date.now();
         const eventId = Number(e.lastEventId || 0);
+        // P2-1（开关 qoderSeqGapAlert，默认关）：发现游标跳变即记一条诊断。
+        // 缺号一般源于服务端增量淘汰或回放窗口截断（截断另有 truncated / stream_resync 兜底），
+        // 因此这里只做可观测记录，不改变重连与消费行为；仅首次缺号打一条 console 警告，避免刷屏。
+        if (flag("qoderSeqGapAlert") && eventId > 0 && eventCursorRef.current > 0 && eventId > eventCursorRef.current + 1) {
+          const gapCount = noteCursorGap(eventCursorRef.current, eventId);
+          if (gapCount === 1) {
+            console.warn(`[oaw] SSE 事件缺号：${eventCursorRef.current} → ${eventId}（缺 ${eventId - eventCursorRef.current - 1} 帧），已记入长连接诊断`);
+          }
+        }
         try { 
           const payload = JSON.parse(e.data);
           if (payload?.type === "connected") {
@@ -1617,6 +1643,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
             // 只有应用层握手成功后才清除退避；HTTP onopen 过早重置会让
             // Runtime 初始化失败时进入 500ms 高频重连循环。
             retryDelay = 500;
+            retryAttempt = 0;
             markReady(true);
           }
           // 事件处理成功后才提交应用层游标：单条事件处理器异常时游标不前进，
@@ -1636,10 +1663,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           scheduleReconnect(nextSource);
         }
       };
+      // P2-2：静默阈值由服务端心跳间隔派生（默认心跳 5s → 阈值 20s，与基线完全一致）；
+      // 若把心跳调大（低功耗 / 远程 SSH 场景），阈值随之放大，避免把正常的慢心跳误判成断线。
+      const silenceLimit = Math.max(20000, numberFlag("heartbeatChatMs", 5000) * 2.5);
       watchdogTimer = setInterval(() => {
         // 某些代理/浏览器会保持 TCP 为 open，却不再触发 EventSource.onerror；
-        // 服务端 heartbeat 正常时不会触发这里，静默超过 20 秒才强制重连。
-        if (isCurrentGeneration() && Date.now() - lastSignalAt > 20000) scheduleReconnect(nextSource);
+        // 服务端 heartbeat 正常时不会触发这里，超过静默阈值才强制重连。
+        if (isCurrentGeneration() && Date.now() - lastSignalAt > silenceLimit) scheduleReconnect(nextSource);
       }, 5000);
     };
     
@@ -1654,7 +1684,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       stopped = true;
       connectionSerial += 1;
       window.removeEventListener("oaw:force-reconnect", onForceReconnect);
-      if (es) es.close();
+      if (es) closeEventSourceQuietly(es, { client: clientId, thread: threadId || "" });
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (watchdogTimer) clearInterval(watchdogTimer);
       slot?.release();
@@ -2196,7 +2226,10 @@ case "runtime_connecting":
         }
         break;
       // 工具输出流：更新最后一个 tool block
+      // tool_output_delta 是 P0-2 单帧护栏的增量帧（服务端开关 qoderToolOutputSplit 打开时才出现）：
+      // 语义与 tool_output 完全一致（卸载 replace 标记后走「追加」分支），因此共用同一分支。
       case "tool_output":
+      case "tool_output_delta":
         if (data.name === "run_subagent") break;
         if (!aid) aid = ensureAssistant();
         if (aid) queueToolOutput(aid, data);
@@ -2256,6 +2289,10 @@ case "runtime_connecting":
                 id: askId,
                 question: data.question || "",
                 options: data.options || [],
+                // Qoder P1-4：交互归属（服务端开关打开时才带；关闭时不显示归属标签）。
+                owner: data.owner || null,
+                // 时间窗口：服务端到点即不再接受回答，前端据此把卡片置为"已超时"。
+                expiresAt: Number(Date.parse(data.expiresAt || "")) || (Date.now() + ASK_TIMEOUT_FALLBACK_MS),
                 answer: "",
               }],
             }));
@@ -2279,6 +2316,8 @@ case "runtime_connecting":
                 id: approvalId,
                 tool: data.tool || "",
                 input: data.input || "",
+                // Qoder P1-4：交互归属（服务端开关打开时才带）。
+                owner: data.owner || null,
                 decision: "",
               }],
             }));
@@ -2529,6 +2568,17 @@ case "runtime_connecting":
         if (!endedWithError && onAgentEnd) onAgentEnd();
         break;
       }
+      case "run_draining":
+        // Qoder P0-3 前端收尾态（开关 qoderDrainOnAbort，默认关）：
+        // 服务端中断后先发 run_draining，再做有界排空（默认 ≤1.5s，静默 300ms 即结束）。
+        // 这里只把状态行切成「正在收尾」，让用户看到中断确实在收尾，而不是以为界面卡住；
+        // 刻意不改 runState.status（LIVE_RUN_STATUSES / 对账逻辑的判定口径保持原样）。
+        // 开关关闭时服务端不发该事件，本分支不会触发。
+        if (flag("qoderDrainOnAbort")) {
+          agentEventAtRef.current = Date.now();
+          setAgentPhase("正在收尾（投递在途消息）");
+        }
+        break;
       case "agent_error":
         // 用户点了中断（或本轮已被标记取消）时，SDK 会以 "Request aborted" 之类收尾。
         // 这不是"生成失败"：早先这里会先打上错误徽记与「模型调用失败：Request aborted」，
@@ -3244,6 +3294,15 @@ case "runtime_connecting":
     setRunState((state) => ({ ...state, status: "running" }));
   }, [patch, setAgentPhase]);
 
+  // 提问超时（服务端 5 分钟窗口已过）或回答被服务端拒绝时，把卡片标记为失效：
+  // 卡片不再提供输入，输入栏的待处理条也随之收起。
+  const markAskExpired = useCallback((messageId, blockId) => {
+    if (!messageId || !blockId) return;
+    patch(messageId, (msg) => (msg.blocks || []).some((block) => block.id === blockId && block.expired)
+      ? msg
+      : { ...msg, blocks: (msg.blocks || []).map((block) => (block.id === blockId ? { ...block, expired: true } : block)) });
+  }, [patch]);
+
   const handleMessageToggleTool = useCallback((messageId, toolId) => {
     patch(messageId, (msg) => {
       const blocks = (msg.blocks || []).map((block, index) => {
@@ -3316,15 +3375,27 @@ case "runtime_connecting":
     return null;
   }, [messages]);
   // 输入栏常驻入口：折叠过程收起时也要能直接处理待审批/待回答（计划 B01）。
+  // 已超时的提问不再进入待处理条：服务端已按假设继续，此时提交必然返回 no pending question。
   const pendingAsk = useMemo(() => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const blocks = messages[index]?.blocks;
       if (!Array.isArray(blocks)) continue;
-      const found = blocks.find((block) => block?.type === "ask" && !block.answer);
+      const found = blocks.find((block) => block?.type === "ask" && !block.answer && !block.expired);
       if (found) return { ...found, messageId: messages[index].id };
     }
     return null;
   }, [messages]);
+  // 提问时间窗口（服务端 ASK_TIMEOUT_MS）：到点把卡片标记为已超时，不再等用户去撞 404。
+  useEffect(() => {
+    if (!pendingAsk?.expiresAt) return undefined;
+    const remain = Number(pendingAsk.expiresAt) - Date.now();
+    if (remain <= 0) {
+      markAskExpired(pendingAsk.messageId, pendingAsk.id);
+      return undefined;
+    }
+    const timer = setTimeout(() => markAskExpired(pendingAsk.messageId, pendingAsk.id), remain + 50);
+    return () => clearTimeout(timer);
+  }, [pendingAsk, markAskExpired]);
   const locateApproval = useCallback(() => {
     const container = bodyRef.current;
     if (!container) return;
@@ -3641,7 +3712,7 @@ case "runtime_connecting":
                     <span>模型切换为 <b>{modelDisplayName(roundModel)}</b></span>
                   </div>
                 )}
-                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} runSummary={runSummary} executionFlow={executionFlow} />
+                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onAskExpired={markAskExpired} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} runSummary={runSummary} executionFlow={executionFlow} />
               </React.Fragment>
             );
            }); })()}
@@ -3756,6 +3827,7 @@ case "runtime_connecting":
             clientId={clientId}
             threadId={threadId}
             onAnswered={(blockId, answer) => handleMessageAskAnswered(pendingAsk?.messageId, blockId, answer)}
+            onExpired={(blockId) => markAskExpired(pendingAsk?.messageId, blockId)}
           />
           <div className="chat-input-row">
             {composerMenu && composerItems.length > 0 && (
@@ -4437,7 +4509,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onResend, index, prevRole, clientId, threadId, runSummary = null, executionFlow = null }) {
+function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onAskExpired, onResend, index, prevRole, clientId, threadId, runSummary = null, executionFlow = null }) {
   if (m.role === "system") {
     if (m.summary) {
       const runId = m.runId || null;
@@ -4603,7 +4675,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
     if (block.type === "tool") return <ToolCard key={key} tool={block} onToggle={() => onToggleTool?.(m.id, block.id || blockIndex)} />;
     if (block.type === "subagent") return <SubagentCard key={key} block={block} onOpenDetail={onOpenSubagent} />;
     if (block.type === "pipeline") return <PipelineCard key={key} block={block} onOpenFile={onOpenFile} />;
-    if (block.type === "ask") return <AskBlock key={key} block={block} clientId={clientId} threadId={threadId} onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)} />;
+    if (block.type === "ask") return <AskBlock key={key} block={block} clientId={clientId} threadId={threadId} onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)} onExpired={(blockId) => onAskExpired?.(m.id, blockId)} />;
     if (block.type === "approval") return <ApprovalBlock key={key} block={block} />;
     if (block.type === "process_note") return (
       <div className="flow-markdown process-narration process-note" key={key}>
@@ -5033,7 +5105,7 @@ function SubagentCard({ block, onOpenDetail }) {
  * 输入栏常驻的待处理条：待审批可直接允许/拒绝，待回答可直接提交；
  * 折叠过程收起或正在回看历史时，不必先找到卡片再操作。
  */
-function PendingActionBar({ approval, ask, onLocateApproval, onLocateAsk, clientId, threadId, onAnswered }) {
+function PendingActionBar({ approval, ask, onLocateApproval, onLocateAsk, clientId, threadId, onAnswered, onExpired }) {
   const [sending, setSending] = useState("");
   const [error, setError] = useState("");
   const [answer, setAnswer] = useState("");
@@ -5067,6 +5139,12 @@ function PendingActionBar({ approval, ask, onLocateApproval, onLocateAsk, client
         body: JSON.stringify({ client: clientId, thread: threadId, answer: value }),
       });
       const result = await res.json().catch(() => ({}));
+      if (res.status === 404) {
+        // 服务端已无该问题（5 分钟窗口已过或已在别处回答）：收起卡片，
+        // 而不是留一张点得动、一发就报 no pending question 的死卡片。
+        onExpired?.(ask?.id);
+        throw new Error("该问题已失效（超过 5 分钟未回答或已在别处回答），回答未提交");
+      }
       if (!res.ok) throw new Error(result.error || `回答失败（${res.status}）`);
       onAnswered?.(ask?.id, value);
       setAnswer("");
@@ -5113,14 +5191,16 @@ function PendingActionBar({ approval, ask, onLocateApproval, onLocateAsk, client
   );
 }
 
-function AskBlock({ block, clientId, threadId, onAnswered }) {
+function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  // 提问有 5 分钟时间窗口：服务端超时后按假设继续，卡片必须同步失效而不是继续接受输入。
+  const expired = Boolean(block.expired);
 
   const submit = async (text) => {
     const answer = (text || "").trim();
-    if (!answer || sending) return;
+    if (!answer || sending || expired) return;
     setSending(true);
     setError("");
     try {
@@ -5130,6 +5210,10 @@ function AskBlock({ block, clientId, threadId, onAnswered }) {
         body: JSON.stringify({ client: clientId, thread: threadId, answer }),
       });
       const result = await res.json().catch(() => ({}));
+      if (res.status === 404) {
+        onExpired?.(block.id);
+        throw new Error("该问题已失效（超过 5 分钟未回答或已在别处回答），回答未提交");
+      }
       if (!res.ok) throw new Error(result.error || `回答失败（${res.status}）`);
       onAnswered?.(block.id, answer);
       setInput("");
@@ -5140,15 +5224,21 @@ function AskBlock({ block, clientId, threadId, onAnswered }) {
   };
 
   return (
-    <div className={`ask-block ${block.answer ? "answered" : ""}`}>
+    <div className={`ask-block ${block.answer ? "answered" : ""} ${expired ? "expired" : ""}`}>
       <div className="ask-head">
         <Icon name="comment" size={12} />
         <span className="ask-title">需要你确认</span>
+        {(() => { const 归属 = 交互归属文案(block.owner); return 归属 ? <span className="interaction-owner" title={归属.title}>{归属.text}</span> : null; })()}
         {block.answer && <span className="ask-status">✓ 已回答</span>}
+        {!block.answer && expired && <span className="ask-status expired">已超时</span>}
       </div>
       <div className="ask-question">{block.question}</div>
       {block.answer ? (
         <div className="ask-answer">你的回答：{block.answer}</div>
+      ) : expired ? (
+        <div className="ask-expired" role="status">
+          超过 5 分钟未回答，Agent 已按自己的假设继续（本轮不再接受该问题的回答）。如需修正，请直接在下方输入消息说明。
+        </div>
       ) : (
         <>
           {block.options?.length > 0 && (
@@ -5163,7 +5253,7 @@ function AskBlock({ block, clientId, threadId, onAnswered }) {
               className="ask-input"
               placeholder="输入你的回答…"
               value={input}
-              onChange={(e) => updateInput(e.target.value)}
+              onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(input); } }}
             />
             <button className="btn primary ask-submit" onClick={() => submit(input)} disabled={sending}>
@@ -5178,6 +5268,20 @@ function AskBlock({ block, clientId, threadId, onAnswered }) {
 }
 
 // ========== 工具审批卡片（opencode 式：允许一次 / 总是允许 / 拒绝） ==========
+/**
+ * Qoder P1-4：交互归属文案。仅在服务端开关 qoderInteractionOwner 打开时，
+ * ask_user / tool_approval_request 载荷才带 owner；关闭时 block.owner 为 null，不渲染标签。
+ */
+function 交互归属文案(owner) {
+  const kind = String(owner?.kind || "");
+  const id = String(owner?.id || "");
+  const short = id.length > 18 ? `${id.slice(0, 15)}…` : id;
+  if (kind === "subagent") return { text: `来自子代理${short ? ` · ${short}` : ""}`, title: `该交互由子代理 ${id} 发起` };
+  if (kind === "turn") return { text: "来自本轮任务", title: `该交互属于本轮 Run ${id}` };
+  if (kind === "session") return { text: "来自会话", title: `该交互属于会话 ${id}` };
+  return null;
+}
+
 function ApprovalBlock({ block }) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
@@ -5209,6 +5313,7 @@ function ApprovalBlock({ block }) {
       <div className="approval-head">
         <Icon name="shield" size={12} />
         <span className="approval-title">需要审批：{toolLabel}</span>
+        {(() => { const 归属 = 交互归属文案(block.owner); return 归属 ? <span className="interaction-owner" title={归属.title}>{归属.text}</span> : null; })()}
         {block.decision === "allow" && <span className="approval-status">✓ 已允许（仅本次）</span>}
         {block.decision === "always" && <span className="approval-status">✓ 已总是允许（全局规则）</span>}
         {block.decision === "deny" && <span className="approval-status denied">✕ 已拒绝</span>}

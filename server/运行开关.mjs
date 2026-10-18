@@ -29,6 +29,11 @@ function readStringList(name) {
     .filter(Boolean);
 }
 
+/* ===== Qoder 对标优化开关族（报告：Qoder对标评审与交通规划Harness方案）=====
+   全部默认关 = 与历史基线行为完全一致；OAW_QODER_ALIGN=1 可一键打开整族用于预览，
+   关掉即整体回滚，无需改代码、无残留。 */
+const QODER_ALIGN = readFlag("OAW_QODER_ALIGN");
+
 /** 只读快照：进程内唯一事实。模块加载时解析一次（服务生命周期内不热更）。 */
 export const RUNTIME_FLAGS = Object.freeze({
   /** U2+U6：Pi 把关扩展（ToolCallEvent 单工具拦截 + 压缩生命周期事件增强） */
@@ -87,6 +92,50 @@ export const RUNTIME_FLAGS = Object.freeze({
   mapBookmarks: readFlag("OAW_MAP_BOOKMARKS"),
   /** 会话恢复 A4：运行中刷新恢复（冷启动探测 LIVE Run + Run 起点整段回放 + 恢复内容新建气泡，默认关） */
   replayRecover: readFlag("OAW_REPLAY_RECOVER"),
+  /** Qoder 对标总开关：打开后整族优化项生效（默认关；关掉即整体回滚） */
+  qoderAlign: QODER_ALIGN,
+  /** Qoder P0-1：SSE 重连退避加入抖动与退避上限放宽（默认关 = 基线固定倍增 500ms→5s 封顶） */
+  qoderSseBackoff: readFlag("OAW_QODER_SSE_BACKOFF") || QODER_ALIGN,
+  /** Qoder P0-4：Qoder/Codex 视觉令牌层（默认关 = pi-dark 基线配色；打开即整站换色，关掉零残留） */
+  qoderStyle: readFlag("OAW_QODER_STYLE") || QODER_ALIGN,
+  /** Qoder P0-2：对话流有界有序背压（默认关 = 基线直接 res.write，写不进去时由 Node 内部无上限缓冲） */
+  qoderSseBackpressure: readFlag("OAW_QODER_SSE_BACKPRESSURE") || QODER_ALIGN,
+  /** Qoder P0-2 队列上限（字节，默认 4 MiB）：排队字节超过即收束连接，交由重连回放补齐 */
+  qoderSseQueueMaxBytes: readPositiveInt("OAW_QODER_SSE_QUEUE_MAX_BYTES", 4 * 1024 * 1024),
+  /** Qoder P0-3：中断后残余消息排空（默认关 = 基线立即发 aborted，不等在途消息） */
+  qoderDrainOnAbort: readFlag("OAW_QODER_DRAIN_ON_ABORT") || QODER_ALIGN,
+  /** Qoder P0-3 排空上限（毫秒，默认 1500）：超过即强制发 aborted，避免中断收尾被无限拖长 */
+  qoderDrainMaxMs: readPositiveInt("OAW_QODER_DRAIN_MAX_MS", 1500),
+  /** Qoder P0-3 静默判定（毫秒，默认 300）：通道持续静默这么久即视为在途消息已排空 */
+  qoderDrainQuietMs: readPositiveInt("OAW_QODER_DRAIN_QUIET_MS", 300),
+  /* ===== P2 打磨层（均为配置型开关，不设环境变量时行为与基线完全一致）===== */
+  /** P2-2：对话流 SSE 心跳间隔（毫秒，默认 = 基线 5000；前端看门狗会按它派生） */
+  heartbeatChatMs: readPositiveInt("OAW_HEARTBEAT_CHAT_MS", 5000),
+  /** P2-2：事件流 SSE 心跳间隔（毫秒，默认 = 基线 15000） */
+  heartbeatEventsMs: readPositiveInt("OAW_HEARTBEAT_EVENTS_MS", 15000),
+  /** P2-2：浏览器帧流心跳间隔（毫秒，默认 = 基线 15000） */
+  heartbeatBrowserMs: readPositiveInt("OAW_HEARTBEAT_BROWSER_MS", 15000),
+  /** P2-4：视觉特效降级（默认关 = 保留背景模糊与动画；打开则去模糊、去长动效） */
+  visualEffectsOff: readFlag("OAW_VISUAL_EFFECTS_OFF"),
+  /** P2-1：SSE 事件缺号告警（默认关 = 不记录游标跳变；打开则在缺号时记入长连接诊断） */
+  qoderSeqGapAlert: readFlag("OAW_QODER_SEQ_GAP_ALERT") || QODER_ALIGN,
+  /* ===== P1 架构收口（可开关化部分）===== */
+  /** P1-5：服务端按 path 的连接配额（默认关 = 不检查，行为与基线一致；打开则超限返回 503 + Retry-After） */
+  streamQuota: readFlag("OAW_STREAM_QUOTA") || QODER_ALIGN,
+  /** P1-5 拒绝时的 Retry-After 秒数（默认 5） */
+  streamQuotaRetryAfterSeconds: readPositiveInt("OAW_STREAM_QUOTA_RETRY_AFTER_S", 5),
+  /** P1-2：事件负载结构校验（默认关 = 不校验；打开则只告警并计数，不改变落盘与投递行为） */
+  eventSchemaCheck: readFlag("OAW_EVENT_SCHEMA_CHECK") || QODER_ALIGN,
+  /** P1-8：右侧对象栏（本轮对象聚合：产出/来源/技能与 MCP/网页查阅/记忆 + 环境信息 + 后台进程） */
+  qoderObjectBar: readFlag("OAW_QODER_OBJECT_BAR") || QODER_ALIGN,
+  /** §4：声明式交通规划领域工作流（注册表 + 六个声明 + preflight 硬约束，默认关 = 不加载也不下发） */
+  domainWorkflows: readFlag("OAW_DOMAIN_WORKFLOWS") || QODER_ALIGN,
+  /** Qoder P0-2：超大 tool_output 单帧切分（默认关 = 原样单帧下发，与基线逐字一致） */
+  qoderToolOutputSplit: readFlag("OAW_QODER_TOOL_OUTPUT_SPLIT") || QODER_ALIGN,
+  /** Qoder P0-2 单帧上限（字节，默认 256 KiB）：超过即切为 tool_output_delta 增量帧 */
+  qoderToolOutputFrameMaxBytes: readPositiveInt("OAW_QODER_TOOL_OUTPUT_FRAME_MAX_BYTES", 256 * 1024),
+  /** P1-4：交互（HITL）归属——ask_user / tool_approval_request 载荷附带 owner{kind,id}（默认关 = 载荷与基线逐字一致） */
+  qoderInteractionOwner: readFlag("OAW_QODER_INTERACTION_OWNER") || QODER_ALIGN,
 });
 
 /** /api/status 下发形态：布尔与数值分开，前端只读布尔位。 */
@@ -117,5 +166,22 @@ export function runtimeFlagsSnapshot() {
     mapTemplates: RUNTIME_FLAGS.mapTemplates,
     mapBookmarks: RUNTIME_FLAGS.mapBookmarks,
     replayRecover: RUNTIME_FLAGS.replayRecover,
+    qoderAlign: RUNTIME_FLAGS.qoderAlign,
+    qoderSseBackoff: RUNTIME_FLAGS.qoderSseBackoff,
+    qoderStyle: RUNTIME_FLAGS.qoderStyle,
+    qoderSseBackpressure: RUNTIME_FLAGS.qoderSseBackpressure,
+    qoderDrainOnAbort: RUNTIME_FLAGS.qoderDrainOnAbort,
+    visualEffectsOff: RUNTIME_FLAGS.visualEffectsOff,
+    qoderSeqGapAlert: RUNTIME_FLAGS.qoderSeqGapAlert,
+    streamQuota: RUNTIME_FLAGS.streamQuota,
+    eventSchemaCheck: RUNTIME_FLAGS.eventSchemaCheck,
+    qoderObjectBar: RUNTIME_FLAGS.qoderObjectBar,
+    domainWorkflows: RUNTIME_FLAGS.domainWorkflows,
+    qoderToolOutputSplit: RUNTIME_FLAGS.qoderToolOutputSplit,
+    qoderInteractionOwner: RUNTIME_FLAGS.qoderInteractionOwner,
+    // 数值位：前端 numberFlag() 读取（心跳间隔需下发给前端派生看门狗阈值）。
+    heartbeatChatMs: RUNTIME_FLAGS.heartbeatChatMs,
+    heartbeatEventsMs: RUNTIME_FLAGS.heartbeatEventsMs,
+    heartbeatBrowserMs: RUNTIME_FLAGS.heartbeatBrowserMs,
   };
 }

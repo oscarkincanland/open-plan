@@ -28,3 +28,12 @@ export async function initRuntimeFlags() {
 export function flag(name) {
   return snapshot[name] === true;
 }
+
+/**
+ * 只读数值开关（如心跳间隔）：快照缺失或值非法时返回 fallback。
+ * 与 flag() 共用同一份快照，避免各模块各自解析环境变量造成语义分叉。
+ */
+export function numberFlag(name, fallback = 0) {
+  const value = Number(snapshot[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}

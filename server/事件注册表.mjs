@@ -28,10 +28,11 @@ const REGISTRY = [
   { type: "thinking_level", lifecycle: true, persist: true, note: "思考深度设置" },
   { type: "run_checkpoint_updated", lifecycle: true, persist: true, note: "恢复检查点更新" },
   { type: "run_cancel_requested", lifecycle: true, persist: true, note: "收到取消请求" },
+  { type: "run_draining", lifecycle: true, persist: true, note: "中断后残余消息排空窗口（Qoder P0-3，默认关）", schema: { required: ["runId"], types: { runId: "string", reason: "string" } } },
   { type: "run_recovered", lifecycle: true, persist: true, note: "服务重启后标记恢复" },
   { type: "run_recovery_started", lifecycle: true, persist: true, note: "用户选择继续该 Run" },
   { type: "run_finished", lifecycle: true, persist: true, note: "Run 终态（权威完成语义）" },
-  { type: "aborted", lifecycle: true, persist: true, note: "回合被中断" },
+  { type: "aborted", lifecycle: true, persist: true, note: "回合被中断", schema: { required: ["runId"], types: { runId: "string" } } },
 
   // ---- 回合 / 消息边界 ----
   { type: "agent_started", lifecycle: true, persist: true, note: "Agent 回合开始" },
@@ -83,6 +84,7 @@ const REGISTRY = [
   // ---- 审批 / 提问 ----
   { type: "ask_user", lifecycle: true, persist: true, note: "向用户提问" },
   { type: "tool_approval_request", lifecycle: true, persist: true, note: "工具审批请求" },
+  { type: "interaction_owner_changed", lifecycle: true, persist: true, note: "交互归属变更（Qoder P1-4 子代理接管，默认关）" },
   { type: "tool_approval_resolved", lifecycle: true, persist: true, note: "工具审批结果" },
 
   // ---- 通道与重试 ----
@@ -137,6 +139,12 @@ const REGISTRY = [
   { type: "review_confirmed", lifecycle: true, persist: true, note: "用户确认写回" },
   { type: "review_confirmation_rejected", lifecycle: true, persist: true, note: "用户拒绝写回" },
 
+  // ---- 领域工作流硬约束（Qoder 对标 §4.3，默认关）----
+  { type: "geo_out_of_range", lifecycle: true, persist: true, note: "坐标越出中国范围（经度 73–135°E / 纬度 18–54°N）" },
+  { type: "data_integrity_failed", lifecycle: true, persist: true, note: "记录数 expected vs actual 不一致" },
+  { type: "artifact_root_violation", lifecycle: true, persist: true, note: "产物路径越出工作区" },
+  { type: "preflight_skipped", lifecycle: true, persist: true, note: "用户显式跳过 preflight 硬约束校验" },
+
   // ---- 记忆治理 ----
   { type: "memory_proposal", lifecycle: true, persist: true, note: "记忆建议提交（UI 事件）" },
   { type: "memory_proposal_updated", lifecycle: true, persist: true, note: "记忆建议内容更新" },
@@ -155,6 +163,7 @@ const REGISTRY = [
   { type: "token", lifecycle: false, persist: false, note: "回答流式文本" },
   { type: "thinking", lifecycle: false, persist: false, note: "思考流" },
   { type: "tool_output", lifecycle: false, persist: false, note: "工具输出流" },
+  { type: "tool_output_delta", lifecycle: false, persist: false, note: "工具输出增量分片（Qoder P0-2 单帧护栏，默认关）" },
   { type: "text_boundary", lifecycle: false, persist: false, note: "文本段落边界（打字机）" },
   { type: "thinking_boundary", lifecycle: false, persist: false, note: "思考段落边界" },
 ];
@@ -175,6 +184,38 @@ export const LIFECYCLE_EVENT_TYPES = new Set(EVENT_REGISTRY.filter((item) => ite
 export const DELTA_EVENT_TYPES = new Set(EVENT_REGISTRY.filter((item) => !item.lifecycle && !item.persist).map((item) => item.type));
 /** 需要写入 .oaw/events 事件流的事件 */
 export const PERSISTED_TYPES = new Set(EVENT_REGISTRY.filter((item) => item.persist).map((item) => item.type));
+
+/**
+ * P1-2：事件负载结构校验（只校验「声明了 schema 的事件」）。
+ * schema 形态：`{ required: ["runId"], types: { runId: "string" } }`，类型取值
+ * string / number / boolean / object / array。
+ * 未声明 schema 的事件一律通过（`skipped: true`），因此存量 100+ 事件不受影响。
+ * 本函数是纯函数：不抛错、不写日志，由调用方决定「告警 / 计数 / 丢弃 / 阻断」。
+ */
+const SCHEMA_TYPE_CHECKS = {
+  string: (value) => typeof value === "string",
+  number: (value) => typeof value === "number" && Number.isFinite(value),
+  boolean: (value) => typeof value === "boolean",
+  object: (value) => value !== null && typeof value === "object" && !Array.isArray(value),
+  array: (value) => Array.isArray(value),
+};
+
+export function validateEventPayload(type, data = {}) {
+  const name = String(type || "");
+  const spec = byType.get(name) || null;
+  const schema = spec?.schema || null;
+  if (!schema) return { ok: true, skipped: true, type: name, missing: [], wrongType: [] };
+  const payload = data && typeof data === "object" ? data : {};
+  const missing = (schema.required || []).filter((key) => payload[key] === undefined || payload[key] === null);
+  const wrongType = Object.entries(schema.types || {})
+    .filter(([key, kind]) => {
+      if (payload[key] === undefined) return false;
+      const check = SCHEMA_TYPE_CHECKS[kind];
+      return check ? !check(payload[key]) : false;
+    })
+    .map(([key, kind]) => `${key} 期望 ${kind}`);
+  return { ok: missing.length === 0 && wrongType.length === 0, skipped: false, type: name, missing, wrongType };
+}
 
 export function eventSpec(type) {
   return byType.get(String(type || "")) || null;

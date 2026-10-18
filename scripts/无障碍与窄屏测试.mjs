@@ -80,14 +80,32 @@ function 无标签图标按钮() {
 }
 
 // ---------- 工具：颜色对比度 ----------
-const 亮度 = (hex) => {
-  const 值 = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+// P2-6：WCAG 对比度必须按「合成后的实色」计算——令牌层里存在 #rrggbbaa 形式的
+// 半透明前景色（如 Qoder 令牌层的 --muted/--dim），若直接忽略 alpha 会得出虚高的对比度，
+// 让「开关打开后配色好看但读不清」这类问题漏检。
+function 解析色(hex) {
+  const 值 = String(hex).trim().replace("#", "");
+  if (值.length === 3) {
+    return { r: parseInt(值[0] + 值[0], 16), g: parseInt(值[1] + 值[1], 16), b: parseInt(值[2] + 值[2], 16), a: 1 };
+  }
+  const 通道 = (i) => parseInt(值.slice(i, i + 2), 16);
+  return { r: 通道(0), g: 通道(2), b: 通道(4), a: 值.length >= 8 ? 通道(6) / 255 : 1 };
+}
+function 合成(前景, 背景) {
+  const f = 解析色(前景);
+  if (f.a >= 1) return f;
+  const b = 解析色(背景);
+  const 混 = (x, y) => Math.round(x * f.a + y * (1 - f.a));
+  return { r: 混(f.r, b.r), g: 混(f.g, b.g), b: 混(f.b, b.b), a: 1 };
+}
+const 亮度 = (色) => {
+  const 值 = [色.r, 色.g, 色.b].map((c) => c / 255)
     .map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
   return 0.2126 * 值[0] + 0.7152 * 值[1] + 0.0722 * 值[2];
 };
 const 对比度 = (前景, 背景) => {
-  const a = 亮度(前景);
-  const b = 亮度(背景);
+  const a = 亮度(合成(前景, 背景));
+  const b = 亮度(合成(背景, 背景));
   return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 };
 /** 从样式表里取某个选择器块的变量表。 */
@@ -97,9 +115,23 @@ function 主题变量(块选择器) {
   const 结束 = 样式.indexOf("\n}", start);
   const 块 = 样式.slice(start, 结束 === -1 ? undefined : 结束);
   const 变量 = {};
+  // 第一遍：直接色值
   const re = /(--[\w-]+)\s*:\s*(#[0-9a-fA-F]{3,8})\s*;/g;
   let m;
   while ((m = re.exec(块))) 变量[m[1]] = m[2];
+  // 第二遍：解析 var(--token) 间接引用（令牌三层化的标准写法：
+  // --body-bg: var(--oaw-gray-050)）。不做这一步会把正确写法误判成"缺少变量"。
+  const reVar = /(--[\w-]+)\s*:\s*var\(\s*(--[\w-]+)\s*\)\s*;/g;
+  let 解析中 = true;
+  while (解析中) {
+    解析中 = false;
+    reVar.lastIndex = 0;
+    while ((m = reVar.exec(块))) {
+      if (变量[m[1]]) continue;
+      const 目标 = 变量[m[2]];
+      if (目标) { 变量[m[1]] = 目标; 解析中 = true; }
+    }
+  }
   return 变量;
 }
 
@@ -165,6 +197,9 @@ console.log("\n▶ 对比度（按主题变量实际计算）");
   const 主题 = {
     暗色: 主题变量(":root {"),
     亮色: 主题变量('[data-theme="light"] {'),
+    // P2-6：opt-in 的 Qoder 令牌层同样纳入审计——只在开关打开时生效的配色最容易漏检。
+    "暗色·Qoder": 主题变量(':root[data-oaw-style="qoder"] {'),
+    "亮色·Qoder": 主题变量('[data-theme="light"][data-oaw-style="qoder"] {'),
   };
   // 阈值：正文 AAA(7)，次要文字 AA(4.5)，三级/状态色按非正文要求(3)。
   // 容差 0.05：主题色按十六进制取整，边界值允许微小舍入差。
@@ -307,7 +342,9 @@ console.log("\n▶ 启动稳定骨架与焦点归还");
   assert.match(TaskCenter, /const triggerRef = useRef\(null\)/, "任务中心应记录触发按钮");
   assert.match(TaskCenter, /const closePanel = useCallback/, "应有统一关闭弹层逻辑");
   assert.match(TaskCenter, /event\.key === "Escape"/, "任务中心应支持 Esc 关闭");
-  assert.match(TaskCenter, /requestAnimationFrame\(\(\) => triggerRef\.current\?\.focus\(\)\)/, "关闭任务中心后应把焦点还给触发按钮");
+  // 焦点归还断言按「意图」而非某一种写法校验：实现里 anchor 取 (anchorRef || triggerRef)，
+  // 早先的正则绑死了 triggerRef.current?.focus() 的字面写法，在引入 anchorRef 后失效（过期断言）。
+  assert.match(TaskCenter, /requestAnimationFrame\(\(\) => \{[\s\S]*?triggerRef\.current[\s\S]*?focus\?\.\(\)/, "关闭任务中心后应把焦点还给触发按钮");
 });
 
 console.log("\n▶ 减少动效（跨端同语义）");

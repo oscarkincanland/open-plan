@@ -174,11 +174,29 @@ function updatePersistedApproval(id, patch) {
 }
 
 /**
+ * Qoder P1-4：交互归属规范化。
+ *
+ * 只接受 `kind ∈ {turn, subagent, session}` 且 id 非空的归属；其余一律视为「无归属」，
+ * 由调用方（agent.mjs）在开关打开时才传入——因此开关关闭时载荷与基线**逐字一致**。
+ * 本模块刻意不读运行开关：门控放在调用侧，保证纯函数可独立断言。
+ */
+export function normalizeOwner(owner) {
+  const kind = String(owner?.kind || "");
+  const id = String(owner?.id ?? "").trim();
+  if (!id) return null;
+  if (!["turn", "subagent", "session"].includes(kind)) return null;
+  return { kind, id };
+}
+
+/**
  * 工具执行前调用：返回前为 allow（继续执行）或抛错（deny/超时/被拒绝）。
  * ask 时挂起等待用户在前端审批（允许一次 / 总是允许 / 拒绝），
  * 等待项持久化到 .oaw/pending-approvals.json，服务重启后仍可恢复。
+ *
+ * `owner`（可选，Qoder P1-4）：这条交互由谁发起——`turn`（本轮）/ `subagent`（子代理）/
+ * `session`（会话）。仅在传入且合法时进入 `tool_approval_request` 载荷。
  */
-export function requireToolApproval({ entry, tool, input, runId, threadId, workspace, emit }) {
+export function requireToolApproval({ entry, tool, input, runId, threadId, workspace, emit, owner = null }) {
   const action = matchToolAction(tool, input);
   if (action === "allow") return Promise.resolve();
   if (action === "deny") {
@@ -225,6 +243,7 @@ export function requireToolApproval({ entry, tool, input, runId, threadId, works
     pendingApprovals.set(approvalId, { resolve: settled, reject: settled, item, timer });
     persistPendingApproval(item);
     try {
+      const 归属 = normalizeOwner(owner);
       emit?.("tool_approval_request", {
         id: approvalId,
         tool,
@@ -233,6 +252,8 @@ export function requireToolApproval({ entry, tool, input, runId, threadId, works
         threadId: item.threadId,
         workspace: workspace || entry?.workspace || null,
         action,
+        // Qoder P1-4：仅在归属合法时附带（未传/非法 → 载荷与基线逐字一致）。
+        ...(归属 ? { owner: 归属 } : {}),
       });
     } catch {}
   });

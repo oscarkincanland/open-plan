@@ -42,7 +42,7 @@ import { createPiNetworkAdapter } from "./Pi网络代理.mjs";
 import { listMcpServers, saveMcpServer, updateMcpServer, deleteMcpServer, testMcpServer, closeMcpConnections } from "./mcp管理.mjs";
 import { listPiExtensions, addPiExtension, updatePiExtension, checkPiExtension, deletePiExtension } from "./pi扩展管理.mjs";
 import { searchPiPackageCatalog, resolveInstalledPiPackage } from "./pi包目录.mjs";
-import { registerServerStream, releaseServerStream, noteStreamWrite, listServerStreams, serverStreamStats, closeServerStreams, sweepServerStreams } from "./流连接.mjs";
+import { registerServerStream, releaseServerStream, noteStreamWrite, listServerStreams, serverStreamStats, closeServerStreams, sweepServerStreams, streamQuotaOf, rejectStreamQuota } from "./流连接.mjs";
 import {
   getConfigStatus,
   importLocalPiConfig,
@@ -2126,12 +2126,26 @@ app.get("/api/browser/shot", (req, res) => {
   }
 });
 
+/**
+ * Qoder P1-5：SSE 流配额门（开关 streamQuota，默认关 = 完全不检查，行为与基线一致）。
+ * 超限时按 HTTP 语义返回 503 + `Retry-After`，不登记流、不影响既有连接。
+ * @returns {boolean} true 表示已拒绝并写好响应，调用端点应立即 return。
+ */
+function enforceStreamQuota(res, path) {
+  if (!RUNTIME_FLAGS.streamQuota) return false;
+  const quota = streamQuotaOf(path);
+  if (quota.ok) return false;
+  rejectStreamQuota(res, { ...quota, retryAfterSeconds: RUNTIME_FLAGS.streamQuotaRetryAfterSeconds });
+  return true;
+}
+
 app.get("/api/browser/stream", (req, res) => {
   const client = String(req.query.client || "");
   const thread = String(req.query.thread || "");
   const withFrames = req.query.frames !== "0";
   if (!client) return res.status(400).end();
   const key = browserModule.browserSessionKey(client, thread);
+  if (enforceStreamQuota(res, "/api/browser/stream")) return;
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
@@ -2201,7 +2215,8 @@ app.get("/api/browser/stream", (req, res) => {
       // 心跳也计入写入记账：否则"纯状态流"在诊断里会一直显示静默（被误判成僵尸流）。
       if (streamId) noteStreamWrite(streamId, Buffer.byteLength(chunk));
     } catch { cleanup(); }
-  }, 15000);
+    // P2-2：心跳间隔由开关提供，默认 15000 = 基线值。
+  }, RUNTIME_FLAGS.heartbeatBrowserMs);
   const session = browserModule.getBrowserSession(key);
   write({ type: "state", data: session ? session.stateView() : { active: false, url: "", title: "", loading: false, hasFrame: false, ownership: { owner: "agent", reason: "", leaseExpiresAt: 0, secondsRemaining: 0 } } });
   if (session?.state?.active) session.refreshTabs().catch(() => {});
@@ -2495,14 +2510,51 @@ app.post("/api/skills/preflight", (req, res) => {
 });
 
 // 声明式工作流注册表：返回技能依赖、可用性和执行步骤，供前端与 Agent 共用。
-app.get("/api/workflows", (_req, res) => {
-  res.json({ workflows: listWorkflows(scanSkills()) });
+app.get("/api/workflows", async (_req, res) => {
+  const payload = { workflows: listWorkflows(scanSkills()) };
+  // §4 领域工作流（Qoder 对标）：默认关，仅追加只读 domain 字段，既有 workflows 结构不变。
+  if (RUNTIME_FLAGS.domainWorkflows) {
+    try {
+      const { 列出工作流 } = await import("./工作流注册表.mjs");
+      payload.domain = (await 列出工作流()).map(({ 文件, ...声明 }) => 声明);
+    } catch (error) {
+      payload.domain = [];
+      payload.domainError = String(error?.message || error);
+    }
+  }
+  res.json(payload);
 });
 
 app.get("/api/workflows/:id/validate", (req, res) => {
   const workflow = getWorkflow(req.params.id, scanSkills());
   if (!workflow) return res.status(404).json({ ok: false, error: "workflow not found" });
   res.json({ ok: workflow.valid, workflow, message: workflow.valid ? "工作流依赖完整" : `缺少技能：${workflow.missing.join(", ")}` });
+});
+
+// §4 领域工作流 preflight 试算（Qoder 对标 M4.4，flag OAW_DOMAIN_WORKFLOWS，默认关）。
+// 只读：跑 server/工作流校验.mjs 的纯函数检查器，不落盘、不发事件、不改任何运行状态；
+// 关掉开关时该路径不可见（404），前端也不会渲染入口。
+app.post("/api/domain-workflows/preflight", async (req, res) => {
+  if (!RUNTIME_FLAGS.domainWorkflows) return res.status(404).json({ ok: false, error: "领域工作流未启用" });
+  const workflowId = String(req.body?.workflowId || "").trim();
+  if (!workflowId) return res.status(400).json({ ok: false, error: "缺少 workflowId" });
+  try {
+    const [{ 取工作流 }, { 运行预检 }] = await Promise.all([
+      import("./工作流注册表.mjs"),
+      import("./工作流校验.mjs"),
+    ]);
+    const workflow = await 取工作流(workflowId);
+    if (!workflow) return res.status(404).json({ ok: false, error: "工作流不存在" });
+    const 预检 = 运行预检(workflow, {
+      坐标点: req.body?.坐标点,
+      记录数: req.body?.记录数,
+      写回: req.body?.写回,
+      产物路径: req.body?.产物路径,
+    }, { 跳过校验: req.body?.跳过校验 === true });
+    res.json({ ok: true, workflow: { id: workflow.id, title: workflow.title }, 预检 });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error?.message || error) });
+  }
 });
 
 // 智能体广场：内置 Agent 保留只读，自定义 Agent 写入项目 .oaw 配置并可再次编辑。
@@ -2992,6 +3044,7 @@ app.get("/api/agent/events", (req, res) => {
   const headerCursor = Number(req.headers["last-event-id"] || 0) || 0;
   const after = Math.max(queryCursor, headerCursor);
   const replayLimit = Math.max(1, Math.min(2000, Number(req.query.limit || 2000) || 2000));
+  if (enforceStreamQuota(res, "/api/agent/events")) return;
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
@@ -3035,7 +3088,8 @@ app.get("/api/agent/events", (req, res) => {
       res.write(chunk);
       if (streamId) noteStreamWrite(streamId, Buffer.byteLength(chunk));
     } catch { cleanup(); }
-  }, 15000);
+    // P2-2：心跳间隔由开关提供，默认 15000 = 基线值。
+  }, RUNTIME_FLAGS.heartbeatEventsMs);
   const replay = listEvents({ after, clientId, threadId, limit: replayLimit });
   for (const event of replay.events) send(event);
   try { res.write(`event: open\ndata: ${JSON.stringify({ cursor: lastSent, latest: replay.latest, earliest: replay.earliest, truncated: replay.truncated })}\n\n`); } catch {}
@@ -3075,7 +3129,8 @@ app.post("/api/runs/:id/cancel", async (req, res) => {
     } else {
       finishRun(run.id, { status: "cancelled", sessionId: run.sessionId, error: "任务在恢复前被取消", summary: "任务已取消" });
     }
-    res.json({ ok: true, run: getRun(run.id), previous: pending });
+    // P2-3：同上，回执仍排队的轮次数量（取消发生在排队期时该值 > 0）。
+    res.json({ ok: true, run: getRun(run.id), previous: pending, stillQueued: Number(live?.queuedCount || 0) });
   } catch (error) {
     res.status(409).json({ error: error.message, run: getRun(run.id) });
   }
@@ -3834,7 +3889,9 @@ app.post("/api/agent/abort", async (req, res) => {
     }
     if (runId) requestRunCancellation(runId, "用户在对话栏请求中断");
     const result = await agentManager.abort(key, { runId });
-    res.json({ ...result, runId: result.runId || runId || null });
+    // P2-3：一并回执「取消后仍排队的轮次数量」，前端据此区分「已停」与「排队中已停」
+    // （基线只返回 ok/runId，无法判断是否还有排队的轮次）。字段为新增，不影响既有消费方。
+    res.json({ ...result, runId: result.runId || runId || null, stillQueued: Number(live?.queuedCount || 0) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -4627,6 +4684,22 @@ app.post("/api/agent/resume", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
 
+// 优雅收流（配合前端消除 net::ERR_ABORTED）：SSE 流式响应永远不会"完成"，
+// 客户端直接 close() EventSource 等于 cancel 一个未完成请求，浏览器控制台必报
+// net::ERR_ABORTED。前端切会话/重连时先调用本接口让服务端把旧 SSE 响应正常
+// end（请求随即记为"完成"），再关本地 EventSource 就没有中止噪音。
+// 只收同键最旧的一条：重连/多标签场景下较新的连接（可能正是活跃流）不受影响。
+app.post("/api/agent/stream/close", (req, res) => {
+  const body = req.body || {};
+  const client = String(body.client || "");
+  const thread = String(body.thread || "");
+  const victim = listServerStreams()
+    .filter((s) => s.path === "/api/agent/stream" && s.client === client && (s.thread || "") === thread)
+    .sort((a, b) => b.ageMs - a.ageMs)[0];
+  if (victim) closeServerStreams({ id: victim.id });
+  res.json({ closed: victim ? 1 : 0 });
+});
+
 // SSE stream per client
 app.get("/api/agent/stream", async (req, res) => {
   const client = String(req.query.client || "");
@@ -4636,6 +4709,7 @@ app.get("/api/agent/stream", async (req, res) => {
   const project = projectManager.getProjectForWorkspace(workspace);
   const defaultModel = String(project?.settings?.defaultModel || "").trim();
 
+  if (enforceStreamQuota(res, "/api/agent/stream")) return;
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
@@ -4670,16 +4744,67 @@ app.get("/api/agent/stream", async (req, res) => {
   req.on("close", cleanup);
   res.on("close", cleanup);
   res.on("error", cleanup);
+  // Qoder P0-2（开关 qoderSseBackpressure，默认关）：
+  // 基线直接 res.write；写不进去时由 Node 内部无上限缓冲，长 tool_output 会持续堆积内存。
+  // 打开后改为「有界有序队列 + drain 驱动」的泵：
+  //   · 有序：SSE 的 id: 与 token 顺序都不能乱，因此 FIFO 排队，不像浏览器帧流那样"最新即可"；
+  //   · 有界：排队字节超上限即收束连接，前端会重连并按自身游标回放补齐事件，内容不丢、内存不涨；
+  //   · 回归安全：开关关闭时走下方基线分支，与优化前逐字一致。
+  const queueMaxBytes = Number(RUNTIME_FLAGS.qoderSseQueueMaxBytes) > 0
+    ? Number(RUNTIME_FLAGS.qoderSseQueueMaxBytes)
+    : 4 * 1024 * 1024;
+  const writeQueue = [];
+  let queuedBytes = 0;
+  let writable = true;
+  let pumping = false;
+  const pumpOut = () => {
+    if (closed || !writable || pumping) return;
+    pumping = true;
+    try {
+      while (writeQueue.length && writable && !closed) {
+        const item = writeQueue[0];
+        let ok = false;
+        try {
+          ok = res.write(item.chunk);
+        } catch {
+          cleanup();
+          return;
+        }
+        writeQueue.shift();
+        queuedBytes -= item.bytes;
+        if (streamId) noteStreamWrite(streamId, item.bytes);
+        if (!ok) {
+          writable = false;
+          res.once("drain", () => { writable = true; pumpOut(); });
+        }
+      }
+    } finally {
+      pumping = false;
+    }
+  };
   const write = (chunk) => {
     if (closed) return false;
-    try {
-      res.write(chunk);
-      if (streamId) noteStreamWrite(streamId, Buffer.byteLength(String(chunk)));
-      return true;
-    } catch {
+    if (!RUNTIME_FLAGS.qoderSseBackpressure) {
+      // ── 基线分支（开关关闭时执行，与优化前逐字一致）──
+      try {
+        res.write(chunk);
+        if (streamId) noteStreamWrite(streamId, Buffer.byteLength(String(chunk)));
+        return true;
+      } catch {
+        cleanup();
+        return false;
+      }
+    }
+    const bytes = Buffer.byteLength(String(chunk));
+    if (queuedBytes + bytes > queueMaxBytes) {
+      // 队列超限：收束连接，交由前端重连 + 事件回放补齐，避免内存无界增长。
       cleanup();
       return false;
     }
+    writeQueue.push({ chunk, bytes });
+    queuedBytes += bytes;
+    pumpOut();
+    return true;
   };
   write(`data: ${JSON.stringify({
     type: "runtime_connecting",
@@ -4691,7 +4816,8 @@ app.get("/api/agent/stream", async (req, res) => {
   // 前端会把它当作传输层心跳，不会提前标记 Agent 已握手。
   heartbeat = setInterval(() => {
     write(`event: heartbeat\ndata: ${JSON.stringify({ type: "heartbeat", at: new Date().toISOString() })}\n\n`);
-  }, 5000);
+    // P2-2：心跳间隔由开关提供，默认 5000 = 基线值（不设环境变量时行为完全不变）。
+  }, RUNTIME_FLAGS.heartbeatChatMs);
 
 try {
     entry = await ensureRuntimeWithTimeout(agentKey(client, thread), { threadId: thread, cwd: workspace, modelSpec: defaultModel });
@@ -4914,6 +5040,7 @@ app.get("/api/memory", (_req, res) => {
 });
 
 app.get("/api/memory/stream", (req, res) => {
+  if (enforceStreamQuota(res, "/api/memory/stream")) return;
   res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
   startMemoryWatcher();
   let closed = false;
