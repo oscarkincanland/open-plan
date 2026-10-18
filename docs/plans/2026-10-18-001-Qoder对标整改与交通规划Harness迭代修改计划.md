@@ -257,6 +257,8 @@ P0-2（背压）与 P1-1（执行句柄）是强依赖前置：§4 领域工作�
   - 依赖：P0-2、P0-3（先有新事件再有 schema）
   - 输出：`事件注册表.mjs` 结构扩展；校验函数落在 `server/事件存储.mjs` 写入路径
   - 验证：`test:event-registry`、`test:pi-iteration` 全绿；新增 `scripts/事件负载校验测试.mjs`（构造非法负载断言 `strict` 下抛错、默认下仅 warn）
+  - 🟡 **2026-10-19 部分落地（保持未勾选）**：机制已交付（`validateEventPayload()` 纯函数 + `appendEvent` 门控调用 + 违规计数经 `eventStoreInfo().schemaViolations` 只读暴露），**首批 8 个事件已声明 `schema`**，字段逐条核对过全部发射点、可空字段不进校验；新增 `scripts/事件负载校验测试.mjs`（`npm run test:event-payload`，11 例：语义 / 覆盖防回退 / 防过严 / 发射点静态契约 / 接线 / 子进程 A-B）。
+  - 🟡 **与原文口径的差异**：① 未用 typebox，改为零新增依赖的手写 schema（`required` + `types`）；② 开关名用 `OAW_EVENT_SCHEMA_CHECK`（默认关），**只告警 + 计数、不抛错也不阻断**，比原文「测试环境 throw」更保守；③ 原文候选的 `stream_quota_rejected` 并不存在为事件（P1-5 在 HTTP 层拒绝），故未纳入。
 
 - [ ] **P1-3 "先订阅后发送"固化**
   - 输入：`client/src/components/ChatPanel.jsx`（已有 `streamReadyRef`；提交路径）

@@ -31,7 +31,7 @@ const REGISTRY = [
   { type: "run_draining", lifecycle: true, persist: true, note: "中断后残余消息排空窗口（Qoder P0-3，默认关）", schema: { required: ["runId"], types: { runId: "string", reason: "string" } } },
   { type: "run_recovered", lifecycle: true, persist: true, note: "服务重启后标记恢复" },
   { type: "run_recovery_started", lifecycle: true, persist: true, note: "用户选择继续该 Run" },
-  { type: "run_finished", lifecycle: true, persist: true, note: "Run 终态（权威完成语义）" },
+  { type: "run_finished", lifecycle: true, persist: true, note: "Run 终态（权威完成语义）", schema: { required: ["runId", "status"], types: { runId: "string", status: "string", artifacts: "array" } } },
   { type: "aborted", lifecycle: true, persist: true, note: "回合被中断", schema: { required: ["runId"], types: { runId: "string" } } },
 
   // ---- 回合 / 消息边界 ----
@@ -44,7 +44,7 @@ const REGISTRY = [
 
   // ---- 工具与写入 ----
   { type: "tool_start", lifecycle: true, persist: true, note: "工具调用开始" },
-  { type: "tool_end", lifecycle: true, persist: true, note: "工具调用结束" },
+  { type: "tool_end", lifecycle: true, persist: true, note: "工具调用结束", schema: { required: ["name"], types: { name: "string", isError: "boolean" } } },
   { type: "tool_call_progress", lifecycle: true, persist: false, note: "工具分段进度（高频）" },
   { type: "tool_repeat_warning", lifecycle: true, persist: true, note: "同参数重复调用提醒" },
   { type: "completion_nudge", lifecycle: true, persist: true, note: "收尾强制完成声明提醒" },
@@ -82,9 +82,9 @@ const REGISTRY = [
   { type: "pipeline_finished", lifecycle: true, persist: true, note: "编辑流水线结束（交付产物/回环/失败终态）" },
 
   // ---- 审批 / 提问 ----
-  { type: "ask_user", lifecycle: true, persist: true, note: "向用户提问" },
-  { type: "tool_approval_request", lifecycle: true, persist: true, note: "工具审批请求" },
-  { type: "interaction_owner_changed", lifecycle: true, persist: true, note: "交互归属变更（Qoder P1-4 子代理接管，默认关）" },
+  { type: "ask_user", lifecycle: true, persist: true, note: "向用户提问", schema: { required: ["askId", "question"], types: { askId: "string", question: "string", options: "array" } } },
+  { type: "tool_approval_request", lifecycle: true, persist: true, note: "工具审批请求", schema: { required: ["id", "tool"], types: { id: "string", tool: "string", action: "string" } } },
+  { type: "interaction_owner_changed", lifecycle: true, persist: true, note: "交互归属变更（Qoder P1-4 子代理接管，默认关）", schema: { required: ["owner"], types: { owner: "object", status: "string" } } },
   { type: "tool_approval_resolved", lifecycle: true, persist: true, note: "工具审批结果" },
 
   // ---- 通道与重试 ----
@@ -163,7 +163,7 @@ const REGISTRY = [
   { type: "token", lifecycle: false, persist: false, note: "回答流式文本" },
   { type: "thinking", lifecycle: false, persist: false, note: "思考流" },
   { type: "tool_output", lifecycle: false, persist: false, note: "工具输出流" },
-  { type: "tool_output_delta", lifecycle: false, persist: false, note: "工具输出增量分片（Qoder P0-2 单帧护栏，默认关）" },
+  { type: "tool_output_delta", lifecycle: false, persist: false, note: "工具输出增量分片（Qoder P0-2 单帧护栏，默认关）", schema: { required: ["output"], types: { output: "string", index: "number", frames: "number" } } },
   { type: "text_boundary", lifecycle: false, persist: false, note: "文本段落边界（打字机）" },
   { type: "thinking_boundary", lifecycle: false, persist: false, note: "思考段落边界" },
 ];
