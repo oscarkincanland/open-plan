@@ -67,7 +67,12 @@ test("服务端门控：开关关闭时端点返回 404（不暴露）", () => {
 test("样式为纯追加：只新增 canvas-tab-workflows / wf-* 选择器", () => {
   const 起点 = 样式.indexOf("M4.4 · 领域工作流面板");
   assert.ok(起点 > 0, "styles.css 缺少 M4.4 追加块");
-  const 追加块 = 样式.slice(起点);
+  // 断言只针对 M4.4 这一个追加块：从它的横幅注释到下一个同级横幅为止。
+  // （此前 slice 到文件末尾，会把后续批次追加的独立块也算进来，导致误判"覆盖既有选择器"。）
+  const 横幅结束 = 样式.indexOf("*/", 起点);
+  assert.ok(横幅结束 > 起点, "M4.4 追加块横幅注释未闭合");
+  const 下一块起点 = 样式.indexOf("/* ===", 横幅结束);
+  const 追加块 = 样式.slice(起点, 下一块起点 > 0 ? 下一块起点 : 样式.length);
   assert.ok(追加块.includes(".app-canvas-slot.canvas-tab-workflows"), "缺少画布宽度声明");
   // 追加块内不得出现对既有选择器的覆写（只允许 .wf-* 与新页签类）
   const 越界 = [...追加块.matchAll(/^([.#][A-Za-z0-9_-]+)[^{]*\{/gm)]
