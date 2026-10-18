@@ -326,6 +326,9 @@ P0-2（背压）与 P1-1（执行句柄）是强依赖前置：§4 领域工作�
   - 依赖：P0-4、P1-7
   - 输出：`styles.css` + `ChatPanel.jsx` 交互
   - 验证：`test:motion`、`test:a11y`、`test:chat-flow` 全绿
+  - 🟡 **2026-10-18 部分落地（保持未勾选）**：① 状态点五态（运行=强调蓝+复用既有 `dot-breathe-soft` 呼吸 / 完成=绿 / 降级=琥珀 / 失败=红 / 无状态=中性灰；折叠条 32px 与「当前步骤 n/N · 耗时」沿用基线既有实现）② 思考块左竖线 3px→2px、强调色 22%（hover 45%）③ 工具卡片状态色只留左侧 3px 边条与状态图标、本体中性 ④ 审批卡左侧形态条 + 拒绝按钮红描边 ⑥ 动效令牌 `--dur-fast/--dur-base/--dur-slow` + `--ease-out`（暗/亮 opt-in 块内同值）——**全部限定在 `:root[data-oaw-style="qoder"]` 作用域**，沿用 P0-4/P1-7 的 `OAW_QODER_STYLE`（默认关），关闭后基线逐字不变。
+  - 🟡 **未做（需改 JS，属渲染核心链路）**：① 键盘 `Alt+↑/↓` 跳步骤与 `Esc` 收起、② 思考块「用户上滚即锁定不抢滚动」、④ HITL 选项 `1/2/3` 快捷键与「主操作右置」（CSS `order` 反转视觉顺序会与 DOM 焦点顺序不一致，属 WCAG 2.4.3 风险，故不做）；④ 的「plan 形态」在现有卡片族中没有对应实现，未凭空新建。
+  - ✅ **验证**：新增 `scripts/组件交互规范测试.mjs`（`npm run test:component-spec`，**10/10**）；`test:motion`、`test:a11y`、`test:icons`、`test:design-tokens` 通过；`vite build` 成功且产物 CSS 内含新段规则。
 
 ### M4 领域工作流（D49–D66）
 

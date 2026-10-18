@@ -120,7 +120,7 @@ const 持续动画宿主 = {
   "agent-avatar-breathe": [".avatar.agent-avatar.is-streaming"],
   blink: [".typing", ".run-summary-dot.running"],
   "dot-breathe": [".efp-pulse"],
-  "dot-breathe-soft": [".efp-pulse"],
+  "dot-breathe-soft": [".efp-pulse", ".execution-flow-item.running .execution-flow-dot"],
   pulse: [".tool-icon.run", ".todo-item.running .todo-num"],
   "brain-pulse": [".brain-core.running .brain-core-dot", ".browser-status.loading i"],
   "pulse-status": [".conversation-status.working i", ".browser-connection.offline i", ".execution-flow-live i"],

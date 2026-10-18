@@ -64,6 +64,7 @@
     "test:stream-split": "node scripts/对话流背压测试.mjs",
     "test:interaction-owner": "node scripts/交互归属测试.mjs",
     "test:design-tokens": "node scripts/设计令牌一致性测试.mjs",
+    "test:component-spec": "node scripts/组件交互规范测试.mjs",
     "test:subagent-trace": "node scripts/子代理事件归约测试.mjs",
     "test:pi-iteration": "node scripts/事件注册表测试.mjs && node scripts/能力契约测试.mjs && node scripts/文档引擎测试.mjs && node scripts/子代理编排器测试.mjs && node scripts/编辑流水线测试.mjs && node scripts/子代理事件归约测试.mjs && node scripts/运行预算测试.mjs && node scripts/执行轨迹归约测试.mjs",
     "test:memory-admission": "node scripts/记忆准入治理测试.mjs",

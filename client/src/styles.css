@@ -10411,6 +10411,70 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .conn-status.retrying i { background: var(--warning); animation: pulse-status-soft 1.6s ease-in-out infinite; }
 .conn-status.recovered { color: var(--success); }
 .conn-status.recovered i { background: var(--success); }
+/* ============================================================================
+   §3.3 组件交互规范（Qoder 对标 · opt-in · 默认不生效 · 可一键回滚）
+   ---------------------------------------------------------------------------
+   来源：对标报告 §3.3 ①（执行流状态点）②（思考块竖线）③（工具卡片中性本体）
+        ④（HITL 形态与危险操作描边）⑥（动效 token）。
+   生效条件：<html data-oaw-style="qoder">，与 P0-4 / P1-7 同一开关
+            （qoderStyle / OAW_QODER_STYLE，默认关）；关闭后本段全部不命中。
+   边界：本段只覆盖配色 / 边条 / 过渡，不改 JSX 结构、不改状态判定，因此报告里
+        必须改 JS 的部分未纳入——① 键盘 Alt+↑/↓ 跳步骤与 Esc 收起、② 思考块
+        上滚锁定、④ 选项 1/2/3 快捷键与「主操作右置」（用 CSS order 反转视觉顺序
+        会与 DOM 焦点顺序不一致，属无障碍风险）。
+   动效：本段刻意排在统一动效闸门之前——闸门（data-reduce-motion / data-motion-level
+        的 !important 规则）可直接覆盖，关闭动效后状态点回到静止，信息不丢。
+   ========================================================================== */
+
+/* ① 执行流状态点五态：运行=强调蓝（呼吸）/ 完成=绿 / 降级=琥珀 / 失败=红 / 无状态=中性灰。
+      折叠条 32px 行高与「当前步骤 n/N · 耗时」沿用基线既有实现（execution-flow-head 已是 32px），无需覆盖。 */
+:root[data-oaw-style="qoder"] .execution-flow-dot {
+  background: var(--op-gray-600);
+  transition: background var(--dur-base) var(--ease-out);
+}
+:root[data-oaw-style="qoder"] .execution-flow-item.running .execution-flow-dot {
+  background: var(--accent);
+  animation: dot-breathe-soft 2.4s var(--ease-out) infinite;
+}
+:root[data-oaw-style="qoder"] .execution-flow-item.success .execution-flow-dot { background: var(--success); }
+:root[data-oaw-style="qoder"] .execution-flow-item.warning .execution-flow-dot { background: var(--warning); }
+:root[data-oaw-style="qoder"] .execution-flow-item.error .execution-flow-dot { background: var(--error); }
+
+/* ② 思考块：左竖线由基线 3px 实色收细为 2px、强调色 22%；hover 提到 45%（保留基线悬停反馈） */
+:root[data-oaw-style="qoder"] .thinking-block,
+:root[data-oaw-style="qoder"] .thinking-process-inline {
+  border-left-width: 2px;
+  border-left-color: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+:root[data-oaw-style="qoder"] .thinking-block:hover {
+  border-left-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* ③ 工具卡片：状态色只留在左侧 3px 边条与状态图标上，卡片本体回到中性面板色 */
+:root[data-oaw-style="qoder"] .tool-card.pending,
+:root[data-oaw-style="qoder"] .tool-card.success,
+:root[data-oaw-style="qoder"] .tool-card.error {
+  background: var(--panel2-bg);
+  border-color: var(--op-comp-toolcard-border);
+}
+:root[data-oaw-style="qoder"] .tool-card.pending { border-left: 3px solid var(--warning); }
+:root[data-oaw-style="qoder"] .tool-card.success { border-left: 3px solid var(--success); }
+:root[data-oaw-style="qoder"] .tool-card.error { border-left: 3px solid var(--error); }
+
+/* ④ HITL 卡片：审批形态用左侧强调条标记；危险操作（拒绝）改为红描边而非实心红块。
+      询问形态（.ask-block）基线已是琥珀描边，本层不重复声明。 */
+:root[data-oaw-style="qoder"] .approval-block { border-left: 3px solid var(--accent); }
+:root[data-oaw-style="qoder"] .approval-block.resolved { border-left-color: var(--success); }
+:root[data-oaw-style="qoder"] .approval-deny {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--error) 55%, transparent);
+  color: var(--error);
+}
+:root[data-oaw-style="qoder"] .approval-deny:hover {
+  border-color: var(--error);
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+}
+
 /* ==========================================================================
    P3 · 统一动效闸门与一次性反馈（动效治理）
    命中条件（二者任一，属性写在 <html> 上）：
@@ -10438,6 +10502,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   .browser-connection.offline i,
   .conversation-status.working i,
   .execution-flow-live i,
+  .execution-flow-item.running .execution-flow-dot,
   .efp-pulse,
   .todo-item.running .todo-num,
   .mp-spin,
@@ -10964,6 +11029,12 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   --tool-pending: var(--op-gray-250);
   --tool-success: #1d2a22;
   --tool-error: #2e2027;
+
+  /* ---- 第 4 层：动效令牌（§3.3 ⑥；只作用于 transform / opacity，暗亮同值）---- */
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+  --ease-out: cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 
 /* 亮色对应（Qoder light：editor.background #FFFFFF / foreground #141414） */
@@ -11018,6 +11089,12 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   --tool-pending: var(--op-gray-200);
   --tool-success: #e8f0e8;
   --tool-error: #f7e6ea;
+
+  /* ---- 第 4 层：动效令牌（§3.3 ⑥；与暗色同值，避免只改一层）---- */
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+  --ease-out: cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 
 /* 正文显式声明系统 sans：基线 body 已是 sans 栈，此处做确定性固化，
