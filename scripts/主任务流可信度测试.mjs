@@ -12,7 +12,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), "utf8");
+// 统一换行符：本仓库在 Windows 工作区是 CRLF、CI（Linux）是 LF，
+// 而下面若干断言用 `\n` 写多行源码形状，不归一会「本地红、CI 绿」地漂移。
+const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const 对话面板 = read("../client/src/components/ChatPanel.jsx");
 const 命令面板 = read("../client/src/components/CommandPalette.jsx");
 const 图标 = read("../client/src/components/Icon.jsx");

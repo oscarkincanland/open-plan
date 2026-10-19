@@ -10,21 +10,21 @@ import { 提取消息展示文本, 计算展示字符数 } from "../client/src/c
 import { bashTimeoutPolicy, isGlobalSearchCommand, normalizeBashOptions } from "../server/命令安全策略.mjs";
 
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "规聚对话流-"));
-const chatPanelSource = fs.readFileSync(new URL("../client/src/components/ChatPanel.jsx", import.meta.url), "utf8");
-const workProductSource = fs.readFileSync(new URL("../client/src/components/工作产物面板.jsx", import.meta.url), "utf8");
-const apiSource = fs.readFileSync(new URL("../client/src/api.js", import.meta.url), "utf8");
-const runProjectionSource = fs.readFileSync(new URL("../client/src/运行展示投影.js", import.meta.url), "utf8");
-const markdownSource = fs.readFileSync(new URL("../client/src/components/MarkdownBody.jsx", import.meta.url), "utf8");
-const artifactTypeSource = fs.readFileSync(new URL("../client/src/产物类型.js", import.meta.url), "utf8");
-const appSource = fs.readFileSync(new URL("../client/src/App.jsx", import.meta.url), "utf8");
-const stylesSource = fs.readFileSync(new URL("../client/src/styles.css", import.meta.url), "utf8");
-const settingsSource = fs.readFileSync(new URL("../client/src/components/SettingsPanel.jsx", import.meta.url), "utf8");
-const appearanceSource = fs.readFileSync(new URL("../client/src/界面外观.js", import.meta.url), "utf8");
-const agentSource = fs.readFileSync(new URL("../server/agent.mjs", import.meta.url), "utf8");
-const serverSource = fs.readFileSync(new URL("../server/index.mjs", import.meta.url), "utf8");
-const excelSource = fs.readFileSync(new URL("../client/src/components/ExcelGrid.jsx", import.meta.url), "utf8");
-const eventDisplaySource = fs.readFileSync(new URL("../client/src/事件展示.js", import.meta.url), "utf8");
-const piRuntimeSource = fs.readFileSync(new URL("../server/Pi运行时管理.mjs", import.meta.url), "utf8");
+const chatPanelSource = fs.readFileSync(new URL("../client/src/components/ChatPanel.jsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const workProductSource = fs.readFileSync(new URL("../client/src/components/工作产物面板.jsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const apiSource = fs.readFileSync(new URL("../client/src/api.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const runProjectionSource = fs.readFileSync(new URL("../client/src/运行展示投影.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const markdownSource = fs.readFileSync(new URL("../client/src/components/MarkdownBody.jsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const artifactTypeSource = fs.readFileSync(new URL("../client/src/产物类型.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const appSource = fs.readFileSync(new URL("../client/src/App.jsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const stylesSource = fs.readFileSync(new URL("../client/src/styles.css", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const settingsSource = fs.readFileSync(new URL("../client/src/components/SettingsPanel.jsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const appearanceSource = fs.readFileSync(new URL("../client/src/界面外观.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const agentSource = fs.readFileSync(new URL("../server/agent.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const serverSource = fs.readFileSync(new URL("../server/index.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const excelSource = fs.readFileSync(new URL("../client/src/components/ExcelGrid.jsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const eventDisplaySource = fs.readFileSync(new URL("../client/src/事件展示.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const piRuntimeSource = fs.readFileSync(new URL("../server/Pi运行时管理.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 let runId = null;
 let selectiveRunId = null;
 
@@ -205,7 +205,7 @@ try {
   assert.match(chatPanelSource, /const open = typeof override === "boolean" \? override : isLiveFold/, "运行中执行过程默认展开，但用户可随时收起（状态由用户决定）");
   assert.match(chatPanelSource, /isLiveFold \? "is-live" : ""/, "运行中过程区应维持有界滚动容器");
   assert.doesNotMatch(chatPanelSource, /setEmbeddedExpanded\(Boolean\(running\)\)/, "事件列表不应随运行自动展开（默认折叠）");
-  const livePlainStyles = fs.readFileSync(new URL("../client/src/styles.css", import.meta.url), "utf8");
+  const livePlainStyles = fs.readFileSync(new URL("../client/src/styles.css", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   assert.match(livePlainStyles, /\.message-process-fold\.is-live \.message-process-scroll \{ max-height: 300px; overflow: auto; overscroll-behavior: contain; \}/, "运行中的过程使用单个有界滚动容器");
   assert.match(livePlainStyles, /\.markdown-body p:has\(> br:only-child\) \{ display: none; \}/, "仅含换行的段落不应占位");
   assert.match(livePlainStyles, /\.result-tabbed/, "结果区页签应有独立视觉分节");
@@ -213,7 +213,7 @@ try {
   assert.match(livePlainStyles, /\.artifact-inline \{/, "结论内嵌产物应有行内文件条样式");
   assert.match(livePlainStyles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,220}?margin-left: auto;/, "无侧栏时消息列应居中（有侧栏时自适应）");
   // 会话定位导航栏：细横杠刻度（ZCode 风格），不再有轨道线/圆珠；当前阅读位置高亮
-  const timelineSource = fs.readFileSync(new URL("../client/src/components/ChatTimeline.jsx", import.meta.url), "utf8");
+  const timelineSource = fs.readFileSync(new URL("../client/src/components/ChatTimeline.jsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   assert.doesNotMatch(timelineSource, /timeline-rail/, "导航栏不再画连续轨道线");
   assert.match(timelineSource, /className=\{`timeline-bead\$\{b\.idx === activeKey \? " active" : ""\}/, "刻度应标记当前阅读位置");
   assert.match(timelineSource, /root\.addEventListener\("scroll", onScroll, \{ passive: true \}\)/, "滚动跟随应挂在消息容器上且 passive");
@@ -231,12 +231,16 @@ try {
   assert.match(chatPanelSource, /setAgentPhase\(`设置思考深度：/, "thinking_level 阶段应推进状态行");
   // 本轮产物 tab + 面板宽度
   assert.match(chatPanelSource, /className="result-tabbed" aria-label="本轮结果"/, "结论之后应是本轮产物的页签区域");
-  assert.match(chatPanelSource, /className="loading-inline"/, "等待首块应为无框行内指示");
+  // v0.11.55 起「模型正在生成」的四瓣状态移到消息内容下方，类名从 loading-inline
+  // 改为 msg-streaming-status（styles.css 里仍是 inline-flex + border:0 + 透明底的无框行内指示），
+  // 这里跟随即有实现更新断言，判据（无框行内）不变。
+  assert.match(chatPanelSource, /className="msg-streaming-status"/, "等待首块应为无框行内指示");
+  assert.match(stylesSource, /\.msg-streaming-status \{[^}]*border: 0;[^}]*background: transparent;[^}]*\}/, "等待指示应无边框 / 无底色（无框行内）");
   assert.doesNotMatch(chatPanelSource, /可写：工作区内/, "输入框不应再显示写入权限徽标");
   assert.doesNotMatch(chatPanelSource, /输入消息…  @ 引用文件/, "输入框占位提示不应再带长说明");
   assert.match(chatPanelSource, /: "输入消息…"\}/, "输入框占位提示应简化为“输入消息…”");
   assert.match(chatPanelSource, /交付产物 \{deliverables\.length\}/, "产物页签应显示交付产物数量");
-  const widthStyles = fs.readFileSync(new URL("../client/src/styles.css", import.meta.url), "utf8");
+  const widthStyles = fs.readFileSync(new URL("../client/src/styles.css", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   assert.match(widthStyles, /--chat-w: 460px/, "对话面板默认宽度应加宽");
   assert.match(widthStyles, /--chat-max: 720px/, "对话面板最大宽度应放宽");
   assert.match(widthStyles, /\.center-chat-slot \.msg\.user \.msg-main \{ width: auto; max-width: min\(78%, 540px\); \}/, "用户气泡应随内容收缩（不再固定宽度）");
@@ -387,7 +391,10 @@ try {
   // App 不再为"浏览器活跃"常驻第二条 /api/browser/stream，改由对话流的工具事件驱动。
   assert.ok(!/new EventSource\(`\/api\/browser\/stream/.test(appSource), "App 不应再常驻浏览器流（改由 ChatPanel 工具事件通知）");
   assert.match(appSource, /onBrowserActivity=\{handleBrowserActivity\}/, "App 应把浏览器活动回调接给 ChatPanel");
-  assert.match(chatPanelSource, /if \(String\(data\.name \|\| ""\)\.startsWith\("browser_"\)\) onBrowserActivity\?\.\(\)/, "browser_* 工具开始时应通知外层展开内置浏览器");
+  // O-P3 起改为白名单：只有写操作类 browser_* 工具拉起侧栏，
+  // browser_close / browser_tabs / browser_snapshot / browser_screenshot 等查看或收尾动作不拉起。
+  assert.match(chatPanelSource, /const BROWSER_PANEL_OPEN_TOOLS = new Set\(\["browser_open",[\s\S]{0,160}?"browser_scroll"\]\)/, "应有写操作类 browser_* 工具白名单");
+  assert.match(chatPanelSource, /if \(BROWSER_PANEL_OPEN_TOOLS\.has\(String\(data\.name \|\| ""\)\)\) onBrowserActivity\?\.\(\)/, "写操作类 browser_* 工具开始时应通知外层展开内置浏览器");
   assert.match(chatPanelSource, /acquireStream\("chat", \{ essential: true, priority: 1, label: "对话流" \}\)/, "对话流应登记为必需长连接");
   assert.match(appSource, /acquireStream\("agent-events", \{ essential: true, priority: 2, label: "全局事件流" \}\)/, "全局事件流应登记为必需长连接");
   assert.match(apiSource, /import \{ closeOptionalStreams \} from "\.\/长连接预算\.js"/, "api.js 超时应能回收可放弃的长连接");
@@ -398,7 +405,7 @@ try {
     assert.ok(serverSource.includes(`path: "${endpoint}"`), `${endpoint} 应登记到服务端流登记表（同键去重）`);
   }
   assert.match(serverSource, /app\.get\("\/api\/diagnostics\/streams"/, "应提供长连接诊断端点");
-  const streamModuleSource = fs.readFileSync(new URL("../server/流连接.mjs", import.meta.url), "utf8");
+  const streamModuleSource = fs.readFileSync(new URL("../server/流连接.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   assert.match(streamModuleSource, /const MAX_SAME_KEY = 2;/, "同键允许一个备用读者（多标签页/监测工具不再互踢）");
   console.log("对话流性能回归：通过");
 } finally {
