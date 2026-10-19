@@ -97,3 +97,43 @@ scripts/_tmp_*
 
 # models.dev 供应商目录缓存（运行时拉取生成，约 1.2 MB，由 /api/agent/provider-catalog/refresh 写入）
 server/models-dev-目录.json
+
+# ===== 仓库整理：与程序无关的一次性产物（本地保留，不入库）=====
+# agent / AI 工具的中间产物
+/.trae/
+/.trae-html-share-packages/
+/.superpowers/
+# 汇报 / 演示产物
+/designs/
+/image/
+# 数据与调研目录（本地分析输入）
+/zhejiang_osm/
+/报自然资源厅shp文件/
+# 根目录一次性脚本（视频 / 汇报 / 改库）
+/暖白风格*.mjs
+/规聚汇报视频整合脚本.mjs
+/创建离线视频版脚本.mjs
+/调整离线版页序脚本.mjs
+/生成规聚25页口播稿Word脚本.mjs
+/修改模板库标题脚本.mjs
+/修改首页动画与标题脚本.mjs
+/嵌入规划模板库脚本.mjs
+/插入汇聚图脚本.mjs
+# 根目录一次性文档
+/Proma与Pi驱动Harness工程管理调研报告.md
+/design-qa.md
+/后续开发计划.md
+/地图功能修改计划.md
+/地图功能重构与实施计划.md
+/地图阶段3-6执行记录.md
+/第一阶段修改计划与执行记录.md
+/遗留十项一次收口记录.md
+/规聚项目完整介绍汇报-25页口播稿.md
+/zz_审查清单_批注版.md
+# 根目录临时 / 二进制产物
+/_t.txt
+/insert-table-titles.json
+/zz_review_working.docx
+/规聚项目完整介绍汇报-25页口播稿.docx
+# 运行时状态（程序写入项目根）
+/.file-roots.json
