@@ -58,7 +58,8 @@ import {
   writeDefaultModel,
 } from "./Pi配置管理.mjs";
 import * as planCatalog from "./套餐目录.mjs";
-import { builtinProviderDetail, builtinProviderList, buildBuiltinImport, findBuiltinModel, loadBuiltinCatalog } from "./供应商目录.mjs";
+import { builtinProviderDetail, builtinProviderList, buildBuiltinImport, findBuiltinModel, invalidateMergedCatalog } from "./供应商目录.mjs";
+import { fetchModelsDevCatalog, readModelsDevCache, writeModelsDevCache } from "./模型目录dev.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
@@ -1632,6 +1633,7 @@ function providerCatalogPayload() {
     generatedAt: list.generatedAt,
     error: list.error,
     totalModels: list.totalModels,
+    sources: list.sources || null,
     summary: {
       total: providers.length,
       importable: providers.filter((provider) => provider.importable).length,
@@ -1723,6 +1725,27 @@ app.post("/api/agent/provider-catalog/import", async (req, res) => {
     });
   } catch (error) {
     res.status(400).json({ ok: false, error: String(error?.message || error), code: "PROVIDER_IMPORT_FAILED" });
+  }
+});
+
+// 刷新 models.dev 供应商目录：拉取最新数据落盘后重建合并目录。
+// 拉取失败时降级用上次缓存（ok:true, fromCache:true），设置界面永远可用，不 500。
+app.post("/api/agent/provider-catalog/refresh", async (_req, res) => {
+  const previous = readModelsDevCache();
+  try {
+    const data = await fetchModelsDevCatalog();
+    writeModelsDevCache(data);
+    invalidateMergedCatalog();
+    res.json({ ok: true, fromCache: false, fetchedAt: data.fetchedAt, providerCount: data.providerCount, modelCount: data.modelCount });
+  } catch (error) {
+    res.json({
+      ok: true,
+      fromCache: true,
+      fetchedAt: previous?.fetchedAt || null,
+      providerCount: previous?.providerCount || 0,
+      modelCount: previous?.modelCount || 0,
+      error: String(error?.message || error).slice(0, 200),
+    });
   }
 });
 

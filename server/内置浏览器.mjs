@@ -25,6 +25,14 @@ const MAX_CAPTURE = { width: 2400, height: 1600 };
 // 页面导航不能把 Agent 回合阻塞到 25 秒；超时后仍保留当前页面，
 // 后续 browser_snapshot/browser_wait 类操作可以继续观察加载结果。
 const NAV_TIMEOUT_MS = 8000;
+// 就绪后的"内容稳定"观察窗：搜索结果页/SPA 在 readyState=complete 之后才由脚本
+// 异步注入正文，不等这一段就会拿到空快照（必应首屏读不到结果即为此）。
+const NAV_SETTLE_MS = 2500;
+const NAV_SETTLE_POLL_MS = 200;
+// 探测新文档是否已提交用 performance.timeOrigin（每个新文档必然不同），
+// 比对比 URL 更可靠：重定向、跨域跳转都不会误判成"上一份文档已就绪"。
+const NAV_DOC_PROBE = "({ ready: document.readyState, origin: Number(performance.timeOrigin) || 0 })";
+const NAV_CONTENT_PROBE = "(() => { const body = document.body; const text = body ? body.innerText : ''; return text.length + ':' + (body ? body.getElementsByTagName('*').length : 0); })()";
 const FRAME_BROADCAST_INTERVAL_MS = 90;
 // 帧流预算：以「面板可读」为先，限制质量/采样/最大边长，并给单帧设字节上限，
 // 避免每帧几百 KB 的 JPEG 把 SSE、React 和浏览器主线程一起拖垮。
@@ -1184,18 +1192,49 @@ class BrowserSession {
     }
   }
 
-  async waitForLoad(timeoutMs = NAV_TIMEOUT_MS) {
-    const deadline = Date.now() + timeoutMs;
+  /**
+   * 等待页面真正可用。分两段：
+   *   1. 等新文档提交并 readyState=complete —— 用 previousOrigin 判断"确实换了文档"，
+   *      否则 Page.navigate 刚发出时读到的还是上一份文档的 complete，会"秒回"；
+   *   2. 等内容稳定（连续两次采样一致）—— 覆盖 complete 之后才异步注入正文的页面。
+   * @param {number} timeoutMs 总预算
+   * @param {{previousOrigin?: number, settleMs?: number, sameDocumentGraceMs?: number}} [options]
+   *        previousOrigin：动作前文档的 performance.timeOrigin（判断"确实换了文档"）；
+   *        settleMs：内容稳定观察窗（默认 NAV_SETTLE_MS，交互类可调小）；
+   *        sameDocumentGraceMs：未观测到新文档时，多久后按"同文档已就绪"放行
+   *        （点击/Esc 等不一定导航的动作必须给宽限，否则会白等满预算）
+   */
+  async waitForLoad(timeoutMs = NAV_TIMEOUT_MS, { previousOrigin = 0, settleMs = NAV_SETTLE_MS, sameDocumentGraceMs = 0 } = {}) {
+    const startedAt = Date.now();
+    const deadline = startedAt + timeoutMs;
+    const grace = Math.max(0, Number(sameDocumentGraceMs) || 0);
+    let ready = false;
     while (Date.now() < deadline) {
       try {
-        const ready = await this.evaluate("document.readyState");
-        // interactive 只代表 HTML 已解析，SPA/搜索页的脚本和可交互控件
-        // 可能还没挂载；browser_open 紧接 browser_snapshot 时会因此得到空页。
-        if (ready === "complete") return true;
+        const probe = await this.evaluate(NAV_DOC_PROBE);
+        if (probe?.ready === "complete") {
+          const navigated = !previousOrigin || probe.origin !== previousOrigin;
+          if (navigated || Date.now() - startedAt >= grace) {
+            ready = true;
+            break;
+          }
+        }
       } catch {}
       await sleep(150);
     }
-    return false;
+    if (!ready) return false;
+    // 内容稳定窗口：正文长度与元素数连续两次采样不变即认为脚本注入已落定。
+    const budget = Math.max(0, Math.min(Number(settleMs) || 0, deadline - Date.now()));
+    const settleDeadline = Date.now() + budget;
+    let previous = "";
+    while (Date.now() < settleDeadline) {
+      let metric = "";
+      try { metric = String(await this.evaluate(NAV_CONTENT_PROBE) || ""); } catch {}
+      if (metric && metric === previous) return true;
+      previous = metric;
+      await sleep(NAV_SETTLE_POLL_MS);
+    }
+    return true;
   }
 
   async navigate(rawUrl) {
@@ -1205,8 +1244,13 @@ class BrowserSession {
     this.state.loading = true;
     this.state.url = url;
     this.emitState();
+    // 导航前记录当前文档身份与地址：仅当目标确实是另一个文档时才要求
+    // timeOrigin 变化（否则同文档的 hash 跳转会被误判成"没换页"而白等 8 秒）。
+    const before = await this.evaluate("({ origin: Number(performance.timeOrigin) || 0, href: location.href })").catch(() => null);
+    const stripHash = (value) => String(value || "").split("#")[0].replace(/\/+$/, "");
+    const sameDocument = stripHash(before?.href) === stripHash(url);
     await this.cdp.send("Page.navigate", { url });
-    await this.waitForLoad(NAV_TIMEOUT_MS);
+    await this.waitForLoad(NAV_TIMEOUT_MS, { previousOrigin: sameDocument ? 0 : Number(before?.origin || 0) });
     this.state.loading = false;
     if (this.state.error && this.state.error.startsWith("页面加载超时")) this.state.error = null;
     await this.refreshTitle().catch(() => {});
@@ -1235,11 +1279,14 @@ class BrowserSession {
     })()`);
     if (!box) throw new Error(`页面上没有编号 ${safe} 的元素，请重新 browser_snapshot`);
     const point = { x: Math.round(box.x), y: Math.round(box.y) };
+    // 点击前记录文档身份：点链接/提交按钮会触发导航，需要等新文档而不是当前页的 complete。
+    const previousOrigin = Number(await this.evaluate("Number(performance.timeOrigin) || 0").catch(() => 0)) || 0;
     await this.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, button: "none", clickCount: 0 });
     await this.cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1 });
     await this.cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1 });
     await sleep(600);
-    await this.waitForLoad(8000).catch(() => {});
+    // 交互场景的稳定窗给短一些：多数点击只是局部刷新，不值得等满默认窗口。
+    await this.waitForLoad(8000, { previousOrigin, settleMs: 1200, sameDocumentGraceMs: 800 }).catch(() => {});
     await this.refreshTitle().catch(() => {});
     this.emitState();
     return { clicked: safe, text: box.text, url: this.state.url };
@@ -1280,13 +1327,15 @@ class BrowserSession {
     };
     const info = map[keyName] || map.Enter;
     await this.ensureStarted();
+    // 回车常触发搜索/表单提交（必然导航）：记录文档身份，等的是新页而不是当前页。
+    const previousOrigin = Number(await this.evaluate("Number(performance.timeOrigin) || 0").catch(() => 0)) || 0;
     const base = { key: keyName, code: info.code, windowsVirtualKeyCode: info.keyCode, nativeVirtualKeyCode: info.keyCode };
     // text/unmodifiedText 是表单回车提交的关键：缺省时多数页面不会触发提交行为
     const down = info.text ? { ...base, text: info.text, unmodifiedText: info.text } : base;
     await this.cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...down });
     await this.cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
     await sleep(600);
-    await this.waitForLoad(10000).catch(() => {});
+    await this.waitForLoad(10000, { previousOrigin, sameDocumentGraceMs: 800 }).catch(() => {});
     await this.refreshTitle().catch(() => {});
     this.emitState();
     return { pressed: keyName };
@@ -1340,9 +1389,10 @@ class BrowserSession {
 
   async back() {
     await this.ensureStarted();
+    const previousOrigin = Number(await this.evaluate("Number(performance.timeOrigin) || 0").catch(() => 0)) || 0;
     await this.evaluate("history.back()");
     await sleep(800);
-    await this.waitForLoad(8000).catch(() => {});
+    await this.waitForLoad(8000, { previousOrigin, sameDocumentGraceMs: 800 }).catch(() => {});
     await this.refreshTitle().catch(() => {});
     this.emitState();
     return this.stateView();

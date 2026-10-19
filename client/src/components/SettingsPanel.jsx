@@ -1321,6 +1321,7 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
           <供应商库
             catalog={providerCatalog}
             refreshing={catalogLoading}
+            onCatalogRefreshed={loadProviderCatalog}
             onImported={async (result) => {
               await Promise.allSettled([loadModelConfigs(), loadProviderCatalog(), refreshModelCatalog(), loadDiagnostics()]);
               if (result?.defaultModel) onModelChange?.(String(result.defaultModel).split("/").slice(1).join("/"));
@@ -1336,29 +1337,40 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
           <div className="model-credentials-head">
             <div>
               <strong>账号登录（订阅制）</strong>
-              <p>Pi 内置 {providerCatalog?.summary?.oauth ?? 0} 个支持"账号登录"的供应商：授权走浏览器 / 设备码，不需要 API Key。</p>
+              <p>共 {providerCatalog?.summary?.oauth ?? 0} 个供应商支持「账号登录」：授权走浏览器 / 设备码，不需要 API Key。</p>
             </div>
             <button className="btn-sm" onClick={importLocalPi} disabled={!piImport?.available || piImporting} title="把本地 Pi 已授权的凭据复制为规聚独立快照"><Icon name="download" size={12} /> {piImporting ? "导入中…" : "从本地 Pi 导入配置"}</button>
           </div>
           <div className="prov-oauth-list">
             {(providerCatalog?.providers || []).filter((provider) => provider.loginMethods?.includes("oauth")).map((provider) => {
               const identity = providerIdentity(provider.id);
+              const loginCmd = `pi auth login ${provider.id}`;
               return <div className="prov-oauth-item" key={provider.id}>
                 <span className="prov-mark"><ProviderIcon provider={identity.icon} size={16} /></span>
                 <div>
                   <strong>{provider.name || provider.id}</strong>
                   <span className="prov-oauth-sub">{provider.auth?.oauth?.name || "账号登录"}{provider.auth?.oauth?.isSubscription ? " · 订阅" : ""}</span>
+                  <button
+                    type="button"
+                    className="prov-oauth-cmd"
+                    title={`点击复制：${loginCmd}`}
+                    onClick={() => { navigator.clipboard?.writeText(loginCmd).catch(() => {}); }}
+                  >
+                    <code>{loginCmd}</code> 复制
+                  </button>
                 </div>
-                <span className={`sp-badge ${provider.configured ? "ok" : ""}`}>{provider.configured ? "已添加" : "未添加"}</span>
-                {provider.importable && <button className="btn-xs" onClick={() => setSettingsSection("providers")} title="在下方供应商库里添加">去添加</button>}
+                <span className={`sp-badge ${provider.configured ? "ok" : ""}`}>{provider.configured ? "已授权" : "未授权"}</span>
+                {provider.importable && <button className="btn-xs" onClick={() => setSettingsSection("providers")} title="在上方供应商库里添加">去添加</button>}
               </div>;
             })}
             {!providerCatalog && <div className="sp-note">正在读取内置目录…</div>}
           </div>
           <div className="sp-note">
-            规聚不代管浏览器授权：请先在 Pi 里执行 <code>/login 供应商</code> 完成账号授权，
-            再点上方「从本地 Pi 导入配置」把凭据带进来（本地 Pi 配置不会被改动）。
-            同一个供应商如果也支持 API Key（如 Anthropic、OpenAI、xAI），直接用 Key 添加即可。
+            规聚不代管浏览器授权，登录三步走：
+            ① 在终端执行 <code>pi auth login 供应商id</code>（点击上方命令可复制），浏览器完成账号授权；
+            ② 回规聚点「从本地 Pi 导入配置」，把已授权凭据复制为规聚独立快照（本地 Pi 配置不会被改动）；
+            ③ 在供应商库「已添加」里确认，即可在模型列表选用。
+            同一个供应商如果也支持 API Key（如 Anthropic、OpenAI、xAI），直接用 Key 添加更简单。
           </div>
         </div>
         <div className="model-control-grid">

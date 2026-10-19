@@ -66,6 +66,23 @@ export function parseLooseJson(text) {
 }
 
 /**
+ * 解析失败诊断：把模型原始返回落盘（截断 / 纯 Markdown / 非法 JSON 一眼可见），
+ * 并在错误里带上长度与开头片段——此前只有一句"未返回可解析的 JSON"，无从定位。
+ * @returns {string} 可直接拼进错误文案的诊断串
+ */
+function diagnoseUnparsable(raw, { intermediateDir, fileBase, stage }) {
+  const text = String(raw ?? "");
+  let saved = "";
+  try {
+    const file = path.join(intermediateDir, `${fileBase}.${stage}.raw.txt`);
+    fs.writeFileSync(file, text, "utf8");
+    saved = `，原始返回已落盘 ${path.basename(file)}`;
+  } catch {}
+  const head = text.replace(/\s+/g, " ").slice(0, 160);
+  return `原始返回 ${text.length} 字符${saved}；开头：${head || "（空）"}`;
+}
+
+/**
  * Evaluator 的确定性检查（§5.2：内容覆盖、格式合规、文件可打开、结构完整）。
  * @returns {{ok: boolean, structural: boolean, checks: string[], issues: string[]}}
  *   structural=true 表示产物本身坏了（不可修复，直接 fail）；
@@ -208,7 +225,7 @@ export async function runEditorialPipeline({
       ].filter(Boolean).join("\n");
       const raw = runModelTask ? await runModelTask(prompt, { stage: "planner" }) : "";
       const parsed = parseLooseJson(raw);
-      if (!parsed) throw new Error("Planner 未返回可解析的大纲 JSON");
+      if (!parsed) throw new Error(`Planner 未返回可解析的大纲 JSON（${diagnoseUnparsable(raw, { intermediateDir, fileBase, stage: "planner" })}）`);
       const outlinePath = path.join(intermediateDir, `${fileBase}.outline.json`);
       fs.writeFileSync(outlinePath, JSON.stringify(parsed, null, 2), "utf8");
       return {
@@ -239,7 +256,7 @@ export async function runEditorialPipeline({
           ].filter(Boolean).join("\n");
       const raw = runModelTask ? await runModelTask(prompt, { stage: "writer" }) : "";
       const parsed = parseLooseJson(raw);
-      if (!parsed) throw new Error("Writer 未返回可解析的内容 JSON");
+      if (!parsed) throw new Error(`Writer 未返回可解析的内容 JSON（${diagnoseUnparsable(raw, { intermediateDir, fileBase, stage: "writer" })}）`);
       const contentPath = path.join(intermediateDir, `${fileBase}.content.json`);
       fs.writeFileSync(contentPath, JSON.stringify(parsed, null, 2), "utf8");
       return {
@@ -334,6 +351,13 @@ export async function runEditorialPipeline({
       const revisedRaw = runModelTask ? await runModelTask(revisePrompt, { stage: "writer" }) : "";
       const revised = parseLooseJson(revisedRaw);
       if (revised) content.content = revised;
+      else {
+        // 修订不可解析时不再静默：落盘原始返回并留一条阶段事件，避免"看起来改过了"却仍是旧稿。
+        emit("pipeline_stage_finished", {
+          pipelineId, stage: "writer", label: STAGE_LABELS.writer, status: "revise_failed",
+          error: `修订未返回可解析的内容 JSON（${diagnoseUnparsable(revisedRaw, { intermediateDir, fileBase, stage: `writer-revise-${round + 1}` })}）`.slice(0, 400),
+        });
+      }
     }
 
     finalStatus = evaluation?.verdict === "fail" ? "failed" : "completed";

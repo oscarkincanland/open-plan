@@ -157,8 +157,25 @@ export const mapExportBatch = (payload = {}) =>
 export const mapExportStatus = (id) =>
   api(`/api/map/export/batch?id=${encodeURIComponent(id)}`);
 
-export const listModels = () => api("/api/models");
-export const refreshModels = () => api("/api/models/refresh", { method: "POST" });
+let modelsCache = null;
+let modelsCacheAt = 0;
+let modelsInflight = null;
+/**
+ * 模型目录：多组件（App 引导、ChatPanel 模型选择器）都会拉取，
+ * 这里做 10 秒单飞缓存——既减少重复请求，也把"页面刷新时恰好在途
+ * 被中止产生 net::ERR_ABORTED 控制台噪音"的窗口压到最小。
+ * refreshModels（POST /api/models/refresh）会立即失效缓存。
+ */
+export function listModels({ maxAgeMs = 10000 } = {}) {
+  const now = Date.now();
+  if (modelsCache && now - modelsCacheAt < maxAgeMs) return Promise.resolve(modelsCache);
+  if (modelsInflight) return modelsInflight;
+  modelsInflight = api("/api/models")
+    .then((data) => { modelsCache = data; modelsCacheAt = Date.now(); return data; })
+    .finally(() => { modelsInflight = null; });
+  return modelsInflight;
+}
+export const refreshModels = () => api("/api/models/refresh", { method: "POST" }).then((data) => { modelsCache = null; return data; });
 export const agentModelConfigs = () => api("/api/agent/model-configs");
 export const saveAgentModelConfig = (payload = {}) => api("/api/agent/model-configs", { method: "POST", body: JSON.stringify(payload) });
 export const deleteAgentModelConfig = (provider) => api(`/api/agent/model-configs/${encodeURIComponent(provider)}`, { method: "DELETE" });
@@ -168,6 +185,7 @@ export const fetchAgentModels = (payload = {}) => api("/api/agent/model-configs/
 export const agentProviderCatalog = () => api("/api/agent/provider-catalog");
 export const agentProviderDetail = (provider) => api(`/api/agent/provider-catalog/${encodeURIComponent(provider)}`);
 export const agentProviderImport = (payload = {}) => api("/api/agent/provider-catalog/import", { method: "POST", body: JSON.stringify(payload) });
+export const agentProviderCatalogRefresh = () => api("/api/agent/provider-catalog/refresh", { method: "POST" });
 export const agentSetDefaultModel = (provider, model) => api("/api/agent/default-model", { method: "POST", body: JSON.stringify({ provider, model }) });
 export const setAgentModel = (client, model, thread) =>
   api("/api/agent/model", { method: "POST", body: JSON.stringify({ client, thread, model }) });

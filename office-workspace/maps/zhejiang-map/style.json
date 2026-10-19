@@ -241,6 +241,20 @@
       ],
       "maxzoom": 13
     },
+    "yiwu_od_demo-lines": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/yiwu_od_demo-lines/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 13
+    },
+    "_probe_import": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/_probe_import/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 13
+    },
     "blank": {
       "name": "无底图",
       "type": "raster",
@@ -421,10 +435,10 @@
         "basemap": true
       }
     },
-    "yiwu_od_demo-lines": {
+    "city-toll-density-2": {
       "type": "vector",
       "tiles": [
-        "/api/map/data/zhejiang-map/tiles/yiwu_od_demo-lines/{z}/{x}/{y}.pbf"
+        "/api/map/data/zhejiang-map/tiles/city-toll-density-2/{z}/{x}/{y}.pbf"
       ],
       "maxzoom": 13
     }
@@ -669,7 +683,7 @@
       "source": "gis_osm_roads_free_1",
       "source-layer": "gis_osm_roads_free_1",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "type": "line",
       "paint": {
@@ -991,30 +1005,7 @@
       },
       "type": "line",
       "paint": {
-        "line-color": [
-          "interpolate",
-          [
-            "linear"
-          ],
-          [
-            "coalesce",
-            [
-              "get",
-              "flow_avg"
-            ],
-            0
-          ],
-          0,
-          "#22d3ee",
-          10000,
-          "#3b82f6",
-          20000,
-          "#facc15",
-          30000,
-          "#f97316",
-          45000,
-          "#e6194b"
-        ],
+        "line-color": "#ff7b00",
         "line-width": [
           "interpolate",
           [
@@ -1138,7 +1129,7 @@
         ],
         "text-rotation-alignment": "map",
         "text-allow-overlap": false,
-        "visibility": "visible"
+        "visibility": "none"
       },
       "paint": {
         "text-color": "#ffffff",
@@ -1590,7 +1581,7 @@
       "source": "yiwu_od_demo",
       "source-layer": "yiwu_od_demo",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "type": "circle",
       "paint": {
@@ -1606,7 +1597,7 @@
       "source": "yiwu_od_demo-lines",
       "source-layer": "yiwu_od_demo-lines",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "type": "line",
       "paint": {
@@ -1666,7 +1657,8 @@
           "Noto Sans Regular"
         ],
         "text-rotation-alignment": "map",
-        "text-allow-overlap": false
+        "text-allow-overlap": false,
+        "visibility": "none"
       },
       "paint": {
         "text-color": "#ffffff",
@@ -1721,6 +1713,38 @@
         "circle-opacity": 0.85,
         "circle-stroke-color": "#ffffff",
         "circle-stroke-width": 2
+      }
+    },
+    {
+      "id": "_probe_import",
+      "source": "_probe_import",
+      "source-layer": "_probe_import",
+      "layout": {
+        "visibility": "none"
+      },
+      "type": "circle",
+      "paint": {
+        "circle-radius": 4.5,
+        "circle-color": "#9467bd",
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-opacity": 0.9
+      }
+    },
+    {
+      "id": "city-toll-density-2",
+      "source": "city-toll-density-2",
+      "source-layer": "city-toll-density-2",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "circle",
+      "paint": {
+        "circle-radius": 4.5,
+        "circle-color": "#9467bd",
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-opacity": 0.9
       }
     }
   ],

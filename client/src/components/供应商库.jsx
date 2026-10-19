@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Icon, { ProviderIcon } from "./Icon.jsx";
 import { providerIdentity, providerLabel } from "../供应商标识.js";
-import { agentProviderDetail, agentProviderImport } from "../api.js";
+import { agentProviderCatalogRefresh, agentProviderDetail, agentProviderImport } from "../api.js";
 
 /** 上下文窗口的紧凑写法：128000 → 128K，1000000 → 1M。 */
 export function formatContext(value) {
@@ -10,6 +10,16 @@ export function formatContext(value) {
   if (n >= 1000000) return `${(n / 1000000).toFixed(n % 1000000 === 0 ? 0 : 1)}M`;
   if (n >= 1000) return `${Math.round(n / 1000)}K`;
   return String(n);
+}
+
+/** 供应商库列表默认渲染条数：models.dev 接入后目录可达 200+，超出部分折叠。 */
+const LIST_PAGE_SIZE = 80;
+
+/** models.dev 缓存状态的中文文案。 */
+function sourceStatusText(status) {
+  if (status === "fresh") return "最新";
+  if (status === "stale") return "已超过 7 天，建议刷新";
+  return "离线 · 未拉取";
 }
 
 function 登录方式徽章({ provider }) {
@@ -40,14 +50,37 @@ function 能力摘要({ provider }) {
 }
 
 /**
- * Pi 内置供应商库：可搜索、按登录方式筛选，一键把 Base URL / 协议 / 模型能力写进配置。
- * 目录数据来自 /api/agent/provider-catalog（服务端固化自 Pi SDK）。
+ * 供应商库：可搜索、按登录方式筛选，一键把 Base URL / 协议 / 模型能力写进配置。
+ * 目录 = Pi 内置快照 + models.dev 合并（/api/agent/provider-catalog），
+ * 「刷新目录」从 models.dev 拉最新供应商与模型（离线自动降级用缓存）。
  */
-export function 供应商库({ catalog, onImported, onEditExisting, refreshing = false }) {
+export function 供应商库({ catalog, onImported, onEditExisting, onCatalogRefreshed, refreshing = false }) {
   const [keyword, setKeyword] = useState("");
   const [filter, setFilter] = useState("all");
   const [detailId, setDetailId] = useState("");
+  const [listExpanded, setListExpanded] = useState(false);
+  const [refreshBusy, setRefreshBusy] = useState(false);
+  const [refreshNote, setRefreshNote] = useState("");
   const providers = Array.isArray(catalog?.providers) ? catalog.providers : [];
+  const sources = catalog?.sources || null;
+  const modelsDev = sources?.modelsDev || null;
+
+  const runRefresh = useCallback(async () => {
+    if (refreshBusy) return;
+    setRefreshBusy(true);
+    setRefreshNote("正在拉取 models.dev 目录…");
+    try {
+      const result = await agentProviderCatalogRefresh();
+      setRefreshNote(result.fromCache
+        ? `拉取失败，已沿用上次缓存${result.error ? ` · ${result.error}` : ""}`
+        : `已更新：${result.providerCount} 家供应商 / ${result.modelCount} 个模型`);
+      onCatalogRefreshed?.();
+    } catch (err) {
+      setRefreshNote(`刷新失败 · ${err.message}`);
+    } finally {
+      setRefreshBusy(false);
+    }
+  }, [refreshBusy, onCatalogRefreshed]);
 
   const filtered = useMemo(() => {
     const text = keyword.trim().toLowerCase();
@@ -79,11 +112,19 @@ export function 供应商库({ catalog, onImported, onEditExisting, refreshing =
     <div className="prov-library">
       <div className="prov-library-head">
         <div>
-          <strong>Pi 内置供应商库</strong>
+          <strong>供应商库</strong>
           <p>
-            共 {providers.length} 个内置供应商（{catalog?.totalModels || 0} 个模型），已添加 {configuredCount} 个。
+            共 {providers.length} 个供应商（{catalog?.totalModels || 0} 个模型），已添加 {configuredCount} 个。
             添加时接口地址、协议、上下文窗口和图片能力会自动带出，只需补 Key。
           </p>
+          {modelsDev && (
+            <p className="prov-library-source">
+              目录来源：Pi 内置 {sources?.builtin?.count ?? "—"} 家
+              · models.dev {modelsDev.count ? `${modelsDev.count} 家` : "未拉取"}
+              {modelsDev.fetchedAt ? ` · 更新于 ${new Date(modelsDev.fetchedAt).toLocaleString()}` : ""}
+              （{sourceStatusText(modelsDev.status)}）
+            </p>
+          )}
         </div>
         <div className="prov-library-search">
           <Icon name="search" size={12} />
@@ -95,8 +136,22 @@ export function 供应商库({ catalog, onImported, onEditExisting, refreshing =
             aria-label="搜索内置供应商"
           />
           {keyword && <button type="button" className="btn-xs" onClick={() => setKeyword("")}>清空</button>}
+          <button
+            type="button"
+            className="btn-sm"
+            disabled={refreshBusy}
+            title="从 models.dev 拉取最新供应商与模型（离线时沿用缓存）"
+            onClick={runRefresh}
+          >
+            {refreshBusy ? "刷新中…" : "刷新目录"}
+          </button>
         </div>
       </div>
+      {(refreshNote || refreshing) && (
+        <div className="prov-library-source model-feedback">
+          {refreshing ? "目录读取中…" : refreshNote}
+        </div>
+      )}
       <div className="prov-library-filters">
         {[
           ["all", `全部 ${providers.length}`],
@@ -113,7 +168,7 @@ export function 供应商库({ catalog, onImported, onEditExisting, refreshing =
       {!providers.length && <div className="model-provider-empty">内置供应商目录为空：请先运行 node scripts/提取Pi供应商目录.mjs 生成目录。</div>}
       {providers.length > 0 && !filtered.length && <div className="model-provider-empty">没有匹配的供应商，换个关键词试试。</div>}
       <div className="prov-library-list">
-        {filtered.map((provider) => {
+        {(listExpanded ? filtered : filtered.slice(0, LIST_PAGE_SIZE)).map((provider) => {
           const identity = providerIdentity(provider.id);
           return (
             <div className={`prov-library-item${provider.configured ? " configured" : ""}`} key={provider.id}>
@@ -124,6 +179,7 @@ export function 供应商库({ catalog, onImported, onEditExisting, refreshing =
                 <div className="prov-library-title">
                   <strong>{provider.name || provider.id}</strong>
                   <code>{provider.id}</code>
+                  {provider.source === "models-dev" && <span className="sp-badge" title="来自 models.dev 目录（opencode 同款数据源）">models.dev</span>}
                   {provider.isDefault && <span className="sp-badge ok">默认</span>}
                   {provider.configured && <span className="sp-badge ok">已添加{provider.configuredModelCount ? ` · ${provider.configuredModelCount} 模型` : ""}</span>}
                   {provider.authError && <span className="sp-badge warn" title={provider.authError}>凭据失效</span>}
@@ -157,6 +213,11 @@ export function 供应商库({ catalog, onImported, onEditExisting, refreshing =
           );
         })}
       </div>
+      {filtered.length > LIST_PAGE_SIZE && (
+        <button type="button" className="btn-xs prov-dialog-more" onClick={() => setListExpanded((value) => !value)}>
+          {listExpanded ? "收起列表" : `显示全部 ${filtered.length} 个供应商（当前显示前 ${LIST_PAGE_SIZE} 个）`}
+        </button>
+      )}
       {detailId && (
         <供应商导入对话框
           providerId={detailId}
@@ -279,6 +340,9 @@ export function 供应商导入对话框({ providerId, onClose, onImported }) {
                   <button type="button" className="btn-xs" onClick={selectVisionOnly} disabled={!provider.capabilities?.visionCount}>仅支持图片</button>
                 </div>
               </div>
+              {models.length > 200 && (
+                <div className="sp-note">该供应商共 {models.length} 个模型，单次最多导入 200 个，建议按需勾选常用模型。</div>
+              )}
               <div className="prov-dialog-model-list">
                 {visibleModels.map((model) => (
                   <label className={`prov-dialog-model${configuredIds.has(model.id) ? " existing" : ""}`} key={model.id}>
@@ -303,7 +367,8 @@ export function 供应商导入对话框({ providerId, onClose, onImported }) {
               {oauthOnly ? (
                 <div className="sp-note">
                   该供应商只支持<b>账号登录</b>（{provider.auth.oauth?.name || "浏览器授权"}），没有 API Key 入口。
-                  请先在 Pi 里执行 <code>/login {provider.id}</code> 完成授权，再用下方「从本地 Pi 导入配置」把凭据带进规聚。
+                  请在终端执行 <code>pi auth login {provider.id}</code> 完成浏览器授权，
+                  再回规聚用「从本地 Pi 导入配置」把凭据带进来。
                 </div>
               ) : (
                 <label className="prov-dialog-field">
