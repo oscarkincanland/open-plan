@@ -11320,3 +11320,16 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent);
   border-radius: 5px;
 }
+
+/* ===== Word/Excel 预览适配优化（2026-10-20，无动画不受 P3 动效闸门约束）===== */
+/* Word：表格线兜底（docx 依赖默认表格样式时 docx-preview 不画线）+ 中文正文行高 */
+.oaw-docx-host .oaw-docx-wrapper section.oaw-docx table td,
+.oaw-docx-host .oaw-docx-wrapper section.oaw-docx table th {
+  border: 1px solid #999;
+}
+.oaw-docx-host .oaw-docx-wrapper section.oaw-docx p {
+  line-height: 1.6;
+}
+/* Excel：截断提示徽标 */
+.excel-truncated { font-size: 10px; color: var(--warning); }
+.excel-toolbar .save-msg { font-size: 11px; }

@@ -703,7 +703,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
             />
           </div>
         )}
-        {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} />}
+        {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} truncated={doc.truncated} maxRows={doc.maxRows} />}
         {doc.kind === "htmlfile" && (
           <div className="docframe-container">
             <iframe

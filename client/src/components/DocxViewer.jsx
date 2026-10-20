@@ -8,6 +8,62 @@ import { extractDocxOutline } from "./文档目录.js";
 import { motionScrollBehavior } from "../界面外观.js";
 import { buildDocUrls, makeFileIdentity, identityMatches, readIdentityHeader, previewStateFromError, PREVIEW_STATE } from "../文件地址.js";
 
+// ---------- 渲染缓冲与字体回退（2026-10-20 预览适配优化） ----------
+// docx 二进制短缓存：右栏页签来回切换时免去重新下载（渲染仍需重跑，
+// docx-preview 不保留 DOM）。LRU 上限 3 份，单份超过 25MB 不缓存。
+const DOCX_BUFFER_CACHE = new Map();
+const DOCX_CACHE_LIMIT = 3;
+const DOCX_CACHE_MAX_BYTES = 25 * 1024 * 1024;
+function cacheDocxBuffer(key) {
+  const hit = DOCX_BUFFER_CACHE.get(key);
+  if (!hit) return null;
+  DOCX_BUFFER_CACHE.delete(key);
+  DOCX_BUFFER_CACHE.set(key, hit);
+  return hit;
+}
+function storeDocxBuffer(key, buf) {
+  try {
+    if (!buf || buf.byteLength > DOCX_CACHE_MAX_BYTES) return;
+    DOCX_BUFFER_CACHE.set(key, buf);
+    while (DOCX_BUFFER_CACHE.size > DOCX_CACHE_LIMIT) {
+      DOCX_BUFFER_CACHE.delete(DOCX_BUFFER_CACHE.keys().next().value);
+    }
+  } catch {}
+}
+
+// 文档里声明但本机未安装的中文字体：给整链回退，避免"宋体/仿宋/楷体缺失 →
+// 浏览器随机默认体"的观感崩坏（字体已安装时不注入，保持文档原字体）。
+const DOCX_FONT_FALLBACKS = [
+  ["宋体", "SimSun", "Songti SC", "Noto Serif CJK SC", "serif"],
+  ["黑体", "SimHei", "Heiti SC", "Noto Sans CJK SC", "sans-serif"],
+  ["楷体", "KaiTi", "Kaiti SC", "STKaiti", "serif"],
+  ["楷体_GB2312", "KaiTi_GB2312", "KaiTi", "serif"],
+  ["仿宋", "FangSong", "STFangsong", "serif"],
+  ["仿宋_GB2312", "FangSong_GB2312", "FangSong", "serif"],
+  ["微软雅黑", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "sans-serif"],
+  ["等线", "DengXian", "PingFang SC", "Microsoft YaHei", "sans-serif"],
+];
+function injectDocxFontFallback(host) {
+  try {
+    const missing = DOCX_FONT_FALLBACKS.filter(([name]) => {
+      try { return !document.fonts.check(`12px "${name}"`); } catch { return true; }
+    });
+    let style = host.querySelector("style[data-oaw-docx-fonts]");
+    if (!missing.length) {
+      if (style) style.textContent = "";
+      return;
+    }
+    if (!style) {
+      style = document.createElement("style");
+      style.setAttribute("data-oaw-docx-fonts", "1");
+      host.appendChild(style);
+    }
+    style.textContent = missing.map(([name, ...chain]) =>
+      `.oaw-docx-wrapper [style*="${name}"] { font-family: "${name}", ${chain.map((f) => `"${f}"`).join(", ")} !important; }`
+    ).join("\n");
+  } catch {}
+}
+
 /**
  * Word 文档查看器（增强版）
  * - 更多字体和颜色选项，颜色直接显示色块
@@ -194,15 +250,23 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
     setImageNotice("");
     onPreviewState?.(PREVIEW_STATE.LOADING);
     try {
-      const res = await fetch(urls.raw, { cache: "no-store", signal });
-      if (!res.ok) throw new Error(`加载失败 HTTP ${res.status}`);
-      // 服务端返回文件身份：与当前文件不符则拒绝渲染，避免同名跨工作区串内容。
-      const serverIdentity = readIdentityHeader(res);
-      if (serverIdentity && !identityMatches(fileIdentity, serverIdentity)) {
-        throw new Error("预览内容与打开的文件不一致（文件身份不匹配），已停止渲染");
+      // 命中渲染缓冲时跳过下载（页签切换的高频路径）；未命中再走网络并落缓存。
+      const cachedBuf = cacheDocxBuffer(urls.raw);
+      let buf;
+      if (cachedBuf) {
+        buf = cachedBuf;
+      } else {
+        const res = await fetch(urls.raw, { cache: "no-store", signal });
+        if (!res.ok) throw new Error(`加载失败 HTTP ${res.status}`);
+        // 服务端返回文件身份：与当前文件不符则拒绝渲染，避免同名跨工作区串内容。
+        const serverIdentity = readIdentityHeader(res);
+        if (serverIdentity && !identityMatches(fileIdentity, serverIdentity)) {
+          throw new Error("预览内容与打开的文件不一致（文件身份不匹配），已停止渲染");
+        }
+        buf = await res.arrayBuffer();
+        if (!live()) return;
+        storeDocxBuffer(urls.raw, buf);
       }
-      const buf = await res.arrayBuffer();
-      if (!live()) return;
 
       // docx-preview 的图片是异步取回的，渲染完成后要给它一点时间；个别文档在
       // blob 链路下拿不到图片（src 落空 / 解码失败），这里改用 base64 数据链重渲染一次。
@@ -218,6 +282,8 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
           renderChanges: showChanges,   // 修订痕迹显示跟随工具栏开关
           useBase64URL: base64URL,
         });
+        // 文档声明但本机缺失的中文字体 → 整链回退（已安装的字体不干预）
+        injectDocxFontFallback(host);
       };
       const brokenImages = async (timeoutMs) => {
         const deadline = Date.now() + timeoutMs;

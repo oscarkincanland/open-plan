@@ -247,69 +247,123 @@ function nodeChildren(node) {
   return Array.isArray(node?.children) ? node.children : Array.isArray(node?.Children) ? node.Children : [];
 }
 
+// ---------- Excel 预览上限：防大文件一次性全量进前端 ----------
+const XLSX_PREVIEW_MAX_ROWS = 5000;
+const XLSX_PREVIEW_MAX_COLS = 120;
+const XLSX_PREVIEW_MAX_SHEETS = 30;
+
+// 把 officecli DOM 路径产出的 1-based 行列键统一为 0-based（与 x-spreadsheet 坐标系
+// 一致；此前 1-based 键直接喂给 0-based 渲染器，整体偏移一格、首行首列恒为空）。
+function clampGridRows(rows) {
+  const out = {};
+  for (const key of Object.keys(rows || {})) {
+    const ri = Number(key);
+    if (!Number.isFinite(ri)) continue;
+    const zeroRi = ri - 1;
+    if (zeroRi < 0 || zeroRi >= XLSX_PREVIEW_MAX_ROWS) continue;
+    const cells = {};
+    for (const ck of Object.keys(rows[key]?.cells || {})) {
+      const ci = Number(ck);
+      if (!Number.isFinite(ci)) continue;
+      const zeroCi = ci - 1;
+      if (zeroCi < 0 || zeroCi >= XLSX_PREVIEW_MAX_COLS) continue;
+      cells[zeroCi] = rows[key].cells[ck];
+    }
+    out[zeroRi] = { cells };
+  }
+  return out;
+}
+
+function buildXlsxGrids(XLSX, wb) {
+  const grids = {};
+  const truncated = [];
+  const names = (wb.SheetNames || []).slice(0, XLSX_PREVIEW_MAX_SHEETS);
+  for (const name of names) {
+    const ws = wb.Sheets[name] || {};
+    // raw:false → 取 Excel 显示值：日期/金额/百分比按单元格格式输出，
+    // 而不是 45000+ 日期序列号或 0.0345 裸小数（2026-10-20 用户反馈"数据显示不对"）。
+    const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: false });
+    const totalRows = data.length;
+    const rows = {};
+    const rowCount = Math.min(totalRows, XLSX_PREVIEW_MAX_ROWS);
+    for (let ri = 0; ri < rowCount; ri += 1) {
+      const cells = {};
+      const row = data[ri] || [];
+      const colCount = Math.min(row.length, XLSX_PREVIEW_MAX_COLS);
+      for (let ci = 0; ci < colCount; ci += 1) {
+        const val = row[ci];
+        if (val !== "" && val != null) cells[ci] = { text: String(val) };
+      }
+      rows[ri] = { cells };
+    }
+    const grid = { rows, totalRows };
+    // 合并单元格：!merges 转为 x-spreadsheet 的 A1 引用串
+    const merges = (ws["!merges"] || []).map((m) => XLSX.utils.encode_range(m));
+    if (merges.length) grid.merges = merges;
+    // 列宽：!cols 的 wpx / wch 转像素（0-based 键，与 Cols.setData 一致）
+    const cols = {};
+    (ws["!cols"] || []).forEach((c, i) => {
+      if (!c) return;
+      const px = c.wpx || (c.wch ? Math.round(c.wch * 7 + 5) : 0);
+      if (px) cols[i] = { width: Math.min(400, Math.max(40, Math.round(px))) };
+    });
+    if (Object.keys(cols).length) grid.cols = cols;
+    if (totalRows > XLSX_PREVIEW_MAX_ROWS) truncated.push({ name, totalRows });
+    grids[name] = grid;
+  }
+  return { sheets: wb.SheetNames || [], grids, truncated, maxRows: XLSX_PREVIEW_MAX_ROWS };
+}
+
 async function readWorkbook(file) {
-  // 尝试 officecli（Windows），失败则用 xlsx 包原生读取（macOS/Linux）
+  // 预览优先用 xlsx 包原生读取：显示值（日期/数字格式）、合并单元格、列宽都能还原，
+  // 且不依赖外部二进制、无 officecli 冷启动；officecli 保留为解析失败时的兜底。
   try {
-    const { get } = await import("./office.mjs");
-    // 枚举 sheets：depth 1 不够则递增重试
-    let info = await get(file, "/", 1);
-    const sheetNodes = [];
-    const collect = (results) => {
-      for (const r of results || []) {
-        if (r.type === "sheet" && r.path) sheetNodes.push(r);
-        collect(nodeChildren(r));
-      }
-    };
-    collect(officeResults(info));
-    if (sheetNodes.length === 0) {
-      info = await get(file, "/", 2);
-      collect(officeResults(info));
-    }
-    if (sheetNodes.length === 0) {
-      throw new Error("无法枚举工作表");
-    }
-    const sheets = [];
-    const grids = {};
-    for (const s of sheetNodes) {
-      const name = s.preview || s.path.split("/").pop();
-      if (!sheets.some((x) => x.name === name)) {
-        sheets.push({ name, path: s.path });
-      }
-    }
-    for (const s of sheets) {
-      // 使用 Office CLI 返回的 DOM 路径，而不是工作表显示名；名称含空格、斜杠
-      // 或非 ASCII 字符时，显示名不一定能作为查询路径。
-      const r = await get(file, s.path || `/${s.name}`, 3);
-      const results = officeResults(r);
-      const res = results.find((item) => item.type === "sheet") || results[0];
-      grids[s.name] = sheetToGrid(nodeChildren(res));
-    }
-    return { sheets: sheets.map((s) => s.name), grids };
-  } catch (officeErr) {
-    // officecli 不可用，使用 xlsx 包原生读取
+    // xlsx 是 CommonJS 包：动态 import 后需要用 .default 取导出对象
+    const xlsxModule = await import("xlsx");
+    const XLSX = xlsxModule.default || xlsxModule;
+    const wb = XLSX.readFile(file, { cellNF: true });
+    return buildXlsxGrids(XLSX, wb);
+  } catch (xlsxErr) {
+    // officecli 兜底：枚举工作表 → 按路径取单元格 DOM
     try {
-      // xlsx 是 CommonJS 包：动态 import 后需要用 .default 取导出对象
-      const xlsxModule = await import("xlsx");
-      const XLSX = xlsxModule.default || xlsxModule;
-      const wb = XLSX.readFile(file);
-      const sheets = wb.SheetNames;
-      const grids = {};
-      for (const name of sheets) {
-        const ws = wb.Sheets[name];
-        const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-        const rows = {};
-        data.forEach((row, ri) => {
-          const cells = {};
-          row.forEach((val, ci) => {
-            cells[ci + 1] = { text: String(val) };
-          });
-          rows[ri + 1] = { cells };
-        });
-        grids[name] = { rows };
+      const { get } = await import("./office.mjs");
+      // 枚举 sheets：depth 1 不够则递增重试
+      let info = await get(file, "/", 1);
+      const sheetNodes = [];
+      const collect = (results) => {
+        for (const r of results || []) {
+          if (r.type === "sheet" && r.path) sheetNodes.push(r);
+          collect(nodeChildren(r));
+        }
+      };
+      collect(officeResults(info));
+      if (sheetNodes.length === 0) {
+        info = await get(file, "/", 2);
+        collect(officeResults(info));
       }
-      return { sheets, grids };
-    } catch (xlsxErr) {
-      throw new Error(`officecli: ${officeErr.message} | xlsx: ${xlsxErr.message}`);
+      if (sheetNodes.length === 0) {
+        throw new Error("无法枚举工作表");
+      }
+      const sheets = [];
+      const grids = {};
+      for (const s of sheetNodes) {
+        const name = s.preview || s.path.split("/").pop();
+        if (!sheets.some((x) => x.name === name)) {
+          sheets.push({ name, path: s.path });
+        }
+      }
+      const capped = sheets.slice(0, XLSX_PREVIEW_MAX_SHEETS);
+      for (const s of capped) {
+        // 使用 Office CLI 返回的 DOM 路径，而不是工作表显示名；名称含空格、斜杠
+        // 或非 ASCII 字符时，显示名不一定能作为查询路径。
+        const r = await get(file, s.path || `/${s.name}`, 3);
+        const results = officeResults(r);
+        const res = results.find((item) => item.type === "sheet") || results[0];
+        grids[s.name] = { rows: clampGridRows(sheetToGrid(nodeChildren(res))), totalRows: null };
+      }
+      return { sheets: sheets.map((s) => s.name), grids, truncated: [], maxRows: XLSX_PREVIEW_MAX_ROWS };
+    } catch (officeErr) {
+      throw new Error(`xlsx: ${xlsxErr.message} | officecli: ${officeErr.message}`);
     }
   }
 }
