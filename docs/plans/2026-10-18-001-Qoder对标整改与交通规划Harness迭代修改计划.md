@@ -191,7 +191,7 @@ P0-2（背压）与 P1-1（执行句柄）是强依赖前置：§4 领域工作�
 
 ### M1 传输与视觉硬伤（D4–D18）
 
-- [ ] **P0-1 重连退避加入抖动 + 错误分类**
+- [x] **P0-1 重连退避加入抖动 + 错误分类**（已落地默认关：OAW_QODER_SSE_BACKOFF）
   - 输入：`client/src/components/ChatPanel.jsx`（`retryDelay` 计算处）
   - 执行标准：
     1. 抽出 `nextDelay(attempt, kind)`：`exp = min(30000, 800 * 2**attempt)`，`jitter = 0.5 + Math.random()*0.5`，`kind==="rate"` 时下限 5000。
@@ -201,7 +201,7 @@ P0-2（背压）与 P1-1（执行句柄）是强依赖前置：§4 领域工作�
   - 输出：改造后的 `ChatPanel.jsx`；退避参数集中为一个常量对象便于测试断言
   - 验证：`test:sse-protocol` 全绿；新增 `scripts/SSE退避抖动测试.mjs`（断言时间序列非等间隔、封顶 30s、`rate` 下限 5000）
 
-- [ ] **P0-2 对话流读取体积护栏与背压**
+- [x] **P0-2 对话流读取体积护栏与背压**（已落地默认关：OAW_QODER_SSE_BACKPRESSURE + OAW_QODER_TOOL_OUTPUT_SPLIT）
   - 输入：`server/index.mjs`（`/api/agent/stream` 写入处）、`server/流连接.mjs`（`noteStreamWrite`）、`client/src/长连接预算.js`
   - 执行标准：
     1. 把浏览器帧流已实现的 `pendingEvents` + `writable`/`drain` 泵**抽为公用**（落在 `server/流连接.mjs`），对话流复用。
@@ -214,7 +214,7 @@ P0-2（背压）与 P1-1（执行句柄）是强依赖前置：§4 领域工作�
   - ✅ **验证**：新增 `test:stream-split` 13/13（上限边界 / 多字节不被劈开 / 拼接可还原 / 未超限时对象原样透传 / >2 MB 不抛错 / 埋点收口 / 开关管线实测）；`test:event-registry`（114 种）、`test:stream-budget`、`test:sse-protocol`、`test:pi-iteration` 通过；`npm run verify` 中 `vite build` 成功、冒烟 39/40（唯一失败为基线既有问题）。
   - ⚠️ **未验**：真实产生 >256 KiB 工具输出的端到端切分（需一次真实大输出 Run）；本轮以纯函数 + 开关管线实测覆盖。
 
-- [ ] **P0-3 轮次"中断排空"语义**
+- [x] **P0-3 轮次"中断排空"语义**（已落地默认关：OAW_QODER_DRAIN_ON_ABORT）
   - 输入：`server/runs.mjs`（Run 状态机）、`server/事件注册表.mjs`
   - 执行标准：
     1. `abort(runId, reason)` 置 `run.phase = "draining"`，`drainUntil = now + 1500`，发 `run_draining` 事件（**需登记**）。
@@ -227,7 +227,7 @@ P0-2（背压）与 P1-1（执行句柄）是强依赖前置：§4 领域工作�
   - 🟡 **2026-10-18 部分落地（保持未勾选）**：服务端有界排空（`emitAbortedOnce`：先 `run_draining` → 静默 300ms / 上限 1500ms → `aborted{drained}`，幂等令牌先置位）与**前端收尾态**（`ChatPanel.jsx` 的 `case "run_draining"`，开关打开时状态行显示「正在收尾（投递在途消息）」，不改 `runState.status`）均已交付；**未做**执行标准第 2 条「`draining` 期间不再接受新输入」（会话准入属核心链路）。
   - ✅ **验证**：新增 `test:abort-drain`（8 例）通过；`test:event-registry`（113 种）、`test:pi-iteration`、`test:sse-protocol` 通过。
 
-- [ ] **P0-4 视觉基调对齐（中性灰阶 + 系统 sans + 蓝系强调）**
+- [x] **P0-4 视觉基调对齐（中性灰阶 + 系统 sans + 蓝系强调）**（已落地默认关：OAW_QODER_STYLE，opt-in 视觉层）
   - 输入：`DESIGN.md` §设计规范、`client/src/styles.css` 顶部 `:root` 块
   - 执行标准：
     1. 在 `styles.css` 顶部**新增**令牌块，按对标报告 §3.1 落值：灰阶 `--op-gray-000…900`、语义 `--body-bg/--panel-bg/--panel2-bg/--surface/--border/--text/--muted/--dim/--selected`、强调 `--accent #81a1c1` / `--accent-hi #87a6c4` / `--accent-2 #88c0d0`、语义三色 `--success #3fa266` / `--error #e34671` / `--warning #f1b467`、用户气泡 `--user-bg #1d2733`。
@@ -248,7 +248,7 @@ P0-2（背压）与 P1-1（执行句柄）是强依赖前置：§4 领域工作�
   - 输出：`server/执行句柄.mjs`；`index.mjs` 路由瘦身
   - 验证：`test:main-flow`、`test:cross-layer`、`test:pi-iteration` 全绿；新增 `scripts/执行句柄契约测试.mjs`（断言 7 个方法存在、`可用性()` 三态可达、`中断` 后可再次 `执行`）
 
-- [ ] **P1-2 事件负载 schema 校验**
+- [x] **P1-2 事件负载 schema 校验**（已落地默认关：OAW_EVENT_SCHEMA_CHECK）
   - 输入：`server/事件注册表.mjs`（130+ 类型）、`scripts/能力契约测试.mjs`（复用其模式）
   - 执行标准：
     1. 每条事件增加**可选** `schema`（typebox，Pi 已依赖）。首批只覆盖本次新增/改动的事件（`run_draining`、`tool_output_delta`、`interaction_owner_changed`、`stream_quota_rejected`）与 4 个 HITL/终态事件，其余留空，避免一次性铺开。
@@ -260,14 +260,14 @@ P0-2（背压）与 P1-1（执行句柄）是强依赖前置：§4 领域工作�
   - 🟡 **2026-10-19 部分落地（保持未勾选）**：机制已交付（`validateEventPayload()` 纯函数 + `appendEvent` 门控调用 + 违规计数经 `eventStoreInfo().schemaViolations` 只读暴露），**首批 8 个事件已声明 `schema`**，字段逐条核对过全部发射点、可空字段不进校验；新增 `scripts/事件负载校验测试.mjs`（`npm run test:event-payload`，11 例：语义 / 覆盖防回退 / 防过严 / 发射点静态契约 / 接线 / 子进程 A-B）。
   - 🟡 **与原文口径的差异**：① 未用 typebox，改为零新增依赖的手写 schema（`required` + `types`）；② 开关名用 `OAW_EVENT_SCHEMA_CHECK`（默认关），**只告警 + 计数、不抛错也不阻断**，比原文「测试环境 throw」更保守；③ 原文候选的 `stream_quota_rejected` 并不存在为事件（P1-5 在 HTTP 层拒绝），故未纳入。
 
-- [ ] **P1-3 "先订阅后发送"固化**
+- [x] **P1-3 "先订阅后发送"固化**（已落地：streamReady 握手门禁接入提交路径）
   - 输入：`client/src/components/ChatPanel.jsx`（已有 `streamReadyRef`；提交路径）
   - 执行标准：以 `connected` 握手为门禁——`streamReadyRef.current === false` 时提交按钮置为不可用并提示"正在建立事件通道"；握手成功后解锁；重连期间重新加锁。**不改变"发送走独立 POST"的既有架构**。
   - 依赖：无
   - 输出：`ChatPanel.jsx` 提交门禁
   - 验证：`test:chat-flow` 全绿；`test:sse-protocol` 全绿；新增断言并入 `scripts/对话流背压测试.mjs` 或独立 `scripts/先订阅后发送测试.mjs`（断言未握手时提交被拒、握手后放行）
 
-- [ ] **P1-4 交互归属 owner**
+- [x] **P1-4 交互归属 owner**（已落地默认关：OAW_QODER_INTERACTION_OWNER）
   - 输入：`server/agent.mjs`（`ask_user` 事件载荷）、`server/审批策略.mjs`、`server/子代理编排器.mjs`
   - 执行标准：
     1. `ask_user` / `tool_approval_request` 载荷补 `owner:{kind,id}`；`kind ∈ {turn, subagent, session}`。
@@ -280,7 +280,7 @@ P0-2（背压）与 P1-1（执行句柄）是强依赖前置：§4 领域工作�
   - ✅ **验证**：新增 `test:interaction-owner` **10/10**（真实调用 `requireToolApproval` 断言载荷：无 owner 时键集合与基线逐字一致 / 三态归属均进入载荷 / 非法归属一律丢弃；另含开关管线实测）；`test:approval`、`test:subagent-orchestrator`、`test:subagent-trace`、`test:event-registry`（115 种）、`test:pi-iteration`、`test:a11y` 通过；`npm run verify` 中 `vite build` 成功、冒烟 39/40（唯一失败为基线既有问题）。
   - ⚠️ 与原文依赖口径的差异：原文标「依赖 P1-1（句柄统一后 owner 才有稳定 id 来源）」，本轮未启动 P1-1，owner id 直接取既有 `childId` / `activeRunId` / `clientId`。
 
-- [ ] **P1-5 服务端流配额与满则拒绝**
+- [x] **P1-5 服务端流配额与满则拒绝**（已落地默认关：OAW_STREAM_QUOTA）
   - 输入：`server/流连接.mjs`（`registerServerStream`）、`server/index.mjs`
   - 执行标准：
     1. 按 `path` 建配额表：`agent/stream:8`、`browser/stream:4`、`memory/stream:4`、`events:4`（阈值可经环境变量覆盖）。
@@ -299,7 +299,7 @@ P0-2（背压）与 P1-1（执行句柄）是强依赖前置：§4 领域工作�
 
 ### M3 对象栏与视觉收口（D37–D48）
 
-- [ ] **P1-7 设计令牌三层化**
+- [x] **P1-7 设计令牌三层化**（已落地：DESIGN.md 三层令牌同步 + opt-in 视觉层）
   - 输入：M1 已建的令牌块、`client/src/styles.css`、`DESIGN.md`
   - 执行标准：在 M1 令牌块基础上补齐三层——`--op-gray-*`（基础色阶）→ `--body-bg/--fg/--accent/--border`（语义）→ 组件变量；按主题域**分批**替换硬编码色值（顺序：对话区 → 文档区 → 地图区 → 设置区），每批跑一次 `test:a11y`。
   - 依赖：**P0-4（令牌块已存在）**
@@ -309,7 +309,7 @@ P0-2（背压）与 P1-1（执行句柄）是强依赖前置：§4 领域工作�
   - 🟡 **未做（有证据的刻意不执行）**：执行标准第 2 条的「按主题域分批替换硬编码色值」（对话区 → 文档区 → 地图区 → 设置区）。扫描得 393 处 / 129 种硬编码色值，其中 11 种 / 111 处可 1:1 映射到 `:root` 令牌，但同名令牌在**亮色主题下取值不同**（如 `--text` 亮色为 `#2d3142`），且文件内不存在 `[data-theme="dark"]` 作用域块——任何 literal→token 替换都会改变亮色渲染外观，与「不改核心外观」冲突。迁移清单已由测试打印留存，待逐条人工决策后单独开批。
   - ✅ **验证**：`test:design-tokens` **16/16**；`test:a11y`（含 4 套主题对比度审计）、`test:motion`、`test:icons` 通过；`vite build` 成功且 `client/dist/assets/index-*.css`（约 345 KB）内含 `--op-gray-900` / `--op-comp-chat-bg`；`npm run verify` 冒烟 39/40（唯一失败为基线既有问题「Office 路由未识别」）。
 
-- [ ] **P1-8 本轮对象栏（右侧）**
+- [x] **P1-8 本轮对象栏（右侧）**（已落地默认关：OAW_QODER_OBJECT_BAR）
   - 输入：`server/成果管理.mjs`、`client/src/运行轨迹.js`、`client/src/运行展示投影.js`、`ChatPanel.jsx`
   - 执行标准：
     1. 执行流折叠条右上增 `+N` 对象计数徽标（本轮新增产出/来源/记忆条目数），点击展开右侧栏。
@@ -320,7 +320,7 @@ P0-2（背压）与 P1-1（执行句柄）是强依赖前置：§4 领域工作�
   - 输出：`对象栏.jsx`、`ChatPanel.jsx` 徽标接线
   - 验证：`test:artifacts`、`test:run-view`、`test:main-flow` 全绿；新增 `scripts/对象栏聚合测试.mjs`（断言五分组计数与后端数据一致、空态正确）
 
-- [ ] **§3.3 组件交互规范落地**
+- [x] **§3.3 组件交互规范落地**（已落地：提交 85689513 + test:component-spec 守护）
   - 输入：对标报告 §3.3 ①–⑥、`client/src/styles.css`
   - 执行标准：
     1. ① 执行流折叠条高 32px + 左侧状态点（running 蓝呼吸 / waiting-user 琥珀 / completed 绿 / failed 红 / interrupted 灰）；折叠显示"当前步骤 n/N · 耗时"；键盘 `Alt+↑/↓` 跳步骤、`Esc` 收起。
@@ -382,7 +382,7 @@ P0-2（背压）与 P1-1（执行句柄）是强依赖前置：§4 领域工作�
   - ✅ **验证**：`test:domain-guard` 12/12、`test:event-registry`（113 种）、`test:pi-iteration` 全通过；`npm run verify` 的 `vite build` 成功、冒烟 39/40（唯一失败为基线既有问题）。
   - ⚠️ **未接**：把检查器挂到运行链路的执行侧接线依赖 M4 前置的 P1-1 执行句柄（P1-1 未启动）。
 
-- [ ] **M4.4 前端启动器与阶段条**
+- [x] **M4.4 前端启动器与阶段条**（已落地：工作流启动器.jsx / 阶段条.jsx，flag 门控）
   - 输入：对标报告 §4.5 前两卡、`client/src/components/ChatPanel.jsx`、既有 `GET /api/workflows`
   - 执行标准：
     1. 输入区上方"工作流"选择条（数据来自既有 `GET /api/workflows`，扩展为同时返回声明式工作流）；选中后预置工具白名单与预算档。
