@@ -148,7 +148,9 @@ function waitingReasonOf(events) {
     if (event?.type === "tool_approval_request" && data.id) approvals.set(String(data.id), data);
     if (event?.type === "tool_approval_resolved" && data.id) approvals.delete(String(data.id));
     if (event?.type === "ask_user") pendingAsk = data;
-    if (event?.type === "ask_answered" || event?.type === "ask_user_answered") pendingAsk = null;
+    // ask_answered（live/排队接力/迟到续跑）与 ask_expired（等待窗口到期）都会终止等待态；
+    // 此前服务端从不下发 ask_answered/ask_expired，回答或超时后"等待你回答"一直挂在投影里。
+    if (event?.type === "ask_answered" || event?.type === "ask_user_answered" || event?.type === "ask_expired") pendingAsk = null;
   }
   if (approvals.size) {
     const first = [...approvals.values()][0];

@@ -16,6 +16,13 @@ function readFlag(name) {
   return TRUTHY.has(raw);
 }
 
+/** 带默认值的开关：环境变量未设置时取 fallback，设置了才按 TRUTHY 解析（用于用户批准默认开的能力）。 */
+function readFlagWithDefault(name, fallback) {
+  const raw = String(process.env?.[name] ?? "").trim().toLowerCase();
+  if (!raw) return fallback;
+  return TRUTHY.has(raw);
+}
+
 function readPositiveInt(name, fallback) {
   const raw = Number.parseInt(String(process.env?.[name] ?? ""), 10);
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
@@ -48,10 +55,10 @@ export const RUNTIME_FLAGS = Object.freeze({
   cacheWarming: readFlag("OAW_CACHE_WARMING"),
   /** U5 侧车空闲回收时间（毫秒，默认 10 分钟） */
   piBashSidecarIdleMs: readPositiveInt("OAW_PI_SIDECAR_IDLE_MS", 10 * 60 * 1000),
-  /** 交互优化 P1：staged 产物在任务运行中即对产物面板可见（默认关：保持 run_finished 后可见） */
-  stagedVisible: readFlag("OAW_STAGED_VISIBLE"),
-  /** 交互优化 P2：run_finished 智能自动切产物页签（默认关） */
-  autoTab: readFlag("OAW_AUTO_TAB"),
+  /** 交互优化 P1：staged 产物在任务运行中即对产物面板可见（2026-10-19 用户批准默认开：产物及时显示） */
+  stagedVisible: readFlagWithDefault("OAW_STAGED_VISIBLE", true),
+  /** 交互优化 P2：run_finished 智能自动切产物页签（2026-10-19 用户批准默认开：任务结束立即看到本轮产物） */
+  autoTab: readFlagWithDefault("OAW_AUTO_TAB", true),
   /** 交互优化 P3：浏览器手关后对话侧活动徽标（默认关） */
   browserBadge: readFlag("OAW_BROWSER_BADGE"),
   /** 交互优化 P7：窄屏开浏览器记忆/恢复预览栏状态（默认关） */
@@ -74,8 +81,8 @@ export const RUNTIME_FLAGS = Object.freeze({
   agentBusyWatchdogMs: readPositiveInt("OAW_BUSY_WATCHDOG_MS", 15 * 60 * 1000),
   /** 会话恢复 A2：恢复遇忙时前端自动等待任务结束后重试（默认关） */
   resumeAutoRetry: readFlag("OAW_RESUME_AUTO_RETRY"),
-  /** GIS G1：空间分析算子（buffer/spatial_filter/bbox_clip，默认关） */
-  spatialAnalysis: readFlag("OAW_SPATIAL_ANALYSIS"),
+  /** GIS G1：空间分析算子（buffer/spatial_filter/bbox_clip）——用户批准默认开（agent 一句话即可出图，无需手搓脚本）；OAW_SPATIAL_ANALYSIS=0 显式关闭 */
+  spatialAnalysis: readFlagWithDefault("OAW_SPATIAL_ANALYSIS", true),
   /** GIS G8：地图分析报告一键成文（/api/map/report + 面板按钮，默认关） */
   mapReport: readFlag("OAW_MAP_REPORT"),
   /** GIS G7：批量导出队列（多项目×多图层×多尺寸×PNG/PDF，默认关；PDF/截图复用 B4 底座） */
@@ -86,12 +93,14 @@ export const RUNTIME_FLAGS = Object.freeze({
   amapMcpBridge: readFlag("OAW_AMAP_MCP_BRIDGE"),
   /** GIS G9：地图项目打包 zip 归档导出（默认关） */
   mapPack: readFlag("OAW_MAP_PACK"),
-  /** GIS G5：场景化分析模板（v1 仅 OD 通勤分析，默认关） */
-  mapTemplates: readFlag("OAW_MAP_TEMPLATES"),
+  /** GIS G5：场景化分析模板——用户批准默认开（OD 期望线一步成图，替代手搓 60 步）；OAW_MAP_TEMPLATES=0 显式关闭 */
+  mapTemplates: readFlagWithDefault("OAW_MAP_TEMPLATES", true),
   /** GIS G10-v1：视图书签（视角收藏与一键恢复，默认关） */
   mapBookmarks: readFlag("OAW_MAP_BOOKMARKS"),
   /** 会话恢复 A4：运行中刷新恢复（冷启动探测 LIVE Run + Run 起点整段回放 + 恢复内容新建气泡，默认关） */
   replayRecover: readFlag("OAW_REPLAY_RECOVER"),
+  /** 地图自检截图：map_screenshot 工具（agent 对地图当前视图截图并用视觉自查样式，默认关） */
+  mapSelfReview: readFlag("OAW_MAP_SELF_REVIEW"),
   /** Qoder 对标总开关：打开后整族优化项生效（默认关；关掉即整体回滚） */
   qoderAlign: QODER_ALIGN,
   /** Qoder P0-1：SSE 重连退避加入抖动与退避上限放宽（默认关 = 基线固定倍增 500ms→5s 封顶） */
@@ -136,6 +145,11 @@ export const RUNTIME_FLAGS = Object.freeze({
   qoderToolOutputFrameMaxBytes: readPositiveInt("OAW_QODER_TOOL_OUTPUT_FRAME_MAX_BYTES", 256 * 1024),
   /** P1-4：交互（HITL）归属——ask_user / tool_approval_request 载荷附带 owner{kind,id}（默认关 = 载荷与基线逐字一致） */
   qoderInteractionOwner: readFlag("OAW_QODER_INTERACTION_OWNER") || QODER_ALIGN,
+  /* ===== 任务编排优化（2026-10-19 用户批准：默认开 = 明确的基线变更，非实验能力）===== */
+  /** ask_user 阻塞等待窗口（毫秒，默认 60 分钟）：拉长等待减少"超时后按假设瞎猜"。 */
+  askTimeoutMs: readPositiveInt("OAW_ASK_TIMEOUT_MS", 60 * 60 * 1000),
+  /** 迟到回答自动续跑：ask 超时/结束后用户再回答时，自动接力（忙=排队接力，空闲=新 Run 继续）。默认开；设 OAW_ASK_AUTO_RESUME=0 关回基线（基线=返回 404 死卡片）。 */
+  askAutoResume: readFlagWithDefault("OAW_ASK_AUTO_RESUME", true),
 });
 
 /** /api/status 下发形态：布尔与数值分开，前端只读布尔位。 */
@@ -166,6 +180,7 @@ export function runtimeFlagsSnapshot() {
     mapTemplates: RUNTIME_FLAGS.mapTemplates,
     mapBookmarks: RUNTIME_FLAGS.mapBookmarks,
     replayRecover: RUNTIME_FLAGS.replayRecover,
+    mapSelfReview: RUNTIME_FLAGS.mapSelfReview,
     qoderAlign: RUNTIME_FLAGS.qoderAlign,
     qoderSseBackoff: RUNTIME_FLAGS.qoderSseBackoff,
     qoderStyle: RUNTIME_FLAGS.qoderStyle,
@@ -179,9 +194,11 @@ export function runtimeFlagsSnapshot() {
     domainWorkflows: RUNTIME_FLAGS.domainWorkflows,
     qoderToolOutputSplit: RUNTIME_FLAGS.qoderToolOutputSplit,
     qoderInteractionOwner: RUNTIME_FLAGS.qoderInteractionOwner,
+    askAutoResume: RUNTIME_FLAGS.askAutoResume,
     // 数值位：前端 numberFlag() 读取（心跳间隔需下发给前端派生看门狗阈值）。
     heartbeatChatMs: RUNTIME_FLAGS.heartbeatChatMs,
     heartbeatEventsMs: RUNTIME_FLAGS.heartbeatEventsMs,
     heartbeatBrowserMs: RUNTIME_FLAGS.heartbeatBrowserMs,
+    askTimeoutMs: RUNTIME_FLAGS.askTimeoutMs,
   };
 }

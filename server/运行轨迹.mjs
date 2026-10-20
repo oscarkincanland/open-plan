@@ -20,6 +20,18 @@ export function completionStatusLabel(status) {
   return STATUS_LABELS[status] || "已结束";
 }
 
+/**
+ * 同一 Run 内多次 complete_task 的合并口径：
+ *  - 状态变化以最新为准（含「先 partial 后 success」的推进与「后声明失败」的纠正）；
+ *  - 状态不变时保留信息量更大的 summary——防止收尾寒暄式的重复声明
+ *    （如「无新增工作」）覆盖先前完整的交付结论（2026-10-19 用户反馈：最终结论不精准）。
+ */
+export function mergeCompletions(previous, next) {
+  if (!previous) return next;
+  if (next.status !== previous.status) return next;
+  return String(next.summary || "").length > String(previous.summary || "").length ? next : previous;
+}
+
 /** 归一化 complete_task 工具参数；非法内容返回 null。 */
 export function normalizeCompletion(raw = {}) {
   const status = String(raw?.status || "").trim().toLowerCase();

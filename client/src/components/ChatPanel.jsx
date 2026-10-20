@@ -70,9 +70,11 @@ const DEFAULT_CONTEXT_WINDOW = 128000;
 const PI_COMPACTION_RESERVE_TOKENS = 16384;
 const PI_COMPACTION_KEEP_RECENT_TOKENS = 20000;
 const LIVE_RUN_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested", "finishing"]);
-// 提问卡片的时间窗口兜底（服务端 ASK_TIMEOUT_MS = 5 分钟，正常由事件里的 expiresAt 给出）：
+// 提问卡片的时间窗口兜底（服务端 ASK_TIMEOUT_MS 默认 60 分钟，正常由事件里的 expiresAt 给出）：
 // 缺少 expiresAt 时按同一口径计时，到期把卡片置为已超时，不再留下点得动却必然 404 的死卡片。
-const ASK_TIMEOUT_FALLBACK_MS = 5 * 60 * 1000;
+// ask_user 等待窗口回退值：仅当服务端事件缺 expiresAt 时使用；正式值以事件为准。
+// 与服务端默认（OAW_ASK_TIMEOUT_MS，默认 60 分钟）对齐，避免回退值比真实窗口短导致卡片提前失效。
+const ASK_TIMEOUT_FALLBACK_MS = 60 * 60 * 1000;
 const MAX_VISIBLE_MESSAGES = 120;
 const MESSAGE_PAGE_SIZE = 80;
 const COMPOSER_COMMANDS = [
@@ -529,6 +531,35 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
+/**
+ * 输入框里引用记号的字符区间（与 parseReferenceMarkers 同一口径）。
+ * 用于 Trae 式行内引用徽章渲染与「整块编辑」：Backspace 一次删掉整个记号、
+ * 记号内部输入先整块选中，避免打字误删一半导致引用悄悄失效。
+ */
+function referenceTokenRanges(text = "") {
+  const value = String(text || "");
+  const ranges = [];
+  const push = (start, end) => { if (end > start) ranges.push({ start, end }); };
+  const bracketPatterns = [
+    /@知识库目录\[[^\]]*\]/g, /@知识库\[[^\]]*\]/g, /@模板目录\[[^\]]*\]/g,
+    /@模板\[[^\]]*\]/g, /@文件\[[^\]]*\]/g, /&会话\[[^\]]*\]/g,
+  ];
+  for (const re of bracketPatterns) {
+    for (const m of value.matchAll(re)) push(m.index, m.index + m[0].length);
+  }
+  for (const m of value.matchAll(/(^|[\s(])@([^\s@，。！？\]}]+)/g)) {
+    const start = m.index + m[1].length;
+    // m[1] 之后还有一个字面量 "@"，m[2] 从 start+1 开始——end 必须含上这一位，
+    // 否则切片少最后一个字符，.docx 等后缀判定失败、徽章整条丢失。
+    let end = start + 1 + m[2].length;
+    while (end > start + 1 && /[),;。！？]/.test(value[end - 1])) end -= 1;
+    const target = value.slice(start + 1, end);
+    if (/^(?:文件|知识库|模板|模板目录)\[/.test(target)) continue;
+    if (target.includes("/") || target.includes("\\") || /\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i.test(target)) push(start, end);
+  }
+  return ranges.sort((a, b) => a.start - b.start);
+}
+
 export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
@@ -917,6 +948,61 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
+  // ---- 行内引用记号：镜像层排版同步 + 整块编辑保护 ----
+  const syncComposerOverlay = useCallback(() => {
+    const el = textareaRef.current;
+    const overlay = composerOverlayRef.current;
+    if (!el || !overlay) return;
+    const cs = window.getComputedStyle(el);
+    const style = overlay.style;
+    style.fontFamily = cs.fontFamily;
+    style.fontSize = cs.fontSize;
+    style.fontWeight = cs.fontWeight;
+    style.lineHeight = cs.lineHeight;
+    style.letterSpacing = cs.letterSpacing;
+    style.padding = cs.padding;
+    overlay.scrollTop = el.scrollTop;
+    overlay.scrollLeft = el.scrollLeft;
+  }, []);
+  useEffect(() => { syncComposerOverlay(); }, [input, syncComposerOverlay]);
+  useEffect(() => {
+    window.addEventListener("resize", syncComposerOverlay);
+    return () => window.removeEventListener("resize", syncComposerOverlay);
+  }, [syncComposerOverlay]);
+
+  // 引用记号整块编辑：光标在记号内先整块选中（防打字误删一半）；记号尾 Backspace /
+  // 记号首 Delete 一次删除整个记号。补全菜单打开时不接管（@ 查询词要能逐字回退）。
+  const handleComposerTokenKeys = (e) => {
+    if (composerMenu || e.ctrlKey || e.metaKey || e.altKey) return;
+    const el = textareaRef.current;
+    if (!el || el.selectionStart !== el.selectionEnd) return;
+    const caret = el.selectionStart;
+    const ranges = referenceTokenRanges(el.value);
+    if (!ranges.length) return;
+    const editableKey = e.key.length === 1 || e.key === "Backspace" || e.key === "Delete";
+    const inside = ranges.find((r) => caret > r.start && caret < r.end);
+    if (inside && editableKey) {
+      e.preventDefault();
+      el.setSelectionRange(inside.start, inside.end);
+      return;
+    }
+    if (e.key === "Backspace") {
+      const hit = ranges.find((r) => caret === r.end);
+      if (!hit) return;
+      e.preventDefault();
+      el.setRangeText("", hit.start, hit.end, "end");
+      updateInput(el.value);
+      requestAnimationFrame(() => el.setSelectionRange(hit.start, hit.start));
+    } else if (e.key === "Delete") {
+      const hit = ranges.find((r) => caret === r.start);
+      if (!hit) return;
+      e.preventDefault();
+      el.setRangeText("", hit.start, hit.end, "end");
+      updateInput(el.value);
+      requestAnimationFrame(() => el.setSelectionRange(hit.start, hit.start));
+    }
+  };
+
   useEffect(() => {
     if (!embedded || lastPrompt || !messages.length) return;
     const lastUser = [...messages].reverse().find((item) => item?.role === "user" && item?.text);
@@ -976,9 +1062,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
 
   useEffect(() => {
     const found = parseReferenceMarkers(input);
-    if (!found.length) return;
     setReferences((prev) => {
-      const merged = [...found, ...prev.filter((r) => input.includes(r.source || `@${r.target}`))];
+      // 来自输入文本的引用（带 source 记号）随文本编辑联动：记号被删掉即从引用条移除；
+      // 外部注入的引用（App/侧栏传入，无 source 字段）不受输入框影响，始终保留。
+      const kept = prev.filter((r) => !r.source || input.includes(r.source));
+      if (!found.length && kept.length === prev.length) return prev;
+      const merged = [...found, ...kept];
       return merged.filter((r, i, arr) => arr.findIndex((x) => x.id === r.id) === i);
     });
   }, [input]);
@@ -2922,6 +3011,7 @@ case "runtime_connecting":
         clearInput();
         setImages([]);
         setAttachments([]);
+        setReferences([]);
         pushSystem("已加入待注入上下文，不会打断当前任务。", `context:${Date.now()}:${text.slice(0, 40)}`);
         return;
       }
@@ -2952,6 +3042,7 @@ case "runtime_connecting":
         clearInput();
         setImages([]);
         setAttachments([]);
+        setReferences([]);
         setInjectedContext([]);
         pushSystem(`已排队第 ${nextQueue.length} 条，当前任务完成后自动执行。`, `queue:${messageId}`);
         return;
@@ -3022,6 +3113,7 @@ case "runtime_connecting":
     clearInput();
     setImages([]);
     setAttachments([]);
+    setReferences([]);
     setInjectedContext([]);
     setContextFileDismissed(false);
       setBusy(true);
@@ -3322,6 +3414,8 @@ case "runtime_connecting":
   // 滚动：用户向上滑动查看历史时暂停自动滚动；在底部才自动滚到最新
   const scrollTimerRef = useRef(null);
   const textareaRef = useRef(null);
+  // Trae 式行内引用徽章：镜像层只画徽章底色（文字透明），随输入内容与滚动同步
+  const composerOverlayRef = useRef(null);
   const updateScrollFollowState = () => {
     const el = bodyRef.current;
     if (!el) return;
@@ -3848,12 +3942,15 @@ case "runtime_connecting":
                 ))}
               </div>
             )}
+            <div className="composer-shell">
             <textarea
               ref={textareaRef}
               value={input}
               disabled={frozen}
               placeholder={frozen ? "会话已冻结，可新建分支继续分析" : busy ? "输入后可排队执行，或仅注入下一轮上下文…" : "输入消息…"}
               onKeyDown={(e) => {
+                handleComposerTokenKeys(e);
+                if (e.defaultPrevented) return;
                 if (composerMenu && composerItems.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
                   e.preventDefault();
                   setComposerIndex((index) => (index + (e.key === "ArrowDown" ? 1 : -1) + composerItems.length) % composerItems.length);
@@ -3875,6 +3972,7 @@ case "runtime_connecting":
                 }
               }}
               onCompositionEnd={() => {}}
+              onScroll={syncComposerOverlay}
               onPaste={(e) => {
                 handleClipboardPaste(e);
               }}
@@ -3886,6 +3984,24 @@ case "runtime_connecting":
                 setComposerMenu(composerTrigger(value));
               }}
             />
+            {/* Trae 式行内引用徽章：只画底色徽章（文字由 textarea 渲染），指针事件全透传 */}
+            <div className="composer-overlay" ref={composerOverlayRef} aria-hidden="true">
+              {(() => {
+                const ranges = referenceTokenRanges(input);
+                if (!ranges.length) return null;
+                const value = `${input}\n`;
+                const nodes = [];
+                let cursor = 0;
+                for (const range of ranges) {
+                  if (range.start > cursor) nodes.push(<span key={`p${cursor}`}>{value.slice(cursor, range.start)}</span>);
+                  nodes.push(<span key={`t${range.start}`} className="composer-token-ghost">{value.slice(range.start, range.end)}</span>);
+                  cursor = range.end;
+                }
+                if (cursor < value.length) nodes.push(<span key={`p${cursor}`}>{value.slice(cursor)}</span>);
+                return nodes;
+              })()}
+            </div>
+            </div>
             <div className="input-send">
               {busy ? (
                 <>
@@ -4171,7 +4287,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
       ? { kind: "ask", text: view.progress.waitingReason || "等待你回答后继续" }
       : completion?.status === "blocked"
         ? { kind: "blocked", text: "有受阻项需要你先处理" }
-        : completion?.status === "partial"
+        : completion?.status === "partial" && (completion?.incomplete?.length || completion?.blockers?.length)
           ? { kind: "partial", text: "有未完成项，需要你决定是否继续" }
           : view.lifecycle === "failed"
             ? { kind: "failed", text: "本轮失败，可重试或调整要求" }
@@ -5140,10 +5256,10 @@ function PendingActionBar({ approval, ask, onLocateApproval, onLocateAsk, client
       });
       const result = await res.json().catch(() => ({}));
       if (res.status === 404) {
-        // 服务端已无该问题（5 分钟窗口已过或已在别处回答）：收起卡片，
+        // 服务端已无该问题（等待窗口已过或已在别处回答）：收起卡片，
         // 而不是留一张点得动、一发就报 no pending question 的死卡片。
         onExpired?.(ask?.id);
-        throw new Error("该问题已失效（超过 5 分钟未回答或已在别处回答），回答未提交");
+        throw new Error("该问题已失效（超过等待窗口未回答或已在别处回答），回答未提交");
       }
       if (!res.ok) throw new Error(result.error || `回答失败（${res.status}）`);
       onAnswered?.(ask?.id, value);
@@ -5195,12 +5311,14 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
-  // 提问有 5 分钟时间窗口：服务端超时后按假设继续，卡片必须同步失效而不是继续接受输入。
+  // 提问有等待窗口（服务端默认 60 分钟）：服务端超时后按假设继续，卡片置为已超时。
+  // askAutoResume（服务端默认开）下超时卡仍可提交：迟到回答会落档并自动续跑接下来的任务。
   const expired = Boolean(block.expired);
+  const canAnswerLate = expired && flag("askAutoResume");
 
   const submit = async (text) => {
     const answer = (text || "").trim();
-    if (!answer || sending || expired) return;
+    if (!answer || sending || (expired && !canAnswerLate)) return;
     setSending(true);
     setError("");
     try {
@@ -5212,7 +5330,7 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
       const result = await res.json().catch(() => ({}));
       if (res.status === 404) {
         onExpired?.(block.id);
-        throw new Error("该问题已失效（超过 5 分钟未回答或已在别处回答），回答未提交");
+        throw new Error("该问题已失效（超过等待窗口未回答或已在别处回答），回答未提交");
       }
       if (!res.ok) throw new Error(result.error || `回答失败（${res.status}）`);
       onAnswered?.(block.id, answer);
@@ -5235,12 +5353,17 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
       <div className="ask-question">{block.question}</div>
       {block.answer ? (
         <div className="ask-answer">你的回答：{block.answer}</div>
-      ) : expired ? (
+      ) : expired && !canAnswerLate ? (
         <div className="ask-expired" role="status">
-          超过 5 分钟未回答，Agent 已按自己的假设继续（本轮不再接受该问题的回答）。如需修正，请直接在下方输入消息说明。
+          超过等待窗口未回答，Agent 已按自己的假设继续（本轮不再接受该问题的回答）。如需修正，请直接在下方输入消息说明。
         </div>
       ) : (
         <>
+          {expired && (
+            <div className="ask-expired" role="status">
+              等待窗口已过，Agent 已按假设继续。现在回答仍有效：提交后系统会把回答作为补充信息，自动继续/重启未完成的任务。
+            </div>
+          )}
           {block.options?.length > 0 && (
             <div className="ask-options">
               {block.options.map((opt, i) => (

@@ -11298,3 +11298,25 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   background: transparent;
   white-space: nowrap;
 }
+
+/* ===== 输入框行内引用记号（Trae 式徽章，2026-10-19）：镜像层只画徽章底色，
+   文字由 textarea 渲染；无动画（不受 P3 动效闸门约束）。===== */
+.composer-shell { flex: 1; position: relative; display: flex; min-width: 0; }
+.composer-shell textarea { position: relative; z-index: 1; }
+.composer-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  color: transparent;
+  pointer-events: none;
+  border-radius: 10px;
+}
+.composer-overlay .composer-token-ghost {
+  color: transparent;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent);
+  border-radius: 5px;
+}
