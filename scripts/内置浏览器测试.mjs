@@ -16,13 +16,18 @@ import { fileURLToPath } from "node:url";
 // 测试使用独立 profile 目录：保证“未启动”断言确定性，也避免影响用户正在使用的浏览器
 process.env.OAW_BROWSER_PROFILE = path.join(os.tmpdir(), `oaw-browser-test-${Date.now().toString(36)}`);
 const {
+  browserAct,
   browserClick,
   browserClose,
+  browserExtract,
   browserOpen,
+  browserScroll,
+  browserSelectOption,
   browserSessionKey,
   browserSnapshot,
   browserType,
   browserUserInput,
+  browserWaitFor,
   getBrowserSession,
   shutdownBrowsers,
 } = await import("../server/内置浏览器.mjs");
@@ -225,6 +230,52 @@ await test("SSE 帧流有背压处理（保留最新帧）", () => {
   assert.match(stream, /session\.captureFrame\(\)/, "无缓存帧时应先截一帧，避免空白面板");
 });
 
+console.log("\n▶ 浏览器原子操作（Proma 对标，默认关）");
+
+await test("新导出存在：等待 / 点击并等待 / 区域抽取 / 原生下拉", () => {
+  for (const [name, fn] of [["browserWaitFor", browserWaitFor], ["browserAct", browserAct], ["browserExtract", browserExtract], ["browserSelectOption", browserSelectOption]]) {
+    assert.equal(typeof fn, "function", `${name} 应导出为函数`);
+  }
+  assert.equal(typeof browserScroll, "function", "browserScroll 应保留");
+});
+
+await test("默认关：未设开关时四个新能力与容器滚动均报 FLAG_DISABLED", async () => {
+  const { RUNTIME_FLAGS } = await import("../server/运行开关.mjs");
+  if (RUNTIME_FLAGS.browserAtomic) return; // 已开启原子族时由 --live 覆盖
+  const key = browserSessionKey("atomic", "off");
+  await assert.rejects(() => browserWaitFor(key, { text: "x" }), (e) => e.code === "FLAG_DISABLED");
+  await assert.rejects(() => browserAct(key, "e1", { text: "x" }), (e) => e.code === "FLAG_DISABLED");
+  await assert.rejects(() => browserExtract(key, {}), (e) => e.code === "FLAG_DISABLED");
+  await assert.rejects(() => browserSelectOption(key, "e1", { index: 0 }), (e) => e.code === "FLAG_DISABLED");
+  await assert.rejects(() => browserScroll(key, "down", 600, { selector: "#list" }), (e) => e.code === "FLAG_DISABLED");
+});
+
+await test("回归：scroll 缺省分支返回值逐字不变，仅新增可选 options", () => {
+  const src = fs.readFileSync(path.join(ROOT, "server", "内置浏览器.mjs"), "utf8");
+  assert.match(src, /\{ y: window\.scrollY, height: document\.body\.scrollHeight \}/, "缺省滚动分支返回值不得变化");
+  assert.match(src, /export async function browserScroll\(key, direction, amount, options = \{\}\)/, "browserScroll 应新增可选 options 参数");
+});
+
+await test("契约：新工具已登记（agent 定义 + 三处白名单 + task 白名单 + 开关快照）", () => {
+  const agent = fs.readFileSync(path.join(ROOT, "server", "agent.mjs"), "utf8");
+  const task = fs.readFileSync(path.join(ROOT, "server", "task.mjs"), "utf8");
+  const flags = fs.readFileSync(path.join(ROOT, "server", "运行开关.mjs"), "utf8");
+  const names = ["browser_wait_for", "browser_act", "browser_extract", "browser_select_option"];
+  for (const name of names) {
+    assert.match(agent, new RegExp(`name: "${name}"`), `agent 缺少工具定义 ${name}`);
+    assert.match(task, new RegExp(`"${name}"`), `task 白名单缺少 ${name}`);
+    const quoted = (agent.match(new RegExp(`"${name}"`, "g")) || []).length;
+    assert.ok(quoted >= 2, `tools/setActiveTools 白名单应包含 ${name}（实际 ${quoted} 处字符串）`);
+  }
+  for (const toolVar of ["browserWaitForTool", "browserActTool", "browserExtractTool", "browserSelectOptionTool"]) {
+    assert.match(agent, new RegExp(toolVar), `customTools 缺少 ${toolVar}`);
+  }
+  assert.match(flags, /browserAtomic/, "运行开关应含 browserAtomic");
+  for (const key of ["browserAtomic", "browserWaitFor", "browserAct", "browserScrollContainer", "browserExtract", "browserSelectOption"]) {
+    assert.ok((flags.match(new RegExp(`${key}:`, "g")) || []).length >= 2, `运行开关定义与快照应都含 ${key}`);
+  }
+});
+
 console.log("\n▶ 服务端与前端接入点");
 
 await test("agent / task / index / 前端已接入浏览器能力", () => {
@@ -326,6 +377,64 @@ if (LIVE) {
       await browserTabs(key, "close", created.tabId);
       const afterClose = await browserTabs(key, "list");
       assert.ok(!afterClose.tabs.some((tab) => tab.id === created.tabId), "关闭后标签应消失");
+    });
+    await test("原子能力：等待文本（先 false 后 true）", async () => {
+      const missing = await browserWaitFor(key, { text: "绝不可能出现的怪词XYZQWE" }, { timeoutMs: 1200 });
+      assert.equal(missing.matched, false, "不存在的文本应超时返回 matched=false");
+      const hit = await browserWaitFor(key, { text: "搜索" }, { timeoutMs: 8000 });
+      assert.equal(hit.matched, true, "应能等到页面出现「搜索」");
+    });
+    await test("原子能力：区域抽取返回文本与字数", async () => {
+      const out = await browserExtract(key, { selector: "body", maxChars: 800 });
+      assert.ok(out.text.length > 0, "抽取正文不应为空");
+      assert.equal(typeof out.chars, "number");
+      assert.ok(out.chars >= out.text.length, "chars 应为抽取前原文长度");
+    });
+    await test("原子能力：点击并等待（browser_act）", async () => {
+      const snap = await browserSnapshot(key);
+      const box = snap.elements.find((line) => /\[e\d+\] (search|searchbox|textbox|textarea|input)\b/.test(line));
+      if (!box) return console.log("  · 跳过：快照未包含输入框元素");
+      const ref = box.match(/\[(e\d+)\]/)[1];
+      const res = await browserAct(key, ref, { selector: "body" }, { timeoutMs: 5000 });
+      assert.equal(res.matched, true, "点击后 body 条件应满足");
+      assert.equal(res.clicked, ref);
+    });
+    await test("原子能力：原生 <select> 选择", async () => {
+      const session = getBrowserSession(key);
+      await session.evaluate(`(() => {
+        let sel = document.getElementById('__oaw_test_select');
+        if (!sel) {
+          sel = document.createElement('select');
+          sel.id = '__oaw_test_select';
+          sel.innerHTML = '<option value="a">Alpha</option><option value="b">Beta</option>';
+          document.body.appendChild(sel);
+        }
+        return true;
+      })()`);
+      const snap = await browserSnapshot(key);
+      const line = snap.elements.find((l) => /\[e\d+\] select\b/.test(l));
+      if (!line) return console.log("  · 跳过：快照未包含注入的 select（可能超出元素上限）");
+      const ref = line.match(/\[(e\d+)\]/)[1];
+      const res = await browserSelectOption(key, ref, { value: "b" });
+      assert.equal(res.selected.value, "b", "应选中 value=b");
+    });
+    await test("原子能力：内部滚动容器返回 moved 与前后指标", async () => {
+      const session = getBrowserSession(key);
+      await session.evaluate(`(() => {
+        let box = document.getElementById('__oaw_test_scroll');
+        if (!box) {
+          box = document.createElement('div');
+          box.id = '__oaw_test_scroll';
+          box.style.cssText = 'height:120px;overflow:auto;';
+          box.innerHTML = '<div style="height:2000px">滚动测试</div>';
+          document.body.appendChild(box);
+        }
+        box.scrollTop = 0;
+        return true;
+      })()`);
+      const res = await browserScroll(key, "down", 400, { selector: "#__oaw_test_scroll" });
+      assert.ok(res.before && res.after, "应返回前后指标");
+      assert.equal(res.moved, true, "容器应发生滚动");
     });
     await test("滚轮接管：归一化坐标滚动页面", async () => {
       const session = getBrowserSession(key);

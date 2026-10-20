@@ -38,6 +38,10 @@ const QODER_ALIGN = readFlag("OAW_QODER_ALIGN");
    关掉即整体回滚。任一单项开关也可独立打开。 */
 const HARNESS_ALIGN = readFlag("OAW_HARNESS_ALIGN");
 
+/* 浏览器原子操作族开关（Proma 对标）：默认全关 = 与历史基线行为完全一致；
+   OAW_BROWSER_ATOMIC=1 可一键打开整族，关掉即整体回滚，无需改代码、无残留。 */
+const BROWSER_ATOMIC = readFlag("OAW_BROWSER_ATOMIC");
+
 /** 只读快照：进程内唯一事实。模块加载时解析一次（服务生命周期内不热更）。 */
 export const RUNTIME_FLAGS = Object.freeze({
   /** U2+U6：Pi 把关扩展（ToolCallEvent 单工具拦截 + 压缩生命周期事件增强） */
@@ -72,6 +76,24 @@ export const RUNTIME_FLAGS = Object.freeze({
   browserUrlGuard: readFlag("OAW_BROWSER_URL_GUARD"),
   /** B5 白名单配置：域名列表（留空 = 放行全部 http/https；子域名自动匹配） */
   browserUrlAllowlist: readStringList("OAW_BROWSER_URL_ALLOWLIST"),
+  /* ===== 浏览器原子操作（Proma 对标，默认全关；OAW_BROWSER_ATOMIC=1 一键开启整族）===== */
+  /** 族开关：浏览器原子操作（等待 / 点击并等待 / 容器滚动 / 区域抽取 / 原生下拉） */
+  browserAtomic: BROWSER_ATOMIC,
+  /** 原子 A1：按 URL 片段/可见文本/CSS 选择器等待（默认关） */
+  browserWaitFor: readFlag("OAW_BROWSER_WAIT_FOR") || BROWSER_ATOMIC,
+  /** 原子 A2：点击并等待（点击 ref 与等待条件合并为一次串行调用，默认关） */
+  browserAct: readFlag("OAW_BROWSER_ACT") || BROWSER_ATOMIC,
+  /** 原子 A3：内部滚动容器滚动 + 前后滚动指标（默认关） */
+  browserScrollContainer: readFlag("OAW_BROWSER_SCROLL_CONTAINER") || BROWSER_ATOMIC,
+  /** 原子 A4：区域正文抽取（text / 基础 Markdown，默认关） */
+  browserExtract: readFlag("OAW_BROWSER_EXTRACT") || BROWSER_ATOMIC,
+  /** 原子 A5：原生 <select> 选项选择（默认关） */
+  browserSelectOption: readFlag("OAW_BROWSER_SELECT_OPTION") || BROWSER_ATOMIC,
+  /* ===== 子代理增强（Proma 对标，默认全关）===== */
+  /** 子代理 A1：委派幂等缓存（同一 toolCallId 重放只执行一次，默认关） */
+  subagentIdempotent: readFlag("OAW_SUBAGENT_IDEMPOTENT"),
+  /** 子代理 A2：阻塞事件冒泡（子代理等待审批时向父事件流冒泡 blocked/unblocked，默认关） */
+  subagentBlockedBubble: readFlag("OAW_SUBAGENT_BLOCKED_BUBBLE"),
   /** 会话恢复 A3：busy 看门狗（busy 期间超时无 Pi 事件活动则强制放行，默认关） */
   agentBusyWatchdog: readFlag("OAW_BUSY_WATCHDOG"),
   /** A3 阈值：busy 无事件活动多久后放行（毫秒，默认 15 分钟） */
@@ -206,6 +228,14 @@ export function runtimeFlagsSnapshot() {
     browserAdaptiveStream: RUNTIME_FLAGS.browserAdaptiveStream,
     browserFullpage: RUNTIME_FLAGS.browserFullpage,
     browserUrlGuard: RUNTIME_FLAGS.browserUrlGuard,
+    browserAtomic: RUNTIME_FLAGS.browserAtomic,
+    browserWaitFor: RUNTIME_FLAGS.browserWaitFor,
+    browserAct: RUNTIME_FLAGS.browserAct,
+    browserScrollContainer: RUNTIME_FLAGS.browserScrollContainer,
+    browserExtract: RUNTIME_FLAGS.browserExtract,
+    browserSelectOption: RUNTIME_FLAGS.browserSelectOption,
+    subagentIdempotent: RUNTIME_FLAGS.subagentIdempotent,
+    subagentBlockedBubble: RUNTIME_FLAGS.subagentBlockedBubble,
     agentBusyWatchdog: RUNTIME_FLAGS.agentBusyWatchdog,
     resumeAutoRetry: RUNTIME_FLAGS.resumeAutoRetry,
     spatialAnalysis: RUNTIME_FLAGS.spatialAnalysis,

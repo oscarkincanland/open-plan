@@ -73,6 +73,10 @@ const REGISTRY = [
   { type: "subagent_result", lifecycle: true, persist: true, note: "子代理结构化结果（status/output/artifacts/toolStats）" },
   { type: "subagent_verified", lifecycle: true, persist: true, note: "子代理对抗式核验结论（verdict/checklist）" },
   { type: "subagent_closed", lifecycle: true, persist: true, note: "子代理关账（finalStatus/parentToolCallId，roster 持久化锚点）" },
+  // 阻塞事件冒泡（开关 subagentBlockedBubble，默认关）：子代理因等待用户审批而阻塞/解除时，
+  // 向父会话事件流冒泡可观测的 blocked/unblocked 生命周期。
+  { type: "subagent_blocked", lifecycle: true, persist: true, note: "子代理因等待用户审批而阻塞（默认关）", schema: { required: ["childId"], types: { childId: "string", kind: "string", tool: "string" } } },
+  { type: "subagent_unblocked", lifecycle: true, persist: true, note: "子代理阻塞解除（审批已决，默认关）", schema: { required: ["childId"], types: { childId: "string", kind: "string", tool: "string" } } },
 
   // ---- Editorial Pipeline（方案 §5.2）----
   // 流水线每步产出中间产物并独立发事件，前端展示为可折叠阶段条。

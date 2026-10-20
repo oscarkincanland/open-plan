@@ -1348,6 +1348,27 @@ class BrowserSession {
     return value || {};
   }
 
+  /**
+   * 滚动 CSS 选择器指定的内部滚动容器（SPA 信息流常在内层容器滚动，导航键不生效），
+   * 返回前后 scrollTop/scrollHeight/clientHeight 与 moved，便于 Agent 核验。
+   */
+  async scrollContainer(selector, direction = "down", amount = 600) {
+    const delta = direction === "up" ? -Math.abs(amount) : Math.abs(amount);
+    const value = await this.evaluate(`(() => {
+      const el = document.querySelector(${JSON.stringify(String(selector))});
+      if (!el) return { found: false };
+      const before = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
+      el.scrollBy(0, ${Number(delta) || 600});
+      const after = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
+      return { found: true, before, after, moved: Math.abs(after.scrollTop - before.scrollTop) > 0 };
+    })()`);
+    await sleep(400);
+    if (!value || value.found === false) {
+      throw Object.assign(new Error(`未找到可滚动容器：${selector}`), { code: "CONTAINER_NOT_FOUND" });
+    }
+    return { selector, before: value.before, after: value.after, moved: value.moved };
+  }
+
   async screenshot(options = {}) {
     // G7：支持 png（地图导出需要无损位图）；缺省 jpeg 保持既有行为零变化。
     const format = options.format === "png" ? "png" : "jpeg";
@@ -1509,6 +1530,93 @@ function shouldSyncFrame(action, payload = {}) {
   return ["click", "wheel", "type", "key", "scroll", "navigate", "back", "reload", "tab_new", "tab_switch", "tab_close"].includes(action);
 }
 
+/** 开关校验统一入口：与既有 FLAG_DISABLED 语义一致（关时抛错、不进入会话）。 */
+function assertBrowserFlag(enabled, envName, label) {
+  if (!enabled) {
+    throw Object.assign(new Error(`${label}未开启（${envName}=1）`), { code: "FLAG_DISABLED" });
+  }
+}
+
+/** 构造等待条件表达式：urlFragment / text / selector 三选一（优先级 selector > text > urlFragment），用 JSON.stringify 拼参防注入。 */
+function waitConditionExpression(condition = {}) {
+  const selector = String(condition.selector || "").trim();
+  const text = String(condition.text || "");
+  const urlFragment = String(condition.urlFragment || "").trim();
+  if (selector) return { kind: "selector", expr: `Boolean(document.querySelector(${JSON.stringify(selector)}))` };
+  if (text) return { kind: "text", expr: `(document.body ? document.body.innerText : '').includes(${JSON.stringify(text)})` };
+  if (urlFragment) return { kind: "urlFragment", expr: `location.href.includes(${JSON.stringify(urlFragment)})` };
+  throw Object.assign(new Error("等待条件为空：请提供 urlFragment / text / selector 之一"), { code: "INVALID_WAIT_CONDITION" });
+}
+
+/** 轮询等待条件成立；超时返回 matched:false（不抛错，调用方据此判断）。 */
+async function waitForCondition(session, condition, { timeoutMs = 15000, intervalMs = 300 } = {}) {
+  const { kind, expr } = waitConditionExpression(condition);
+  const startedAt = Date.now();
+  const deadline = startedAt + Math.max(1000, Number(timeoutMs) || 15000);
+  const interval = Math.max(100, Number(intervalMs) || 300);
+  const readView = () => session.evaluate("({ url: location.href, title: document.title })").catch(() => null);
+  while (Date.now() < deadline) {
+    let matched = false;
+    try { matched = (await session.evaluate(expr)) === true; } catch {}
+    if (matched) {
+      const view = await readView();
+      return { matched: true, kind, elapsedMs: Date.now() - startedAt, url: view?.url || session.state.url, title: view?.title || session.state.title };
+    }
+    await sleep(interval);
+  }
+  const view = await readView();
+  return { matched: false, kind, elapsedMs: Date.now() - startedAt, url: view?.url || session.state.url, title: view?.title || session.state.title };
+}
+
+/** 抽取表达式：text 走 innerText；markdown 走自研基础块级/行内序列化（标题/列表/链接/强调）。 */
+function extractExpression(selector, format) {
+  const scope = selector ? `document.querySelector(${JSON.stringify(selector)})` : "document.body";
+  if (format !== "markdown") {
+    return `(() => {
+      const scope = ${scope};
+      if (!scope) return { found: false };
+      return { found: true, text: String(scope.innerText || '').replace(/\\n{3,}/g, '\\n\\n').trim(), url: location.href, title: document.title };
+    })()`;
+  }
+  return `(() => {
+    const root = ${scope};
+    if (!root) return { found: false };
+    const lines = [];
+    const inline = (el) => {
+      let out = '';
+      for (const node of el.childNodes) {
+        if (node.nodeType === 3) { out += String(node.nodeValue || '').replace(/\\s+/g, ' '); continue; }
+        if (node.nodeType !== 1) continue;
+        const tag = node.tagName.toLowerCase();
+        if (tag === 'br') { out += '\\n'; continue; }
+        if (tag === 'a') {
+          const href = node.getAttribute('href') || '';
+          const t = inline(node).trim();
+          out += (href && !href.startsWith('javascript:')) ? '[' + t + '](' + href + ')' : t;
+          continue;
+        }
+        if (tag === 'strong' || tag === 'b') { out += '**' + inline(node).trim() + '**'; continue; }
+        if (tag === 'em' || tag === 'i') { out += '*' + inline(node).trim() + '*'; continue; }
+        if (tag === 'img') { const src = node.getAttribute('src') || ''; if (src) out += '![' + (node.getAttribute('alt') || '') + '](' + src + ')'; continue; }
+        out += inline(node);
+      }
+      return out;
+    };
+    const block = (el) => {
+      for (const node of el.children) {
+        const tag = node.tagName.toLowerCase();
+        if (/^h[1-6]$/.test(tag)) { lines.push('#'.repeat(Number(tag[1])) + ' ' + inline(node).trim(), ''); continue; }
+        if (tag === 'li') { lines.push('- ' + inline(node).trim()); continue; }
+        if (['ul','ol','div','section','article','main','nav','header','footer','aside'].includes(tag)) { block(node); continue; }
+        const t = inline(node).trim();
+        if (t) lines.push(t, '');
+      }
+    };
+    block(root);
+    return { found: true, text: lines.join('\\n').replace(/\\n{3,}/g, '\\n\\n').trim(), url: location.href, title: document.title };
+  })()`;
+}
+
 export async function browserClick(key, ref) {
   const session = await requireActiveSession(key);
   session.assertAgentWrite("click");
@@ -1533,12 +1641,121 @@ export async function browserPress(key, pressKey) {
   return result;
 }
 
-export async function browserScroll(key, direction, amount) {
+export async function browserScroll(key, direction, amount, options = {}) {
+  const selector = String(options?.selector || "").trim();
+  // 无 selector：与历史基线逐字一致（window 滚动，返回 { y, height }）。
+  if (!selector) {
+    const session = await requireActiveSession(key);
+    session.assertAgentWrite("scroll");
+    const result = await session.scroll(direction, amount);
+    syncFrameSoon(session);
+    return result;
+  }
+  // 带 selector：内部滚动容器（开关 OAW_BROWSER_SCROLL_CONTAINER）。
+  assertBrowserFlag(RUNTIME_FLAGS.browserScrollContainer, "OAW_BROWSER_SCROLL_CONTAINER", "容器滚动");
   const session = await requireActiveSession(key);
   session.assertAgentWrite("scroll");
-  const result = await session.scroll(direction, amount);
+  const result = await session.scrollContainer(selector, direction, amount);
   syncFrameSoon(session);
   return result;
+}
+
+/** 原子 A1：等待 URL 片段 / 可见文本 / CSS 选择器成立（开关 OAW_BROWSER_WAIT_FOR）。 */
+export async function browserWaitFor(key, condition, options = {}) {
+  assertBrowserFlag(RUNTIME_FLAGS.browserWaitFor, "OAW_BROWSER_WAIT_FOR", "浏览器等待");
+  const session = await requireActiveSession(key);
+  return waitForCondition(session, condition, options);
+}
+
+/** 原子 A2：点击 ref 并等待一个条件成立（合并 click + wait，开关 OAW_BROWSER_ACT）。 */
+export async function browserAct(key, ref, condition, options = {}) {
+  assertBrowserFlag(RUNTIME_FLAGS.browserAct, "OAW_BROWSER_ACT", "点击并等待");
+  const session = await requireActiveSession(key);
+  session.assertAgentWrite("click");
+  const clicked = await session.click(ref);
+  const waited = await waitForCondition(session, condition, options);
+  syncFrameSoon(session);
+  return {
+    clicked: clicked.clicked,
+    text: clicked.text,
+    url: waited.url || clicked.url,
+    matched: waited.matched,
+    kind: waited.kind,
+    elapsedMs: waited.elapsedMs,
+  };
+}
+
+/** 原子 A4：从 body 或 CSS 选择器区域抽取限长 text / 基础 Markdown（开关 OAW_BROWSER_EXTRACT）。 */
+export async function browserExtract(key, options = {}) {
+  assertBrowserFlag(RUNTIME_FLAGS.browserExtract, "OAW_BROWSER_EXTRACT", "区域正文抽取");
+  const session = await requireActiveSession(key);
+  const selector = String(options.selector || "").trim();
+  const format = options.format === "markdown" ? "markdown" : "text";
+  const maxChars = Math.max(200, Math.min(20000, Number(options.maxChars) || 4000));
+  const value = await session.evaluate(extractExpression(selector, format));
+  if (!value || value.found === false) {
+    throw Object.assign(new Error(`未找到抽取区域：${selector || "body"}`), { code: "EXTRACT_TARGET_NOT_FOUND" });
+  }
+  const full = String(value.text || "");
+  const truncated = full.length > maxChars;
+  return {
+    url: value.url || session.state.url,
+    title: value.title || session.state.title,
+    selector: selector || "body",
+    format,
+    text: truncated ? full.slice(0, maxChars) : full,
+    truncated,
+    chars: full.length,
+  };
+}
+
+/** 原子 A5：对原生 <select> 按 value/label/index 选择（开关 OAW_BROWSER_SELECT_OPTION）。 */
+export async function browserSelectOption(key, ref, options = {}) {
+  assertBrowserFlag(RUNTIME_FLAGS.browserSelectOption, "OAW_BROWSER_SELECT_OPTION", "原生下拉选择");
+  const session = await requireActiveSession(key);
+  session.assertAgentWrite("select");
+  const safe = String(ref || "").trim();
+  if (!/^e\d+$/.test(safe)) throw new Error(`无效的元素编号：${ref}（请先 browser_snapshot 获取）`);
+  const mode = options.value != null ? "value" : (options.label != null ? "label" : (options.index != null ? "index" : ""));
+  if (!mode) {
+    throw Object.assign(new Error("请提供 value / label / index 之一"), { code: "INVALID_SELECT_OPTION" });
+  }
+  const valueJson = JSON.stringify(options.value == null ? "" : String(options.value));
+  const labelJson = JSON.stringify(options.label == null ? "" : String(options.label));
+  const indexJson = JSON.stringify(options.index == null ? -1 : Number(options.index));
+  const expr = `(() => {
+    const el = document.querySelector('[data-oaw-ref="${safe}"]');
+    if (!el) return { found: false };
+    if (el.tagName !== 'SELECT') return { found: true, isSelect: false, tag: el.tagName.toLowerCase() };
+    const opts = Array.from(el.options);
+    const mode = ${JSON.stringify(mode)};
+    let target = -1;
+    if (mode === 'value') target = opts.findIndex((o) => o.value === ${valueJson});
+    else if (mode === 'label') target = opts.findIndex((o) => String(o.label) === ${labelJson});
+    else target = Number(${indexJson});
+    if (target < 0 || target >= opts.length) {
+      return { found: true, isSelect: true, matched: false, options: opts.map((o) => ({ value: o.value, label: o.label })).slice(0, 50) };
+    }
+    el.selectedIndex = target;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    const selected = el.options[el.selectedIndex];
+    return { found: true, isSelect: true, matched: true, selected: { value: selected.value, label: selected.label, index: el.selectedIndex } };
+  })()`;
+  const result = await session.evaluate(expr);
+  if (!result || result.found === false) throw new Error(`页面上没有编号 ${safe} 的元素，请重新 browser_snapshot`);
+  if (result.isSelect === false) {
+    throw Object.assign(new Error(`编号 ${safe} 不是原生 <select>（实际为 <${result.tag}>）`), { code: "NOT_A_SELECT" });
+  }
+  if (result.matched === false) {
+    throw Object.assign(new Error(`未匹配到选项（可用：${JSON.stringify(result.options || [])}）`), { code: "OPTION_NOT_FOUND" });
+  }
+  await sleep(400);
+  await session.waitForLoad(4000, { sameDocumentGraceMs: 600 }).catch(() => {});
+  await session.refreshTitle().catch(() => {});
+  session.emitState();
+  syncFrameSoon(session);
+  return { ref: safe, selected: result.selected };
 }
 
 export async function browserScreenshot(key, options = {}) {

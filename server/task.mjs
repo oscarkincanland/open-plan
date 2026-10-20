@@ -41,6 +41,7 @@ const AGENT_TOOLS = Object.freeze([
   // P2-A：编辑流水线（生成 Word/PPT 初稿的原生流水线，仅 Work 模式）
   "editorial_pipeline",
   "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close",
+  "browser_wait_for", "browser_act", "browser_extract", "browser_select_option",
 ]);
 
 /** Office/写作意图词（O-01）：覆盖中文最自然的说法，避免"写个文档"完全空转。 */

@@ -98,21 +98,25 @@ import {
 } from "./记忆管理.mjs";
 import { isGlobalSearchCommand, normalizeBashOptions } from "./命令安全策略.mjs";
 import { normalizeOfficeFailure } from "./文件权限错误.mjs";
-import { requireToolApproval } from "./审批策略.mjs";
+import { matchToolAction, requireToolApproval } from "./审批策略.mjs";
 import { webSearch } from "./联网搜索.mjs";
 import { webFetch } from "./网页读取.mjs";
 import {
+  browserAct,
   browserBack,
   browserClick,
   browserClose,
+  browserExtract,
   browserOpen,
   browserPress,
   browserScreenshot,
   browserScroll,
+  browserSelectOption,
   browserSessionKey,
   browserSnapshot,
   browserTabs,
   browserType,
+  browserWaitFor,
 } from "./内置浏览器.mjs";
 import { CHANNEL_HISTORY_LIMIT, PROTOCOL_VERSION, createStreamId, pushChannelEvent } from "./事件协议.mjs";
 import { completionStatusLabel, inferCompletion, normalizeCompletion } from "./运行轨迹.mjs";
@@ -562,9 +566,14 @@ import {
   SUBAGENT_ROLES,
   resolveRole,
   orchestrateSubagents,
+  createDelegationIdempotencyCache,
 } from "./子代理编排器.mjs";
 // Editorial Pipeline（P2-A）：Planner→Writer→Formatter（原生）→Evaluator 的确定性编排
 import { runEditorialPipeline, safePipelineName } from "./编辑流水线.mjs";
+
+// 子代理委派幂等缓存（开关 subagentIdempotent，默认关）：Pi 重放同一 tool call 时复用同一次
+// 编排，避免重复创建真实子会话。键含会话前缀，避免跨会话 toolCallId 撞车。
+const subagentDelegationCache = createDelegationIdempotencyCache();
 
 export function noteRepeatedToolCall(entry, session, ev, emit) {
   try {
@@ -1848,6 +1857,9 @@ execute: async (_toolCallId, params) => {
       if (error?.code === "BROWSER_USER_TAKEOVER") {
         return `浏览器暂时由用户操作中：${message}。\n请等待用户点击「交还 Agent」，或在回复里说明你需要接手的原因并请用户交还；期间仍可做只读观察（browser_snapshot / browser_screenshot / browser_tabs list）。`;
       }
+      if (error?.code === "FLAG_DISABLED") {
+        return `浏览器能力未开启：${message}。请在启动服务前设置对应环境变量后重试。`;
+      }
       return `浏览器操作失败：${message}`;
     };
 
@@ -1945,15 +1957,123 @@ execute: async (_toolCallId, params) => {
     const browserScrollTool = defineTool({
       name: "browser_scroll",
       label: "网页滚动",
-      description: "滚动页面（down / up），用于加载更多内容或浏览长页面。滚动后建议重新 browser_snapshot。",
+      description:
+        "滚动页面（down / up）。无 selector 时滚动整个页面；提供 selector 时滚动该 CSS 选择器对应的内部滚动容器（SPA 信息流常在内层容器滚动，导航键无效），并返回前后 scrollTop/scrollHeight/clientHeight 与 moved。滚动后建议重新 browser_snapshot。",
       parameters: Type.Object({
         direction: Type.Optional(Type.String({ description: "down 或 up，默认 down" })),
         amount: Type.Optional(Type.Number({ description: "滚动像素，默认 600" })),
+        selector: Type.Optional(Type.String({ description: "内部滚动容器的 CSS 选择器（可选；不传则滚动整个页面）" })),
       }),
       execute: async (_toolCallId, params) => {
         try {
-          const result = await browserScroll(browserKeyOf(), params.direction || "down", params.amount);
+          const result = await browserScroll(browserKeyOf(), params.direction || "down", params.amount, { selector: params.selector || "" });
+          if (result && result.selector) {
+            const after = result.after || {};
+            return browserToolResult(`已滚动容器 ${result.selector}（moved=${result.moved ? "true" : "false"}，scrollTop ${result.before?.scrollTop ?? "-"}→${after.scrollTop ?? "-"}，内容高 ${after.scrollHeight ?? "-"}px）。`, result);
+          }
           return browserToolResult(`已滚动到 y=${result.y ?? "-"}（页面高 ${result.height ?? "-"}px）。`, result);
+        } catch (error) {
+          return browserToolResult(browserErrorText(error));
+        }
+      },
+    });
+
+    const browserWaitForTool = defineTool({
+      name: "browser_wait_for",
+      label: "等待页面状态",
+      description:
+        "等待页面出现某个状态：URL 片段（urlFragment）、可见文本（text）或 CSS 选择器（selector）之一，按 selector > text > urlFragment 优先。适合点击/跳转后等待加载完成。超时返回 matched=false（不报错），可用更短超时快速探测；不执行任意 JavaScript。",
+      parameters: Type.Object({
+        urlFragment: Type.Optional(Type.String({ description: "等待 URL 包含该片段" })),
+        text: Type.Optional(Type.String({ description: "等待页面出现该可见文本" })),
+        selector: Type.Optional(Type.String({ description: "等待该 CSS 选择器出现" })),
+        timeoutMs: Type.Optional(Type.Number({ description: "超时毫秒，默认 15000" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        try {
+          const result = await browserWaitFor(
+            browserKeyOf(),
+            { urlFragment: params.urlFragment, text: params.text, selector: params.selector },
+            { timeoutMs: params.timeoutMs },
+          );
+          const cond =
+            result.kind === "selector" ? `选择器 ${params.selector}` : result.kind === "text" ? `文本「${params.text}」` : `URL 片段「${params.urlFragment}」`;
+          return browserToolResult(`等待 ${cond}：${result.matched ? "已满足" : "超时未满足"}（${result.elapsedMs}ms）。当前 ${result.url}`, result);
+        } catch (error) {
+          return browserToolResult(browserErrorText(error));
+        }
+      },
+    });
+
+    const browserActTool = defineTool({
+      name: "browser_act",
+      label: "点击并等待",
+      description:
+        "点击指定编号的元素，并等待一个条件成立（URL 片段 / 可见文本 / CSS 选择器，同 browser_wait_for），把「点击 + 等待」合并为一次调用。已知点击后的预期状态时优先用它，避免先 browser_click 再 browser_wait_for。",
+      parameters: Type.Object({
+        ref: Type.String({ description: "元素编号，如 e12（来自 browser_snapshot）" }),
+        urlFragment: Type.Optional(Type.String({ description: "等待 URL 包含该片段" })),
+        text: Type.Optional(Type.String({ description: "等待页面出现该可见文本" })),
+        selector: Type.Optional(Type.String({ description: "等待该 CSS 选择器出现" })),
+        timeoutMs: Type.Optional(Type.Number({ description: "等待超时毫秒，默认 15000" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        try {
+          const result = await browserAct(
+            browserKeyOf(),
+            params.ref,
+            { urlFragment: params.urlFragment, text: params.text, selector: params.selector },
+            { timeoutMs: params.timeoutMs },
+          );
+          return browserToolResult(
+            `已点击 [${result.clicked}]（${result.text || ""}）并等待：${result.matched ? "已满足" : "超时未满足"}（${result.kind}，${result.elapsedMs}ms）。当前 ${result.url}`,
+            result,
+          );
+        } catch (error) {
+          return browserToolResult(browserErrorText(error));
+        }
+      },
+    });
+
+    const browserExtractTool = defineTool({
+      name: "browser_extract",
+      label: "抽取网页正文",
+      description:
+        "抽取页面正文或指定 CSS 选择器区域的文本（或基础 Markdown）。优先传 selector 限定正文/列表/卡片区域，只有需要整页概览时才省略（避免导航/页脚/侧栏噪声）。用于读取内容，替代为读正文而执行页面脚本。",
+      parameters: Type.Object({
+        selector: Type.Optional(Type.String({ description: "要抽取的 CSS 选择器区域（可选；省略则抽取整页 body）" })),
+        format: Type.Optional(Type.String({ description: "text（默认）或 markdown" })),
+        maxChars: Type.Optional(Type.Number({ description: "最大字符数，默认 4000，上限 20000" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        try {
+          const result = await browserExtract(browserKeyOf(), { selector: params.selector, format: params.format, maxChars: params.maxChars });
+          return browserToolResult(
+            `已抽取 ${result.selector}（${result.chars} 字${result.truncated ? "，已截断" : ""}，format=${result.format}）：\n${result.text}`,
+            result,
+          );
+        } catch (error) {
+          return browserToolResult(browserErrorText(error));
+        }
+      },
+    });
+
+    const browserSelectOptionTool = defineTool({
+      name: "browser_select_option",
+      label: "选择下拉选项",
+      description:
+        "对页面中的原生 <select> 下拉框按 value、label（显示文本）或 index（序号，从 0 起）选择一项（三者任选其一）。自定义下拉菜单（非原生 select）请改用 browser_click。",
+      parameters: Type.Object({
+        ref: Type.String({ description: "下拉框元素编号，如 e7（来自 browser_snapshot）" }),
+        value: Type.Optional(Type.String({ description: "选项的 value" })),
+        label: Type.Optional(Type.String({ description: "选项的显示文本" })),
+        index: Type.Optional(Type.Number({ description: "选项序号（从 0 起）" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        try {
+          const result = await browserSelectOption(browserKeyOf(), params.ref, { value: params.value, label: params.label, index: params.index });
+          const sel = result.selected || {};
+          return browserToolResult(`已选择 [${result.ref}] → ${sel.label ?? sel.value ?? ""}（value="${sel.value ?? ""}", index=${sel.index ?? "-"}）。`, result);
         } catch (error) {
           return browserToolResult(browserErrorText(error));
         }
@@ -3093,10 +3213,18 @@ execute: async (_toolCallId, params) => {
               writeFile: async (absolutePath, content) => {
                 const target = resolveSubagentWritablePath(absolutePath);
                 const ctx = activeWriteContext("write");
-                await requireToolApproval({ entry, tool: "write", input: String(target || ""), runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
-                  // Qoder P1-4（开关 qoderInteractionOwner，默认关）：这条写回审批由该子代理发起，
-                  // 前端据此把审批卡片归到子代理节点，而不是与父会话的审批混在一起。
-                  owner: RUNTIME_FLAGS.qoderInteractionOwner ? { kind: "subagent", id: childId } : null });
+                // 阻塞事件冒泡（开关 subagentBlockedBubble，默认关）：仅当写审批确实会阻塞（ask）时，
+                // 向父事件流冒泡 blocked/unblocked，供父会话与前端看到「子代理在等你确认」。
+                const bubbleBlocked = RUNTIME_FLAGS.subagentBlockedBubble && matchToolAction("write", String(target || "")) === "ask";
+                if (bubbleBlocked) emitChild("subagent_blocked", { status: "blocked", kind: "approval", tool: "write", target: String(target || "").slice(0, 300) });
+                try {
+                  await requireToolApproval({ entry, tool: "write", input: String(target || ""), runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+                    // Qoder P1-4（开关 qoderInteractionOwner，默认关）：这条写回审批由该子代理发起，
+                    // 前端据此把审批卡片归到子代理节点，而不是与父会话的审批混在一起。
+                    owner: RUNTIME_FLAGS.qoderInteractionOwner ? { kind: "subagent", id: childId } : null });
+                } finally {
+                  if (bubbleBlocked) emitChild("subagent_unblocked", { status: "running", kind: "approval", tool: "write", target: String(target || "").slice(0, 300) });
+                }
                 return stageWrite({ ...ctx, targetPath: target, content, onEvent: writeEvent });
               },
             },
@@ -3317,6 +3445,16 @@ execute: async (_toolCallId, params) => {
             details: { role, count: taskList.length, background: true, isolated: true, readOnly: roleSpec.readOnly },
           };
         }
+        // 委派幂等（开关 subagentIdempotent，默认关）：Pi 重放同一 tool call 时复用同一次编排，
+        // 避免通道重放导致重复派发；关闭时直接 await runOrchestration()，行为与基线逐字一致。
+        // 后台派发已在上方提前返回，不入缓存（无同步结果可复用）。
+        if (RUNTIME_FLAGS.subagentIdempotent && parentToolCallId) {
+          const dedupKey = `${entry?.threadId || ""}::${parentToolCallId}`;
+          const { deduped, promise } = subagentDelegationCache.run(dedupKey, () => runOrchestration());
+          const result = await promise;
+          if (!deduped) return result;
+          return { ...result, details: { ...(result.details || {}), deduped: true } };
+        }
         const orchestration = await runOrchestration();
         return {
           content: [{ type: "text", text: orchestration.text }],
@@ -3475,8 +3613,8 @@ execute: async (_toolCallId, params) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
-        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_datasets", "map_edit", "map_import", "map_analyze", "map_template", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames],
+        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, browserWaitForTool, browserActTool, browserExtractTool, browserSelectOptionTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
+        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_datasets", "map_edit", "map_import", "map_analyze", "map_template", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "browser_wait_for", "browser_act", "browser_extract", "browser_select_option", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames],
       }));
     } catch (error) {
       piRuntimeManager.markFailure(runtimeRecord.runtimeId, error, { recovering: true, reason: "session_create_failed" });
@@ -3485,7 +3623,7 @@ execute: async (_toolCallId, params) => {
     // 显式激活全部自定义工具（pi SDK 仅激活 tools 白名单中的工具，customTools 需手动激活，
     // 否则 kb_search/map_read/ask_user 等对模型不可见）
     try {
-      piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), "ask_user", "officecli", "review_copy", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames]);
+      piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), "ask_user", "officecli", "review_copy", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "browser_wait_for", "browser_act", "browser_extract", "browser_select_option", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames]);
     } catch {}
 
     // event channel with history for SSE replay

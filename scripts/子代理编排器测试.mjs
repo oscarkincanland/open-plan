@@ -8,6 +8,9 @@
  * 退出码: 0 = 全部通过, 1 = 有失败
  */
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   SUBAGENT_ROLES,
   SUBAGENT_CONCURRENCY,
@@ -19,7 +22,10 @@ import {
   buildVerifierTask,
   summarizeResults,
   orchestrateSubagents,
+  createDelegationIdempotencyCache,
 } from "../server/子代理编排器.mjs";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 let failed = 0;
 const test = (name, fn) => Promise.resolve().then(fn).then(
@@ -215,6 +221,105 @@ await test("summarizeResults 多任务带标题、附核验结论", () => {
 console.log("\n▶ revise 回环上限");
 test("SUBAGENT_REVISE_ROUNDS = 1（方案 §3.6）", () => {
   assert.equal(SUBAGENT_REVISE_ROUNDS, 1);
+});
+
+console.log("\n▶ 委派幂等缓存（opt-in，默认关）");
+await test("同一 key 只执行一次；重复调用 deduped=true", async () => {
+  const cache = createDelegationIdempotencyCache();
+  let runs = 0;
+  const fn = async () => { runs += 1; return { runs }; };
+  const first = cache.run("k1", fn);
+  const second = cache.run("k1", fn);
+  assert.equal(first.deduped, false);
+  assert.equal(second.deduped, true);
+  const [a, b] = await Promise.all([first.promise, second.promise]);
+  assert.equal(runs, 1, "同一 key 只应执行一次");
+  assert.deepEqual(a, { runs: 1 });
+  assert.deepEqual(b, { runs: 1 });
+  assert.equal(cache.size(), 1);
+});
+await test("在途调用共享同一个 promise（并发重放不重复派发）", async () => {
+  const cache = createDelegationIdempotencyCache();
+  let release;
+  let runs = 0;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const fn = async () => { runs += 1; await gate; return "done"; };
+  const first = cache.run("k", fn);
+  const second = cache.run("k", fn);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(runs, 1, "首次调用即占位，重放不应再次进入执行器");
+  assert.equal(first.promise, second.promise, "在途时应共享同一个 promise");
+  release();
+  assert.equal(await second.promise, "done");
+});
+await test("失败不缓存：后续重放会重新执行", async () => {
+  const cache = createDelegationIdempotencyCache();
+  let runs = 0;
+  const fn = async () => { runs += 1; if (runs === 1) throw new Error("boom"); return "ok"; };
+  await assert.rejects(() => cache.run("k", fn).promise);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(cache.has("k"), false, "失败后应从缓存移除");
+  assert.equal(await cache.run("k", fn).promise, "ok");
+  assert.equal(runs, 2);
+});
+await test("TTL 过期后重新执行", async () => {
+  let clock = 0;
+  const cache = createDelegationIdempotencyCache({ ttlMs: 1000, now: () => clock });
+  let runs = 0;
+  const fn = async () => { runs += 1; return runs; };
+  await cache.run("k", fn).promise;
+  clock = 500;
+  assert.equal(cache.run("k", fn).deduped, true, "未过期应命中");
+  clock = 2000;
+  const third = cache.run("k", fn);
+  assert.equal(third.deduped, false, "过期后应重新执行");
+  await third.promise;
+  assert.equal(runs, 2);
+});
+await test("超过 max 时按最旧清理", async () => {
+  const cache = createDelegationIdempotencyCache({ max: 2 });
+  const fn = async () => "x";
+  await cache.run("a", fn).promise;
+  await cache.run("b", fn).promise;
+  await cache.run("c", fn).promise;
+  assert.equal(cache.has("a"), false, "最旧的 a 应被清理");
+  assert.equal(cache.size(), 2);
+});
+
+console.log("\n▶ 阻塞事件冒泡与开关契约（opt-in）");
+await test("subagent_blocked / subagent_unblocked 已登记且负载校验生效", async () => {
+  const { isRegisteredEvent, validateEventPayload, eventSpec } = await import("../server/事件注册表.mjs");
+  for (const type of ["subagent_blocked", "subagent_unblocked"]) {
+    assert.ok(isRegisteredEvent(type), `${type} 未登记`);
+    const spec = eventSpec(type);
+    assert.equal(spec.persist, true, `${type} 应落盘`);
+    assert.equal(spec.lifecycle, true, `${type} 应为生命周期事件`);
+    const verdict = validateEventPayload(type, { childId: "subagent_x", kind: "approval", tool: "write", target: "a/b.txt" });
+    assert.equal(verdict.ok, true, `${type} 合法负载应通过：${JSON.stringify(verdict)}`);
+  }
+  assert.equal(validateEventPayload("subagent_blocked", { kind: "approval" }).ok, false, "缺少 childId 应判不合法");
+});
+await test("运行开关含 subagentIdempotent / subagentBlockedBubble（默认关）", async () => {
+  const flags = await import("../server/运行开关.mjs");
+  const src = fs.readFileSync(path.join(ROOT, "server", "运行开关.mjs"), "utf8");
+  assert.match(src, /OAW_SUBAGENT_IDEMPOTENT/, "应定义幂等开关环境变量");
+  assert.match(src, /OAW_SUBAGENT_BLOCKED_BUBBLE/, "应定义阻塞冒泡开关环境变量");
+  const snapshot = flags.runtimeFlagsSnapshot();
+  assert.ok("subagentIdempotent" in snapshot, "快照应含 subagentIdempotent");
+  assert.ok("subagentBlockedBubble" in snapshot, "快照应含 subagentBlockedBubble");
+  if (!process.env.OAW_SUBAGENT_IDEMPOTENT && !process.env.OAW_SUBAGENT_BLOCKED_BUBBLE) {
+    assert.equal(flags.RUNTIME_FLAGS.subagentIdempotent, false, "未设 env 时幂等开关应默认关闭");
+    assert.equal(flags.RUNTIME_FLAGS.subagentBlockedBubble, false, "未设 env 时冒泡开关应默认关闭");
+  }
+});
+await test("agent.mjs 接线：幂等复用 + 阻塞冒泡均门控在开关上", () => {
+  const src = fs.readFileSync(path.join(ROOT, "server", "agent.mjs"), "utf8");
+  assert.match(src, /subagentDelegationCache\.run\(/, "run_subagent 应接入委派幂等缓存");
+  assert.match(src, /RUNTIME_FLAGS\.subagentIdempotent && parentToolCallId/, "幂等路径应门控 subagentIdempotent");
+  assert.match(src, /return runOrchestration\(\);/, "开关关闭时应直接执行编排主体（基线行为）");
+  assert.match(src, /emitChild\("subagent_blocked"/, "应冒泡 subagent_blocked");
+  assert.match(src, /emitChild\("subagent_unblocked"/, "应冒泡 subagent_unblocked");
+  assert.match(src, /RUNTIME_FLAGS\.subagentBlockedBubble && matchToolAction\("write"/, "冒泡应门控 subagentBlockedBubble");
 });
 
 console.log(failed ? "\n子代理编排器测试：存在失败" : "\n子代理编排器测试：全部通过");
