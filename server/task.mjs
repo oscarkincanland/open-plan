@@ -91,7 +91,10 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
   const refList = Array.isArray(references) ? references : [];
   const attachmentNames = (Array.isArray(attachments) ? attachments : []).map((item) => String(item?.name || item || ""));
   const refTargets = refList.map((item) => String(item?.target || "")).join(" ");
-  const files = [String(task.currentFile || ""), refTargets, ...attachmentNames].join(" ");
+  // filter(Boolean)：currentFile 存在而引用列表为空时，join(" ") 会产生尾随空格，
+  // 使扩展名正则的 $ 锚定失配（officecli 路由从 preferred 误降级为 lazy/fallback，
+  // verify 第二阶段检查因此红灯）。2026-10-20 路由诊断插桩定位。
+  const files = [String(task.currentFile || ""), refTargets, ...attachmentNames].filter(Boolean).join(" ");
   const document = DOCUMENT_EXTENSIONS.test(files) || refList.some((item) => item.kind === "file" || item.kind === "template");
   const office = OFFICE_EXTENSIONS.test(files) || containsAny(source, ["officecli", "word", "excel", "ppt", "docx", "xlsx", "pptx", "表格", "文档排版", "修改文档"]);
   const knowledge = refList.some((item) => ["knowledge", "knowledge_dir"].includes(item.kind)) || containsAny(source, ["知识库", "知识库搜索", "知识检索", "参考资料"]);
