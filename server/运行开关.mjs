@@ -150,6 +150,11 @@ export const RUNTIME_FLAGS = Object.freeze({
   askTimeoutMs: readPositiveInt("OAW_ASK_TIMEOUT_MS", 60 * 60 * 1000),
   /** 迟到回答自动续跑：ask 超时/结束后用户再回答时，自动接力（忙=排队接力，空闲=新 Run 继续）。默认开；设 OAW_ASK_AUTO_RESUME=0 关回基线（基线=返回 404 死卡片）。 */
   askAutoResume: readFlagWithDefault("OAW_ASK_AUTO_RESUME", true),
+  /* ===== CAD 能力（2026-10-21 方案评审通过：DXF/DWG 预览 + agent 读取/修改）===== */
+  /** CAD 预览：DXF/DWG 进文件树白名单 + /api/doc 预览分支 + CadViewer（默认关 = 白名单/路由/图标与基线一致） */
+  cadPreview: readFlag("OAW_CAD_PREVIEW"),
+  /** CAD agent 能力：documentRead 读取 CAD + cad_read/cad_edit 工具（默认关） */
+  cadAgent: readFlag("OAW_CAD_AGENT"),
 });
 
 /** /api/status 下发形态：布尔与数值分开，前端只读布尔位。 */
@@ -195,6 +200,8 @@ export function runtimeFlagsSnapshot() {
     qoderToolOutputSplit: RUNTIME_FLAGS.qoderToolOutputSplit,
     qoderInteractionOwner: RUNTIME_FLAGS.qoderInteractionOwner,
     askAutoResume: RUNTIME_FLAGS.askAutoResume,
+    cadPreview: RUNTIME_FLAGS.cadPreview,
+    cadAgent: RUNTIME_FLAGS.cadAgent,
     // 数值位：前端 numberFlag() 读取（心跳间隔需下发给前端派生看门狗阈值）。
     heartbeatChatMs: RUNTIME_FLAGS.heartbeatChatMs,
     heartbeatEventsMs: RUNTIME_FLAGS.heartbeatEventsMs,

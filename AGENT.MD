@@ -55,3 +55,4 @@
 ## 当前能力（目标 v0.10.2）
 - 对话顶部固定执行流，支持折叠及隐藏/恢复；思考块默认展开并固定 240px 独立滚动。
 - 顶部控制区提供模型上下文用量环形圈和 Codex 风格审批模式按钮；自动批准不覆盖显式 deny 规则。
+- CAD 能力（双开关默认关）：`OAW_CAD_PREVIEW=1` 后 DXF/DWG 进文件树并可 SVG 预览（图层显隐/缩放/块展开，`CadViewer.jsx`）；`OAW_CAD_AGENT=1` 后 agent 可经 `context_read`/`cad_read` 读图纸摘要、`cad_edit` 做白名单修改（替换文字/图层改名/移层/删实体/加 LINE/CIRCLE/TEXT，写入走审批）。DWG 依赖外部转换工具（ODA/LibreDWG 或 `OAW_DWG_CONVERTER`），未装自动降级并提示；零新增 npm 依赖，解析见 `server/CAD解析.mjs`/`server/CAD修改.mjs`，专项文档 `docs/CAD预览专项/`。

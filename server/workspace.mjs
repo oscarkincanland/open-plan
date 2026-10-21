@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { atomicWriteJson } from "./持久化工具.mjs";
+import { RUNTIME_FLAGS } from "./运行开关.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PROJECT_DIR = path.resolve(__dirname, "..");
@@ -43,7 +44,10 @@ export { AGENT_DIR, LOCAL_PI_AGENT_DIR } from "./Pi配置管理.mjs";
 fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
 
 const ROOTS_STATE_FILE = path.join(PROJECT_DIR, ".file-roots.json");
-const SUPPORTED_EXTENSIONS = /\.(docx|doc|xlsx|xls|pptx|pdf|csv|json|md|markdown|txt|html|htm|wps|png|jpg|jpeg|gif|webp|bmp|svg|avif)$/i;
+// CAD 预览开关（默认关）：开启后 DXF/DWG 进入文件树与文件搜索白名单（CAD 方案 AC1/AC6）。
+// 开关为进程级静态快照，正则只在模块加载时构建一次，flag 关 = 白名单与基线逐字节一致。
+const CAD_EXT_SEGMENT = RUNTIME_FLAGS.cadPreview ? "|dxf|dwg" : "";
+const SUPPORTED_EXTENSIONS = new RegExp(`\\.(docx|doc|xlsx|xls|pptx|pdf|csv|json|md|markdown|txt|html|htm|wps|png|jpg|jpeg|gif|webp|bmp|svg|avif${CAD_EXT_SEGMENT})$`, "i");
 const SEARCH_SKIP_DIRS = new Set(["node_modules", ".git", ".venv", "__pycache__", ".next", "dist", "build", "coverage"]);
 
 // 当前工作区（可切换），默认项目内的 office-workspace；切换后持久化，重启恢复

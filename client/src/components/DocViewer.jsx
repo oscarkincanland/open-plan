@@ -5,6 +5,7 @@ import { buildDocUrls, makeFileIdentity, identityMatches, PREVIEW_STATE, PREVIEW
 import MarkdownBody from "./MarkdownBody.jsx";
 import MarkdownToc from "./MarkdownToc.jsx";
 import ExcelGrid from "./ExcelGrid.jsx";
+import CadViewer from "./CadViewer.jsx";
 import DocxViewer from "./DocxViewer.jsx";
 import PptxViewer from "./PptxViewer.jsx";
 import ImageViewer from "./ImageViewer.jsx";
@@ -190,9 +191,9 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
     generationRef.current += 1;
     for (const controller of abortMapRef.current.values()) { try { controller.abort(); } catch {} }
     abortMapRef.current.clear();
-    // text / xlsx / htmlfile 的内容已随 open 响应返回并经身份核对，可直接 ready；
+    // text / xlsx / htmlfile / cad 的内容已随 open 响应返回并经身份核对，可直接 ready；
     // 其余格式（docx/pptx/pdf/html）还要经过渲染或 iframe 加载，先置 loading。
-    const localReady = doc?.kind === "text" || doc?.kind === "xlsx" || doc?.kind === "htmlfile";
+    const localReady = doc?.kind === "text" || doc?.kind === "xlsx" || doc?.kind === "htmlfile" || doc?.kind === "cad";
     setPreviewState(localReady ? PREVIEW_STATE.READY : PREVIEW_STATE.LOADING);
     setPreviewErr("");
     setWatchUrl(null);
@@ -547,6 +548,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
         )}
         {isOfficePreview && <span className="badge">专用预览工具栏</span>}
         {doc.kind === "xlsx" && <span className="badge">可编辑</span>}
+        {doc.kind === "cad" && <span className="badge">CAD 图纸</span>}
         {doc.kind === "htmlfile" && <span className="badge">HTML 页面</span>}
         {doc.kind === "pdf" && <span className="badge">PDF</span>}
         {doc.kind === "text" && <span className="badge">{doc.ext === "md" || doc.ext === "markdown" ? "Markdown" : "文本"}</span>}
@@ -704,6 +706,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
           </div>
         )}
         {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} truncated={doc.truncated} maxRows={doc.maxRows} />}
+        {doc.kind === "cad" && <CadViewer doc={doc} />}
         {doc.kind === "htmlfile" && (
           <div className="docframe-container">
             <iframe

@@ -2536,6 +2536,109 @@ execute: async (_toolCallId, params) => {
       },
     });
 
+    // ---- CAD 能力（cad_read / cad_edit，开关 OAW_CAD_AGENT，默认关） ----
+    const cadReadTool = defineTool({
+      name: "cad_read",
+      label: "CAD 图纸读取",
+      description:
+        "读取工作区中的 DXF/DWG 图纸并返回结构化摘要：图层清单、实体统计、文字内容、绘图范围。用户让你看图纸、查图层、查标注文字、确认图纸内容时使用。file 为工作区相对路径。需要 CAD 能力开关（OAW_CAD_AGENT）。",
+      parameters: Type.Object({
+        file: Type.String({ description: "图纸相对工作区路径，如 图纸/总平面.dxf" }),
+      }),
+      execute: async (_toolCallId, params) => {
+        if (!RUNTIME_FLAGS.cadAgent) {
+          return { content: [{ type: "text", text: "CAD 能力未开启（OAW_CAD_AGENT=1）。开启后支持 DXF/DWG 读取与修改。" }], details: {} };
+        }
+        try {
+          const ws = entry.workspace || getWorkspace();
+          const target = path.resolve(ws, String(params.file || ""));
+          if (!isInside(ws, target)) throw new Error("路径必须位于工作区内");
+          const cad = await import("./CAD解析.mjs");
+          const doc = await cad.readCadDocument(target);
+          const summary = cad.summarizeCad(doc, path.basename(String(params.file || "")));
+          return { content: [{ type: "text", text: summary }], details: { format: doc.format, entityCounts: doc.entityCounts, truncated: doc.truncated } };
+        } catch (e) {
+          return { content: [{ type: "text", text: `CAD 读取失败：${e?.message || e}` }], details: {} };
+        }
+      },
+    });
+
+    const cadEditTool = defineTool({
+      name: "cad_edit",
+      label: "CAD 图纸修改",
+      description:
+        "对工作区中的 DXF/DWG 图纸执行白名单修改（ops 按顺序执行）：replace_text 替换文字（find/replace，可选 layer 过滤）；rename_layer 重命名图层（from/to，含块内实体）；move_entities 变更实体图层（from/to，可选 entityType）；delete_layer_entities 删除某层实体（layer，可选 entityType）；add_entity 新增简单实体（entityType=LINE/CIRCLE/TEXT + layer + 坐标/文字）。修改前走写入审批；DWG 经 DXF 往返修改，回转不可用时自动另存 -修改.dxf 并说明。",
+      parameters: Type.Object({
+        file: Type.String({ description: "图纸相对工作区路径" }),
+        ops: Type.Array(
+          Type.Object({
+            type: Type.Union([
+              Type.Literal("replace_text"),
+              Type.Literal("rename_layer"),
+              Type.Literal("move_entities"),
+              Type.Literal("delete_layer_entities"),
+              Type.Literal("add_entity"),
+            ]),
+            find: Type.Optional(Type.String({ description: "replace_text：要替换的文字" })),
+            replace: Type.Optional(Type.String({ description: "replace_text：替换为（空串=删除该文字）" })),
+            from: Type.Optional(Type.String({ description: "rename_layer/move_entities：源图层名" })),
+            to: Type.Optional(Type.String({ description: "rename_layer/move_entities：目标图层名" })),
+            layer: Type.Optional(Type.String({ description: "replace_text 可选图层过滤；delete_layer_entities/add_entity 的图层" })),
+            entityType: Type.Optional(Type.String({ description: "move_entities/delete_layer_entities 的实体类型过滤；add_entity 的新增类型（LINE/CIRCLE/TEXT）" })),
+            x: Type.Optional(Type.Number({ description: "add_entity：X 坐标" })),
+            y: Type.Optional(Type.Number({ description: "add_entity：Y 坐标" })),
+            x2: Type.Optional(Type.Number({ description: "add_entity LINE：终点 X" })),
+            y2: Type.Optional(Type.Number({ description: "add_entity LINE：终点 Y" })),
+            r: Type.Optional(Type.Number({ description: "add_entity CIRCLE：半径" })),
+            h: Type.Optional(Type.Number({ description: "add_entity TEXT：字高，默认 2.5" })),
+            text: Type.Optional(Type.String({ description: "add_entity TEXT：文字内容" })),
+          }),
+          { description: "修改操作序列，按数组顺序执行" },
+        ),
+        output: Type.Optional(Type.String({ description: "可选：结果另存为工作区相对新路径；缺省原地写回（DWG 回转不可用时自动另存 -修改.dxf）" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        if (!RUNTIME_FLAGS.cadAgent) {
+          return { content: [{ type: "text", text: "CAD 能力未开启（OAW_CAD_AGENT=1）。开启后支持 DXF/DWG 读取与修改。" }], details: {} };
+        }
+        const ctx = activeWriteContext("cad_edit");
+        const ws = entry.workspace || getWorkspace();
+        const target = path.resolve(ws, String(params.file || ""));
+        if (!isInside(ws, target) || !fs.existsSync(target)) {
+          return { content: [{ type: "text", text: `CAD 修改失败：文件不存在或不在工作区内（${params.file}）` }], details: {} };
+        }
+        let outputPath = "";
+        if (params.output) {
+          outputPath = path.resolve(ws, String(params.output));
+          if (!isInside(ws, outputPath)) {
+            return { content: [{ type: "text", text: "CAD 修改失败：output 必须位于工作区内" }], details: {} };
+          }
+        }
+        let prepared;
+        try {
+          const cadEdit = await import("./CAD修改.mjs");
+          prepared = await cadEdit.prepareCadEdit(target, params.ops || [], { outputPath });
+        } catch (e) {
+          return { content: [{ type: "text", text: `CAD 修改失败：${e?.message || e}` }], details: {} };
+        }
+        // 落盘走统一写入通道：审批 → writeWorkspaceFile（run 备份/写入清单/事件）
+        await requireToolApproval({
+          entry, tool: "write", input: prepared.targetPath,
+          runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+        });
+        const relative = path.relative(ws, prepared.targetPath).replace(/\\/g, "/");
+        writeEvent("write_started", { ...ctx, path: relative, kind: "cad_edit" });
+        const written = writeWorkspaceFile({ workspace: entry.workspace, targetPath: prepared.targetPath, content: prepared.content, runId: ctx.runId, threadId: ctx.threadId, kind: "cad_edit" });
+        writeEvent("file_changed", { runId: ctx.runId, files: [relative], kind: "cad_edit" });
+        const opSummary = (prepared.changes || []).map((c) => `${c.op}(${c.changed} 处)`).join("、");
+        const noteSuffix = prepared.note ? `\n${prepared.note}` : "";
+        return {
+          content: [{ type: "text", text: `已修改 CAD 图纸：${written.path}\n操作：${opSummary}${noteSuffix}` }],
+          details: { path: relative, format: prepared.format, changes: prepared.changes, note: prepared.note },
+        };
+      },
+    });
+
     // ---- 记忆工具（agent 完成任务后自主沉淀经验/偏好） ----
     const memoryUpdateTool = defineTool({
       name: "memory_update",
@@ -3107,8 +3210,8 @@ execute: async (_toolCallId, params) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions],
-        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_datasets", "map_edit", "map_import", "map_analyze", "map_template", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames],
+        customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, cadReadTool, cadEditTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions],
+        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_datasets", "map_edit", "map_import", "map_analyze", "map_template", "map_save_analysis", "map_clear_analysis", "cad_read", "cad_edit", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames],
       }));
     } catch (error) {
       piRuntimeManager.markFailure(runtimeRecord.runtimeId, error, { recovering: true, reason: "session_create_failed" });
@@ -3117,7 +3220,7 @@ execute: async (_toolCallId, params) => {
     // 显式激活全部自定义工具（pi SDK 仅激活 tools 白名单中的工具，customTools 需手动激活，
     // 否则 kb_search/map_read/ask_user 等对模型不可见）
     try {
-      piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), "ask_user", "officecli", "review_copy", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames]);
+      piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), "ask_user", "officecli", "review_copy", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "cad_read", "cad_edit", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames]);
     } catch {}
 
     // event channel with history for SSE replay

@@ -27,6 +27,7 @@
     "dev": "node scripts/服务监督.mjs --background",
     "start:foreground": "node scripts/服务监督.mjs --foreground",
     "build": "cd client && npm run build",
+    "test:cad": "node scripts/CAD解析测试.mjs",
     "verify": "node scripts/验证脚本.mjs",
     "test:phase1": "node scripts/阶段一稳定性测试.mjs",
     "test:phase2": "node scripts/第二阶段记忆治理测试.mjs",

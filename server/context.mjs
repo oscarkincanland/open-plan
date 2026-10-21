@@ -7,10 +7,12 @@ import { promisify } from "node:util";
 import JSZip from "jszip";
 import XLSX from "xlsx";
 import { PROJECT_DIR, getWorkspace, resolveExternalPath, resolvePath, listFileRoots } from "./workspace.mjs";
+import { RUNTIME_FLAGS } from "./运行开关.mjs";
 
 const execFileAsync = promisify(execFile);
 const MAX_READ_CHARS = 50000;
-const SUPPORTED = new Set(["docx", "xlsx", "pptx", "pdf", "csv", "json", "md", "markdown", "txt", "html", "htm"]);
+// CAD agent 读取（开关 cadAgent，默认关）：开启后 DXF/DWG 可被 @引用/context_read 读取（CAD 方案 AC3）
+const SUPPORTED = new Set(["docx", "xlsx", "pptx", "pdf", "csv", "json", "md", "markdown", "txt", "html", "htm", ...(RUNTIME_FLAGS.cadAgent ? ["dxf", "dwg"] : [])]);
 const MAX_DOCUMENT_CACHE_ENTRIES = 32;
 const MAX_DOCUMENT_CACHE_CHARS = 2_000_000;
 const documentReadCache = new Map();
@@ -86,7 +88,8 @@ export function parseReferences(text = "") {
   for (const m of source.matchAll(/@模板\[([^\]]+)\]/g)) add(makeRef("template", m[1], { source: m[0] }));
   for (const m of source.matchAll(/@文件\[([^\]]+)\]/g)) add(makeRef("file", m[1], { source: m[0] }));
   for (const m of source.matchAll(/&会话\[([^\]]+)\]/g)) add(makeRef("session", m[1], { source: m[0] }));
-  const ext = /\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i;
+  // @引用裸写法扩展名识别：CAD 开启时把 dxf/dwg 也当文件引用（与 SUPPORTED 同步门控）
+  const ext = new RegExp(`\\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm${RUNTIME_FLAGS.cadAgent ? "|dxf|dwg" : ""})$`, "i");
   for (const m of source.matchAll(/(^|[\s(])@([^\s@，。！？\]}]+)/g)) {
     const target = m[2].replace(/[),;。！？]+$/, "");
     if (/^(?:文件|知识库|模板|模板目录)\[/.test(target)) continue;
@@ -281,6 +284,18 @@ async function extractPdf(file) {
 async function extractFile(file, range = null) {
   const ext = path.extname(file).slice(1).toLowerCase();
   if (["md", "markdown", "txt", "html", "htm", "csv", "json"].includes(ext)) return fs.readFileSync(file, "utf8");
+  if (ext === "dxf" || ext === "dwg") {
+    // CAD 摘要（AC3）：结构化解析 → 图层/实体/文字/范围文本，走统一 documentRead 缓存。
+    // 降级（DWG 无转换器/损坏文件）以可读错误文本返回，不向 agent 抛原始堆栈（AC2）。
+    if (!RUNTIME_FLAGS.cadAgent) return "[CAD 读取未开启（OAW_CAD_AGENT=1）]";
+    try {
+      const { readCadDocument, summarizeCad } = await import("./CAD解析.mjs");
+      const cad = await readCadDocument(file);
+      return summarizeCad(cad, path.basename(file));
+    } catch (e) {
+      return `[CAD 读取失败：${e?.message || e}]`;
+    }
+  }
   if (ext === "docx") return extractDocx(file);
   if (ext === "pptx") return extractPptx(file);
   if (ext === "xlsx") {

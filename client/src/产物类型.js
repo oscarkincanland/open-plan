@@ -24,6 +24,8 @@ const EXT_KINDS = Object.freeze({
   geojson: { icon: "map", label: "地图数据" },
   shp: { icon: "map", label: "地图数据" },
   kml: { icon: "map", label: "地图数据" },
+  dxf: { icon: "layers", label: "CAD 图纸" },
+  dwg: { icon: "layers", label: "CAD 图纸" },
   png: { icon: "image", label: "图片" },
   jpg: { icon: "image", label: "图片" },
   jpeg: { icon: "image", label: "图片" },

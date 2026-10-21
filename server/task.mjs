@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
+import { RUNTIME_FLAGS } from "./运行开关.mjs";
 
 const OFFICE_EXTENSIONS = /\.(?:docx|xlsx|pptx|xls|doc)$/i;
 const DOCUMENT_EXTENSIONS = /\.(?:docx|xlsx|pptx|xls|doc|pdf|csv|json|md|markdown|txt|html|htm)$/i;
+const CAD_EXTENSIONS = /\.(?:dxf|dwg)$/i;
 
 /**
  * 工作台保留四种后端模式值。office 是历史兼容值，前端主入口展示
@@ -99,6 +101,8 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
   const office = OFFICE_EXTENSIONS.test(files) || containsAny(source, ["officecli", "word", "excel", "ppt", "docx", "xlsx", "pptx", "表格", "文档排版", "修改文档"]);
   const knowledge = refList.some((item) => ["knowledge", "knowledge_dir"].includes(item.kind)) || containsAny(source, ["知识库", "知识库搜索", "知识检索", "参考资料"]);
   const map = containsAny(source, ["地图", "图层", "geojson", "等时圈", "热力图", "od图", "空间分析"]) || /(?:^|[\\/])maps(?:[\\/]|$)/i.test(files);
+  // CAD 意图：文件扩展名或话术命中（cad 读取/修改能力，cadPreview/cadAgent 开关族）
+  const cad = CAD_EXTENSIONS.test(files) || containsAny(source, ["dxf", "dwg", "cad", "图纸", "红线图", "总平面"]);
   const workflow = Boolean(task.workflowId) || /@工作流\[|@技能\[|工作流|skill|workflow/i.test(String(text || ""));
   const output = containsAny(source, ["生成", "创建", "导出", "写入", "制作", "修改", "编辑", "排版"]);
   // 方案 §5.3：把"生成新文档"与"精确编辑既有文档"分流。
@@ -159,6 +163,14 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
     });
   }
   if (workflow) capabilities.push({ id: "skills", label: "Skills / 工作流", status: "planned", required: Boolean(task.workflowId), provider: "native", reason: task.workflowId ? `工作流 ${task.workflowId} 声明了技能依赖` : "本轮出现工作流或技能意图" });
+  // CAD 能力（cadAgent 开关，默认关）：关闭时不声明，编排/遥测与基线一致。
+  // cad 恒 preferred（解析内置于工作台，无外部二进制）；cad_dwg 的实际可用性取决于
+  // 外部转换工具（ODA/LibreDWG），计划期不做同步探测，以 cad_read/cad_edit 返回为准。
+  if (RUNTIME_FLAGS.cadAgent && cad && (mode === "chat" || mode === "agent")) {
+    capabilities.push({ id: "cad", label: "CAD 读取", status: "ready", required: false, provider: "native", reason: "DXF/DWG 结构化读取（cad_read/context_read），解析内置于工作台" });
+    capabilities.push({ id: "cad_edit", label: "CAD 白名单修改", status: mode === "agent" ? "ready" : "not_available", required: false, provider: "native", reason: mode === "agent" ? "DXF 实体级白名单修改（cad_edit，写入走审批）；DWG 经 DXF 往返" : "Chat 只读，不声明修改能力" });
+    capabilities.push({ id: "cad_dwg", label: "CAD DWG 转换", status: "planned", required: false, provider: "external", reason: "DWG 依赖外部转换工具（ODA/LibreDWG），未装时自动降级 DXF 另存" });
+  }
   return {
     version: 2,
     mode,
