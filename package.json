@@ -118,7 +118,8 @@
     "test:file-diff": "node scripts/文件差异测试.mjs",
     "test:stream-budget": "node scripts/长连接预算与流去重测试.mjs",
     "test:provider-catalog": "node scripts/供应商目录与一键导入测试.mjs",
-    "test:review-fixes": "node scripts/Review报错修复回归测试.mjs"
+    "test:review-fixes": "node scripts/Review报错修复回归测试.mjs",
+    "test:exec-handle": "node scripts/执行句柄契约测试.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.1.0",

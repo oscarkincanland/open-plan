@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { listWorkspace, searchWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace, isInside } from "./workspace.mjs";
 import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, queryComments, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
 import { getApprovalMode, listPendingApprovals, listPermissionRules, removeUserRule, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
-import { agentManager, classifyAgentError, getCredentialErrors, isAbortLikeError, isProviderTruncation, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
+import { agentManager, classifyAgentError, getCredentialErrors, isAbortLikeError, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
@@ -16,19 +16,19 @@ import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
 import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs } from "./runs.mjs";
-import { markRunTiming, attachRunTimingMeta, attachRunTimingSpans, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
+import { attachRunTimingMeta, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
 import { workspaceTrustSummary, setWorkspaceTrust } from "./项目信任.mjs";
 import { runtimeFlagsSnapshot, RUNTIME_FLAGS } from "./运行开关.mjs";
-import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
+import { validateArtifacts } from "./产物验证.mjs";
 import { listPublishedArtifacts, publishArtifact, inspectRunAcceptance, confirmArtifactAcceptance, rollbackPublishedArtifact } from "./成果管理.mjs";
 import { atomicWriteFile, atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
 import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs";
 import { listConnectors, getConnector, beginConnectorAuth, setConnectorStatus } from "./connectors.mjs";
 import * as projectManager from "./项目管理.mjs";
 import { listAgents, createAgent, updateAgent, deleteAgent } from "./智能体管理.mjs";
-import { listStagedFilesForValidation, stageWrite, writeWorkspaceFile, withWriteLockAsync } from "./写入协调.mjs";
+import { writeWorkspaceFile, withWriteLockAsync } from "./写入协调.mjs";
 import { evaluateWorkspaceWrite, runRuntimeEvaluation } from "./运行评测.mjs";
 import { normalizeOfficeFailure, normalizeWorkspaceWriteError, workspaceWriteHttpStatus } from "./文件权限错误.mjs";
 import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, CHANNEL_HISTORY_LIMIT } from "./事件协议.mjs";
@@ -36,13 +36,21 @@ import * as searchModule from "./联网搜索.mjs";
 import { nativeCapabilities, openWithDefaultApp, pickFiles, pickFolder, revealInFileManager, cancelActivePicker, activePickerInfo } from "./原生文件.mjs";
 import { DIFF_LIMITS, diffFileContents } from "./文件差异.mjs";
 import * as browserModule from "./内置浏览器.mjs";
-import { inferCompletion } from "./运行轨迹.mjs";
 import { PI_PACKAGE_VERSION, piRuntimeManager } from "./Pi运行时管理.mjs";
 import { createPiNetworkAdapter } from "./Pi网络代理.mjs";
 import { listMcpServers, saveMcpServer, updateMcpServer, deleteMcpServer, testMcpServer, closeMcpConnections } from "./mcp管理.mjs";
 import { listPiExtensions, addPiExtension, updatePiExtension, checkPiExtension, deletePiExtension } from "./pi扩展管理.mjs";
 import { searchPiPackageCatalog, resolveInstalledPiPackage } from "./pi包目录.mjs";
 import { registerServerStream, releaseServerStream, noteStreamWrite, listServerStreams, serverStreamStats, closeServerStreams, sweepServerStreams, streamQuotaOf, rejectStreamQuota } from "./流连接.mjs";
+// P1-1 统一执行句柄：执行 / 中断 / 响应交互 / 释放 / 订阅 / 可用性 / 能力
+import {
+  执行句柄,
+  绑定执行依赖,
+  validateStagedArtifacts,
+  waitForFlush,
+  resolveRunCompletion,
+  getRunFinalText,
+} from "./执行句柄.mjs";
 import {
   getConfigStatus,
   importLocalPiConfig,
@@ -64,6 +72,13 @@ import { fetchModelsDevCatalog, readModelsDevCache, writeModelsDevCache } from "
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
 const app = express();
+// P1-1 统一执行句柄：把事件广播、诊断落盘与会话键注入句柄，
+// 句柄因此不必反向依赖 index.mjs（避免模块环）。
+绑定执行依赖({
+  emit: (entry, type, data) => emitChannel(entry, type, data),
+  recordDiagnostic: (req, details) => recordAgentDiagnostic(req, details),
+  agentKey,
+});
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = process.env.PORT || 3002;
 const API_TOKEN = String(process.env.OAW_API_TOKEN || "").trim();
@@ -108,10 +123,6 @@ async function ensureRuntimeWithTimeout(key, options = {}) {
 
 const recoveredRunIds = recoverActiveRuns();
 if (recoveredRunIds.length) console.warn(`[runs] 已将 ${recoveredRunIds.length} 个中断前活动 Run 标记为 recovering，等待用户继续。`);
-
-function validateStagedArtifacts(runId) {
-  return listStagedFilesForValidation(runId).map((item) => validateArtifactFile(item.file, item.root, item.path));
-}
 
 app.use(express.json({ limit: "256mb" }));
 
@@ -3914,11 +3925,8 @@ app.post("/api/agent/abort", async (req, res) => {
         && item.clientId === client && (!thread || !item.threadId || item.threadId === thread));
       runId = running?.id || "";
     }
-    if (runId) requestRunCancellation(runId, "用户在对话栏请求中断");
-    const result = await agentManager.abort(key, { runId });
-    // P2-3：一并回执「取消后仍排队的轮次数量」，前端据此区分「已停」与「排队中已停」
-    // （基线只返回 ok/runId，无法判断是否还有排队的轮次）。字段为新增，不影响既有消费方。
-    res.json({ ...result, runId: result.runId || runId || null, stillQueued: Number(live?.queuedCount || 0) });
+    // P1-1：中断语义下沉到执行句柄（路由只做参数校验与响应封装）。
+    res.json(await 执行句柄.中断(runId, "用户在对话栏请求中断", { client, thread }));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -3998,9 +4006,15 @@ app.get("/api/agent/pending", (req, res) => {
 app.post("/api/agent/answer", (req, res) => {
   const { client, thread, answer } = req.body || {};
   if (!client || !answer) return res.status(400).json({ error: "client and answer required" });
-  const result = agentManager.submitAnswer(agentKey(client, thread), String(answer).slice(0, 2000));
+  // P1-1：响应交互下沉到执行句柄（路由只做参数校验与响应封装）。
+  const result = 执行句柄.响应交互(client, answer, { thread });
   if (!result.ok) return res.status(404).json({ error: "no pending question" });
   res.json(result);
+});
+
+// P1-1：统一执行句柄的只读自述（可用性三态 + 能力清单）。
+app.get("/api/agent/handle", (_req, res) => {
+  res.json({ availability: 执行句柄.可用性(), capabilities: 执行句柄.能力() });
 });
 
 // ---------- 工具审批（参考 opencode 的 allow/ask/deny 三值模型） ----------
@@ -4038,169 +4052,6 @@ app.post("/api/agent/approval", (req, res) => {
   if (!result.ok) return res.status(404).json(result);
   res.json(result);
 });
-
-/**
- * 后台执行已被接收的 Agent Run。
- * HTTP 只负责完成 admission；模型、工具和产物状态统一通过 SSE 回传，
- * 这样供应商慢或断开时不会把浏览器的 prompt 请求长期挂住。
- */
-function getRunFinalText(run) {
-  // 权威终稿优先读 Run 根级投影（由 recordRunFinalText 单写入维护），
-  // 旧 Run 没有该字段时回退到事件流中的最后一条 assistant_final。
-  if (run && String(run.finalText || "").trim()) return String(run.finalText);
-  return [...(run?.events || [])]
-    .reverse()
-    .find((item) => item?.type === "assistant_final" && String(item?.data?.text || "").trim())
-    ?.data?.text || "";
-}
-
-// 其他 run 的暂存清单路径（产物统计时排除，避免并行任务相互污染）
-function otherRunsStagedPaths(currentRunId) {
-  const paths = new Set();
-  const runsDir = path.join(PROJECT_DIR, ".oaw", "runs");
-  let names = [];
-  try { names = fs.readdirSync(runsDir); } catch { return paths; }
-  for (const name of names) {
-    if (name === currentRunId) continue;
-    try {
-      const manifest = JSON.parse(fs.readFileSync(path.join(runsDir, name, "写入清单.json"), "utf8"));
-      if (Array.isArray(manifest.files)) {
-        for (const entry of manifest.files) {
-          if (typeof entry?.path === "string") paths.add(entry.path.replace(/\\/g, "/"));
-        }
-      }
-    } catch {}
-  }
-  return paths;
-}
-
-// 完成语义：显式 complete_task 优先；否则按 Run 终态推断（source:"inferred"），
-// 前端据此区分“回答结束”与“任务真正完成”。
-function resolveRunCompletion(entry, runStatus, { artifacts = 0, validations = [], runId = null } = {}) {
-  const pending = entry?.pendingCompletion && typeof entry.pendingCompletion === "object" ? entry.pendingCompletion : null;
-  // 完成声明必须属于当前 Run：同一会话上一轮的声明不能串到本轮（否则会误报 success）。
-  const explicit = pending && (!runId || !pending.runId || pending.runId === runId) ? pending : null;
-  return explicit || inferCompletion({ runStatus, artifacts, validations });
-}
-
-async function executeAgentRun({ entry, key, client, thread, normalizedText, images, effort, resolved, task, workflow, run, before, runWorkspace, effectiveModel, capabilityPlan, preflight, requestId, admissionReadyAt = 0 }) {
-  const tracksWorkspace = run?.snapshotMode !== "none";
-  try {
-    await agentManager.promptWithContext(key, normalizedText, images, effort, resolved, { runId: run.id, task, workflow, admissionReadyAt: Number(admissionReadyAt) || 0 });
-  } catch (e) {
-    const currentModel = entry?.session?.model;
-    const diagnostic = recordAgentDiagnostic({ requestId }, {
-      client,
-      thread,
-      runId: run?.id || null,
-      model: effectiveModel || (currentModel?.provider && currentModel?.id ? `${currentModel.provider}/${currentModel.id}` : null),
-      error: e,
-    });
-    // 与发送路由同一条规矩：用户主动中断时 SDK 会以 "Request aborted" 拒绝这次 prompt，
-    // 这不是模型/运行时故障——不发 agent_error、不写 runtime_error
-    //（写了会把 Run 标成"需要恢复"、把 Runtime 标成 failed）。
-    const cancelRequestedHere = getRun(run.id)?.status === "cancel_requested"
-      || Boolean(entry?.cancelRequested)
-      || Boolean(entry?.abortRequestedAt && Date.now() - entry.abortRequestedAt < 120000);
-    const userAborted = cancelRequestedHere && isAbortLikeError(diagnostic.message);
-    if (entry && userAborted) {
-      emitChannel(entry, "aborted", { runId: run?.id || null, reason: "用户请求中断" });
-    } else if (entry) {
-      emitChannel(entry, "agent_error", { message: diagnostic.message, code: diagnostic.errorCode || e?.code || null, category: diagnostic.errorCategory || null, providerStatus: diagnostic.providerStatus || null, runId: run?.id || null, requestId, retryable: diagnostic.retryable });
-    }
-    // 失败前已生成的权威文本也写入 run 记录，供前端断线兜底渲染
-    if (run && entry?.lastFinalText) recordRunEvent(run.id, "assistant_final", { text: entry.lastFinalText });
-// 出错也检测产物（agent 可能已部分写入文件）；清单走内容哈希口径，
-// 只碰了 mtime、内容没变的文件不算变更。
-    const stagedElsewhere = otherRunsStagedPaths(run?.id || "");
-    if (tracksWorkspace) await waitForFlush(before, runWorkspace);
-    const changed = listRunArtifacts(run, runWorkspace)
-      .map((item) => item.path)
-      .filter((p) => !stagedElsewhere.has(String(p).replace(/\\/g, "/")));
-    const validations = validateArtifacts(changed, runWorkspace);
-    const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
-    if (changed.length && entry) {
-      emitChannel(entry, "file_changed", { files: changed, runId: run?.id || null });
-      emitChannel(entry, "agent_summary", {
-        products: changed,
-        // A02-3：总结正文只给数量，文件清单走 products/artifacts，不再把全部文件名塞进正文
-        summary: `对话异常结束，仍处理了 ${changed.length} 个文件`,
-        runId: run?.id || null,
-        artifacts: [],
-      });
-    }
-    const runtimeHealth = entry ? agentManager.runtimeHealth(key) : null;
-    // 供应商流截断（未返回 finish_reason）：既不是用户中断，也不该按"模型调用失败"处理——
-    // 关键看这一轮有没有客观产出（文件改动 / 暂存产物 / 模型最终文本）。
-    const truncatedRecoverable = !userAborted
-      && isProviderTruncation(diagnostic.message)
-      && (Boolean(entry?.lastFinalText) || changed.length > 0 || stagedValidations.length > 0);
-    if (runtimeHealth && !userAborted && !truncatedRecoverable) recordRunEvent(run.id, "runtime_error", { code: diagnostic.errorCode || e?.code || null, message: diagnostic.message, runtime: runtimeHealth });
-    const cancelled = userAborted || getRun(run.id)?.status === "cancel_requested";
-    // 供应商流截断但活已经干完：按「部分完成」收尾而不是「本轮失败」——
-    // 判定必须看客观产物（有改动或有过校验通过）与模型的最终文本，而不是只看调用是否干净收尾。
-    const truncationCompletion = truncatedRecoverable
-      ? {
-        status: "partial",
-        source: "inferred",
-        summary: `${entry?.lastFinalText ? String(entry.lastFinalText).slice(0, 4000) : run?.task?.goal || "本轮产物已产出"}\n\n⚠ 模型流被供应商截断（未返回 finish_reason，已自动重试并继续），产物已产出并通过校验，请按结果核对。`,
-        incomplete: [],
-        blockers: [],
-        verification: null,
-        verificationStatus: "not_checked",
-      }
-      : null;
-    const failureCompletion = truncationCompletion || resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations], runId: run.id });
-    const failed = finishRun(run.id, {
-      status: cancelled ? "cancelled" : (truncatedRecoverable ? "completed" : "failed"),
-      sessionId: entry?.session?.sessionId || null,
-      error: cancelled ? "用户请求取消" : (truncatedRecoverable ? "模型流被供应商截断（产物已产出）" : e.message),
-      summary: cancelled ? "任务已中断" : (truncatedRecoverable ? "部分完成（模型流被截断）" : "Agent 执行失败"),
-      validations: [...validations, ...stagedValidations],
-      completion: failureCompletion,
-    });
-    if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)), model: getRun(run.id)?.model || null, finalMessageId: getRun(run.id)?.finalMessageId || null });
-    return;
-  }
-
-// officecli keeps files in a resident process — disk writes flush asynchronously.
-  // Poll until the workspace snapshot stabilizes, then diff.
-  // 把最终权威文本写入 run 记录（assistant_final），前端 run_finished 用它兜底渲染
-  if (run && entry?.lastFinalText) recordRunEvent(run.id, "assistant_final", { text: entry.lastFinalText });
-  const stagedElsewhere = otherRunsStagedPaths(run?.id || "");
-  if (tracksWorkspace) await waitForFlush(before, runWorkspace);
-  // 产物清单走内容哈希口径（与 run.artifacts 相同），而非 mtime 差异：
-  // 后者会把 Office/CLI 只是读取过、内容未变的文件也算成本轮产物。
-  const changed = listRunArtifacts(run, runWorkspace)
-    .map((item) => item.path)
-    .filter((p) => !stagedElsewhere.has(String(p).replace(/\\/g, "/")));
-  const validations = validateArtifacts(changed, runWorkspace);
-  const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
-  const allValidations = [...validations, ...stagedValidations];
-  const publishableStagedValidations = stagedValidations.filter((item) => item.status !== "failed");
-  const verificationNote = allValidations.some((item) => item.status === "failed") ? "，但产物校验发现问题" : allValidations.some((item) => item.status === "warning") ? "，产物校验有提示" : "";
-  const cancelled = run && getRun(run.id)?.status === "cancel_requested";
-  const finalStatus = cancelled ? "cancelled" : "completed";
-  const publishPaths = publishableStagedValidations.map((item) => item.path).filter(Boolean);
-  const publishedCount = changed.length + publishableStagedValidations.length;
-  const completed = run ? finishRun(run.id, { status: finalStatus, sessionId: entry?.session?.sessionId || null, summary: cancelled ? "任务已取消" : (publishedCount ? `本轮对话完成，共处理 ${publishedCount} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更"), validations: allValidations, publishPaths: run ? publishPaths : null, completion: resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }) }) : null;
-  if (entry) {
-    const productPaths = [...changed, ...publishableStagedValidations.map((item) => item.path).filter(Boolean)];
-    if (productPaths.length) emitChannel(entry, "file_changed", { files: productPaths, runId: run?.id || null });
-    // 终态总结必须无条件发出：没有文件变更的轮次也要有结果卡（总结 + 本轮过程行），
-    // 否则对话看起来“没有总结、折叠过程也没做完”。文案与 run 记录里的 summary 保持一致。
-    emitChannel(entry, "agent_summary", {
-      products: productPaths,
-      // A02-3：正文只保留数量，文件清单走 products/artifacts
-      summary: completed?.summary || (cancelled ? "任务已取消" : (publishedCount ? `本轮对话完成，共处理 ${publishedCount} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更")),
-      runId: run?.id || null,
-      artifacts: completed?.artifacts || [],
-      references: resolved,
-      status: completed?.status || finalStatus,
-    });
-    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked", completion: completed?.completion || resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }), finalText: getRunFinalText(getRun(run.id)), model: getRun(run.id)?.model || null, finalMessageId: getRun(run.id)?.finalMessageId || null });
-  }
-}
 
 app.post("/api/agent/prompt", async (req, res) => {
   const admissionStartedAt = new Date().toISOString();
@@ -4272,8 +4123,7 @@ app.post("/api/agent/prompt", async (req, res) => {
     // 早先每次插话都 beginRun 出一条新 Run：同一会话会同时出现两条"执行中"，
     // 会话列表与任务中心互相矛盾，而且真正执行的回合结束后插话 Run 仍留在 running
     // （用户反馈的"会话之间切换混乱"）。
-    const steeringRun = entry.busy && entry.activeRunId ? getRun(entry.activeRunId) : null;
-    let before = [];
+    // 插话（steer）、快照与 Run 创建已下沉到执行句柄；这里只保留失败收口需要的句柄。
     let run = null;
     let resolved = [];
     let task = null;
@@ -4338,117 +4188,34 @@ app.post("/api/agent/prompt", async (req, res) => {
         ...(workflow && !workflow.valid ? [`工作流缺少技能：${workflow.missing.join(", ")}`] : []),
       ],
     });
-      // Chat 没有上传文件时是严格只读模式，不需要为每轮问答扫描工作区。
-      // 用户明确上传的附件需要在成功后发布为可追溯文件，因此保留完整快照。
-      const tracksWorkspace = task.mode !== "chat" || Boolean(attachments?.length);
-      // 插话沿用当前 Run 的"运行前快照"：整个回合（含插话）的改动要在同一个窗口里比对。
-      before = steeringRun ? (steeringRun.before || []) : (tracksWorkspace ? await timed("snapshot", async () => snapshotWorkspace(runWorkspace)) : []);
-      const runtimeSnapshot = agentManager.runtimeSnapshot(key, {
-        profile: task.agentProfile,
-        taskMode: task.mode,
-        capabilityPlanVersion: capabilityPlan?.version || null,
+      // P1-1：Run 生命周期下沉到统一执行句柄
+      // （建 Run → 暂存附件 → 记录事件 → 广播准入 → 后台跑 Agent → 返回准入应答）。
+      const result = await 执行句柄.执行(normalizedText, {
+        entry,
+        key,
+        client,
+        thread,
+        images,
+        effort,
+        resolved,
+        task,
+        workflow,
+        workflowId,
+        runWorkspace,
+        effectiveModel,
+        capabilityPlan,
+        preflight,
+        requestId: req.requestId,
+        admissionStartedAt,
+        serverReceivedAt,
+        admissionSpans,
+        attachments,
+        projectId: project?.id || null,
+        requestedModel,
+        timed,
       });
-      run = steeringRun || await timed("beginRun", async () => beginRun({
-      clientId: client,
-      threadId: thread || null,
-      sessionId: entry.session?.sessionId || null,
-      cwd: runWorkspace,
-      task,
-      references: resolved,
-      workflow,
-      projectId: project?.id || null,
-      capabilityPlan,
-      runtimeSnapshot,
-      snapshotMode: tracksWorkspace ? "full" : "none",
-      beforeSnapshot: tracksWorkspace ? before : null,
-      // 本轮实际使用的模型（含刚恢复的备用模型）：会话里按轮显示模型与切换分割线都靠它。
-      model: effectiveModel || null,
-      }));
-      // admission 完成（含快照/运行时准备）——这是服务端可控准备耗时的上界。
-      const admissionReadyAt = Date.now();
-      // 插话不重写首字打点：当前 Run 的 marks 已经反映它自己的首个回合。
-      if (!steeringRun) {
-        markRunTiming(run.id, "serverReceivedAt", serverReceivedAt);
-        markRunTiming(run.id, "admissionReadyAt", admissionReadyAt);
-        // 细分耗时：准入这一段到底慢在等什么（运行时/写探针/引用读取/快照/写 Run 记录）
-        attachRunTimingSpans(run.id, { ...admissionSpans, admissionTotal: admissionReadyAt - serverReceivedAt });
-      }
-      attachRunTimingMeta(run.id, { model: requestedModel || taskInput?.model || null, mode: task.mode });
-    // 上传附件先进入当前 Run 的暂存区；Agent 可以通过 staging overlay 读取，成功后才发布到工作区。
-    if (Array.isArray(attachments) && attachments.length) {
-      for (const att of attachments) {
-        const safe = safeName(att.name);
-        if (!safe) continue;
-        stageWrite({
-          runId: run.id,
-          workspace: runWorkspace,
-          targetPath: path.join(runWorkspace, safe),
-          content: Buffer.from(att.data, "base64"),
-          threadId: thread || null,
-          kind: "attachment",
-          onEvent: (type, data) => emitChannel(entry, type, data),
-        });
-      }
-    }
-      recordRunEvent(run.id, "prompt", { text: normalizedText.slice(0, 4000), workflowId, referenceCount: resolved.length, steer: Boolean(steeringRun) });
-      if (steeringRun) recordRunEvent(run.id, "steer", { text: normalizedText.slice(0, 2000), source: "user", merged: true });
-      recordRunEvent(run.id, "capability_plan", { plan: capabilityPlan, preflight });
-      if (runtimeSnapshot) recordRunEvent(run.id, "runtime_health", runtimeSnapshot);
-      // 插话已经并入当前回合：不再重复发 capability_plan/run_admitted（那些属于本轮开头的准入）。
-      if (!steeringRun) {
-        emitChannel(entry, "capability_plan", { plan: capabilityPlan, preflight, runId: run.id });
-        emitChannel(entry, "run_admitted", {
-          runId: run.id,
-          requestId: req.requestId,
-          startedAt: admissionStartedAt,
-          admittedAt: new Date().toISOString(),
-          snapshotMode: tracksWorkspace ? "full" : "none",
-        });
-      }
-    // 先启动入队，再返回 admission 响应。executeAgentRun 在现有 entry 上
-    // 会同步登记 queuedCount，避免响应里的 queued/queuePosition 与真实状态错位。
-    const execution = executeAgentRun({
-      entry,
-      key,
-      client,
-      thread,
-      normalizedText,
-      images,
-      effort,
-      resolved,
-      task,
-      workflow,
-      run,
-      before,
-      runWorkspace,
-      effectiveModel,
-      capabilityPlan,
-      preflight,
-      admissionReadyAt,
-      requestId: req.requestId,
-    });
-    execution.catch((error) => {
-      console.error("[agent] 后台 Run 收尾失败", error);
-    });
-    // 参考 pi-web：先返回“已接收”，最终模型/工具/产物状态由 SSE 事件驱动。
-    res.json({
-      ok: true,
-      accepted: true,
-      queued: Boolean(entry.busy || entry.compacting || entry.queuedCount > 1),
-      queuePosition: Math.max(1, entry.queuedCount || 1),
-      changed: [],
-      runId: run?.id || null,
-      artifacts: [],
-      validations: [],
-      verificationStatus: "pending",
-      status: "accepted",
-      task,
-      sessionId: entry?.session?.sessionId || null,
-      model: effectiveModel || (entry.session?.model?.provider && entry.session?.model?.id ? `${entry.session.model.provider}/${entry.session.model.id}` : null),
-      modelFallbackFrom: entry.modelFallbackFrom || null,
-      thread: thread || null,
-    });
-    return;
+      res.json(result);
+      return;
   } catch (e) {
     if (e?.code === "SKILL_PREFLIGHT_FAILED" || e?.code === "OFFICE_PREFLIGHT_FAILED") {
       emitChannel(entry, "agent_error", { message: e.message, code: e.code, preflight });
@@ -4461,6 +4228,8 @@ app.post("/api/agent/prompt", async (req, res) => {
       return;
     }
     const currentModel = entry?.session?.model;
+    // Run 由执行句柄创建：句柄在出错时把 runId 挂在 error 上，这里据此找回 Run 收口。
+    run = e?.runId ? getRun(e.runId) : null;
     const diagnostic = recordAgentDiagnostic(req, {
       client,
       thread,
@@ -4484,10 +4253,10 @@ app.post("/api/agent/prompt", async (req, res) => {
     }
     // 出错也检测产物（agent 可能已部分写入文件）；清单走内容哈希口径，
     // 只碰了 mtime、内容没变的文件不算变更。
-    if (run) await waitForFlush(before, runWorkspace);
+    if (run) await waitForFlush(run?.before || [], runWorkspace);
     const changed = run
       ? listRunArtifacts(run, runWorkspace).map((item) => item.path)
-      : await waitForFlush(before, runWorkspace);
+      : await waitForFlush(run?.before || [], runWorkspace);
     const validations = validateArtifacts(changed, runWorkspace);
     const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
     if (changed.length) {
@@ -5828,20 +5597,6 @@ function walkWorkspaceSnapshot(dir, root, depth = 0, count = { n: 0 }) {
     }
   }
   return out;
-}
-function diffWorkspace(before, after) {
-  const b = new Set(before);
-  return after.filter((x) => !b.has(x)).map((x) => x.split("|")[0]);
-}
-async function waitForFlush(before, workspace = getWorkspace()) {
-  let last = before;
-  for (let i = 0; i < 6; i++) {
-    await new Promise((r) => setTimeout(r, 1500));
-    const snap = snapshotWorkspace(workspace);
-    if (JSON.stringify(snap) === JSON.stringify(last)) break;
-    last = snap;
-  }
-  return diffWorkspace(before, last);
 }
 function emitChannel(entry, type, data) {
   const id = ++entry.channel.seq;
