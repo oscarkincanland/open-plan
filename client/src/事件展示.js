@@ -58,8 +58,19 @@ export const EVENT_UI = Object.freeze({
   tool_start: { phase: "executing" },
   tool_end: { phase: "executing" },
   subagent_start: { phase: "executing" },
+  subagent_planned: { phase: "executing" },
+  subagent_started: { phase: "executing" },
+  subagent_progress: { phase: "executing" },
+  subagent_result: { phase: "executing" },
+  subagent_verified: { phase: "verifying" },
+  subagent_closed: { phase: "executing" },
+  subagent_tool: { phase: "executing" },
   subagent_update: { phase: "executing" },
   subagent_end: { phase: "executing" },
+  pipeline_started: { phase: "executing" },
+  pipeline_stage_started: { phase: "executing" },
+  pipeline_stage_finished: { phase: "executing" },
+  pipeline_finished: { phase: "executing" },
   write_started: { phase: "executing" },
   write_locked: { phase: "executing" },
   write_rejected: { phase: "executing" },
@@ -82,6 +93,8 @@ export const EVENT_UI = Object.freeze({
   agent_queue_update: { phase: "executing" },
   tool_repeat_warning: { phase: "executing" },
   completion_nudge: { phase: "executing" },
+  run_budget_notice: { phase: "executing" },
+  run_budget_blocked: { phase: "executing" },
   // 验证
   artifacts_validated: { phase: "verifying" },
   // 交付
@@ -182,10 +195,27 @@ export function flowEventLabel(event) {
       return "插入新指令";
     }
     case "tool_repeat_warning": return `重复调用提醒：${data.name || "工具"} 第 ${data.count || 3} 次`;
+    case "run_budget_notice": return `预算提醒：${eventMessageText(data.reason, "接近软预算")}`;
+    case "run_budget_blocked": return `预算阻断：${eventMessageText(data.reason, "已达硬预算")}`;
     case "completion_nudge": return "补充完成状态";
     case "tool_start": return `调用 ${toolLabel}`;
     case "tool_end": return `${toolLabel}${data.isError ? "失败" : "完成"}`;
-    case "subagent_start": return `启动子 Agent：${{ scout: "资料探索", reviewer: "审阅", planner: "方案拆解" }[data.role] || "只读任务"}`;
+    case "subagent_start": return `启动子 Agent：${{ scout: "资料探索", reviewer: "审阅", planner: "方案拆解", verifier: "独立核验", worker: "执行" }[data.role] || "只读任务"}`;
+    case "subagent_planned": return `编排子任务：${data.task ? String(data.task).slice(0, 40) : (data.role || "子代理")}`;
+    case "subagent_started": return `子 Agent 会话已建立${data.model ? `（${String(data.model).slice(0, 30)}）` : ""}`;
+    case "subagent_progress": return data.phase || data.activity || "子 Agent 处理中";
+    case "subagent_result": return `子 Agent 交付${data.status === "completed" ? "结果" : `（${data.status || "结果"}）`}`;
+    case "subagent_verified": return `核验结论：${{ pass: "通过", revise: "需修订", fail: "不通过" }[data.verdict] || data.verdict || "待定"}`;
+    case "subagent_closed": return `子任务关账：${data.finalStatus || "完成"}`;
+    case "pipeline_started": return "启动编辑流水线（规划 → 撰写 → 排版 → 验收）";
+    case "pipeline_stage_started": return `流水线阶段开始：${data.label || data.stage || ""}`;
+    case "pipeline_stage_finished": return `流水线阶段完成：${data.label || data.stage || ""}${data.artifact ? `（${String(data.artifact)}）` : ""}`;
+    case "pipeline_finished": return data.deliverable ? `流水线交付：${String(data.deliverable)}` : `流水线结束（${data.status || "完成"}）`;
+    case "subagent_tool": {
+      const childTool = TOOL_LABELS[String(data.toolName || "").toLowerCase()] || data.toolName || "工具";
+      if (data.status === "end") return `子 Agent ${data.isError ? `${childTool}失败` : `${childTool}完成`}`;
+      return `子 Agent 调用 ${childTool}`;
+    }
     case "subagent_update": return data.activity || "子 Agent 正在处理";
     case "subagent_end": return `子 Agent${data.status === "completed" ? "已完成" : data.status === "cancelled" ? "已取消" : "失败"}`;
     case "todo_updated": return `任务清单已更新${data.todoProgress ? `（${data.todoProgress.completed || 0}/${data.todoProgress.total || 0}）` : ""}`;
@@ -213,6 +243,7 @@ export function flowEventLabel(event) {
     case "run_recovery_started": return "正在恢复任务";
     case "run_recovered": return "任务已恢复";
     case "run_cancel_requested": return "已请求取消任务";
+    case "run_draining": return "正在收尾（等待在途消息投递）";
     case "step_updated": return `步骤已更新${data.title || data.name ? `：${String(data.title || data.name).slice(0, 40)}` : ""}`;
     case "artifact_rolled_back": return "产物已回滚";
     case "map_action": return `地图操作${data.action ? `：${String(data.action).slice(0, 30)}` : ""}`;
@@ -236,7 +267,10 @@ export function flowEventLabel(event) {
     case "run_finished": return runConclusion(event).label;
     case "task_completed": return `任务${completionLabelSafe(data.status)}${data.summary ? `：${String(data.summary).slice(0, 50)}` : ""}`;
     case "aborted": return "任务已中断";
-    case "capability_plan": return "能力准备完成";
+    case "capability_plan": {
+      const list = Array.isArray(data?.plan?.capabilities) ? data.plan.capabilities : [];
+      return list.length ? `能力准备完成（${list.length} 项）` : "能力准备完成";
+    }
     case "mode_policy": return `模式：${MODE_LABELS[String(data.mode || "").toLowerCase()] || "Chat"}`;
     case "review_material_classified": return `材料识别：${data.materialType || "待判断"}`;
     case "review_source_search_started": return "搜索审查规范";
@@ -264,7 +298,7 @@ function completionLabelSafe(status) {
 /** 事件 → 语气（error / success / running），用于执行流配色 */
 export function flowEventTone(event) {
   const type = String(event?.type || "");
-  if (["agent_error", "agent_model_fallback_failed", "write_rejected", "officecli_failed", "review_write_blocked", "review_confirmation_rejected", "stream_resync", "runtime_error", "memory_proposal_failed"].includes(type) || event?.data?.isError || (type === "subagent_end" && ["failed", "cancelled"].includes(event?.data?.status))) return "error";
+  if (["agent_error", "agent_model_fallback_failed", "write_rejected", "officecli_failed", "review_write_blocked", "review_confirmation_rejected", "stream_resync", "runtime_error", "memory_proposal_failed"].includes(type) || event?.data?.isError || (type === "subagent_end" && ["failed", "cancelled"].includes(event?.data?.status)) || (type === "subagent_tool" && event?.data?.isError === true) || (type === "pipeline_stage_finished" && ["failed", "revise"].includes(event?.data?.status)) || (type === "pipeline_finished" && event?.data?.status === "failed")) return "error";
   if (type === "artifacts_validated") return event?.data?.status === "failed" ? "error" : "success";
   if (type === "run_finished") return runConclusion(event).tone;
   if (type === "task_completed") return event?.data?.status === "failed" ? "error" : event?.data?.status === "success" ? "success" : "warning";
@@ -304,12 +338,13 @@ const TOOL_IDENTITY_RULES = [
   [/^(grep|find|ls|glob)$/i, "search"],
   [/^(kb_search|kb_read|memory_update|skills_search|skills_read)$/i, "book"],
   [/^(read|context_read)$/i, "file"],
-  [/^(map_read|map_datasets|map_edit|map_import|map_analyze|map_save_analysis|map_clear_analysis)$/i, "map"],
+  [/^(map_read|map_datasets|map_edit|map_import|map_analyze|map_template|map_save_analysis|map_clear_analysis)$/i, "map"],
   [/^(write|edit|review_source_apply)$/i, "edit"],
   [/^officecli$/i, "doc"],
   [/^(bash|terminal|shell)$/i, "terminal"],
   [/^(todo|taskcreate|taskupdate)$/i, "list"],
   [/^(run_subagent|subagent)$/i, "flow"],
+  [/^editorial_pipeline$/i, "flow"],
   [/^(tool_approval|approval|review_copy)/i, "shield"],
   [/^(ask_user)$/i, "comment"],
   [/^(complete_task)$/i, "check"],

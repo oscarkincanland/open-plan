@@ -43,10 +43,26 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  const loadFile = useCallback(async (rel) => {
+    try {
+      const r = await fetch(`/api/memory/${encodeURIComponent(rel)}`);
+      const d = await r.json();
+      setActive(rel);
+      setContent(d.content || "");
+      setEditing(false);
+      setDirty(false);
+    } catch {}
+  }, []);
+
   // SSE 记忆变更监听。
   // 依赖数组必须为空：早先挂在 [active, dirty] 上，编辑一次文件就会关闭并重建连接，
   // 既造成同源连接槽位抖动，也让"实时"变成"每次编辑重连"。
-  // 回调用 ref 取最新状态，连接本身只在挂载/卸载时建立和释放。
+  //
+  // loadFile 同样不能进依赖数组：它在本段之后才用 const 声明，渲染期求值 [loadFile]
+  // 会踩 TDZ（Cannot access 'loadFile' before initialization），整个「记忆与沉淀」
+  // 模块一挂载就抛错崩溃。改用 ref 取稳定引用，连接只在挂载/卸载时建立和释放。
+  const loadFileRef = useRef(loadFile);
+  loadFileRef.current = loadFile;
   const memoryStateRef = useRef({ active: "", dirty: false });
   memoryStateRef.current = { active, dirty };
   useEffect(() => {
@@ -63,7 +79,7 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
         });
         // 如果正在查看变更的文件，自动刷新
         const { active: currentFile, dirty: currentDirty } = memoryStateRef.current;
-        if (currentFile === data.file && !currentDirty) loadFile(currentFile);
+        if (currentFile === data.file && !currentDirty) loadFileRef.current(currentFile);
       } catch {}
     };
     es.onerror = () => {};
@@ -71,17 +87,6 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
       es.close();
       slot.release();
     };
-  }, [loadFile]);
-
-  const loadFile = useCallback(async (rel) => {
-    try {
-      const r = await fetch(`/api/memory/${encodeURIComponent(rel)}`);
-      const d = await r.json();
-      setActive(rel);
-      setContent(d.content || "");
-      setEditing(false);
-      setDirty(false);
-    } catch {}
   }, []);
 
   const saveFile = useCallback(async () => {
@@ -189,10 +194,10 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
       {/* 记忆变更 Dock（Proma MemoryChangeDock 风格） */}
       {changes.length > 0 && (
         <div className="memory-dock">
-          <div className="memory-dock-head"><Icon name="info" size={10} /> 记忆已更新</div>
+          <div className="memory-dock-head"><Icon name="info" size={12} /> 记忆已更新</div>
           {changes.map((c) => (
             <div key={c.file} className="memory-change-item" onClick={() => loadFile(c.file)}>
-              <Icon name="file" size={10} />
+              <Icon name="file" size={12} />
               <span className="memory-change-file">{c.file}</span>
               <button className="memory-change-dismiss" onClick={(e) => { e.stopPropagation(); dismissChange(c.file); }}>
                 <Icon name="x" size={9} />
@@ -205,7 +210,7 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
       {/* 待沉淀卡片：长期记忆必须经过用户确认 */}
       <div className="memory-proposals">
           <div className="memory-proposals-head">
-            <span><Icon name="bookmark" size={11} /> 记忆治理（{proposals.length}）</span>
+            <span><Icon name="bookmark" size={12} /> 记忆治理（{proposals.length}）</span>
             <select value={proposalStatus} onChange={(e) => { setProposalStatus(e.target.value); setSelectedProposals([]); }}>
               <option value="pending">待审核</option>
               <option value="all">全部历史</option>
@@ -254,7 +259,7 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
               className={`memory-file-item ${active === f.rel ? "active" : ""}`}
               onClick={() => loadFile(f.rel)}
             >
-              <Icon name={f.type === "agents" ? "doc" : "file"} size={11} />
+              <Icon name={f.type === "agents" ? "doc" : "file"} size={12} />
               <span className="memory-file-name">{f.rel}</span>
               <span className="memory-file-size">{(f.size / 1024).toFixed(1)}k</span>
             </div>

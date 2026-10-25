@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { modelsDevCacheStatus, readModelsDevCache } from "./模型目录dev.mjs";
 
 /**
  * Pi 内置供应商目录（由 scripts/提取Pi供应商目录.mjs 从 SDK bundle 固化）。
@@ -93,6 +94,77 @@ export function loadBuiltinCatalog() {
   return catalogCache;
 }
 
+// ---------- 合并层：Pi 快照（元数据与已验证能力优先） + models.dev 目录 ----------
+
+let mergedCache = null;
+
+/** models.dev 缓存刷新后调用：清掉合并结果与模型能力索引，下次访问重建。 */
+export function invalidateMergedCatalog() {
+  mergedCache = null;
+  modelIndexCache = null;
+}
+
+/**
+ * 合并目录：Pi 快照为基底，models.dev 缓存补充供应商与最新模型。
+ *   - 同 id 供应商：保留快照的元数据（名称/协议/登录方式/OAuth 声明）与已验证的
+ *     模型能力，只补充快照缺失的模型 id；快照模型缺 contextWindow 时用 models.dev 补。
+ *   - 快照外供应商：整条来自 models.dev，标记 source: "models-dev"；
+ *     无 baseUrl / 占位符 / 协议不白名单的由 importBlockReason 原样拦截为手动填写。
+ * models.dev 缓存不存在时直接退回快照（offline），接口不报错。
+ */
+export function loadMergedCatalog() {
+  if (mergedCache) return mergedCache;
+  const builtin = loadBuiltinCatalog();
+  const snapshot = readModelsDevCache();
+  if (!snapshot || !Array.isArray(snapshot.providers) || !snapshot.providers.length) {
+    mergedCache = {
+      generatedAt: builtin.generatedAt,
+      loginOnly: builtin.loginOnly,
+      error: builtin.error,
+      providers: builtin.providers.map((provider) => ({ ...provider, source: "builtin" })),
+      sources: {
+        builtin: { generatedAt: builtin.generatedAt, count: builtin.providers.length },
+        modelsDev: { fetchedAt: null, count: 0, status: modelsDevCacheStatus(null) },
+      },
+    };
+    return mergedCache;
+  }
+  const byId = new Map(builtin.providers.map((provider) => [provider.id, { ...provider, source: "builtin" }]));
+  for (const dev of snapshot.providers) {
+    if (!dev || !dev.id) continue;
+    const existing = byId.get(dev.id);
+    if (!existing) {
+      byId.set(dev.id, { ...dev, source: "models-dev" });
+      continue;
+    }
+    const known = new Set(existing.models.map((model) => model.id));
+    const additions = dev.models.filter((model) => !known.has(model.id));
+    const devById = new Map(dev.models.map((model) => [model.id, model]));
+    const patched = existing.models.map((model) => {
+      if (model.contextWindow || !devById.has(model.id)) return model;
+      const contextWindow = devById.get(model.id).contextWindow;
+      return contextWindow ? { ...model, contextWindow } : model;
+    });
+    byId.set(dev.id, { ...existing, models: [...patched, ...additions] });
+  }
+  const providers = [...byId.values()];
+  mergedCache = {
+    generatedAt: builtin.generatedAt,
+    loginOnly: builtin.loginOnly,
+    error: builtin.error,
+    providers,
+    sources: {
+      builtin: { generatedAt: builtin.generatedAt, count: builtin.providers.length },
+      modelsDev: {
+        fetchedAt: snapshot.fetchedAt || null,
+        count: Number(snapshot.providerCount) || providers.length - builtin.providers.length,
+        status: modelsDevCacheStatus(snapshot),
+      },
+    },
+  };
+  return mergedCache;
+}
+
 /** 某个内置供应商为什么不能一键导入（能导入时返回 null）。 */
 function importBlockReason(provider) {
   if (!provider.baseUrl) return "该供应商的接口地址由运行环境决定（如 Azure 需要资源名），请手动填写";
@@ -120,6 +192,7 @@ function providerSummary(provider) {
     api: provider.api,
     apiLabel: API_LABELS[provider.api] || provider.api,
     baseUrl: provider.baseUrl,
+    source: provider.source || "builtin",
     modelCount: models.length,
     auth: provider.auth,
     loginMethods: [
@@ -138,18 +211,19 @@ function providerSummary(provider) {
 }
 
 export function builtinProviderList() {
-  const catalog = loadBuiltinCatalog();
+  const catalog = loadMergedCatalog();
   return {
     generatedAt: catalog.generatedAt,
     error: catalog.error || null,
     providers: catalog.providers.map(providerSummary),
     totalModels: catalog.providers.reduce((n, provider) => n + provider.models.length, 0),
     loginOnly: catalog.loginOnly,
+    sources: catalog.sources,
   };
 }
 
 export function builtinProviderDetail(id) {
-  const catalog = loadBuiltinCatalog();
+  const catalog = loadMergedCatalog();
   const provider = catalog.providers.find((item) => item.id === String(id || ""));
   if (!provider) return null;
   return { ...providerSummary(provider), models: provider.models };
@@ -158,7 +232,7 @@ export function builtinProviderDetail(id) {
 /** 模型 ID → 能力索引（精确 + 去供应商前缀），用于给手填网关的模型自动补能力。 */
 function modelIndex() {
   if (modelIndexCache) return modelIndexCache;
-  const catalog = loadBuiltinCatalog();
+  const catalog = loadMergedCatalog();
   const index = new Map();
   const order = [
     ...FIRST_PARTY.map((id) => catalog.providers.find((provider) => provider.id === id)).filter(Boolean),
@@ -187,7 +261,7 @@ export function findBuiltinModel(modelId) {
  * 用户只需要补一个 API Key。
  */
 export function buildBuiltinImport(id, options = {}) {
-  const catalog = loadBuiltinCatalog();
+  const catalog = loadMergedCatalog();
   const provider = catalog.providers.find((item) => item.id === String(id || ""));
   if (!provider) throw new Error(`内置供应商不存在：${id}`);
   const blockReason = importBlockReason(provider);

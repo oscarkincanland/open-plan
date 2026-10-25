@@ -605,18 +605,18 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
           </button>
         </div>
         <button className={`toolbar-btn ${showComments ? "active" : ""}`} onClick={() => setShowComments(!showComments)} title="显示批注">
-          <Icon name="comment" size={13} />
+          <Icon name="comment" size={14} />
         </button>
         <button className={`toolbar-btn ${showChanges ? "active" : ""}`} onClick={() => setShowChanges(!showChanges)} title="显示修订">
-          <Icon name="history" size={13} />
+          <Icon name="history" size={14} />
         </button>
         {outline.length > 0 && (
           <button className={`toolbar-btn ${outlineOpen ? "active" : ""}`} onClick={() => setOutlineOpen(!outlineOpen)} title="目录导航">
-            <Icon name="list" size={13} />
+            <Icon name="list" size={14} />
           </button>
         )}
         <button className="toolbar-btn" onClick={() => setRenderKey((k) => k + 1)} title="刷新渲染">
-          <Icon name="refresh" size={13} />
+          <Icon name="refresh" size={14} />
         </button>
         <span className="toolbar-sep" />
         {pageCount > 0 && (
@@ -751,7 +751,7 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
         {outlineOpen && outline.length > 0 && (
           <div className="oaw-docx-outline" style={{ width: outlineW, minWidth: outlineW, maxWidth: outlineW }}>
             <div className="oaw-docx-outline-head">
-              <span><Icon name="list" size={11} /> 目录{outline.length ? ` (${outline.length})` : ""}</span>
+              <span><Icon name="list" size={12} /> 目录{outline.length ? ` (${outline.length})` : ""}</span>
               <button className="btn-xs" onClick={() => setOutlineOpen(false)} aria-label="关闭大纲"><Icon name="close" size={12} /></button>
             </div>
             <div className="oaw-docx-outline-list">

@@ -1,7 +1,10 @@
-import React from "react";
+import React, { lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
-import DesktopAgentPrototype from "./components/桌面端Agent原型.jsx";
+// F4：桌面原型仅 ?prototype=desktop 可达，lazy 化后不进入主 bundle（按需 chunk 加载）。
+const DesktopAgentPrototype = lazy(() => import("./components/桌面端Agent原型.jsx"));
+// G7：批量导出视图仅 ?export=map 可达（服务端经内置浏览器打开），同样 lazy 按需加载。
+const MapExportView = lazy(() => import("./components/地图导出视图.jsx"));
 import { ThemeProvider } from "./theme.jsx";
 import { installStaleChunkRecovery } from "./分包恢复.js";
 import "./styles.css";
@@ -22,9 +25,12 @@ restoreNativeFileApis();
 window.setInterval(restoreNativeFileApis, 1000);
 
 const isDesktopPrototype = new URLSearchParams(window.location.search).get("prototype") === "desktop";
+const isMapExportView = new URLSearchParams(window.location.search).get("export") === "map";
 
 createRoot(document.getElementById("root")).render(
   <ThemeProvider>
-    {isDesktopPrototype ? <DesktopAgentPrototype /> : <App />}
+    <Suspense fallback={null}>
+      {isMapExportView ? <MapExportView /> : isDesktopPrototype ? <DesktopAgentPrototype /> : <App />}
+    </Suspense>
   </ThemeProvider>
 );

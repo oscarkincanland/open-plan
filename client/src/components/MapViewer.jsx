@@ -378,7 +378,12 @@ const MapViewer = forwardRef(function MapViewer(
     const geoSource = map.getSource(source);
     if (geoSource?.setData) geoSource.setData(payload.geojson);
     else map.addSource(source, { type: "geojson", data: payload.geojson });
-    if (!sameKind && type === "isochrone") {
+    // G1：面状空间分析（缓冲区/筛选/裁剪）用 fill+line 渲染，不能落进热力图分支
+    const polygonalAnalysis = type === "buffer" || type === "spatial_filter" || type === "bbox_clip";
+    if (!sameKind && polygonalAnalysis) {
+      map.addLayer({ id: `${id}-fill`, type: "fill", source, paint: { "fill-color": ["coalesce", ["get", "color"], "#f97316"], "fill-opacity": 0.22 } });
+      map.addLayer({ id: `${id}-line`, type: "line", source, paint: { "line-color": ["coalesce", ["get", "color"], "#ea580c"], "line-width": 1.8, "line-opacity": 0.9 } });
+    } else if (!sameKind && type === "isochrone") {
       map.addLayer({ id: `${id}-fill`, type: "fill", source, paint: { "fill-color": ["coalesce", ["get", "color"], "#8b5cf6"], "fill-opacity": 0.2 } });
       map.addLayer({ id: `${id}-line`, type: "line", source, paint: { "line-color": ["coalesce", ["get", "color"], "#7c3aed"], "line-width": 2, "line-opacity": 0.9 } });
       map.addLayer({ id: `${id}-labels`, type: "symbol", source, layout: { "text-field": ["concat", ["to-string", ["get", "range"]], " 分钟"], "text-size": 11, "text-anchor": "center", "text-allow-overlap": false }, paint: { "text-color": "#5b21b6", "text-halo-color": "#fff", "text-halo-width": 1.2 } });
@@ -1199,7 +1204,7 @@ const MapViewer = forwardRef(function MapViewer(
           <Icon name="map" size={14} /> {config?.name || "地图"}
         </span>
         <label className="map-import-btn" title="导入 GeoJSON / SHP 矢量数据">
-          <Icon name="upload" size={13} /> 导入
+          <Icon name="upload" size={14} /> 导入
           <input
             ref={fileInputRef}
             type="file"

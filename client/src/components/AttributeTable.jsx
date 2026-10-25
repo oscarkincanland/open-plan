@@ -80,7 +80,7 @@ export default function AttributeTable({ project, layerId, layerName, onClose, o
     <div className="lp-attr-backdrop" onClick={onClose}>
       <div className="lp-attr" onClick={(e) => e.stopPropagation()}>
         <div className="lp-attr-head">
-          <Icon name="list" size={13} />
+          <Icon name="list" size={14} />
           <span className="lp-attr-title">{layerName || layerId} — 属性表</span>
           {data && <span className="lp-attr-count">{filtered.length} / {data.rows.length} 要素</span>}
           <div className="lp-attr-actions">

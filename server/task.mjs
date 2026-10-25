@@ -35,6 +35,8 @@ const AGENT_TOOLS = Object.freeze([
   "map_read", "map_analyze", "map_clear_analysis", "map_datasets",
   "map_edit", "map_import", "map_save_analysis",
   "memory_update", "todo", "complete_task",
+  // P2-A：编辑流水线（生成 Word/PPT 初稿的原生流水线，仅 Work 模式）
+  "editorial_pipeline",
   "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close",
 ]);
 
@@ -96,21 +98,47 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
   const map = containsAny(source, ["地图", "图层", "geojson", "等时圈", "热力图", "od图", "空间分析"]) || /(?:^|[\\/])maps(?:[\\/]|$)/i.test(files);
   const workflow = Boolean(task.workflowId) || /@工作流\[|@技能\[|工作流|skill|workflow/i.test(String(text || ""));
   const output = containsAny(source, ["生成", "创建", "导出", "写入", "制作", "修改", "编辑", "排版"]);
+  // 方案 §5.3：把"生成新文档"与"精确编辑既有文档"分流。
+  // 生成类（有输出意图但没有引用既有 Office 文件）优先原生 OOXML 直写—— admission 不做
+  // officecli 预检（消除冷启动阻塞）；编辑类引用了既有文档，保留 CLI 精确定位能力。
+  const officeRefExists = OFFICE_EXTENSIONS.test(files);
+  const officeGenerate = office && output && !officeRefExists;
   const capabilities = [
     mode === "chat"
-      ? { id: "chat", label: "Chat 检索", status: "ready", required: true, reason: "只读检索知识库、Skills 和工作区资料" }
+      ? { id: "chat", label: "Chat 检索", status: "ready", required: true, provider: "pi", reason: "只读检索知识库、Skills 和工作区资料" }
       : mode === "office"
-        ? { id: "office", label: "Office 对话", status: "ready", required: true, reason: "通过 Office CLI 精准处理 Office 文档" }
+        ? { id: "office", label: "Office 对话", status: "ready", required: true, provider: "pi", reason: "通过 Office CLI 精准处理 Office 文档" }
         : mode === "review"
-          ? { id: "review", label: "Review 审查", status: "ready", required: true, reason: "依据规范生成审查报告和安全副本" }
-        : { id: "agent", label: "Agent 对话", status: "ready", required: true, reason: "处理本轮任务并保持会话上下文" },
+          ? { id: "review", label: "Review 审查", status: "ready", required: true, provider: "pi", reason: "依据规范生成审查报告和安全副本" }
+        : { id: "agent", label: "Agent 对话", status: "ready", required: true, provider: "pi", reason: "处理本轮任务并保持会话上下文" },
   ];
-  if (document) capabilities.push({ id: "document", label: "文档读取", status: "planned", required: true, reason: "本轮存在文档、文件引用或附件" });
-  if (knowledge) capabilities.push({ id: "knowledge", label: "知识库检索", status: "planned", required: false, reason: "本轮出现知识库引用或检索意图" });
+  // provider 表示该能力由谁实现：native=工作台原生代码，officecli=外部 Office CLI 二进制，pi=Pi Agent 运行时。
+  // 契约 v2 把"路由建议"升级为"可据以分派的来源声明"，为后续"原生直写优先、CLI 兜底"提供判定依据。
+  if (document) capabilities.push({ id: "document", label: "文档读取", status: "planned", required: true, provider: "native", reason: "本轮存在文档、文件引用或附件" });
+  if (knowledge) capabilities.push({ id: "knowledge", label: "知识库检索", status: "planned", required: false, provider: "native", reason: "本轮出现知识库引用或检索意图" });
   // Chat 只负责检索与解释，即使用户提到 docx/xlsx，也不能触发 Office CLI
   // 预检或写入路由；Office CLI 仅作为 Office 兼容模式或 Agent 内部能力使用。
-  if (office && mode !== "chat") capabilities.push({ id: "officecli", label: "Office CLI", status: "preferred", required: Boolean(output), reason: "本轮涉及 Office 文件或 Office 编辑意图" });
-  if (mode === "review") capabilities.push({ id: "reviewEvidence", label: "规范依据台账", status: "required", required: true, reason: "每条审查结论必须绑定实际读取的规范文件" });
+  if (office && mode !== "chat") {
+    capabilities.push({
+      id: "officecli",
+      label: "Office CLI",
+      // 生成类任务原生直写优先，CLI 只兜底高级操作（图表/透视/Morph 等）；编辑类仍 preferred。
+      status: officeRefExists ? "preferred" : "fallback",
+      required: Boolean(output) && officeRefExists,
+      provider: "officecli",
+      reason: officeRefExists
+        ? "本轮涉及编辑既有 Office 文档，需要 CLI 精确定位能力"
+        : "生成类任务优先原生直写，Office CLI 仅兜底高级操作",
+    });
+  }
+  // 原生 Office 生成能力（§5.4/§5.5）：新建 Word/Excel/PPT 走工作台内置 OOXML 引擎。
+  if (officeGenerate && mode !== "chat" && mode !== "review") {
+    capabilities.push({ id: "office_generate", label: "Office 原生生成", status: "preferred", required: false, provider: "native", reason: "新建 Word/Excel/PPT 由内置 OOXML 引擎直写，无需外部二进制预检" });
+  }
+  if (mode === "review") capabilities.push({ id: "reviewEvidence", label: "规范依据台账", status: "required", required: true, provider: "native", reason: "每条审查结论必须绑定实际读取的规范文件" });
+  // 子代理能力只在 Chat 与 Work 声明；与 toolPolicyForMode 的 run_subagent 白名单保持一致，
+  // 避免"声明了却调不到"（Office / Review 不暴露 run_subagent）。
+  if (mode === "chat" || mode === "agent") capabilities.push({ id: "subagent", label: "子代理", status: "available", required: false, provider: "pi", reason: "可派发隔离的只读子 Agent 并行处理资料阅读/审阅" });
   // 地图能力只在 Chat（只读）与 Work（可写）声明；Office 专注文档、Review 依赖本地材料，
   // 两者的工具白名单里都没有地图工具，声明了就成了"说得到做不到"（X1 的同类问题）。
   const mapAvailable = map && (mode === "chat" || mode === "agent");
@@ -121,18 +149,21 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
       label: "地图工具",
       status: "ready",
       required: false,
+      provider: "native",
       reason: mapWritable
         ? "地图查询、分析与图层写入（写操作需审批）"
         : "地图只读查询与临时可视化（不落盘；保存图层需切到 Work 模式）",
     });
   }
-  if (workflow) capabilities.push({ id: "skills", label: "Skills / 工作流", status: "planned", required: Boolean(task.workflowId), reason: task.workflowId ? `工作流 ${task.workflowId} 声明了技能依赖` : "本轮出现工作流或技能意图" });
+  if (workflow) capabilities.push({ id: "skills", label: "Skills / 工作流", status: "planned", required: Boolean(task.workflowId), provider: "native", reason: task.workflowId ? `工作流 ${task.workflowId} 声明了技能依赖` : "本轮出现工作流或技能意图" });
   return {
-    version: 1,
+    version: 2,
     mode,
     capabilities,
     routing: {
-      officecli: office && mode !== "chat" ? "preferred" : "not_needed",
+      // preferred=编辑既有文档（admission 阻塞预检）；lazy=生成类任务（原生直写优先，
+      // 预检后台惰性执行，不阻塞 admission）；not_needed=无 Office 意图。
+      officecli: office && mode !== "chat" ? (officeRefExists ? "preferred" : "lazy") : "not_needed",
       documentRead: document ? "enabled" : "not_needed",
       knowledge: knowledge ? "enabled" : "not_needed",
       // read_only / read_write：让前端与提示词都能区分"能不能落盘"。

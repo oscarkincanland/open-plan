@@ -15,7 +15,9 @@ const PORT = Number.parseInt(String(process.env.PORT || "3002"), 10);
 const HEALTH_INTERVAL_MS = 15_000;
 const HEALTH_TIMEOUT_MS = 4_000;
 const HEALTH_FAILURE_LIMIT = 3;
-const STARTUP_GRACE_MS = 60_000;
+// 冷启动实测已漂移到 ~100s：宽限期必须覆盖它，否则健康检查在启动期内连判 3 次失败，
+// 监督器会把"还在启动"的服务反复 SIGTERM 重启（表现为永远起不来）。
+const STARTUP_GRACE_MS = 180_000;
 const CHILD_STOP_TIMEOUT_MS = 12_000;
 const RAPID_RESTART_WINDOW_MS = 30_000;
 const RAPID_RESTART_LIMIT = 5;
@@ -136,7 +138,9 @@ async function launchBackground() {
   fs.closeSync(logFd);
   log(`已启动后台监督进程（PID ${child.pid ?? "unknown"}），等待健康检查。`);
 
-  const deadline = Date.now() + 60_000;
+  // 冷启动实测已漂移到 ~100s（runs/事件数据增长 + Pi 运行时初始化）；
+  // 60s 历史窗口必然超时，导致监督器把"还在启动"误判为失败并反复重启。
+  const deadline = Date.now() + 180_000;
   while (Date.now() < deadline) {
     const health = await getHealth();
     if (health && health.statusCode >= 200 && health.statusCode < 300 && isHealthyPayload(health.payload, version)) {

@@ -14,6 +14,8 @@ import {
   updateMcpServer,
   updatePiExtension,
 } from "../api.js";
+import { askConfirm } from "./Feedback.jsx";
+import { flag } from "../运行开关.js";
 
 const PI_CANDIDATES_KEY = "oaw_pi_package_candidates_v1";
 
@@ -103,7 +105,7 @@ export default function IntegrationsCenter({ kind = "mcp", open = false, onClose
 
   const testMcp = async (server) => {
     const action = server.transport === "stdio" ? "将启动这个本地 MCP 命令，并保持连接供会话调用。继续吗？" : `将连接到该 MCP 地址：\n${server.endpoint}\n继续吗？`;
-    if (!window.confirm(action)) return;
+    if (!(await askConfirm(action))) return;
     setBusyId(server.id); setError(""); setNotice("");
     try {
       const result = await testMcpServer(server.id);
@@ -115,7 +117,7 @@ export default function IntegrationsCenter({ kind = "mcp", open = false, onClose
   };
 
   const toggleMcp = async (server) => {
-    if (!server.enabled && !window.confirm("启用后，新建的 Agent 会话可以调用此 MCP 服务；未标记只读的工具会按现有权限策略请求审批。继续吗？")) return;
+    if (!server.enabled && !(await askConfirm("启用后，新建的 Agent 会话可以调用此 MCP 服务；未标记只读的工具会按现有权限策略请求审批。继续吗？"))) return;
     setBusyId(server.id); setError(""); setNotice("");
     try {
       await updateMcpServer(server.id, { enabled: !server.enabled });
@@ -126,7 +128,7 @@ export default function IntegrationsCenter({ kind = "mcp", open = false, onClose
   };
 
   const removeMcp = async (server) => {
-    if (!window.confirm(`删除 MCP 配置「${server.name}」？不会删除它的程序或远端数据。`)) return;
+    if (!(await askConfirm(`删除 MCP 配置「${server.name}」？不会删除它的程序或远端数据。`))) return;
     setBusyId(server.id); setError("");
     try { await deleteMcpServer(server.id); await refresh(); setNotice("MCP 配置已删除。"); }
     catch (err) { setError(err.message || "删除失败"); }
@@ -185,7 +187,7 @@ export default function IntegrationsCenter({ kind = "mcp", open = false, onClose
   };
 
   const togglePi = async (extension) => {
-    if (!extension.enabled && !window.confirm(`启用「${extension.name}」会在新建会话时执行该路径中的 Pi 扩展代码。扩展拥有服务进程权限，只启用你信任的代码。\n\n${extension.path}\n\n确认启用？`)) return;
+    if (!extension.enabled && !(await askConfirm(`启用「${extension.name}」会在新建会话时执行该路径中的 Pi 扩展代码。扩展拥有服务进程权限，只启用你信任的代码。\n\n${extension.path}\n\n确认启用？`))) return;
     setBusyId(extension.id); setError(""); setNotice("");
     try {
       await updatePiExtension(extension.id, { enabled: !extension.enabled });
@@ -206,7 +208,7 @@ export default function IntegrationsCenter({ kind = "mcp", open = false, onClose
   };
 
   const removePi = async (extension) => {
-    if (!window.confirm(`移除扩展登记「${extension.name}」？不会删除扩展文件。`)) return;
+    if (!(await askConfirm(`移除扩展登记「${extension.name}」？不会删除扩展文件。`))) return;
     setBusyId(extension.id); setError("");
     try { await deletePiExtension(extension.id); await refresh(); setNotice("扩展登记已移除，文件保留在原位置。"); }
     catch (err) { setError(err.message || "删除失败"); }
@@ -216,7 +218,7 @@ export default function IntegrationsCenter({ kind = "mcp", open = false, onClose
   return (
     <div className="module-view integration-center">
       <div className="module-head">
-        <button className="module-back" onClick={onClose} title="返回对话"><Icon name="back" size={15} /></button>
+        <button className="module-back" onClick={onClose} title="返回对话" aria-label="返回对话"><Icon name="back" size={15} /></button>
         <div className="module-brand-heading"><span className="integration-mark"><Icon name={kind === "mcp" ? "plug" : "package"} size={19} /></span><span><h2>{kind === "mcp" ? "MCP" : "Pi 插件"}</h2><p>{kind === "mcp" ? "连接外部工具与服务，按权限策略接入对话" : "发现、选择并管理 Pi 扩展能力"}</p></span></div>
       </div>
       <div className="module-body integration-body">
@@ -252,7 +254,23 @@ export default function IntegrationsCenter({ kind = "mcp", open = false, onClose
               )}
             </section>
             <section className="integration-panel integration-form-panel">
-              <div className="integration-section-head"><span><h3>添加 MCP 服务</h3><p>stdio 适合本机 MCP 程序；HTTP 适合远程 Streamable HTTP 端点。</p></span></div>
+              <div className="integration-section-head">
+                <span><h3>添加 MCP 服务</h3><p>stdio 适合本机 MCP 程序；HTTP 适合远程 Streamable HTTP 端点。</p></span>
+                {/* GIS G3：高德 MCP 桥预置模板（flag OAW_AMAP_MCP_BRIDGE，默认关） */}
+                {kind === "mcp" && flag("amapMcpBridge") && (
+                  <button
+                    type="button"
+                    className="btn-xs"
+                    onClick={() => {
+                      setTransport("http");
+                      setMcpForm((p) => ({ ...p, name: "高德地图 MCP", endpoint: "https://mcp.amap.com/mcp", headers: "" }));
+                    }}
+                    title="自动填入高德 MCP Server 地址，补全 ?key= 即可"
+                  >
+                    <Icon name="locate" size={12} /> 高德地图预置
+                  </button>
+                )}
+              </div>
               <form className="integration-form" onSubmit={saveMcp}>
                 <label>服务名称<input value={mcpForm.name} onChange={(e) => setMcpForm({ ...mcpForm, name: e.target.value })} placeholder="例如：本地文件检索" required /></label>
                 <div className="integration-field-row"><label>传输方式<select value={transport} onChange={(e) => setTransport(e.target.value)}><option value="stdio">本地 stdio</option><option value="http">Streamable HTTP</option></select></label></div>
@@ -263,10 +281,15 @@ export default function IntegrationsCenter({ kind = "mcp", open = false, onClose
                   <label>环境变量 JSON（可选）<small>敏感值仅保存在本机，不会回显；格式如 {`{"API_KEY":"…"}`}</small><textarea rows={4} value={mcpForm.env} onChange={(e) => setMcpForm({ ...mcpForm, env: e.target.value })} placeholder={'{"API_KEY":"在此粘贴密钥"}'} /></label>
                 </> : <>
                   <label>服务地址<input type="url" value={mcpForm.endpoint} onChange={(e) => setMcpForm({ ...mcpForm, endpoint: e.target.value })} placeholder="https://example.com/mcp" required /></label>
+                  {flag("amapMcpBridge") && (
+                    <small className="integration-field-hint">
+                      高德地图：地址补全为 https://mcp.amap.com/mcp?key=你的Key（高德开放平台 → 应用管理 → Web 服务 Key），测试通过后即可让 Agent 使用 geocode / POI / 路线规划。
+                    </small>
+                  )}
                   <label>请求头 JSON（可选）<small>适用于 API Key/Bearer Token；保存后不会回显。</small><textarea rows={4} value={mcpForm.headers} onChange={(e) => setMcpForm({ ...mcpForm, headers: e.target.value })} placeholder={'{"Authorization":"Bearer …"}'} /></label>
                 </>}
-                <div className="integration-security-note"><Icon name="shield" size={13} /> 添加后默认停用。测试会启动本地程序或连接远端服务。MCP 工具的“只读”注解来自服务端，仅作提示；每次调用都按规聚的审批策略处理。</div>
-                <button type="submit" className="btn primary" disabled={saving}><Icon name={saving ? "loading" : "plus"} size={13} className={saving ? "icon-loading" : ""} /> 保存 MCP 配置</button>
+                <div className="integration-security-note"><Icon name="shield" size={14} /> 添加后默认停用。测试会启动本地程序或连接远端服务。MCP 工具的“只读”注解来自服务端，仅作提示；每次调用都按规聚的审批策略处理。</div>
+                <button type="submit" className="btn primary" disabled={saving}><Icon name={saving ? "loading" : "plus"} size={14} className={saving ? "icon-loading" : ""} /> 保存 MCP 配置</button>
               </form>
             </section>
           </div>
@@ -283,7 +306,7 @@ export default function IntegrationsCenter({ kind = "mcp", open = false, onClose
             <div className="integration-section-head"><span><h3>Pi 包目录 · Subagent</h3><p>实时搜索 npm 中带有 pi-package 标签的 Pi 包；先加入候选，再审阅来源。</p></span><span className="pi-catalog-count">{catalog.total ? `${catalog.total.toLocaleString()} 个结果` : "官方目录"}</span></div>
             <form className="pi-catalog-search" onSubmit={(event) => { event.preventDefault(); loadCatalog(catalogQuery, 0); }}>
               <input aria-label="搜索 Pi 包目录" value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} placeholder="搜索 subagent、MCP、browser…" />
-              <button type="submit" className="btn primary" disabled={catalogLoading}><Icon name={catalogLoading ? "loading" : "search"} size={13} className={catalogLoading ? "icon-loading" : ""} /> 搜索目录</button>
+              <button type="submit" className="btn primary" disabled={catalogLoading}><Icon name={catalogLoading ? "loading" : "search"} size={14} className={catalogLoading ? "icon-loading" : ""} /> 搜索目录</button>
             </form>
             {catalogError && <div className="integration-alert error" role="alert">{catalogError}<button className="btn-xs" type="button" onClick={() => loadCatalog(catalogQuery, 0)}>重试</button></div>}
             {catalogLoading && catalog.items.length === 0 ? <div className="integration-empty">正在读取官方目录…</div> : catalog.items.length === 0 ? <div className="integration-empty">没有找到匹配的 Pi 包。</div> : (
@@ -315,7 +338,7 @@ export default function IntegrationsCenter({ kind = "mcp", open = false, onClose
               </div>
             )}
             {catalog.items.length < catalog.total && catalog.items.length > 0 && <button className="btn-xs pi-catalog-more" type="button" disabled={catalogLoading} onClick={() => loadCatalog(catalogQuery, catalog.page + 1, true)}>{catalogLoading ? "读取中…" : "加载更多"}</button>}
-            <div className="integration-security-note warning"><Icon name="shield" size={13} /> 加入候选只保存在此浏览器，不会安装或运行代码。本机已安装的包登记后仍为停用状态；启用会再次要求确认。</div>
+            <div className="integration-security-note warning"><Icon name="shield" size={14} /> 加入候选只保存在此浏览器，不会安装或运行代码。本机已安装的包登记后仍为停用状态；启用会再次要求确认。</div>
           </section>
           {selectedPackages.length > 0 && <section className="integration-panel pi-selected-panel">
             <div className="integration-section-head"><span><h3>已选候选包（{selectedPackages.length}）</h3><p>仅记录选择，尚未接入当前 Agent。</p></span></div>
@@ -346,8 +369,8 @@ export default function IntegrationsCenter({ kind = "mcp", open = false, onClose
               <form className="integration-form" onSubmit={savePi}>
                 <label>显示名称<input value={piForm.name} onChange={(e) => setPiForm({ ...piForm, name: e.target.value })} placeholder="例如：代码审阅 subagent" /></label>
                 <label>扩展文件或目录路径<input value={piForm.path} onChange={(e) => setPiForm({ ...piForm, path: e.target.value })} placeholder="/Users/you/.pi/agent/extensions/example" required /></label>
-                <div className="integration-security-note warning"><Icon name="shield" size={13} /> Pi 扩展是可执行代码，可获得规聚服务进程的系统权限。检查路径不会运行代码；只启用你审阅并信任的扩展。</div>
-                <button type="submit" className="btn primary" disabled={saving}><Icon name={saving ? "loading" : "plus"} size={13} className={saving ? "icon-loading" : ""} /> 登记为未启用</button>
+                <div className="integration-security-note warning"><Icon name="shield" size={14} /> Pi 扩展是可执行代码，可获得规聚服务进程的系统权限。检查路径不会运行代码；只启用你审阅并信任的扩展。</div>
+                <button type="submit" className="btn primary" disabled={saving}><Icon name={saving ? "loading" : "plus"} size={14} className={saving ? "icon-loading" : ""} /> 登记为未启用</button>
               </form>
             </section>
           </div>

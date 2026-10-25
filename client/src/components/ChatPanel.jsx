@@ -10,14 +10,21 @@ import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
 import { completionLabel, formatDuration, formatTokenCount, reduceRunTrace, reduceTurnMetrics, runToolDetailText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, summarizeTurnMetrics, turnMetricsText, verificationLabel } from "../运行轨迹.js";
 import { associateRunMessages, projectLegacyRunSummary, upsertRunSummaryMessage } from "../运行展示投影.js";
-import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone } from "../事件展示.js";
+import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, toolIdentity } from "../事件展示.js";
 import { buildArtifactIndex } from "../产物类型.js";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
 import { isStaleChunkError, recoverFromStaleChunk } from "../分包恢复.js";
 import { isMotionReduced, motionScrollBehavior, useAppearance, useAppearanceSetter } from "../界面外观.js";
 import { startLatencyProbe, markLatency, patchLatencyMeta, markFirstDomText, finalizeLatencyProbe } from "../首字延迟埋点.js";
-import { acquireStream } from "../长连接预算.js";
+import { acquireStream, closeEventSourceQuietly, noteCursorGap } from "../长连接预算.js";
+import { notifyError, askConfirm } from "./Feedback.jsx";
+import { flag, flagsReady, numberFlag } from "../运行开关.js";
+import { getBrowserStreamState } from "../浏览器联动.js";
+
+// O-P3：浏览器"写操作类"工具白名单 —— 只有这些会拉起内置浏览器侧栏；
+// browser_close / browser_tabs / browser_snapshot / browser_screenshot 等查看或收尾动作不拉起。
+const BROWSER_PANEL_OPEN_TOOLS = new Set(["browser_open", "browser_click", "browser_type", "browser_press", "browser_scroll"]);
 
 // 错误边界包装器
 class ErrorBoundary extends React.Component {
@@ -66,6 +73,9 @@ const DEFAULT_CONTEXT_WINDOW = 128000;
 const PI_COMPACTION_RESERVE_TOKENS = 16384;
 const PI_COMPACTION_KEEP_RECENT_TOKENS = 20000;
 const LIVE_RUN_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested", "finishing"]);
+// 提问卡片的时间窗口兜底（服务端 ASK_TIMEOUT_MS = 5 分钟，正常由事件里的 expiresAt 给出）：
+// 缺少 expiresAt 时按同一口径计时，到期把卡片置为已超时，不再留下点得动却必然 404 的死卡片。
+const ASK_TIMEOUT_FALLBACK_MS = 5 * 60 * 1000;
 const MAX_VISIBLE_MESSAGES = 120;
 const MESSAGE_PAGE_SIZE = 80;
 const COMPOSER_COMMANDS = [
@@ -522,7 +532,7 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   // 草稿按 thread 恢复（交互 3）：模块导航会卸载本组件，重挂载时从缓存取回未发送内容。
@@ -535,6 +545,16 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       return next;
     });
   }, [threadId]);
+  // 子代理详情实时更新：把最新的子代理 block 推给外层（App 右栏详情按 id 订阅）。
+  useEffect(() => {
+    if (!onSubagentUpdate) return;
+    for (const message of messages) {
+      for (const block of (message?.blocks || [])) {
+        if (block?.type === "subagent") onSubagentUpdate(threadId, block);
+      }
+    }
+  }, [messages, threadId, onSubagentUpdate]);
+
   // 发送成功、切换/新建会话、执行斜杠命令时才清空草稿。
   const clearInput = useCallback(() => {
     writeDraft(threadId, "");
@@ -768,6 +788,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const streamGenerationRef = useRef(0);
   const eventHandlerRef = useRef(null);
   const reconciledRunIdsRef = useRef(new Set());
+  // OAW_REPLAY_RECOVER：冷启动 Run 探测与回放缓冲（恢复差异报告 F1/F4，默认关）
+  const replayProbeRef = useRef({ pending: false, thread: null });
+  const replayBufferRef = useRef([]);
+  const replayProbedThreadsRef = useRef(new Set());
+  const [replayFlagsTick, setReplayFlagsTick] = useState(0); // 开关快照就绪后重跑一次探测
   // ChatPanel 本身持续挂载时，按 thread 保存界面状态，切换子对话不会把原对话的流式内容丢掉。
   const threadCacheRef = useRef(new Map());
   const previousThreadRef = useRef(threadId);
@@ -1035,7 +1060,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         stopRequestedRef.current = false;
         roundStoppedRef.current = false;
         setStopping(false);
-      assistantIdRef.current = isLiveRun ? latestAssistant?.id || null : null;
+      // OAW_REPLAY_RECOVER（F4）：恢复水合场景不锚定历史最后一条 assistant 气泡——
+      // 运行中那条消息尚未落盘，锚定会把回放 token 拼进上一轮气泡；改为由
+      // ensureAssistant 新建气泡承载恢复的流式内容（flag 关 = 基线锚定）。
+      assistantIdRef.current = isLiveRun ? (flag("replayRecover") ? null : (latestAssistant?.id || null)) : null;
       lastAssistantIdRef.current = latestAssistant?.id || null;
       streamBufRef.current = null;
       streamingMsgIdRef.current = assistantIdRef.current;
@@ -1088,7 +1116,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       stoppingRef.current = false;
       stopRequestedRef.current = false;
       roundStoppedRef.current = false;
-      assistantIdRef.current = hydratedIsLive ? hydratedAssistant?.id || null : null;
+      // OAW_REPLAY_RECOVER（F4）：同上，恢复水合时不锚定历史气泡（flag 关 = 基线锚定）。
+      assistantIdRef.current = hydratedIsLive ? (flag("replayRecover") ? null : (hydratedAssistant?.id || null)) : null;
     lastAssistantIdRef.current = hydratingHistory ? hydratedAssistant?.id || null : null;
     streamBufRef.current = null;
     streamingMsgIdRef.current = assistantIdRef.current;
@@ -1493,7 +1522,20 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     let reconnectTimer = null;
     let stopped = false;
     let retryDelay = 500;
+    let retryAttempt = 0;
     let connectionSerial = 0;
+    // Qoder P0-1（开关 qoderSseBackoff，默认关）：
+    // 基线为固定倍增 500ms → 5s 封顶且无抖动，服务端重启时 N 个标签页会同相位重连形成风暴。
+    // 打开后改为指数退避 800ms → 30s 封顶 + 0.5~1.0× 抖动：失败次数越多退避越久，且各标签页错峰。
+    // 关闭时走下方原基线分支（逐字保持历史行为），因此开关关闭 = 与优化前完全一致。
+    const computeRetryDelay = () => {
+      if (!flag("qoderSseBackoff")) return Math.min(5000, retryDelay * 2);
+      const BASE = 800;
+      const MAX = 30000;
+      const exponential = Math.min(MAX, BASE * (2 ** retryAttempt));
+      const jitter = 0.5 + Math.random() * 0.5;
+      return Math.max(1, Math.round(exponential * jitter));
+    };
     let watchdogTimer = null;
     // 对话流是核心长连接（必需）：申请槽位时若超预算会顶掉可放弃的面板流，
     // 保证"切工作区/切会话"这类控制面请求永远有槽位可用。
@@ -1521,7 +1563,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       if (!isCurrentGeneration() || !source || source !== es) return;
       setConnected(false);
       markReady(false);
-      source.close();
+      closeEventSourceQuietly(source, { client: clientId, thread: threadId || "" });
       es = null;
       if (watchdogTimer) {
         clearInterval(watchdogTimer);
@@ -1532,7 +1574,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         reconnectTimer = null;
         connect();
       }, retryDelay);
-      retryDelay = Math.min(5000, retryDelay * 2);
+      retryDelay = computeRetryDelay();
+      retryAttempt += 1;
     };
     
     const connect = () => {
@@ -1549,7 +1592,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       const streamQuery = knownStreamId ? `&stream=${encodeURIComponent(knownStreamId)}` : "";
       const nextSource = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId || "")}${workspaceQuery}${cursorQuery}${streamQuery}`);
       es = nextSource;
-      slot?.attach(() => nextSource.close());
+      slot?.attach(() => closeEventSourceQuietly(nextSource, { client: clientId, thread: threadId || "" }));
       
       nextSource.onopen = () => {
         // 仅表示 HTTP/SSE 通道打开；Agent 是否已就绪由服务端 connected 握手确认。
@@ -1573,6 +1616,15 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         if (!isCurrentGeneration() || serial !== connectionSerial || es !== nextSource) return;
         lastSignalAt = Date.now();
         const eventId = Number(e.lastEventId || 0);
+        // P2-1（开关 qoderSeqGapAlert，默认关）：发现游标跳变即记一条诊断。
+        // 缺号一般源于服务端增量淘汰或回放窗口截断（截断另有 truncated / stream_resync 兜底），
+        // 因此这里只做可观测记录，不改变重连与消费行为；仅首次缺号打一条 console 警告，避免刷屏。
+        if (flag("qoderSeqGapAlert") && eventId > 0 && eventCursorRef.current > 0 && eventId > eventCursorRef.current + 1) {
+          const gapCount = noteCursorGap(eventCursorRef.current, eventId);
+          if (gapCount === 1) {
+            console.warn(`[oaw] SSE 事件缺号：${eventCursorRef.current} → ${eventId}（缺 ${eventId - eventCursorRef.current - 1} 帧），已记入长连接诊断`);
+          }
+        }
         try { 
           const payload = JSON.parse(e.data);
           if (payload?.type === "connected") {
@@ -1594,6 +1646,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
             // 只有应用层握手成功后才清除退避；HTTP onopen 过早重置会让
             // Runtime 初始化失败时进入 500ms 高频重连循环。
             retryDelay = 500;
+            retryAttempt = 0;
             markReady(true);
           }
           // 事件处理成功后才提交应用层游标：单条事件处理器异常时游标不前进，
@@ -1613,10 +1666,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           scheduleReconnect(nextSource);
         }
       };
+      // P2-2：静默阈值由服务端心跳间隔派生（默认心跳 5s → 阈值 20s，与基线完全一致）；
+      // 若把心跳调大（低功耗 / 远程 SSH 场景），阈值随之放大，避免把正常的慢心跳误判成断线。
+      const silenceLimit = Math.max(20000, numberFlag("heartbeatChatMs", 5000) * 2.5);
       watchdogTimer = setInterval(() => {
         // 某些代理/浏览器会保持 TCP 为 open，却不再触发 EventSource.onerror；
-        // 服务端 heartbeat 正常时不会触发这里，静默超过 20 秒才强制重连。
-        if (isCurrentGeneration() && Date.now() - lastSignalAt > 20000) scheduleReconnect(nextSource);
+        // 服务端 heartbeat 正常时不会触发这里，超过静默阈值才强制重连。
+        if (isCurrentGeneration() && Date.now() - lastSignalAt > silenceLimit) scheduleReconnect(nextSource);
       }, 5000);
     };
     
@@ -1631,7 +1687,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       stopped = true;
       connectionSerial += 1;
       window.removeEventListener("oaw:force-reconnect", onForceReconnect);
-      if (es) es.close();
+      if (es) closeEventSourceQuietly(es, { client: clientId, thread: threadId || "" });
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (watchdogTimer) clearInterval(watchdogTimer);
       slot?.release();
@@ -1675,12 +1731,51 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   // 这里在拿到 runId 后立即拉取，并在执行期间短轮询，避免 Todo 只存在于任务中心。
   // 同时覆盖“后端已完成但 SSE 终结事件丢失”的情况：用当前 thread 找回 Run，
   // 再注入一个幂等的 run_finished，让输入框和状态栏恢复可用。
+  // OAW_REPLAY_RECOVER：开关快照异步到达（初始全关），就绪后重跑一次冷启动探测。
+  useEffect(() => {
+    let active = true;
+    flagsReady.then(() => { if (active) setReplayFlagsTick((t) => t + 1); });
+    return () => { active = false; };
+  }, []);
   useEffect(() => {
     const runId = runState.runId;
     const activeStatuses = ["running", "queued", "waiting_user", "recovering", "cancel_requested", "finishing"];
     const shouldReconcile = busy || activeStatuses.includes(runState.status);
     if (!runId && !shouldReconcile) {
-      setTodoItems([]);
+      // OAW_REPLAY_RECOVER（F1）：冷启动（无历史水合、本地 idle）时探测本 thread 是否
+      // 仍有执行中的 Run；命中则恢复运行上下文并冲刷探测期间缓冲的回放事件，使刷新后
+      // 的对话能重建“运行中”的实时内容。探测每 thread 仅一次，flag 关 = 基线行为。
+      if (flag("replayRecover") && threadId && !replayProbedThreadsRef.current.has(threadId)) {
+        replayProbedThreadsRef.current.add(threadId);
+        replayProbeRef.current = { pending: true, thread: threadId };
+        replayBufferRef.current = [];
+        const probeThread = threadId;
+        void (async () => {
+          try {
+            const result = await listRuns(probeThread, 12, { cwd: workspace });
+            if (replayProbeRef.current.thread !== probeThread) return; // 已切走：新探测接管
+            const live = (result?.runs || [])
+              .filter((item) => item?.clientId === clientId && activeStatuses.includes(item.status))
+              .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))[0] || null;
+            if (live) {
+              // F4：恢复的流式内容进新气泡，不续写历史最后一条 assistant（防跨轮拼接）
+              assistantIdRef.current = null;
+              runInProgressRef.current = true;
+              activeRunIdRef.current = live.id;
+              setBusy(true);
+              setRunState((s) => ({ ...s, status: live.status, runId: live.id, task: live.task || s.task, artifacts: live.artifacts || s.artifacts, references: live.references || s.references, mode: normalizeUiMode(live.task?.mode) }));
+              const nextTodos = live.todoVersion === 1 && Array.isArray(live.todos) ? live.todos : (Array.isArray(live.steps) ? live.steps : []);
+              if (nextTodos.length) setTodoItems(nextTodos);
+            }
+          } catch {}
+          replayProbeRef.current = { pending: false, thread: null };
+          const buffered = replayBufferRef.current;
+          replayBufferRef.current = [];
+          for (const ev of buffered) eventHandlerRef.current?.(ev);
+        })();
+      } else {
+        setTodoItems([]);
+      }
       return undefined;
     }
     let cancelled = false;
@@ -1746,7 +1841,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       window.removeEventListener("oaw:force-reconcile", onForceReconcile);
       if (timer) window.clearInterval(timer);
     };
-  }, [clientId, threadId, workspace, runState.runId, runState.status, busy]);
+  }, [clientId, threadId, workspace, runState.runId, runState.status, busy, replayFlagsTick]);
 
   const acceptSystemEvent = useCallback((key) => {
     const value = String(key || "");
@@ -1764,6 +1859,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   function handleEvent(ev) {
     const envelope = ev?.event || ev || {};
     const { type, data = {} } = envelope;
+    // OAW_REPLAY_RECOVER：冷启动探测期间缓冲通道回放事件，探测完成后统一冲刷落点，
+    // 避免探测竞态窗口内到达的 token/tool 事件因 busy/idle 门闩被静默丢弃。
+    if (flag("replayRecover") && replayProbeRef.current.pending && replayProbeRef.current.thread === threadId && type !== "connected") {
+      if (replayBufferRef.current.length < 6000) replayBufferRef.current.push(ev);
+      return;
+    }
     const eventRunId = data?.runId || null;
     // 重连会回放历史事件。已知当前 Run 时，旧 Run 的事件不能污染当前对话。
     if (eventRunId && activeRunIdRef.current && eventRunId !== activeRunIdRef.current) return;
@@ -1796,7 +1897,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         lastAssistantIdRef.current = assistantIdRef.current;
         return assistantIdRef.current;
       }
-      if (!force && !busy && !LIVE_RUN_STATUSES.has(runState.status)) return null;
+      // OAW_REPLAY_RECOVER：探测恢复的运行上下文经 ref 同步生效（state 可能尚未提交），
+      // 故 runInProgressRef 也放行；flag 关时与基线判定完全一致。
+      const replayRecoverGate = flag("replayRecover") && runInProgressRef.current;
+      if (!force && !busy && !LIVE_RUN_STATUSES.has(runState.status) && !replayRecoverGate) return null;
       const recoveredId = newId();
       assistantIdRef.current = recoveredId;
       lastAssistantIdRef.current = recoveredId;
@@ -1903,59 +2007,200 @@ case "runtime_connecting":
         if (aid) scheduleFlush("thinking", data);
         break;
       case "subagent_start":
+      case "subagent_planned":
+      case "subagent_started":
         flushToolOutput();
         setAgentPhase("子 Agent 正在处理只读子任务");
         if (!aid) aid = ensureAssistant();
         if (aid) {
           if (streamBufRef.current) flushNow(aid);
-          const childId = data.childId || data.toolCallId || newId();
+          const childId = data.childId || data.parentToolCallId || newId();
+          const planned = type === "subagent_planned";
           patch(aid, (m) => m.blocks?.some((block) => block.type === "subagent" && block.id === childId)
             ? m
-            : ({ ...m, blocks: [...(m.blocks || []), { type: "subagent", id: childId, role: data.role || "scout", task: data.task || "", status: "running", activity: "正在准备隔离的只读会话", preview: "", summary: "", error: "" }] }));
+            : ({ ...m, blocks: [...(m.blocks || []), { type: "subagent", id: childId, parentToolCallId: data.parentToolCallId || null, role: data.role || "scout", task: data.task || "", status: planned ? "planned" : "running", activity: planned ? "子任务已编排，等待执行" : "正在准备隔离的只读会话", thinking: "", preview: "", summary: "", error: "", tools: [], transcript: [] }] }));
         }
         break;
       case "subagent_update":
+      case "subagent_progress":
         if (!aid) aid = ensureAssistant();
         if (aid) {
-          const childId = data.childId || data.toolCallId;
+          const childId = data.childId || data.parentToolCallId;
           patch(aid, (m) => {
             const blocks = [...(m.blocks || [])];
             let block = blocks.find((item) => item.type === "subagent" && item.id === childId);
             if (!block) {
-              block = { type: "subagent", id: childId || newId(), role: data.role || "scout", task: data.task || "", status: "running", preview: "", summary: "", error: "" };
+              block = { type: "subagent", id: childId || newId(), parentToolCallId: data.parentToolCallId || null, role: data.role || "scout", task: data.task || "", status: "running", thinking: "", preview: "", summary: "", error: "", tools: [], transcript: [] };
               blocks.push(block);
             }
-            Object.assign(block, { status: data.status || block.status, activity: data.activity || block.activity, preview: data.preview ?? block.preview });
+            Object.assign(block, {
+              status: data.status || block.status,
+              activity: data.activity || data.phase || block.activity,
+              thinking: data.thinking ?? block.thinking,
+              preview: data.preview ?? block.preview,
+              transcript: data.delta ? appendSubagentTrace(block.transcript, { kind: data.delta.kind, text: data.delta.text }) : (block.transcript || []),
+            });
             return { ...m, blocks };
           });
         }
         break;
-      case "subagent_end":
-        flushToolOutput();
+      case "subagent_tool": {
+        // 子代理内部工具调用：归到对应子代理卡片下，按子 toolCallId 去重（回放不重复）
         if (!aid) aid = ensureAssistant();
         if (aid) {
-          const childId = data.childId || data.toolCallId;
+          const childId = data.childId || data.parentToolCallId;
           patch(aid, (m) => {
             const blocks = [...(m.blocks || [])];
             let block = blocks.find((item) => item.type === "subagent" && item.id === childId);
             if (!block) {
-              block = { type: "subagent", id: childId || newId(), role: data.role || "scout", task: data.task || "", status: "running" };
+              block = { type: "subagent", id: childId || newId(), parentToolCallId: data.parentToolCallId || null, role: data.role || "scout", task: data.task || "", status: "running", thinking: "", preview: "", summary: "", error: "", tools: [], transcript: [] };
               blocks.push(block);
             }
+            const tools = [...(block.tools || [])];
+            const tid = data.toolCallId ? String(data.toolCallId) : null;
+            let tool = tid ? tools.find((item) => item.toolCallId === tid) : null;
+            if (!tool) {
+              tool = { toolCallId: tid, name: data.toolName || "read", status: "running", isError: false };
+              tools.push(tool);
+            }
+            let transcript = block.transcript || [];
+            if (data.status === "end") {
+              tool.status = "done";
+              tool.isError = data.isError === true;
+              tool.result = data.result || tool.result || "";
+              transcript = appendSubagentTrace(transcript, { kind: "tool_result", toolCallId: tid, isError: data.isError === true, result: data.result || "" });
+            } else {
+              tool.status = "running";
+              tool.args = data.args || tool.args || "";
+              transcript = appendSubagentTrace(transcript, { kind: "tool_call", toolName: data.toolName || "read", toolCallId: tid, args: data.args || "" });
+            }
+            block.tools = tools;
+            block.transcript = transcript;
+            return { ...m, blocks };
+          });
+        }
+        break;
+      }
+      case "subagent_end":
+        flushToolOutput();
+        if (!aid) aid = ensureAssistant();
+        if (aid) {
+          const childId = data.childId || data.parentToolCallId;
+          patch(aid, (m) => {
+            const blocks = [...(m.blocks || [])];
+            let block = blocks.find((item) => item.type === "subagent" && item.id === childId);
+            if (!block) {
+              block = { type: "subagent", id: childId || newId(), parentToolCallId: data.parentToolCallId || null, role: data.role || "scout", task: data.task || "", status: "running", thinking: "", tools: [], transcript: [] };
+              blocks.push(block);
+            }
+            // subagent_end 携带后端有界会话轨迹（含思考/文本/工具），回放与实时都据此重建详情
+            if (Array.isArray(data.transcript) && data.transcript.length) block.transcript = data.transcript;
             Object.assign(block, { status: data.status || "completed", activity: data.status === "completed" ? "子任务已完成" : "子任务已结束", summary: data.summary || "", error: data.error || "" });
             return { ...m, blocks };
           });
         }
         break;
+      case "subagent_result":
+        // §3.4 契约：结构化结果（output/artifacts），与 subagent_end 语义互补
+        if (!aid) aid = ensureAssistant();
+        if (aid) {
+          const childId = data.childId || data.parentToolCallId;
+          patch(aid, (m) => {
+            const blocks = [...(m.blocks || [])];
+            const block = blocks.find((item) => item.type === "subagent" && item.id === childId);
+            if (!block) return m;
+            if (data.output) block.summary = String(data.output).slice(0, 9000);
+            if (Array.isArray(data.artifacts) && data.artifacts.length) block.artifacts = data.artifacts.map((item) => String(item?.path || item || "")).filter(Boolean);
+            if (data.status) block.status = String(data.status);
+            return { ...m, blocks };
+          });
+        }
+        break;
+      case "subagent_verified":
+        // 对抗式核验结论：pass / revise / fail，附检查清单
+        if (!aid) aid = ensureAssistant();
+        if (aid) {
+          const childId = data.childId || data.parentToolCallId;
+          patch(aid, (m) => {
+            const blocks = [...(m.blocks || [])];
+            const block = blocks.find((item) => item.type === "subagent" && item.id === childId);
+            if (!block) return m;
+            block.verdict = String(data.verdict || "");
+            block.checklist = Array.isArray(data.checklist) ? data.checklist.slice(0, 40).map((item) => ({ item: String(item?.item || item || "").slice(0, 300), ok: item?.ok !== false })) : [];
+            if (data.notes) block.verifyNotes = String(data.notes).slice(0, 1200);
+            if (data.verdict === "revise") block.status = "running"; // 进入修订回环
+            return { ...m, blocks };
+          });
+        }
+        break;
+      case "subagent_closed":
+        if (!aid) aid = ensureAssistant();
+        if (aid) {
+          const childId = data.childId || data.parentToolCallId;
+          patch(aid, (m) => {
+            const blocks = [...(m.blocks || [])];
+            const block = blocks.find((item) => item.type === "subagent" && item.id === childId);
+            if (!block) return m;
+            if (data.finalStatus) block.status = String(data.finalStatus);
+            return { ...m, blocks };
+          });
+        }
+        break;
+      case "pipeline_started":
+      case "pipeline_stage_started":
+      case "pipeline_stage_finished":
+      case "pipeline_finished": {
+        // P2-A：编辑流水线阶段条（§5.2）——planner→writer→formatter→evaluator 可折叠展示
+        if (!aid) aid = ensureAssistant();
+        if (aid) {
+          if (streamBufRef.current && type === "pipeline_started") flushNow(aid);
+          patch(aid, (m) => {
+            const blocks = [...(m.blocks || [])];
+            let block = blocks.find((item) => item.type === "pipeline" && item.id === (data.pipelineId || "pipeline"));
+            if (!block) {
+              block = { type: "pipeline", id: data.pipelineId || newId(), pipelineId: data.pipelineId || null, format: data.format || null, status: "running", stages: [], deliverable: "" };
+              blocks.push(block);
+            }
+            if (type === "pipeline_started" && data.format) block.format = data.format;
+            const stageId = String(data.stage || "");
+            if (stageId && type !== "pipeline_finished") {
+              const stages = [...(block.stages || [])];
+              let stage = stages.find((item) => item.stage === stageId);
+              if (!stage) {
+                stage = { stage: stageId, label: data.label || stageId, status: "running", checks: [], issues: [] };
+                stages.push(stage);
+              }
+              if (type === "pipeline_stage_started") {
+                stage.status = "running";
+                if (data.label) stage.label = data.label;
+              } else {
+                stage.status = String(data.status || "done");
+                if (data.artifact) stage.artifact = data.artifact;
+                if (Array.isArray(data.checks)) stage.checks = data.checks.slice(0, 12);
+                if (Array.isArray(data.issues)) stage.issues = data.issues.slice(0, 8);
+              }
+              block.stages = stages;
+            }
+            if (type === "pipeline_finished") {
+              block.status = String(data.status || "completed");
+              if (data.deliverable) block.deliverable = String(data.deliverable);
+              if (Array.isArray(data.issues)) block.issues = data.issues.slice(0, 8);
+            }
+            return { ...m, blocks };
+          });
+        }
+        break;
+      }
       // 工具调用开始：推入新 tool block（按 toolCallId 去重，重放不产生重复卡片）
       case "tool_start":
         if (data.name === "run_subagent") break;
         flushToolOutput();
         setAgentPhase(`调用工具：${data.name || "处理中"}`);
-        // 浏览器类工具开始执行时通知外层展开内置浏览器侧栏。
+        // 浏览器"写操作类"工具开始执行时通知外层展开内置浏览器侧栏（O-P3 判定修正：
+        // browser_close / browser_tabs / browser_snapshot 等查看或收尾动作不再把面板拉起）。
         // 这条通知替代了原先 App 常驻的 /api/browser/stream（只用它判断"浏览器活跃"），
         // 少一条长连接就少占一个同源连接槽位。
-        if (String(data.name || "").startsWith("browser_")) onBrowserActivity?.();
+        if (BROWSER_PANEL_OPEN_TOOLS.has(String(data.name || ""))) onBrowserActivity?.();
         if (!aid) aid = ensureAssistant();
         if (aid) {
           if (streamBufRef.current) flushNow(aid);
@@ -1984,7 +2229,10 @@ case "runtime_connecting":
         }
         break;
       // 工具输出流：更新最后一个 tool block
+      // tool_output_delta 是 P0-2 单帧护栏的增量帧（服务端开关 qoderToolOutputSplit 打开时才出现）：
+      // 语义与 tool_output 完全一致（卸载 replace 标记后走「追加」分支），因此共用同一分支。
       case "tool_output":
+      case "tool_output_delta":
         if (data.name === "run_subagent") break;
         if (!aid) aid = ensureAssistant();
         if (aid) queueToolOutput(aid, data);
@@ -2044,6 +2292,10 @@ case "runtime_connecting":
                 id: askId,
                 question: data.question || "",
                 options: data.options || [],
+                // Qoder P1-4：交互归属（服务端开关打开时才带；关闭时不显示归属标签）。
+                owner: data.owner || null,
+                // 时间窗口：服务端到点即不再接受回答，前端据此把卡片置为"已超时"。
+                expiresAt: Number(Date.parse(data.expiresAt || "")) || (Date.now() + ASK_TIMEOUT_FALLBACK_MS),
                 answer: "",
               }],
             }));
@@ -2067,6 +2319,8 @@ case "runtime_connecting":
                 id: approvalId,
                 tool: data.tool || "",
                 input: data.input || "",
+                // Qoder P1-4：交互归属（服务端开关打开时才带）。
+                owner: data.owner || null,
                 decision: "",
               }],
             }));
@@ -2317,6 +2571,17 @@ case "runtime_connecting":
         if (!endedWithError && onAgentEnd) onAgentEnd();
         break;
       }
+      case "run_draining":
+        // Qoder P0-3 前端收尾态（开关 qoderDrainOnAbort，默认关）：
+        // 服务端中断后先发 run_draining，再做有界排空（默认 ≤1.5s，静默 300ms 即结束）。
+        // 这里只把状态行切成「正在收尾」，让用户看到中断确实在收尾，而不是以为界面卡住；
+        // 刻意不改 runState.status（LIVE_RUN_STATUSES / 对账逻辑的判定口径保持原样）。
+        // 开关关闭时服务端不发该事件，本分支不会触发。
+        if (flag("qoderDrainOnAbort")) {
+          agentEventAtRef.current = Date.now();
+          setAgentPhase("正在收尾（投递在途消息）");
+        }
+        break;
       case "agent_error":
         // 用户点了中断（或本轮已被标记取消）时，SDK 会以 "Request aborted" 之类收尾。
         // 这不是"生成失败"：早先这里会先打上错误徽记与「模型调用失败：Request aborted」，
@@ -2944,7 +3209,7 @@ case "runtime_connecting":
   };
 
   const handleRollbackRun = async (runId, paths) => {
-    if (!runId || !window.confirm("确认回滚本轮产物？这会恢复修改前的文件内容。")) return;
+    if (!runId || !(await askConfirm("确认回滚本轮产物？这会恢复修改前的文件内容。"))) return;
     try {
       await rollbackRun(runId, paths);
       pushSystem("已回滚本轮可恢复的文件变更。");
@@ -3032,6 +3297,15 @@ case "runtime_connecting":
     setRunState((state) => ({ ...state, status: "running" }));
   }, [patch, setAgentPhase]);
 
+  // 提问超时（服务端 5 分钟窗口已过）或回答被服务端拒绝时，把卡片标记为失效：
+  // 卡片不再提供输入，输入栏的待处理条也随之收起。
+  const markAskExpired = useCallback((messageId, blockId) => {
+    if (!messageId || !blockId) return;
+    patch(messageId, (msg) => (msg.blocks || []).some((block) => block.id === blockId && block.expired)
+      ? msg
+      : { ...msg, blocks: (msg.blocks || []).map((block) => (block.id === blockId ? { ...block, expired: true } : block)) });
+  }, [patch]);
+
   const handleMessageToggleTool = useCallback((messageId, toolId) => {
     patch(messageId, (msg) => {
       const blocks = (msg.blocks || []).map((block, index) => {
@@ -3104,15 +3378,27 @@ case "runtime_connecting":
     return null;
   }, [messages]);
   // 输入栏常驻入口：折叠过程收起时也要能直接处理待审批/待回答（计划 B01）。
+  // 已超时的提问不再进入待处理条：服务端已按假设继续，此时提交必然返回 no pending question。
   const pendingAsk = useMemo(() => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const blocks = messages[index]?.blocks;
       if (!Array.isArray(blocks)) continue;
-      const found = blocks.find((block) => block?.type === "ask" && !block.answer);
+      const found = blocks.find((block) => block?.type === "ask" && !block.answer && !block.expired);
       if (found) return { ...found, messageId: messages[index].id };
     }
     return null;
   }, [messages]);
+  // 提问时间窗口（服务端 ASK_TIMEOUT_MS）：到点把卡片标记为已超时，不再等用户去撞 404。
+  useEffect(() => {
+    if (!pendingAsk?.expiresAt) return undefined;
+    const remain = Number(pendingAsk.expiresAt) - Date.now();
+    if (remain <= 0) {
+      markAskExpired(pendingAsk.messageId, pendingAsk.id);
+      return undefined;
+    }
+    const timer = setTimeout(() => markAskExpired(pendingAsk.messageId, pendingAsk.id), remain + 50);
+    return () => clearTimeout(timer);
+  }, [pendingAsk, markAskExpired]);
   const locateApproval = useCallback(() => {
     const container = bodyRef.current;
     if (!container) return;
@@ -3203,7 +3489,7 @@ case "runtime_connecting":
               className="btn-xs chat-hist-refresh"
               onClick={(e) => { e.stopPropagation(); onRefreshSessions(); }}
               title="刷新会话"
-            ><Icon name="refresh" size={11} /></button>
+            ><Icon name="refresh" size={12} /></button>
           </div>
           {histOpen && (
             <div className="chat-hist-list">
@@ -3216,10 +3502,10 @@ case "runtime_connecting":
                   try { await onSelectSession(s); setHistOpen(false); }
                   finally { setHistoryLoading(false); }
                 }}
-                onDelete={async (id) => { try { if (onDeleteSession) await onDeleteSession(id); else await deleteSession(id); onRefreshSessions(); } catch (e) { alert("删除失败: " + e.message); } }}
+                onDelete={async (id) => { try { if (onDeleteSession) await onDeleteSession(id); else await deleteSession(id); onRefreshSessions(); } catch (e) { notifyError("删除失败: " + e.message); } }}
                 onBatchDelete={onBatchDeleteSession || (async (ids) => { const result = await deleteSessions(ids); onRefreshSessions(); return result; })}
-                onRename={async (id, label) => { try { await renameSession(id, label); onRefreshSessions(); } catch (e) { alert("重命名失败: " + e.message); } }}
-                onFork={onForkSession || (async (id) => { try { await forkSession(id); onRefreshSessions(); } catch (e) { alert("创建分支失败: " + e.message); } })}
+                onRename={async (id, label) => { try { await renameSession(id, label); onRefreshSessions(); } catch (e) { notifyError("重命名失败: " + e.message); } }}
+                onFork={onForkSession || (async (id) => { try { await forkSession(id); onRefreshSessions(); } catch (e) { notifyError("创建分支失败: " + e.message); } })}
                 onPin={onPinSession}
                 onFreeze={onFreezeSession}
               />
@@ -3229,7 +3515,7 @@ case "runtime_connecting":
         <div className="chat-head">
           <span className="chat-title"><Logo size={16} /> {panelTitle}</span>
           <span className={`chat-mode-badge mode-${editMode}`} title={currentMode.title}>
-            <Icon name={currentMode.icon} size={11} /> {currentMode.label}
+            <Icon name={currentMode.icon} size={12} /> {currentMode.label}
           </span>
           {onPromoteToAgent && lastPrompt && editMode === "chat" && (
             <button
@@ -3249,7 +3535,7 @@ case "runtime_connecting":
             数据来自既有 props（mapProject / mapContext），不新增状态。 */}
         {mapProject && (
           <div className="chat-map-status" title="Agent 会读到当前地图项目与视口范围">
-            <Icon name="map" size={11} />
+            <Icon name="map" size={12} />
             <span className="cms-project">{mapProject}</span>
             {mapContext?.center && (
               <>
@@ -3266,7 +3552,7 @@ case "runtime_connecting":
               disabled={!mapContext?.center}
               title={mapContext?.center ? "将当前地图视图加入下一轮上下文" : "地图就绪后可固定当前视图"}
             >
-              <Icon name="pin" size={10} /> 固定视图
+              <Icon name="pin" size={12} /> 固定视图
             </button>
           </div>
         )}
@@ -3275,7 +3561,7 @@ case "runtime_connecting":
         {mapProject && lastMapVisual && (
           <div className="chat-map-visual" role="status">
             <div className="cmv-row">
-              <Icon name="star" size={11} />
+              <Icon name="star" size={12} />
               <span className="cmv-text">
                 已在地图上显示「{lastMapVisual.title}」<em>（临时，未保存）</em>
               </span>
@@ -3293,7 +3579,7 @@ case "runtime_connecting":
                   send(`把刚才的地图分析「${lastMapVisual.title}」保存为正式图层。`);
                 }}
               >
-                <Icon name="download" size={10} /> 保存为图层
+                <Icon name="download" size={12} /> 保存为图层
               </button>
             </div>
             {mapVisualHint && <div className="cmv-hint" role="alert">{mapVisualHint}</div>}
@@ -3429,14 +3715,14 @@ case "runtime_connecting":
                     <span>模型切换为 <b>{modelDisplayName(roundModel)}</b></span>
                   </div>
                 )}
-                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onAskAnswered={handleMessageAskAnswered} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} runSummary={runSummary} executionFlow={executionFlow} />
+                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onAskExpired={markAskExpired} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} runSummary={runSummary} executionFlow={executionFlow} />
               </React.Fragment>
             );
            }); })()}
           </div>
           {showScrollToBottom && (
             <button type="button" className="chat-scroll-latest" onClick={scrollToLatest} title="回到底部" aria-label="回到底部">
-              <Icon name="chevronDown" size={13} />
+              <Icon name="chevronDown" size={14} />
               <span>回到底部</span>
             </button>
           )}
@@ -3461,10 +3747,10 @@ case "runtime_connecting":
           <div className="att-preview-row">
             {attachments.map((att, i) => (
               <div className="att-chip" key={i} title={att.name}>
-                <Icon name="file" size={13} />
+                <Icon name="file" size={14} />
                 <span className="att-name">{att.name}</span>
                 <button className="att-remove" onClick={() => setAttachments((at) => at.filter((_, j) => j !== i))}>
-                  <Icon name="x" size={10} />
+                  <Icon name="x" size={12} />
                 </button>
               </div>
             ))}
@@ -3509,14 +3795,14 @@ case "runtime_connecting":
             <span className="chat-target-label">本轮目标</span>
             {workspace ? (
               <span className="chat-target-chip scope" title={`会话工作区（跨轮生效，在左侧会话栏切换）：${workspace}`}>
-                <Icon name="folder" size={11} /> 工作区 {pathBaseName(workspace)}
+                <Icon name="folder" size={12} /> 工作区 {pathBaseName(workspace)}
               </span>
             ) : (
               <span className="chat-target-chip muted" title="尚未选择工作区，Agent 只能处理引用/上传的材料">未选择工作区</span>
             )}
             {targetContextFile && (
               <span className="chat-target-chip file" title={`本轮会带上当前打开文件：${targetContextFile}`}>
-                <Icon name="file" size={11} /> {pathBaseName(targetContextFile)}
+                <Icon name="file" size={12} /> {pathBaseName(targetContextFile)}
                 <button
                   type="button"
                   onClick={() => setContextFileDismissed(true)}
@@ -3527,7 +3813,7 @@ case "runtime_connecting":
             )}
             {targetReferenceCount > 0 && (
               <span className="chat-target-chip ref" title="引用只作为参考上下文，不等于授权写入；写入仍受工作区与审批控制">
-                <Icon name="link" size={11} /> 参考文件 {targetReferenceCount}
+                <Icon name="link" size={12} /> 参考文件 {targetReferenceCount}
               </span>
             )}
           </div>
@@ -3544,6 +3830,7 @@ case "runtime_connecting":
             clientId={clientId}
             threadId={threadId}
             onAnswered={(blockId, answer) => handleMessageAskAnswered(pendingAsk?.messageId, blockId, answer)}
+            onExpired={(blockId) => markAskExpired(pendingAsk?.messageId, blockId)}
           />
           <div className="chat-input-row">
             {composerMenu && composerItems.length > 0 && (
@@ -3606,7 +3893,7 @@ case "runtime_connecting":
               {busy ? (
                 <>
                   {hasDraft && <button className="btn primary pending-send-btn" onClick={() => send()} title={busyInputMode === "steer" ? "打断当前回合立即执行（Enter）" : busyInputMode === "queue" ? "排队执行（Enter）" : "注入上下文（Enter）"}>
-                    <Icon name={busyInputMode === "steer" ? "send" : busyInputMode === "queue" ? "list" : "layers"} size={13} />
+                    <Icon name={busyInputMode === "steer" ? "send" : busyInputMode === "queue" ? "list" : "layers"} size={14} />
                     <span>{busyInputMode === "steer" ? "立即" : busyInputMode === "queue" ? "排队" : "注入"}</span>
                   </button>}
                   <button className="btn danger stop-btn" onClick={stop} disabled={stopping} title={stopping ? "正在中断当前回复" : "中断当前回复"} aria-label={stopping ? "正在中断当前回复" : "中断当前回复"}>
@@ -3657,7 +3944,7 @@ case "runtime_connecting":
                     <strong>{modelDisplayName(selectedModelInfo)}</strong>
                     <small>{selectedEffort.shortLabel}</small>
                   </span>
-                  <Icon name="chevronDown" size={11} />
+                  <Icon name="chevronDown" size={12} />
                 </button>
                 {modelOpen && createPortal(
                   <div
@@ -3680,7 +3967,7 @@ case "runtime_connecting":
                     />
                     <div className="ct-pop-list model-control-list">
                       <button type="button" className="ct-pop-refresh" onClick={async (e) => { e.stopPropagation(); setModelMsg("扫描中…"); try { const d = await fetch("/api/models/refresh", { method: "POST" }).then((x) => x.json()); if (d.ok) { setModels(d.models || []); if (d.counts) setModelCounts(d.counts); setModelMsg(`可用 ${d.counts?.available ?? d.count ?? 0} / 配置 ${d.counts?.configured ?? "?"}`); } else setModelMsg("扫描失败: " + (d.error || "")); } catch (err) { setModelMsg("扫描失败: " + err.message); } setTimeout(() => setModelMsg(""), 2500); }} title="重新扫描 Pi 模型目录与可用模型">
-                        <Icon name="refresh" size={11} /> 重新扫描模型 <small>可用 {modelCounts.available || "—"}</small>
+                        <Icon name="refresh" size={12} /> 重新扫描模型 <small>可用 {modelCounts.available || "—"}</small>
                       </button>
                       {modelSections.map((section) => (
                         <div className="model-pinned-section" key={section.key}>
@@ -3706,7 +3993,7 @@ case "runtime_connecting":
                             aria-expanded={allModelsOpen}
                             title="展开全部模型列表（按供应商分组）"
                           >
-                            <Icon name={allModelsOpen ? "chevronDown" : "chevronRight"} size={11} /> 全部模型（{models.length}）
+                            <Icon name={allModelsOpen ? "chevronDown" : "chevronRight"} size={12} /> 全部模型（{models.length}）
                             <small>可用 {modelCounts.available || "—"}</small>
                           </button>
                           {allModelsOpen && (
@@ -3756,7 +4043,7 @@ case "runtime_connecting":
             <span className="chat-toolbar-spacer" />
             <div className="chat-toolbar-group toolbar-session-group">
               <button className="ct-btn" onClick={handleNewSession} title="新建会话">
-                <Icon name="plus" size={14} />
+                <Icon name="chatPlus" size={14} />
               </button>
             </div>
             {modelMsg && <span className={`model-msg${pendingModel ? " pending" : ""}`} title={pendingModel ? `已排队：本轮结束后切换为 ${pendingModel}` : undefined}>{modelMsg}</span>}
@@ -4045,11 +4332,11 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
         </div>
         </details>
         )}
-        {actionNeeded && <div className={`run-result-action ${actionNeeded.kind}`}><Icon name="arrowRight" size={11} /> {actionNeeded.text}</div>}
+        {actionNeeded && <div className={`run-result-action ${actionNeeded.kind}`}><Icon name="arrowRight" size={12} /> {actionNeeded.text}</div>}
         {/* 被中断的轮次：明确写出终态与可继续的方式，不靠"内容戛然而止"让用户猜 */}
         {interrupted && !actionNeeded && (
           <div className="run-result-action cancelled" role="status">
-            <Icon name="stop" size={11} /> 本轮已中断，已保留生成到一半的内容；可以重新发送、补充要求，或直接继续提问。
+            <Icon name="stop" size={12} /> 本轮已中断，已保留生成到一半的内容；可以重新发送、补充要求，或直接继续提问。
           </div>
         )}
         {/* 本轮用时与 token：明确到每一轮（回合）——总量常驻可见，逐轮明细一键展开 */}
@@ -4096,17 +4383,17 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
             <div className="result-tabs" role="tablist" aria-label="本轮结果视图">
               {products.length > 0 && (
                 <button type="button" role="tab" aria-selected={resultTab === "products"} className={`result-tab ${resultTab === "products" ? "active" : ""}`} onClick={() => setResultTab("products")}>
-                  <Icon name="folder" size={11} /> 本轮产物 <span className="result-tab-count">{attributedProducts.length}</span>
+                  <Icon name="folder" size={12} /> 本轮产物 <span className="result-tab-count">{attributedProducts.length}</span>
                 </button>
               )}
               {fileChanges.length > 0 && (
                 <button type="button" role="tab" aria-selected={resultTab === "changes"} className={`result-tab ${resultTab === "changes" ? "active" : ""}`} onClick={() => setResultTab("changes")}>
-                  <Icon name="edit" size={11} /> 文件改动 <span className="result-tab-count">{fileChanges.length}</span>
+                  <Icon name="edit" size={12} /> 文件改动 <span className="result-tab-count">{fileChanges.length}</span>
                 </button>
               )}
               {reviewSources.length > 0 && (
                 <button type="button" role="tab" aria-selected={resultTab === "sources"} className={`result-tab ${resultTab === "sources" ? "active" : ""}`} onClick={() => setResultTab("sources")}>
-                  <Icon name="shield" size={11} /> 依据 <span className="result-tab-count">{reviewSources.length}</span>
+                  <Icon name="shield" size={12} /> 依据 <span className="result-tab-count">{reviewSources.length}</span>
                 </button>
               )}
             </div>
@@ -4114,7 +4401,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
               <div className="result-tab-panel" role="tabpanel" aria-label="本轮产物">
                 <div className="product-cards-head">
                   <span>
-                    <Icon name="folder" size={11} /> 交付产物 {deliverables.length} · 已确认 {confirmedProducts.length}
+                    <Icon name="folder" size={12} /> 交付产物 {deliverables.length} · 已确认 {confirmedProducts.length}
                     {attributedProducts.length > confirmedProducts.length ? ` · 待确认 ${attributedProducts.length - confirmedProducts.length}` : ""}
                     {leadProducts.length ? ` · 未归属线索 ${leadProducts.length}` : ""}
                   </span>
@@ -4153,7 +4440,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
                     <div className="product-leads-list">
                       {leadProducts.map((item) => (
                         <button type="button" className="product-lead" key={item.path} onClick={() => onOpenFile?.(item.path)} title={`${item.path}（未归属线索）`}>
-                          <Icon name={item.icon || "file"} size={11} />
+                          <Icon name={item.icon || "file"} size={12} />
                           <span>{item.name}</span>
                           {item.sizeText && <em>{item.sizeText}</em>}
                         </button>
@@ -4168,7 +4455,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
               <div className="result-tab-panel" role="tabpanel" aria-label="文件改动">
                 <div className="file-change-summary">
                   <span className="file-change-label">
-                    <Icon name="folder" size={11} /> 本轮文件（{fileChanges.length}）
+                    <Icon name="folder" size={12} /> 本轮文件（{fileChanges.length}）
                     {deliverables.length ? ` · 交付 ${deliverables.length}` : ""}
                   </span>
                   {m.workspace && <small className="summary-workspace" title={m.workspace}>工作区：{m.workspace}</small>}
@@ -4180,7 +4467,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
                         onClick={() => onOpenFile?.(change.relativePath)}
                         title={`${change.changeType} · ${change.confidence === "suspected" ? "疑似变更" : "已确认"} · ${change.relativePath}`}
                       >
-                        <Icon name={change.changeType === "deleted" ? "trash" : "file"} size={11} /> {change.relativePath}
+                        <Icon name={change.changeType === "deleted" ? "trash" : "file"} size={12} /> {change.relativePath}
                       </span>
                     ))}
                   </div>
@@ -4199,7 +4486,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
             {resultTab === "sources" && reviewSources.length > 0 && (
               <div className="result-tab-panel" role="tabpanel" aria-label="规范依据">
                 <div className="review-source-summary">
-                  <div className="file-change-label"><Icon name="shield" size={11} /> 规范依据（已读取 {reviewSources.length}）</div>
+                  <div className="file-change-label"><Icon name="shield" size={12} /> 规范依据（已读取 {reviewSources.length}）</div>
                   <div className="review-source-list">
                     {reviewSources.map((source) => (
                       <div className="review-source-row" key={source.sourceId}>
@@ -4216,7 +4503,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
         )}
         {memoryProposalIds.length > 0 && (
           <div className="run-result-links">
-            <span className="run-result-chip muted" title={`有 ${memoryProposalIds.length} 条待审核记忆建议，在「设置 → 记忆」中确认或拒绝`}><Icon name="book" size={11} /> 记忆建议 {memoryProposalIds.length}</span>
+            <span className="run-result-chip muted" title={`有 ${memoryProposalIds.length} 条待审核记忆建议，在「设置 → 记忆」中确认或拒绝`}><Icon name="book" size={12} /> 记忆建议 {memoryProposalIds.length}</span>
           </div>
         )}
       </div>
@@ -4225,7 +4512,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onAskAnswered, onResend, index, prevRole, clientId, threadId, runSummary = null, executionFlow = null }) {
+function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onAskExpired, onResend, index, prevRole, clientId, threadId, runSummary = null, executionFlow = null }) {
   if (m.role === "system") {
     if (m.summary) {
       const runId = m.runId || null;
@@ -4303,7 +4590,7 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
   // 本轮是否被中断：本地标记只管当下，刷新/切回会话后靠 Run 终态
   const runInterrupted = /^(cancelled|aborted)$/.test(String(runSummary?.runStatus || m.runStatus || ""));
   const isTaskLive = streaming || Boolean(executionFlow?.running) || LIVE_RUN_STATUSES.has(String(runSummary?.runStatus || ""));
-  const processBlockTypes = new Set(["thinking", "tool", "subagent", "ask", "approval", "process_note"]);
+  const processBlockTypes = new Set(["thinking", "tool", "subagent", "pipeline", "ask", "approval", "process_note"]);
   // 模型发言（text）不再归入过程区：它是这一小节的结论，必须留在消息正文里。
   // 过去只有"最后一个文本块"能留在外面，于是每写一段新小结，上一段就被折进
   // "思考与工具过程"，折叠后整轮只剩最终答复。现在只把思考、工具、审批、
@@ -4350,8 +4637,8 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
       const id = String(data.id || `${data.runId || "approval"}:${data.tool || ""}:${data.input || ""}`).trim();
       return !processApprovalIds.has(id);
     }
-    if (["subagent_start", "subagent_update", "subagent_end"].includes(event?.type)) {
-      const id = String(data.childId || data.toolCallId || "").trim();
+    if (["subagent_start", "subagent_tool", "subagent_update", "subagent_end"].includes(event?.type)) {
+      const id = String(data.childId || data.parentToolCallId || "").trim();
       return !processSubagentIds.has(id);
     }
     return true;
@@ -4389,8 +4676,9 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
     const key = block.id || `block-${blockIndex}`;
     if (block.type === "thinking") return <ThinkingBlock key={key} text={block.text} startTime={block.startTime} streaming={streaming && processOrder === lastThinkingBlockIndex} embedded />;
     if (block.type === "tool") return <ToolCard key={key} tool={block} onToggle={() => onToggleTool?.(m.id, block.id || blockIndex)} />;
-    if (block.type === "subagent") return <SubagentCard key={key} block={block} />;
-    if (block.type === "ask") return <AskBlock key={key} block={block} clientId={clientId} threadId={threadId} onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)} />;
+    if (block.type === "subagent") return <SubagentCard key={key} block={block} onOpenDetail={onOpenSubagent} />;
+    if (block.type === "pipeline") return <PipelineCard key={key} block={block} onOpenFile={onOpenFile} />;
+    if (block.type === "ask") return <AskBlock key={key} block={block} clientId={clientId} threadId={threadId} onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)} onExpired={(blockId) => onAskExpired?.(m.id, blockId)} />;
     if (block.type === "approval") return <ApprovalBlock key={key} block={block} />;
     if (block.type === "process_note") return (
       <div className="flow-markdown process-narration process-note" key={key}>
@@ -4436,7 +4724,7 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
         }}
       >
         <summary>
-          <Icon name="flow" size={11} />
+          <Icon name="flow" size={12} />
           {isTaskActivity ? "执行过程" : foldedProcessBlocks.some((block) => block.type === "tool") ? "思考与工具过程" : "思考记录"}
           {isLiveFold && <span>实时</span>}
         </summary>
@@ -4510,8 +4798,10 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
   }, [streaming, visibleBlocks]);
   return (
     <div className={`msg ${isUser ? "user" : "assistant"} ${m.status || ""}`} data-msg-index={index}>
-      <div className={`avatar ${isUser ? "user-avatar" : "agent-avatar"}`}>
-        <Icon name={isUser ? "user" : "robot"} size={14} />
+      <div className={`avatar ${isUser ? "user-avatar" : "agent-avatar"} ${!isUser && streaming ? "is-streaming" : ""}`}>
+        {isUser
+          ? <Icon name="user" size={14} />
+          : <Logo size={22} withBackground={false} markColor="#fff" className="agent-avatar-mark" />}
       </div>
       <div className="msg-main">
         {/* 消息头：作者 + 时间（相邻同角色消息省略，减少重复气泡头部） */}
@@ -4519,7 +4809,6 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
         <div className="msg-header">
           <span className="msg-author">{isUser ? "You" : (model || "Agent")}</span>
           <span className="msg-time">{formatMsgTime(m.createdAt || Date.now())}</span>
-          {!isUser && streaming && <span className="msg-streaming-badge"><StreamingDot /> 生成中</span>}
           {!isUser && m.status === "error" && <span className="msg-error-badge">生成失败</span>}
           {/* 中断既要认本地标记，也要认 Run 的终态：刷新/切回会话后本地标记会丢，只有 runStatus 还在 */}
           {!isUser && (m.stopped || runInterrupted) && <span className="msg-stopped-badge">{m.stopped ? "已停止生成" : "本轮已中断"}</span>}
@@ -4572,14 +4861,14 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
               />
             )}
             {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
-            {/* 流式等待首块：思考中 + 耗时 */}
-            {streaming && !hasContent && (
-              <div className="loading-inline">
-                <LoadingDots label={agentPhase || "正在思考"} seconds={waitSec} />
+            {/* 状态固定在消息内容下方：等待首字和持续生成共用同一组四瓣与状态短句 */}
+            {streaming && (
+              <div className="msg-streaming-status" role="status" aria-live="off">
+                <StreamingDot />
+                <StreamingActivityLabel />
+                {!hasContent && waitSec > 0 && <span className="msg-streaming-elapsed">{waitSec}s</span>}
               </div>
             )}
-            {/* 流式收尾：呼吸脉冲圆点 */}
-            {streaming && hasContent && <StreamingDot />}
             {/* 已停止 / 错误标记 */}
             {m.status === "error" && <div className="err-badge" title={m.errorText}>{m.errorText || "处理失败，请重试"}</div>}
           </>
@@ -4608,8 +4897,6 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
 // 不应随每个 token 一起重新渲染。操作回调保持稳定，工作区/线程真正变化时
 // 则仍由 onOpenFile、threadId 等关键属性触发必要更新。
 const MemoMessage = React.memo(Message, (previous, next) => {
-  const phaseChangedWhileWaiting = (previous.m?.status === "streaming" || next.m?.status === "streaming")
-    && previous.agentPhase !== next.agentPhase;
   return previous.m === next.m
     && previous.model === next.model
     && previous.index === next.index
@@ -4617,7 +4904,7 @@ const MemoMessage = React.memo(Message, (previous, next) => {
     && previous.clientId === next.clientId
     && previous.threadId === next.threadId
     && previous.onOpenFile === next.onOpenFile
-    && !phaseChangedWhileWaiting;
+    && previous.onOpenSubagent === next.onOpenSubagent;
 });
 
 function ReferenceChips({ references = [], onOpenFile }) {
@@ -4627,7 +4914,7 @@ function ReferenceChips({ references = [], onOpenFile }) {
       {references.map((r) => {
         const label = r.metadata?.name || r.metadata?.relativePath || r.target;
         const canOpen = r.kind === "file" && !!onOpenFile && r.status !== "missing";
-        const content = <><Icon name="file" size={10} /> @{label}</>;
+        const content = <><Icon name="file" size={12} /> @{label}</>;
         return canOpen ? (
           <button type="button" className={`msg-reference-chip ${r.status || ""}`} key={r.id} onClick={() => onOpenFile(r.metadata?.relativePath || r.target)} title={`打开引用：${label}`}>{content}</button>
         ) : (
@@ -4638,18 +4925,28 @@ function ReferenceChips({ references = [], onOpenFile }) {
   );
 }
 
-// ========== 流式指示器：呼吸脉冲圆点（Proma StreamingIndicator） ==========
-function StreamingDot() {
-  return <span className="streaming-dot" title="生成中" />;
+const STREAMING_ACTIVITY_LABELS = [
+  "正在聚合资料", "正在梳理需求", "正在检索规范", "正在调查现状",
+  "正在比对数据", "正在提炼要点", "正在搭建分析框架", "正在开展专题分析",
+  "正在核对关键结论", "正在整理图表", "正在撰写章节", "正在合并稿件",
+  "正在统一口径", "正在校对格式", "正在检查引用", "正在生成成果",
+];
+
+function StreamingActivityLabel() {
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    if (isMotionReduced()) return undefined;
+    const timer = window.setInterval(() => setIndex((value) => (value + 1) % STREAMING_ACTIVITY_LABELS.length), 4200);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <span className="msg-streaming-label" aria-live="off">{STREAMING_ACTIVITY_LABELS[index]}</span>;
 }
 
-// ========== 等待指示器：弹跳点 + 耗时（Proma MessageLoading） ==========
-function LoadingDots({ label, seconds }) {
+// ========== 流式指示器：四瓣依次点亮 ==========
+function StreamingDot() {
   return (
-    <span className="loading-dots">
-      <span className="ldot" /><span className="ldot" /><span className="ldot" />
-      <span className="loading-label">{label}…</span>
-      {seconds > 0 && <span className="loading-elapsed">{seconds}s</span>}
+    <span className="streaming-dot" title="正在处理" aria-hidden="true">
+      <Logo size={16} withBackground={false} markColor="currentColor" className="streaming-dot-mark" />
     </span>
   );
 }
@@ -4672,7 +4969,7 @@ function ThinkingBlock({ text, startTime, streaming, embedded = false }) {
     return (
       <section className={`thinking-process-inline ${streaming ? "is-streaming" : ""}`}>
         <div className="thinking-process-heading">
-          <ToolIdentityIcon name="__thinking__" size={11} />
+          <ToolIdentityIcon name="__thinking__" size={12} />
           <span>思考</span>
           {streaming ? <span>思考中…</span> : duration ? <span>思考了 {duration}s</span> : <span>{String(text || "").length} 字</span>}
         </div>
@@ -4691,7 +4988,7 @@ function ThinkingBlock({ text, startTime, streaming, embedded = false }) {
         onClick={() => setExpanded((v) => !v)}
       >
         <span className="thinking-icon" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
-        <span className="thinking-label"><ToolIdentityIcon name="__thinking__" size={11} /> 思考</span>
+        <span className="thinking-label"><ToolIdentityIcon name="__thinking__" size={12} /> 思考</span>
         {streaming && <span className="thinking-status">思考中…</span>}
         {!streaming && duration && <span className="thinking-status">思考了 {duration}s</span>}
         {!streaming && !duration && <span className="thinking-status">{text.length} 字</span>}
@@ -4701,24 +4998,106 @@ function ThinkingBlock({ text, startTime, streaming, embedded = false }) {
   );
 }
 
-function SubagentCard({ block }) {
+/** 子代理轨迹追加：连续同类文本（思考/正文）合并，避免碎片化；有界存储。 */
+function appendSubagentTrace(list, item) {
+  const next = Array.isArray(list) ? list.slice() : [];
+  if (!item) return next;
+  const last = next[next.length - 1];
+  if ((item.kind === "thinking" || item.kind === "text") && last && last.kind === item.kind) {
+    next[next.length - 1] = { ...last, text: `${last.text || ""}${item.text || ""}`.slice(-20000) };
+  } else {
+    next.push(item);
+  }
+  if (next.length > 240) next.splice(0, next.length - 240);
+  return next;
+}
+
+// ========== 编辑流水线阶段条（P2-A，方案 §5.2） ==========
+function PipelineCard({ block, onOpenFile }) {
   const [expanded, setExpanded] = useState(block.status === "running");
-  const statusText = block.status === "completed" ? "已完成" : block.status === "failed" ? "失败" : block.status === "cancelled" ? "已取消" : "执行中";
-  const roleText = { scout: "资料探索", reviewer: "审阅", planner: "方案拆解" }[block.role] || "只读任务";
+  const stages = Array.isArray(block.stages) ? block.stages : [];
+  const runningStage = stages.find((stage) => stage.status === "running");
+  const failed = stages.some((stage) => stage.status === "failed") || block.status === "failed";
+  const statusText = block.status === "completed" ? "已交付" : block.status === "failed" ? "未通过验收" : block.status === "cancelled" ? "已取消" : runningStage ? `进行中：${runningStage.label || runningStage.stage}` : "进行中";
+  return (
+    <section className={`pipeline-card ${block.status || "running"}`} aria-label={`编辑流水线（${block.format === "pptx" ? "PPT" : "Word"}）`}>
+      <button type="button" className="pipeline-card-head" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+        <span className="pipeline-card-icon"><Icon name={failed ? "x" : block.status === "completed" ? "check" : "flow"} size={14} /></span>
+        <span className="pipeline-card-title">
+          <strong>编辑流水线 · {block.format === "pptx" ? "PPT" : "Word"}</strong>
+          <small>{stages.length ? stages.map((stage) => stage.label || stage.stage).join(" → ") : "规划 → 撰写 → 排版 → 验收"}</small>
+        </span>
+        <span className="pipeline-card-status">{block.status === "running" && <i />} {statusText}</span>
+        <span className={`pipeline-card-chevron ${expanded ? "open" : ""}`}>▸</span>
+      </button>
+      {expanded && <div className="pipeline-card-body">
+        <ol className="pipeline-stages">
+          {stages.map((stage) => (
+            <li key={stage.stage} className={`pipeline-stage ${stage.status || "running"}`}>
+              <span className="pipeline-stage-icon"><Icon name={stage.status === "done" || stage.status === "pass" || stage.status === "completed" ? "check" : stage.status === "running" ? "flow" : "x"} size={12} /></span>
+              <div className="pipeline-stage-info">
+                <b>{stage.label || stage.stage}</b>
+                <em>{stage.status === "done" || stage.status === "pass" || stage.status === "completed" ? "完成" : stage.status === "revise" ? "需修订" : stage.status === "failed" ? "失败" : "进行中"}{stage.artifact ? ` · ${stage.artifact}` : ""}</em>
+                {stage.issues?.length > 0 && <span className="pipeline-stage-issues">{stage.issues.slice(0, 3).join("；")}</span>}
+              </div>
+            </li>
+          ))}
+        </ol>
+        {block.deliverable && (
+          <div className="pipeline-deliverable">
+            <b>产物</b>
+            {onOpenFile
+              ? <button type="button" className="pipeline-open" onClick={() => onOpenFile(block.deliverable)}>{block.deliverable}</button>
+              : <span>{block.deliverable}</span>}
+          </div>
+        )}
+        {block.issues?.length > 0 && <div className="pipeline-issues" role="status">待改进：{block.issues.slice(0, 4).join("；")}</div>}
+      </div>}
+    </section>
+  );
+}
+
+function SubagentCard({ block, onOpenDetail }) {
+  const [expanded, setExpanded] = useState(block.status === "running");
+  const statusText = block.status === "completed" ? "已完成" : block.status === "failed" ? "失败" : block.status === "cancelled" ? "已取消" : block.status === "planned" ? "已编排" : "执行中";
+  const roleText = { scout: "资料探索", reviewer: "审阅", planner: "方案拆解", verifier: "独立核验", worker: "执行" }[block.role] || "只读任务";
   const content = block.summary || block.preview || "";
+  const tools = Array.isArray(block.tools) ? block.tools : [];
+  const runningTools = tools.filter((tool) => tool.status !== "done").length;
+  const verdictText = { pass: "核验通过", revise: "核验需修订", fail: "核验不通过" }[block.verdict] || "";
   return (
     <section className={`subagent-card ${block.status || "running"}`} aria-label={`子 Agent：${roleText}`}>
       <button type="button" className="subagent-card-head" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
-        <span className="subagent-card-icon"><Icon name={block.status === "completed" ? "check" : block.status === "failed" ? "x" : "robot"} size={13} /></span>
-        <span className="subagent-card-title"><strong>子 Agent · {roleText}</strong><small>{block.activity || "隔离上下文 · 只读文件"}</small></span>
+        <span className="subagent-card-icon"><Icon name={block.status === "completed" ? "check" : block.status === "failed" ? "x" : "robot"} size={14} /></span>
+        <span className="subagent-card-title"><strong>子 Agent · {roleText}</strong><small>{block.activity || "隔离上下文 · 不继承主对话"}</small></span>
+        {tools.length > 0 && <span className="subagent-card-toolcount">{runningTools ? `${tools.length} 个工具 · ${runningTools} 进行中` : `${tools.length} 个工具`}</span>}
         <span className="subagent-card-status">{block.status === "running" && <i />} {statusText}</span>
         <span className={`subagent-card-chevron ${expanded ? "open" : ""}`}>▸</span>
       </button>
       {expanded && <div className="subagent-card-body">
+        <div className="subagent-card-actions">
+          <button type="button" className="subagent-open-detail" onClick={() => onOpenDetail?.(block)}>
+            <Icon name="file" size={12} /> 在右侧查看完整过程
+          </button>
+        </div>
         {block.task && <div className="subagent-task"><b>子任务</b><span>{block.task}</span></div>}
+        {block.thinking && <div className="subagent-thinking"><b>思考</b><span>{block.thinking}</span></div>}
+        {tools.length > 0 && <div className="subagent-tools">
+          <b>工具调用</b>
+          <div className="subagent-tool-list">
+            {tools.map((tool, index) => (
+              <span key={tool.toolCallId || `${tool.name}-${index}`} className={`subagent-tool ${tool.status === "done" ? (tool.isError ? "error" : "done") : tool.status === "planned" ? "planned" : "running"}`}>
+                <Icon name={toolIdentity(tool.name).icon} size={12} />
+                <em>{tool.name}</em>
+                <i>{tool.status === "done" ? (tool.isError ? "失败" : "完成") : tool.status === "planned" ? "计划" : "执行中"}</i>
+              </span>
+            ))}
+          </div>
+        </div>}
+        {verdictText && <div className={`subagent-verdict ${block.verdict}`}><b>核验</b><span>{verdictText}</span></div>}
         {block.error && <div className="subagent-error" role="alert">{block.error}</div>}
         {content && <div className={`subagent-result ${block.status === "running" ? "preview" : ""}`}>{block.status === "running" ? readableProgressText(content) : <SafeMarkdown text={content} />}</div>}
-        {!content && !block.error && <div className="subagent-placeholder">子任务只使用当前 Run 授权的文件读取能力，不继承主对话上下文。</div>}
+        {!content && !block.error && <div className="subagent-placeholder">子任务使用隔离上下文与受权工具执行，不继承主对话内容。</div>}
       </div>}
     </section>
   );
@@ -4729,7 +5108,7 @@ function SubagentCard({ block }) {
  * 输入栏常驻的待处理条：待审批可直接允许/拒绝，待回答可直接提交；
  * 折叠过程收起或正在回看历史时，不必先找到卡片再操作。
  */
-function PendingActionBar({ approval, ask, onLocateApproval, onLocateAsk, clientId, threadId, onAnswered }) {
+function PendingActionBar({ approval, ask, onLocateApproval, onLocateAsk, clientId, threadId, onAnswered, onExpired }) {
   const [sending, setSending] = useState("");
   const [error, setError] = useState("");
   const [answer, setAnswer] = useState("");
@@ -4763,6 +5142,12 @@ function PendingActionBar({ approval, ask, onLocateApproval, onLocateAsk, client
         body: JSON.stringify({ client: clientId, thread: threadId, answer: value }),
       });
       const result = await res.json().catch(() => ({}));
+      if (res.status === 404) {
+        // 服务端已无该问题（5 分钟窗口已过或已在别处回答）：收起卡片，
+        // 而不是留一张点得动、一发就报 no pending question 的死卡片。
+        onExpired?.(ask?.id);
+        throw new Error("该问题已失效（超过 5 分钟未回答或已在别处回答），回答未提交");
+      }
       if (!res.ok) throw new Error(result.error || `回答失败（${res.status}）`);
       onAnswered?.(ask?.id, value);
       setAnswer("");
@@ -4809,14 +5194,16 @@ function PendingActionBar({ approval, ask, onLocateApproval, onLocateAsk, client
   );
 }
 
-function AskBlock({ block, clientId, threadId, onAnswered }) {
+function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  // 提问有 5 分钟时间窗口：服务端超时后按假设继续，卡片必须同步失效而不是继续接受输入。
+  const expired = Boolean(block.expired);
 
   const submit = async (text) => {
     const answer = (text || "").trim();
-    if (!answer || sending) return;
+    if (!answer || sending || expired) return;
     setSending(true);
     setError("");
     try {
@@ -4826,6 +5213,10 @@ function AskBlock({ block, clientId, threadId, onAnswered }) {
         body: JSON.stringify({ client: clientId, thread: threadId, answer }),
       });
       const result = await res.json().catch(() => ({}));
+      if (res.status === 404) {
+        onExpired?.(block.id);
+        throw new Error("该问题已失效（超过 5 分钟未回答或已在别处回答），回答未提交");
+      }
       if (!res.ok) throw new Error(result.error || `回答失败（${res.status}）`);
       onAnswered?.(block.id, answer);
       setInput("");
@@ -4836,15 +5227,21 @@ function AskBlock({ block, clientId, threadId, onAnswered }) {
   };
 
   return (
-    <div className={`ask-block ${block.answer ? "answered" : ""}`}>
+    <div className={`ask-block ${block.answer ? "answered" : ""} ${expired ? "expired" : ""}`}>
       <div className="ask-head">
         <Icon name="comment" size={12} />
         <span className="ask-title">需要你确认</span>
+        {(() => { const 归属 = 交互归属文案(block.owner); return 归属 ? <span className="interaction-owner" title={归属.title}>{归属.text}</span> : null; })()}
         {block.answer && <span className="ask-status">✓ 已回答</span>}
+        {!block.answer && expired && <span className="ask-status expired">已超时</span>}
       </div>
       <div className="ask-question">{block.question}</div>
       {block.answer ? (
         <div className="ask-answer">你的回答：{block.answer}</div>
+      ) : expired ? (
+        <div className="ask-expired" role="status">
+          超过 5 分钟未回答，Agent 已按自己的假设继续（本轮不再接受该问题的回答）。如需修正，请直接在下方输入消息说明。
+        </div>
       ) : (
         <>
           {block.options?.length > 0 && (
@@ -4859,7 +5256,7 @@ function AskBlock({ block, clientId, threadId, onAnswered }) {
               className="ask-input"
               placeholder="输入你的回答…"
               value={input}
-              onChange={(e) => updateInput(e.target.value)}
+              onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(input); } }}
             />
             <button className="btn primary ask-submit" onClick={() => submit(input)} disabled={sending}>
@@ -4874,6 +5271,20 @@ function AskBlock({ block, clientId, threadId, onAnswered }) {
 }
 
 // ========== 工具审批卡片（opencode 式：允许一次 / 总是允许 / 拒绝） ==========
+/**
+ * Qoder P1-4：交互归属文案。仅在服务端开关 qoderInteractionOwner 打开时，
+ * ask_user / tool_approval_request 载荷才带 owner；关闭时 block.owner 为 null，不渲染标签。
+ */
+function 交互归属文案(owner) {
+  const kind = String(owner?.kind || "");
+  const id = String(owner?.id || "");
+  const short = id.length > 18 ? `${id.slice(0, 15)}…` : id;
+  if (kind === "subagent") return { text: `来自子代理${short ? ` · ${short}` : ""}`, title: `该交互由子代理 ${id} 发起` };
+  if (kind === "turn") return { text: "来自本轮任务", title: `该交互属于本轮 Run ${id}` };
+  if (kind === "session") return { text: "来自会话", title: `该交互属于会话 ${id}` };
+  return null;
+}
+
 function ApprovalBlock({ block }) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
@@ -4905,6 +5316,7 @@ function ApprovalBlock({ block }) {
       <div className="approval-head">
         <Icon name="shield" size={12} />
         <span className="approval-title">需要审批：{toolLabel}</span>
+        {(() => { const 归属 = 交互归属文案(block.owner); return 归属 ? <span className="interaction-owner" title={归属.title}>{归属.text}</span> : null; })()}
         {block.decision === "allow" && <span className="approval-status">✓ 已允许（仅本次）</span>}
         {block.decision === "always" && <span className="approval-status">✓ 已总是允许（全局规则）</span>}
         {block.decision === "deny" && <span className="approval-status denied">✕ 已拒绝</span>}
@@ -5046,7 +5458,7 @@ function ApprovalModeControl({ mode, saving, onChange }) {
       aria-pressed={automatic}
       title={automatic ? "当前：自动批准。会自动放行原本需要逐次询问的操作，deny 规则仍然生效；该模式保存在本机全局配置，跨会话/项目生效，可在设置中改回" : "当前：每次询问。工具写入或危险操作需要逐次确认。点击启用自动批准（本机全局，可随时关闭）"}
     >
-      <Icon name={automatic ? "check" : "shield"} size={13} />
+      <Icon name={automatic ? "check" : "shield"} size={14} />
       <span>{automatic ? "自动批准" : "每次询问"}</span>
       <i className="approval-mode-dot" />
     </button>
@@ -5140,7 +5552,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
     return (
       <div className={`execution-flow-item ${flowEventTone(event)}`} key={event.key || `${event.seq || event.id || index}:${event.type}`}>
         <span className="execution-flow-dot" />
-        {(event.type === "tool_start" || event.type === "tool_end") && data.name && <ToolIdentityIcon name={data.name} size={11} className="tool-identity-inline" />}
+        {(event.type === "tool_start" || event.type === "tool_end") && data.name && <ToolIdentityIcon name={data.name} size={12} className="tool-identity-inline" />}
         <span className="execution-flow-label">{label}</span>
         {showDetail && <span className="execution-flow-detail" title={detail}>{String(detail).slice(0, 100)}</span>}
         <time>{event.at ? new Date(event.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : ""}</time>
@@ -5211,7 +5623,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
               onClick={() => onLocateApproval?.(pendingApproval)}
               title="定位到需要你审批的工具卡片；任务中心里也能打开同一条运行"
             >
-              <Icon name="shield" size={11} /> 待批准：{pendingApproval.tool || "工具"} · 去处理
+              <Icon name="shield" size={12} /> 待批准：{pendingApproval.tool || "工具"} · 去处理
             </button>
           )}
           {running && nextStep && (
@@ -5227,7 +5639,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
       {notes.length > 0 && (
         <div className={`execution-flow-notes ${notesOpen ? "open" : ""}`}>
           <button type="button" className="efn-toggle" onClick={() => setNotesOpen((value) => !value)} aria-expanded={notesOpen}>
-            <Icon name="info" size={11} />
+            <Icon name="info" size={12} />
             <span>系统提示 {notes.length} 条</span>
             {Number(compaction?.count) > 0 && <span className="efn-chip">上下文压缩 {compaction.count} 次</span>}
             {notes.some((item) => item.kind === "file") && <span className="efn-chip">文件变更</span>}
@@ -5330,7 +5742,7 @@ function TaskProgressCard({ tasks, running = false }) {
           </div>
           {tasks.map((t, i) => (
             <div key={t.id || i} className={`task-item ${t.done || ["completed", "skipped"].includes(t.status) ? "done" : ""} ${t.status === "failed" ? "failed" : ""}`}>
-              <span className="task-status">{t.status === "failed" ? <Icon name="warning" size={11} /> : (t.done || ["completed", "skipped"].includes(t.status) ? <Icon name="check" size={11} /> : <span className="task-pending-dot" />)}</span>
+              <span className="task-status">{t.status === "failed" ? <Icon name="warning" size={12} /> : (t.done || ["completed", "skipped"].includes(t.status) ? <Icon name="check" size={12} /> : <span className="task-pending-dot" />)}</span>
               <span className="task-text">{t.title || t.name || t.text || "执行 Agent 任务"}</span>
               {t.note && <small title={t.note}>{t.note}</small>}
               {t.status === "running" || t.status === "in_progress" ? <small>进行中</small> : null}
@@ -5392,6 +5804,18 @@ function ToolCard({ tool, onToggle }) {
   const fullInput = inputStr.replace(/\s+/g, " ").trim();
   const cmdPreview = isCmd ? `${fullInput.slice(0, 96)}${fullInput.length > 96 ? "…" : ""}` : fullInput.slice(0, 80);
   const outputPreview = output?.length > 300 ? output.slice(0, 300) + "..." : output;
+  // O-P5：browser_screenshot 结果内嵌截图回看（结果 JSON 的 details.file 指向服务端落盘文件）
+  let shotInfo = null;
+  if (done && !isError && name === "browser_screenshot") {
+    const raw = String(output || tool.result || "");
+    const matched = raw.match(/"file"\s*:\s*"([^"]*?(?:shot|page)-[\w-]+\.(?:jpg|pdf))"/i);
+    if (matched) shotInfo = { name: matched[1].split(/[\\/]/).pop() };
+  }
+  // O-P8（OAW_RECONCILE_HINT，默认关）：browser_* 工具报成功但面板帧流仍在重连时，追加对账提示
+  const reconcilePending = done && !isError && flag("reconcileHint")
+    && /^browser_/.test(String(name || ""))
+    && getBrowserStreamState().status === "reconnecting"
+    && Date.now() - getBrowserStreamState().since > 3000;
 
   return (
     <div className={`tool-card ${done ? (isError ? "error" : "success") : "pending"} ${isMapTool ? "tool-card-map" : ""}`} onClick={onToggle}>
@@ -5409,6 +5833,16 @@ function ToolCard({ tool, onToggle }) {
       </div>
       {expanded && (
         <div className="tool-detail">
+          {shotInfo && (
+            <div className="tool-section tool-shot-preview">
+              <div className="tool-section-label">截图回看</div>
+              <img className="tool-shot-thumb" src={`/api/browser/shot?file=${encodeURIComponent(shotInfo.name)}`} alt="浏览器截图" loading="lazy" />
+              <div><a className="btn-xs" href={`/api/browser/shot?file=${encodeURIComponent(shotInfo.name)}`} download={shotInfo.name}>下载截图</a></div>
+            </div>
+          )}
+          {reconcilePending && (
+            <div className="tool-section tool-reconcile-hint" role="status">画面暂不可达（面板重连中），操作已生效。</div>
+          )}
           {/* 输入参数 */}
           {inputStr && (
             <div className="tool-section">

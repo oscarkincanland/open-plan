@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
 import { openInSystem, revealInSystem } from "../api.js";
 import { PREVIEW_STATE } from "../文件地址.js";
+import { notifyError } from "./Feedback.jsx";
 
 /**
  * 独立图片查看器（W5/D04）
@@ -52,25 +53,25 @@ export default function ImageViewer({ doc, onPreviewState, onPreviewError }) {
   }, []);
 
   const handleOpenOriginal = useCallback(() => {
-    if (doc?.identity?.relativePath) openInSystem(doc.identity.relativePath).catch((error) => alert(`打开失败：${error.message}`));
+    if (doc?.identity?.relativePath) openInSystem(doc.identity.relativePath).catch((error) => notifyError(`打开失败：${error.message}`));
   }, [doc?.identity?.relativePath]);
 
   const handleReveal = useCallback(() => {
-    if (doc?.identity?.relativePath) revealInSystem(doc.identity.relativePath).catch((error) => alert(`在文件管理器中显示失败：${error.message}`));
+    if (doc?.identity?.relativePath) revealInSystem(doc.identity.relativePath).catch((error) => notifyError(`在文件管理器中显示失败：${error.message}`));
   }, [doc?.identity?.relativePath]);
 
   return (
     <div className="image-viewer">
       <div className="image-viewer-toolbar">
-        <span className="badge"><Icon name="image" size={11} /> {doc?.ext ? String(doc.ext).toUpperCase() : "图片"}</span>
+        <span className="badge"><Icon name="image" size={12} /> {doc?.ext ? String(doc.ext).toUpperCase() : "图片"}</span>
         {natural && <span className="image-viewer-size">{natural.width} × {natural.height}</span>}
         <span className="image-viewer-spacer" />
         <button type="button" className={`btn-xs ${scale === "fit" ? "active" : ""}`} onClick={() => setScale("fit")} title="适应窗口">适应窗口</button>
         <button type="button" className={`btn-xs ${scale === 1 ? "active" : ""}`} onClick={() => setScale(1)} title="原始大小（100%）">100%</button>
-        <button type="button" className="btn-xs" onClick={() => step(-1)} title="缩小"><Icon name="minus" size={11} /></button>
-        <button type="button" className="btn-xs" onClick={() => step(1)} title="放大"><Icon name="plus" size={11} /></button>
-        <button type="button" className="btn-xs" onClick={handleOpenOriginal} title="用系统默认应用打开原图"><Icon name="externalLink" size={11} /> 打开原图</button>
-        <button type="button" className="btn-xs" onClick={handleReveal} title="在文件管理器中显示"><Icon name="folderOpen" size={11} /></button>
+        <button type="button" className="btn-xs" onClick={() => step(-1)} title="缩小"><Icon name="minus" size={12} /></button>
+        <button type="button" className="btn-xs" onClick={() => step(1)} title="放大"><Icon name="plus" size={12} /></button>
+        <button type="button" className="btn-xs" onClick={handleOpenOriginal} title="用系统默认应用打开原图"><Icon name="externalLink" size={12} /> 打开原图</button>
+        <button type="button" className="btn-xs" onClick={handleReveal} title="在文件管理器中显示"><Icon name="folderOpen" size={12} /></button>
       </div>
       {state === PREVIEW_STATE.FAILED && (
         <div className="image-viewer-error" role="alert">

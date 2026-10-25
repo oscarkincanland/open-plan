@@ -82,10 +82,10 @@ test("状态行样式已定义", () => {
 
 console.log("\n▶ 4.3 工具调用的地图语义标识");
 
-test("map_* 七个工具都登记了地图图标（单一来源）", () => {
+test("map_* 八个工具都登记了地图图标（单一来源）", () => {
   const idx = eventSrc.indexOf("TOOL_IDENTITY_RULES");
   const block = eventSrc.slice(idx, idx + 1600);
-  assert.match(block, /map_read\|map_datasets\|map_edit\|map_import\|map_analyze\|map_save_analysis\|map_clear_analysis/, "应登记全部 7 个地图工具");
+  assert.match(block, /map_read\|map_datasets\|map_edit\|map_import\|map_analyze\|map_template\|map_save_analysis\|map_clear_analysis/, "应登记全部 8 个地图工具");
   assert.match(block, /"map"\]/, "应映射到 map 图标");
 });
 

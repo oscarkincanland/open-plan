@@ -28,10 +28,11 @@ const REGISTRY = [
   { type: "thinking_level", lifecycle: true, persist: true, note: "思考深度设置" },
   { type: "run_checkpoint_updated", lifecycle: true, persist: true, note: "恢复检查点更新" },
   { type: "run_cancel_requested", lifecycle: true, persist: true, note: "收到取消请求" },
+  { type: "run_draining", lifecycle: true, persist: true, note: "中断后残余消息排空窗口（Qoder P0-3，默认关）", schema: { required: ["runId"], types: { runId: "string", reason: "string" } } },
   { type: "run_recovered", lifecycle: true, persist: true, note: "服务重启后标记恢复" },
   { type: "run_recovery_started", lifecycle: true, persist: true, note: "用户选择继续该 Run" },
-  { type: "run_finished", lifecycle: true, persist: true, note: "Run 终态（权威完成语义）" },
-  { type: "aborted", lifecycle: true, persist: true, note: "回合被中断" },
+  { type: "run_finished", lifecycle: true, persist: true, note: "Run 终态（权威完成语义）", schema: { required: ["runId", "status"], types: { runId: "string", status: "string", artifacts: "array" } } },
+  { type: "aborted", lifecycle: true, persist: true, note: "回合被中断", schema: { required: ["runId"], types: { runId: "string" } } },
 
   // ---- 回合 / 消息边界 ----
   { type: "agent_started", lifecycle: true, persist: true, note: "Agent 回合开始" },
@@ -43,7 +44,7 @@ const REGISTRY = [
 
   // ---- 工具与写入 ----
   { type: "tool_start", lifecycle: true, persist: true, note: "工具调用开始" },
-  { type: "tool_end", lifecycle: true, persist: true, note: "工具调用结束" },
+  { type: "tool_end", lifecycle: true, persist: true, note: "工具调用结束", schema: { required: ["name"], types: { name: "string", isError: "boolean" } } },
   { type: "tool_call_progress", lifecycle: true, persist: false, note: "工具分段进度（高频）" },
   { type: "tool_repeat_warning", lifecycle: true, persist: true, note: "同参数重复调用提醒" },
   { type: "completion_nudge", lifecycle: true, persist: true, note: "收尾强制完成声明提醒" },
@@ -58,9 +59,32 @@ const REGISTRY = [
   { type: "artifact_rolled_back", lifecycle: true, persist: true, note: "产物回滚" },
   { type: "file_changed", lifecycle: true, persist: true, note: "工作区文件变更" },
 
+  // ---- 子代理（Subagent）----
+  // 子代理事件一律带 parentToolCallId（即父会话 run_subagent 的 toolCallId），
+  // 前端据此把子代理归到父工具调用下；此前未登记导致不落盘、跨会话回放拿不到。
+  // 方案 §3.4 事件契约：planned→started→(progress|tool)*→result→(verified→result)*→closed。
+  { type: "subagent_planned", lifecycle: true, persist: true, note: "子代理编排计划（含角色/任务/工具白名单/预算）" },
+  { type: "subagent_start", lifecycle: true, persist: true, note: "子代理启动（含角色/子任务；执行器兼容事件）" },
+  { type: "subagent_started", lifecycle: true, persist: true, note: "子代理会话已建立（含模型与播种引用）" },
+  { type: "subagent_tool", lifecycle: true, persist: true, note: "子代理工具调用（start/end，含子 toolCallId）" },
+  { type: "subagent_update", lifecycle: true, persist: false, note: "子代理进度/思考节流（高频，不落盘，对齐 tool_call_progress）" },
+  { type: "subagent_progress", lifecycle: true, persist: false, note: "子代理阶段进度（orchestrator 契约，节流高频不落盘）" },
+  { type: "subagent_end", lifecycle: true, persist: true, note: "子代理结束（含结论摘要/错误）" },
+  { type: "subagent_result", lifecycle: true, persist: true, note: "子代理结构化结果（status/output/artifacts/toolStats）" },
+  { type: "subagent_verified", lifecycle: true, persist: true, note: "子代理对抗式核验结论（verdict/checklist）" },
+  { type: "subagent_closed", lifecycle: true, persist: true, note: "子代理关账（finalStatus/parentToolCallId，roster 持久化锚点）" },
+
+  // ---- Editorial Pipeline（方案 §5.2）----
+  // 流水线每步产出中间产物并独立发事件，前端展示为可折叠阶段条。
+  { type: "pipeline_started", lifecycle: true, persist: true, note: "编辑流水线开始（Planner→Writer→Formatter→Evaluator）" },
+  { type: "pipeline_stage_started", lifecycle: true, persist: true, note: "流水线阶段开始（含 stage/目标/中间产物路径）" },
+  { type: "pipeline_stage_finished", lifecycle: true, persist: true, note: "流水线阶段完成（含产物路径与检查结论）" },
+  { type: "pipeline_finished", lifecycle: true, persist: true, note: "编辑流水线结束（交付产物/回环/失败终态）" },
+
   // ---- 审批 / 提问 ----
-  { type: "ask_user", lifecycle: true, persist: true, note: "向用户提问" },
-  { type: "tool_approval_request", lifecycle: true, persist: true, note: "工具审批请求" },
+  { type: "ask_user", lifecycle: true, persist: true, note: "向用户提问", schema: { required: ["askId", "question"], types: { askId: "string", question: "string", options: "array" } } },
+  { type: "tool_approval_request", lifecycle: true, persist: true, note: "工具审批请求", schema: { required: ["id", "tool"], types: { id: "string", tool: "string", action: "string" } } },
+  { type: "interaction_owner_changed", lifecycle: true, persist: true, note: "交互归属变更（Qoder P1-4 子代理接管，默认关）", schema: { required: ["owner"], types: { owner: "object", status: "string" } } },
   { type: "tool_approval_resolved", lifecycle: true, persist: true, note: "工具审批结果" },
 
   // ---- 通道与重试 ----
@@ -73,6 +97,15 @@ const REGISTRY = [
   { type: "agent_queued", lifecycle: true, persist: true, note: "任务排队" },
   { type: "agent_queue_update", lifecycle: true, persist: true, note: "队列状态更新" },
   { type: "steer", lifecycle: true, persist: true, note: "运行中插话/系统提醒" },
+
+  // ---- 运行预算（E02）----
+  { type: "run_budget_notice", lifecycle: true, persist: true, note: "运行预算软提醒（回合/工具接近软预算）" },
+  { type: "run_budget_blocked", lifecycle: true, persist: true, note: "运行预算硬阻断（硬预算/重复无进展/连续失败）" },
+  { type: "tool_gate_denied", lifecycle: true, persist: true, note: "工具被把关扩展单点拒绝（U2，扩展 tool_call 拦截，Run 继续执行）" },
+
+  // ---- 上下文预算（U1/U6）----
+  { type: "context_usage", lifecycle: true, persist: false, note: "回合边界精确上下文用量（U1，getContextUsage 实测，高频不落盘）" },
+  { type: "compaction_failed", lifecycle: true, persist: true, note: "上下文压缩失败（U6，含原因与是否中止，不再静默）" },
 
   // ---- 上下文与错误 ----
   { type: "context_compacting", lifecycle: true, persist: true, note: "开始压缩上下文" },
@@ -106,6 +139,12 @@ const REGISTRY = [
   { type: "review_confirmed", lifecycle: true, persist: true, note: "用户确认写回" },
   { type: "review_confirmation_rejected", lifecycle: true, persist: true, note: "用户拒绝写回" },
 
+  // ---- 领域工作流硬约束（Qoder 对标 §4.3，默认关）----
+  { type: "geo_out_of_range", lifecycle: true, persist: true, note: "坐标越出中国范围（经度 73–135°E / 纬度 18–54°N）" },
+  { type: "data_integrity_failed", lifecycle: true, persist: true, note: "记录数 expected vs actual 不一致" },
+  { type: "artifact_root_violation", lifecycle: true, persist: true, note: "产物路径越出工作区" },
+  { type: "preflight_skipped", lifecycle: true, persist: true, note: "用户显式跳过 preflight 硬约束校验" },
+
   // ---- 记忆治理 ----
   { type: "memory_proposal", lifecycle: true, persist: true, note: "记忆建议提交（UI 事件）" },
   { type: "memory_proposal_updated", lifecycle: true, persist: true, note: "记忆建议内容更新" },
@@ -124,6 +163,7 @@ const REGISTRY = [
   { type: "token", lifecycle: false, persist: false, note: "回答流式文本" },
   { type: "thinking", lifecycle: false, persist: false, note: "思考流" },
   { type: "tool_output", lifecycle: false, persist: false, note: "工具输出流" },
+  { type: "tool_output_delta", lifecycle: false, persist: false, note: "工具输出增量分片（Qoder P0-2 单帧护栏，默认关）", schema: { required: ["output"], types: { output: "string", index: "number", frames: "number" } } },
   { type: "text_boundary", lifecycle: false, persist: false, note: "文本段落边界（打字机）" },
   { type: "thinking_boundary", lifecycle: false, persist: false, note: "思考段落边界" },
 ];
@@ -144,6 +184,38 @@ export const LIFECYCLE_EVENT_TYPES = new Set(EVENT_REGISTRY.filter((item) => ite
 export const DELTA_EVENT_TYPES = new Set(EVENT_REGISTRY.filter((item) => !item.lifecycle && !item.persist).map((item) => item.type));
 /** 需要写入 .oaw/events 事件流的事件 */
 export const PERSISTED_TYPES = new Set(EVENT_REGISTRY.filter((item) => item.persist).map((item) => item.type));
+
+/**
+ * P1-2：事件负载结构校验（只校验「声明了 schema 的事件」）。
+ * schema 形态：`{ required: ["runId"], types: { runId: "string" } }`，类型取值
+ * string / number / boolean / object / array。
+ * 未声明 schema 的事件一律通过（`skipped: true`），因此存量 100+ 事件不受影响。
+ * 本函数是纯函数：不抛错、不写日志，由调用方决定「告警 / 计数 / 丢弃 / 阻断」。
+ */
+const SCHEMA_TYPE_CHECKS = {
+  string: (value) => typeof value === "string",
+  number: (value) => typeof value === "number" && Number.isFinite(value),
+  boolean: (value) => typeof value === "boolean",
+  object: (value) => value !== null && typeof value === "object" && !Array.isArray(value),
+  array: (value) => Array.isArray(value),
+};
+
+export function validateEventPayload(type, data = {}) {
+  const name = String(type || "");
+  const spec = byType.get(name) || null;
+  const schema = spec?.schema || null;
+  if (!schema) return { ok: true, skipped: true, type: name, missing: [], wrongType: [] };
+  const payload = data && typeof data === "object" ? data : {};
+  const missing = (schema.required || []).filter((key) => payload[key] === undefined || payload[key] === null);
+  const wrongType = Object.entries(schema.types || {})
+    .filter(([key, kind]) => {
+      if (payload[key] === undefined) return false;
+      const check = SCHEMA_TYPE_CHECKS[kind];
+      return check ? !check(payload[key]) : false;
+    })
+    .map(([key, kind]) => `${key} 期望 ${kind}`);
+  return { ok: missing.length === 0 && wrongType.length === 0, skipped: false, type: name, missing, wrongType };
+}
 
 export function eventSpec(type) {
   return byType.get(String(type || "")) || null;

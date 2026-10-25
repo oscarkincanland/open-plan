@@ -262,8 +262,47 @@ SSE Event Types:
 ```
 font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
 ```
+> 注：上行为**等宽栈**（代码 / 路径 / 参数 / 数字场景）。正文实际使用系统 sans 栈，见下方「排版与字体（现状）」。
 
 ### 间距与细节
 - 基准字号 12px，行高 18px；按钮圆角 3px，padding 2-8px；卡片圆角 3-4px
 - 全局滚动条：8px 细滚动条、圆角、hover 高亮，CSS 变量自动适配暗/亮主题
 - 头像：圆形，用户蓝色系、agent 青绿色
+
+### 设计令牌三层结构（2026-10-18 起）
+后两层只允许引用上一层；新增颜色必须落到令牌层，不得在规则里直写色值——由 `scripts/设计令牌一致性测试.mjs` 的「硬编码色值棘轮」守护（当前 393 处 / 129 种，只允许下降）。
+
+第 1 层 · 基础色阶（只声明取值，不带语义）
+```
+--op-gray-000 → --op-gray-900   共 13 阶（暗色方向 000 最暗、900 最亮）
+--op-blue-400/500/600   --op-green-500   --op-red-500   --op-amber-500
+```
+
+第 2 层 · 语义令牌（只引用基础色阶 / 前景透明度，不写死基础层已提供的色值）
+```
+--body-bg  --panel-bg  --panel2-bg  --surface  --text  --muted  --dim
+--border  --selected  --accent  --accent-hi  --success  --error  --warning
+--user-bg  --user-fg      （成对声明：无障碍测试会校验配对）
+```
+
+第 3 层 · 组件变量（组件只消费本层）
+```
+--op-comp-chat-bg  --op-comp-toolcard-border
+--op-comp-toolcard-pending  --op-comp-toolcard-success  --op-comp-toolcard-error
+```
+
+以上三层**目前只存在于 Qoder 视觉层**（见下节）；默认主题仍使用本文档上方「配色 / 亮色主题」两节的取值。
+
+### Qoder 视觉层（opt-in · 默认关）
+- **生效条件**：`<html data-oaw-style="qoder">`；由运行开关 `qoderStyle` / `OAW_QODER_STYLE` 控制，**默认关闭**——关闭时外观逐像素回到 pi-dark 基线（只「覆盖」变量取值，不删不改名任何既有规则）。
+- **内容**：
+  1. 整站配色：中性灰阶打底（去掉蓝紫倾向）+ 单一冷蓝强调 + 语义三色统一饱和（§3.1）；
+  2. 令牌三层结构（见上节）；
+  3. 组件交互规范（§3.3）：执行流状态点五态（运行 = 强调蓝 + 呼吸 / 完成 = 绿 / 降级 = 琥珀 / 失败 = 红 / 无状态 = 中性灰）、思考块左竖线 2px · 强调色 22%（hover 45%）、工具卡片状态色只留左侧 3px 边条与状态图标（本体中性）、审批卡左侧形态条 + 拒绝按钮红描边。
+- **动效令牌**：`--dur-fast 120ms / --dur-base 200ms / --dur-slow 320ms / --ease-out`，只作用于 `transform` / `opacity`；统一动效闸门（`data-reduce-motion` / `data-motion-level="off"`）仍可用 `!important` 覆盖，关闭动效后呼吸点静止、信息不丢。
+- **回滚**：见 `docs/plans/2026-10-18-004-Qoder优化开关与回滚说明.md`（开关级 / 单文件级 / 整站级三层）。
+
+### 排版与字体（现状 · 2026-10-18 核对）
+- 正文：系统 sans 栈 —— `-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif`；Qoder 视觉层对 `body` 显式固化同一栈，避免被 `inherit` 链改回等宽。
+- 代码 / 路径 / 参数 / 数字：等宽栈 —— `ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace`（局部使用 `'SF Mono', 'Fira Code', …`）。
+- **待办（需确认）**：计划里「把 font-family 拆为 `--font-sans` / `--font-mono` 两个令牌」尚未做——它要改基线 `body` 的字体声明行（外观核心行），故先以文档记录现状取值，改动等确认。

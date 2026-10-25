@@ -20,7 +20,9 @@ import { applyObjectiveDowngrade } from "../server/运行轨迹.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
-const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
+// 统一换行符：本仓库在 Windows 工作区是 CRLF、CI（Linux）是 LF，
+// 而下面若干断言用 `\n` 写多行源码形状，不归一会「本地红、CI 绿」地漂移。
+const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8").replace(/\r\n/g, "\n");
 let failed = 0;
 function ok(msg) { console.log(`  ✓ ${msg}`); }
 function fail(msg) { console.error(`  ✗ ${msg}`); failed = 1; }
@@ -111,8 +113,10 @@ test("内置工具清单全部映射到确定图标（无遗漏、无异常）",
     bash: "terminal", officecli: "doc",
     grep: "search", find: "search", ls: "search", web_search: "search", web_fetch: "search",
     kb_search: "book", kb_read: "book", skills_search: "book", skills_read: "book", memory_update: "book",
-    map_read: "map", map_datasets: "map", map_edit: "map", map_import: "map", map_analyze: "map", map_save_analysis: "map", map_clear_analysis: "map",
+    map_read: "map", map_datasets: "map", map_edit: "map", map_import: "map", map_analyze: "map", map_template: "map", map_save_analysis: "map", map_clear_analysis: "map",
     review_copy: "shield", ask_user: "comment", todo: "list", complete_task: "check", run_subagent: "flow",
+    // P2-A：编辑流水线与子代理同属编排类
+    editorial_pipeline: "flow",
   };
   const unmapped = [];
   for (const name of names) {
@@ -335,7 +339,8 @@ test("中断不把 Runtime 标成失败（否则下一条消息被当作失效�
 test("abort 接口返回真实结果，并按 client 兜底查找在跑会话", () => {
   assert.match(agent源, /resolveLiveEntry\(clientId\)/, "找不到精确 key 时要按 client 前缀兜底");
   assert.match(agent源, /return \{ ok: true, cancelled: false, reason: "no-live-session" \}/, "没有在跑的任务要如实返回");
-  assert.match(index源, /res\.json\(\{ \.\.\.result, runId: result\.runId \|\| runId \|\| null \}\)/, "中断结果要回传 runId");
+  // P2-3 起该响应还会附带 stillQueued（取消后仍排队的轮次），因此只锁定前缀形状，不写死整行。
+  assert.match(index源, /res\.json\(\{ \.\.\.result, runId: result\.runId \|\| runId \|\| null/, "中断结果要回传 runId");
   assert.match(index源, /const running = listRuns\(\{ limit: 20 \}\)\.find/, "内存 key 不匹配时按 Run 记录兜底取消");
 });
 

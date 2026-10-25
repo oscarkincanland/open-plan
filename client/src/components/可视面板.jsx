@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
-import { mapVisual, mapVisualSources, mapDemoAnalysis } from "../api.js";
+import { mapVisual, mapVisualSources, mapDemoAnalysis, mapReport } from "../api.js";
+import { flag } from "../运行开关.js";
+import { notifySuccess, notifyError } from "./Feedback.jsx";
 
 /**
  * 可视面板（阶段 2 §2.2）
@@ -74,6 +76,7 @@ export default function 可视面板({
   const [visible, setVisible] = useState(true);
   const [sources, setSources] = useState([]);
   const [askText, setAskText] = useState("");
+  const [reportBusy, setReportBusy] = useState(false);
   const renderedIdRef = useRef(null);
 
   const current = useMemo(() => DATASETS.find((d) => d.id === dataset) || DATASETS[0], [dataset]);
@@ -267,17 +270,43 @@ export default function 可视面板({
     setAskText("");
   }, [askText, onAskAgent]);
 
+  // GIS G8：分析结果一键成文（flag mapReport，默认关；产物落工作区根目录）。
+  const generateReport = useCallback(async () => {
+    if (!descriptor || reportBusy) return;
+    setReportBusy(true);
+    try {
+      const stats = descriptor.stats || {};
+      const bullets = [
+        `要素数量：${stats.count ?? 0}`,
+        Number.isFinite(stats.min) ? `值域：${stats.min} – ${stats.max}` : "",
+        Number.isFinite(stats.avg) ? `均值：${stats.avg}` : "",
+        descriptor.lines?.features?.length ? `流向要素：${descriptor.lines.features.length} 条` : "",
+        descriptor.styleHint?.field ? `指标列：${descriptor.styleHint.field}` : "",
+      ].filter(Boolean);
+      const r = await mapReport({
+        workspace,
+        project,
+        title: descriptor.title || "地图分析报告",
+        sections: [{ heading: "结果摘要", bullets }],
+      });
+      notifySuccess(`报告已生成：${r.fileName}`);
+    } catch (e) {
+      notifyError(`报告生成失败：${e.message}`);
+    }
+    setReportBusy(false);
+  }, [descriptor, reportBusy, workspace, project]);
+
   const stats = descriptor?.stats || {};
   const canSave = Boolean(descriptor?.geojson);
 
   return (
     <div className="vp" role="dialog" aria-label="可视面板">
       <div className="vp-head">
-        <Icon name="chart" size={13} />
+        <Icon name="chart" size={14} />
         <span className="vp-title">可视化</span>
         <span className="vp-sub">六个分析面板已整合到这里</span>
         <button type="button" className="mp-op" onClick={onClose} title="关闭可视面板" aria-label="关闭可视面板">
-          <Icon name="close" size={13} />
+          <Icon name="close" size={14} />
         </button>
       </div>
 
@@ -303,7 +332,7 @@ export default function 可视面板({
         </div>
 
         <button className="vp-advanced-toggle" type="button" onClick={() => setAdvanced((v) => !v)} aria-expanded={advanced}>
-          <Icon name={advanced ? "chevronDown" : "chevronRight"} size={11} /> 高级（手动选数据集与参数）
+          <Icon name={advanced ? "chevronDown" : "chevronRight"} size={12} /> 高级（手动选数据集与参数）
         </button>
 
         {advanced && (
@@ -361,7 +390,7 @@ export default function 可视面板({
         {descriptor && (
           <div className="vp-card">
             <div className="vp-card-head">
-              <Icon name="star" size={11} />
+              <Icon name="star" size={12} />
               <span className="vp-card-name" title={descriptor.title}>{descriptor.title}</span>
               <span className="vp-card-badge">临时</span>
             </div>
@@ -393,6 +422,17 @@ export default function 可视面板({
               >
                 <Icon name="download" size={12} /> 保存为图层
               </button>
+              {flag("mapReport") && (
+                <button
+                  className="btn-sm"
+                  type="button"
+                  onClick={generateReport}
+                  disabled={reportBusy}
+                  title="把当前分析结果整理为 Word 报告（落到工作区根目录）"
+                >
+                  <Icon name={reportBusy ? "loading" : "file"} size={12} /> {reportBusy ? "生成中…" : "生成分析报告"}
+                </button>
+              )}
               {conversationMode === "chat" && <span className="vp-card-hint">当前 Chat 模式只做临时可视化；保存需切到 Work</span>}
             </div>
           </div>

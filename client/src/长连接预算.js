@@ -41,6 +41,35 @@ export function streamEvents(limit = 20) {
   return eventLog.slice(-limit);
 }
 
+/**
+ * P2-1：SSE 事件缺号（游标跳变）记录。
+ * 缺号一般来自服务端的增量淘汰或回放窗口截断（截断另有 truncated / stream_resync 兜底），
+ * 这里只做可观测，不改变重连与消费行为。
+ * @returns {number} 累计缺号次数（1 表示这是本次会话首次，调用方可据此只警告一次）
+ */
+const cursorGaps = [];
+
+export function noteCursorGap(from, to) {
+  const missed = Math.max(0, Number(to) - Number(from) - 1);
+  cursorGaps.push({ at: Date.now(), from: Number(from), to: Number(to), missed });
+  if (cursorGaps.length > 40) cursorGaps.splice(0, cursorGaps.length - 40);
+  note("cursor-gap", `${from}→${to}`, `缺 ${missed} 帧`);
+  return cursorGaps.length;
+}
+
+export function cursorGapStats() {
+  return {
+    count: cursorGaps.length,
+    missed: cursorGaps.reduce((sum, item) => sum + item.missed, 0),
+    latest: cursorGaps.slice(-5),
+  };
+}
+
+/** 清空缺号记录（切换会话/重置流预算时同步复位，避免跨会话串味）。 */
+export function resetCursorGaps() {
+  cursorGaps.length = 0;
+}
+
 export function streamSnapshot() {
   return [...streams.values()].map((entry) => ({
     key: entry.key,
@@ -158,5 +187,54 @@ export function waitForStreamSlot(listener) {
 export function resetStreams() {
   streams.clear();
   eventLog.length = 0;
+  resetCursorGaps();
   publish();
+}
+
+/**
+ * 安静关闭 EventSource（消除 net::ERR_ABORTED 控制台噪音）：
+ *
+ * 流式响应（SSE）永远不会"完成"，浏览器 cancel 一个未完成的请求就会在控制台
+ * 记一条 net::ERR_ABORTED——关得再"优雅"也躲不掉。所以：
+ *   1. CONNECTING 阶段：等连接落定（open/error）再按后续分支处理，最长 2 秒兜底；
+ *   2. OPEN 阶段：先请服务端把这条 SSE 响应优雅 end（POST /api/agent/stream/close），
+ *      响应完整结束后请求记为"完成"，此后 error 事件到达、再本地 close() 只会
+ *      取消重连定时器，网络层已无在途请求可中止 → 无噪音。
+ * meta 传 { client, thread }（服务端据此定位旧流）；服务端不可达或事件迟到时
+ * 按兜底计时器直接关——最多保留一条噪音，不影响功能。
+ */
+export function closeEventSourceQuietly(es, meta = {}) {
+  if (!es) return;
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    try { es.close(); } catch { /* 连接已销毁，忽略 */ }
+  };
+  try {
+    if (typeof EventSource === "undefined") { finish(); return; }
+    if (es.readyState === EventSource.CLOSED) { finish(); return; }
+    if (es.readyState === EventSource.OPEN && (meta.client || meta.thread)) {
+      // 服务端 end 响应后 EventSource 会收到 error（此时请求已"完成"），
+      // 那一刻关最干净；fetch 返回或兜底计时器是双保险。
+      es.addEventListener("error", finish, { once: true });
+      fetch("/api/agent/stream/close", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client: meta.client || "", thread: meta.thread || "" }),
+      })
+        .catch(() => {})
+        .finally(() => { setTimeout(finish, 150); });
+      setTimeout(finish, 2000);
+      return;
+    }
+    if (es.readyState === EventSource.CONNECTING) {
+      // 连接落定后按 OPEN/CLOSED 分支处理；error 到达说明请求已结束，直接关即可。
+      es.addEventListener("open", () => closeEventSourceQuietly(es, meta), { once: true });
+      es.addEventListener("error", finish, { once: true });
+      setTimeout(finish, 2000);
+      return;
+    }
+    finish();
+  } catch { finish(); }
 }

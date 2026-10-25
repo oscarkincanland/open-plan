@@ -6,6 +6,7 @@ import { useTheme, SKINS } from "../theme.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
 import { ACTIVITY_DISPLAY_OPTIONS, ANSWER_DETAIL_OPTIONS, MARQUEE_COLORS, MARQUEE_SPEEDS, MARQUEE_STYLES, MOTION_LEVELS, PREVIEW_AUTO_OPEN_OPTIONS, useAppearance, useAppearanceSetter } from "../界面外观.js";
 import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentModelConfigs, agentNetworkSettings, agentNetworkSettingsSave, agentPlanApply, agentPlanDisconnect, agentPlanModels, agentPlans, agentProviderCatalog, agentSetDefaultModel, archiveProject, classifyProjects, createProject, deleteAgentModelConfig, fetchAgentModels, getPermissionRules, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, removePermissionRule, saveAgentModelConfig, searchSettings, searchSettingsSave, searchSettingsTest, updateProject, updateProjectSettings } from "../api.js";
+import { notifyError, askConfirm } from "./Feedback.jsx";
 
 /**
  * 设置面板（左侧栏底部 tab）
@@ -349,7 +350,7 @@ const [providerConfigMsg, setProviderConfigMsg] = useState("");
       const result = await removePermissionRule(rule);
       if (Array.isArray(result?.rules)) setPermissionRules((prev) => ({ ...(prev || { mode: "ask", defaults: [] }), user: result.rules }));
     } catch (error) {
-      window.alert(error.message || "撤销规则失败");
+      notifyError(error.message || "撤销规则失败");
     }
     setPermissionBusy(false);
   }, []);
@@ -430,7 +431,7 @@ const [providerConfigMsg, setProviderConfigMsg] = useState("");
   const clearSearchCredentials = useCallback(async () => {
     const backend = searchDraft.backend;
     const label = searchMeta.backends.find((item) => item.id === backend)?.name || backend;
-    if (!window.confirm(`确定清除「${label}」已保存的凭据/地址？清除后需重新配置才能使用该后端。`)) return;
+    if (!(await askConfirm(`确定清除「${label}」已保存的凭据/地址？清除后需重新配置才能使用该后端。`))) return;
     setSearchSaving(true);
     setSearchSaveMsg("");
     try {
@@ -577,7 +578,7 @@ await agentAuthSave(provider, key);
   };
 
   const removeAuth = async (provider) => {
-    if (!confirm(`删除 ${provider} 的 API Key？`)) return;
+    if (!(await askConfirm(`删除 ${provider} 的 API Key？`))) return;
 await agentAuthRemove(provider).catch(() => {});
     const r = await agentAuth();
     setProviders(r.providers || {});
@@ -644,7 +645,7 @@ await agentAuthRemove(provider).catch(() => {});
   };
 
   const disconnectPlanAccess = async (plan) => {
-    if (!confirm(`断开 ${plan.name}？将移除其模型与凭据（不影响其他供应商）。`)) return;
+    if (!(await askConfirm(`断开 ${plan.name}？将移除其模型与凭据（不影响其他供应商）。`))) return;
     try {
       await agentPlanDisconnect(plan.planId);
       await loadPlans();
@@ -664,7 +665,7 @@ await agentAuthRemove(provider).catch(() => {});
     const providerCount = Number(piImport.credentialCount ?? piImport.providers?.length ?? 0);
     const sessionCount = Number(piImport.sessionCount ?? piImport.sessions?.count ?? 0);
     const sessionNotice = piImportSessions ? `，并导入最多 ${sessionCount} 个历史会话` : "；历史会话暂不导入";
-    if (!confirm(`将本地 Pi 的模型配置和 ${providerCount} 个供应商凭据复制为规聚独立快照${sessionNotice}。源配置不会被修改。`)) return;
+    if (!(await askConfirm(`将本地 Pi 的模型配置和 ${providerCount} 个供应商凭据复制为规聚独立快照${sessionNotice}。源配置不会被修改。`))) return;
     setPiImporting(true);
     setPiImportMsg("正在复制配置快照…");
     try {
@@ -832,7 +833,7 @@ const authResult = await agentAuth();
 
   const removeProviderConfig = async (provider) => {
     const target = modelConfigs.find((item) => item.provider === provider);
-    if (!target || !confirm(`删除供应商“${target.name || provider}”及其凭据？`)) return;
+    if (!target || !(await askConfirm(`删除供应商“${target.name || provider}”及其凭据？`))) return;
     try {
       await deleteAgentModelConfig(provider);
       setModelConfigs((items) => items.filter((item) => item.provider !== provider));
@@ -919,8 +920,8 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
     { label: "真实调用", value: probeMsg.startsWith("连接成功") ? "已通过" : "尚未测试", ok: probeMsg.startsWith("连接成功") },
   ];
 
-  const resetAll = () => {
-    if (!confirm("确定恢复默认设置并清空界面状态？将刷新页面。")) return;
+  const resetAll = async () => {
+    if (!(await askConfirm("确定恢复默认设置并清空界面状态？将刷新页面。"))) return;
     try {
       localStorage.removeItem("oaw_settings");
       localStorage.removeItem("oaw_ui_state_v1");
@@ -1222,7 +1223,7 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
               <small>执行中</small>
             </div>
             <details open className="message-process-fold run-activity-fold is-live sp-activity-marquee-preview">
-              <summary><Icon name="flow" size={11} /> 对话执行过程<span>实时</span></summary>
+              <summary><Icon name="flow" size={12} /> 对话执行过程<span>实时</span></summary>
             </details>
           </div>
         </div>
@@ -1303,7 +1304,7 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
               <label className="model-provider-check"><input type="checkbox" checked={providerDraft.clearApiKey} onChange={(event) => setProviderDraft((value) => ({ ...value, clearApiKey: event.target.checked, apiKey: "" }))} /> 清除已保存 Key</label>
               <label className="model-provider-check"><input type="checkbox" checked={providerDraft.enabled} onChange={(event) => setProviderDraft((value) => ({ ...value, enabled: event.target.checked }))} /> 启用供应商</label>
             </div>
-            <div className="model-provider-models-head"><strong>模型</strong><button className="btn-xs" onClick={fetchModelsFromUrl} disabled={modelsFetching} title="调用 {接口地址}/models 拉取模型列表并合并到下方"><Icon name="download" size={11} /> {modelsFetching ? "拉取中…" : "从接口拉取"}</button><button className="btn-xs" onClick={() => setProviderDraft((value) => ({ ...value, models: [...value.models, { id: "", name: "", contextWindow: "", reasoning: true, vision: false, enabled: true }] }))}><Icon name="plus" size={11} /> 添加模型</button></div>
+            <div className="model-provider-models-head"><strong>模型</strong><button className="btn-xs" onClick={fetchModelsFromUrl} disabled={modelsFetching} title="调用 {接口地址}/models 拉取模型列表并合并到下方"><Icon name="download" size={12} /> {modelsFetching ? "拉取中…" : "从接口拉取"}</button><button className="btn-xs" onClick={() => setProviderDraft((value) => ({ ...value, models: [...value.models, { id: "", name: "", contextWindow: "", reasoning: true, vision: false, enabled: true }] }))}><Icon name="plus" size={12} /> 添加模型</button></div>
             <div className="model-provider-models">
               {providerDraft.models.map((model, index) => <div className="model-provider-model-row" key={`${index}-${model.id}`}>
                 <input className="sp-input" value={model.id} onChange={(event) => updateProviderModel(index, { id: event.target.value })} placeholder="模型 ID" />
@@ -1323,6 +1324,7 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
           <供应商库
             catalog={providerCatalog}
             refreshing={catalogLoading}
+            onCatalogRefreshed={loadProviderCatalog}
             onImported={async (result) => {
               await Promise.allSettled([loadModelConfigs(), loadProviderCatalog(), refreshModelCatalog(), loadDiagnostics()]);
               if (result?.defaultModel) onModelChange?.(String(result.defaultModel).split("/").slice(1).join("/"));
@@ -1338,29 +1340,40 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
           <div className="model-credentials-head">
             <div>
               <strong>账号登录（订阅制）</strong>
-              <p>Pi 内置 {providerCatalog?.summary?.oauth ?? 0} 个支持"账号登录"的供应商：授权走浏览器 / 设备码，不需要 API Key。</p>
+              <p>共 {providerCatalog?.summary?.oauth ?? 0} 个供应商支持「账号登录」：授权走浏览器 / 设备码，不需要 API Key。</p>
             </div>
             <button className="btn-sm" onClick={importLocalPi} disabled={!piImport?.available || piImporting} title="把本地 Pi 已授权的凭据复制为规聚独立快照"><Icon name="download" size={12} /> {piImporting ? "导入中…" : "从本地 Pi 导入配置"}</button>
           </div>
           <div className="prov-oauth-list">
             {(providerCatalog?.providers || []).filter((provider) => provider.loginMethods?.includes("oauth")).map((provider) => {
               const identity = providerIdentity(provider.id);
+              const loginCmd = `pi auth login ${provider.id}`;
               return <div className="prov-oauth-item" key={provider.id}>
                 <span className="prov-mark"><ProviderIcon provider={identity.icon} size={16} /></span>
                 <div>
                   <strong>{provider.name || provider.id}</strong>
                   <span className="prov-oauth-sub">{provider.auth?.oauth?.name || "账号登录"}{provider.auth?.oauth?.isSubscription ? " · 订阅" : ""}</span>
+                  <button
+                    type="button"
+                    className="prov-oauth-cmd"
+                    title={`点击复制：${loginCmd}`}
+                    onClick={() => { navigator.clipboard?.writeText(loginCmd).catch(() => {}); }}
+                  >
+                    <code>{loginCmd}</code> 复制
+                  </button>
                 </div>
-                <span className={`sp-badge ${provider.configured ? "ok" : ""}`}>{provider.configured ? "已添加" : "未添加"}</span>
-                {provider.importable && <button className="btn-xs" onClick={() => setSettingsSection("providers")} title="在下方供应商库里添加">去添加</button>}
+                <span className={`sp-badge ${provider.configured ? "ok" : ""}`}>{provider.configured ? "已授权" : "未授权"}</span>
+                {provider.importable && <button className="btn-xs" onClick={() => setSettingsSection("providers")} title="在上方供应商库里添加">去添加</button>}
               </div>;
             })}
             {!providerCatalog && <div className="sp-note">正在读取内置目录…</div>}
           </div>
           <div className="sp-note">
-            规聚不代管浏览器授权：请先在 Pi 里执行 <code>/login 供应商</code> 完成账号授权，
-            再点上方「从本地 Pi 导入配置」把凭据带进来（本地 Pi 配置不会被改动）。
-            同一个供应商如果也支持 API Key（如 Anthropic、OpenAI、xAI），直接用 Key 添加即可。
+            规聚不代管浏览器授权，登录三步走：
+            ① 在终端执行 <code>pi auth login 供应商id</code>（点击上方命令可复制），浏览器完成账号授权；
+            ② 回规聚点「从本地 Pi 导入配置」，把已授权凭据复制为规聚独立快照（本地 Pi 配置不会被改动）；
+            ③ 在供应商库「已添加」里确认，即可在模型列表选用。
+            同一个供应商如果也支持 API Key（如 Anthropic、OpenAI、xAI），直接用 Key 添加更简单。
           </div>
         </div>
         <div className="model-control-grid">
@@ -1459,7 +1472,7 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
             <button className="btn-sm" onClick={() => probe()} disabled={probeLoading || (!activeModel && !defaultModel)} title="使用已保存的凭据发送最小请求">{probeLoading ? "测试中…" : "测试已保存凭据"}</button>
             {authMsg && <span className="sp-auth-msg">{authMsg}</span>}
           </div>
-          {providers && Object.keys(providers).length > 0 && <div className="sp-auth-list model-auth-list">{Object.entries(providers).map(([p, v]) => <span key={p} className="sp-auth-item"><Icon name="check" size={11} /><code>{PROVIDER_LABELS[p] || p}</code> {v.masked}{authErrors[p] && <span className="sp-badge warn" title={authErrors[p].message}>凭据失效</span>}<button className="btn-xs" onClick={() => removeAuth(p)} title={`删除 ${p} 凭据`}>删除</button>{authErrors[p] && <span className="sp-badge warn">重新保存 Key 可恢复</span>}</span>)}</div>}
+          {providers && Object.keys(providers).length > 0 && <div className="sp-auth-list model-auth-list">{Object.entries(providers).map(([p, v]) => <span key={p} className="sp-auth-item"><Icon name="check" size={12} /><code>{PROVIDER_LABELS[p] || p}</code> {v.masked}{authErrors[p] && <span className="sp-badge warn" title={authErrors[p].message}>凭据失效</span>}<button className="btn-xs" onClick={() => removeAuth(p)} title={`删除 ${p} 凭据`}>删除</button>{authErrors[p] && <span className="sp-badge warn">重新保存 Key 可恢复</span>}</span>)}</div>}
         </div>
         <div className="sp-note">模型目录由规聚独立管理，也可从本地 Pi 一次性导入；连接测试只发送最小请求，不写入会话。若出现“已接收信息”长时间无响应，先在这里刷新目录并测试真实连接，再开始 Agent 任务。</div>
       </div>}

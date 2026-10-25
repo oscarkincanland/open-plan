@@ -21,7 +21,13 @@ export async function api(path, opts = {}) {
     ...opts,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(data.error || `HTTP ${res.status}`);
+    // 保留服务端结构化错误信息（如 SESSION_BUSY 的占用详情），供界面区分处理
+    if (data.code) error.code = data.code;
+    if (data.detail) error.detail = data.detail;
+    throw error;
+  }
   return data;
 }
 
@@ -137,9 +143,39 @@ export const browserClose = (client, thread, { force = false } = {}) =>
   api("/api/browser/close", { method: "POST", body: JSON.stringify({ client, thread, force }) });
 export const browserReset = (client, thread) =>
   api("/api/browser/reset", { method: "POST", body: JSON.stringify({ client, thread }) });
+export const browserStreamPause = (payload = {}) =>
+  api("/api/browser/stream-pause", { method: "POST", body: JSON.stringify(payload) });
+export const browserFullpage = (payload = {}) =>
+  api("/api/browser/fullpage", { method: "POST", body: JSON.stringify(payload) });
+export const browserPdf = (payload = {}) =>
+  api("/api/browser/pdf", { method: "POST", body: JSON.stringify(payload) });
+export const mapReport = (payload = {}) =>
+  api("/api/map/report", { method: "POST", body: JSON.stringify(payload) });
+// G7：批量导出（flag OAW_MAP_EXPORT，默认关）
+export const mapExportBatch = (payload = {}) =>
+  api("/api/map/export/batch", { method: "POST", body: JSON.stringify(payload) });
+export const mapExportStatus = (id) =>
+  api(`/api/map/export/batch?id=${encodeURIComponent(id)}`);
 
-export const listModels = () => api("/api/models");
-export const refreshModels = () => api("/api/models/refresh", { method: "POST" });
+let modelsCache = null;
+let modelsCacheAt = 0;
+let modelsInflight = null;
+/**
+ * 模型目录：多组件（App 引导、ChatPanel 模型选择器）都会拉取，
+ * 这里做 10 秒单飞缓存——既减少重复请求，也把"页面刷新时恰好在途
+ * 被中止产生 net::ERR_ABORTED 控制台噪音"的窗口压到最小。
+ * refreshModels（POST /api/models/refresh）会立即失效缓存。
+ */
+export function listModels({ maxAgeMs = 10000 } = {}) {
+  const now = Date.now();
+  if (modelsCache && now - modelsCacheAt < maxAgeMs) return Promise.resolve(modelsCache);
+  if (modelsInflight) return modelsInflight;
+  modelsInflight = api("/api/models")
+    .then((data) => { modelsCache = data; modelsCacheAt = Date.now(); return data; })
+    .finally(() => { modelsInflight = null; });
+  return modelsInflight;
+}
+export const refreshModels = () => api("/api/models/refresh", { method: "POST" }).then((data) => { modelsCache = null; return data; });
 export const agentModelConfigs = () => api("/api/agent/model-configs");
 export const saveAgentModelConfig = (payload = {}) => api("/api/agent/model-configs", { method: "POST", body: JSON.stringify(payload) });
 export const deleteAgentModelConfig = (provider) => api(`/api/agent/model-configs/${encodeURIComponent(provider)}`, { method: "DELETE" });
@@ -149,6 +185,7 @@ export const fetchAgentModels = (payload = {}) => api("/api/agent/model-configs/
 export const agentProviderCatalog = () => api("/api/agent/provider-catalog");
 export const agentProviderDetail = (provider) => api(`/api/agent/provider-catalog/${encodeURIComponent(provider)}`);
 export const agentProviderImport = (payload = {}) => api("/api/agent/provider-catalog/import", { method: "POST", body: JSON.stringify(payload) });
+export const agentProviderCatalogRefresh = () => api("/api/agent/provider-catalog/refresh", { method: "POST" });
 export const agentSetDefaultModel = (provider, model) => api("/api/agent/default-model", { method: "POST", body: JSON.stringify({ provider, model }) });
 export const setAgentModel = (client, model, thread) =>
   api("/api/agent/model", { method: "POST", body: JSON.stringify({ client, thread, model }) });
@@ -226,8 +263,20 @@ export const resolveContext = (references, text) => api("/api/context/resolve", 
 export const readContext = (reference, query, range) => api("/api/context/read", { method: "POST", body: JSON.stringify({ reference, query, range }) });
 
 export const listSkills = () => api("/api/skills");
+// P1-8 对象栏自取数用（均为既有只读端点，无新增后端接口）
+export const listArtifacts = (options = {}) => {
+  const params = new URLSearchParams();
+  if (options.cwd) params.set("cwd", options.cwd);
+  if (options.projectId) params.set("projectId", options.projectId);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return api(`/api/artifacts${suffix}`);
+};
+export const getStatus = () => api("/api/status");
+export const listAgentRuntimes = () => api("/api/agent/runtimes");
 export const preflightSkills = (workflowId, skills = []) => api("/api/skills/preflight", { method: "POST", body: JSON.stringify({ workflowId, skills }) });
 export const listWorkflows = () => api("/api/workflows");
+// M4.4 领域工作流（开关 domainWorkflows）：只读 preflight 试算，不产生任何副作用
+export const preflightDomainWorkflow = (payload = {}) => api("/api/domain-workflows/preflight", { method: "POST", body: JSON.stringify(payload) });
 export const validateWorkflow = (id) => api(`/api/workflows/${encodeURIComponent(id)}/validate`);
 export const listAgents = () => api("/api/agents");
 export const createAgent = (payload) => api("/api/agents", { method: "POST", body: JSON.stringify(payload || {}) });
