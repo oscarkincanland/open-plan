@@ -26,6 +26,7 @@ const 运行展示投影 = read("../client/src/运行展示投影.js");
 const 智能体管理 = read("../server/智能体管理.mjs");
 const 智能体运行时 = read("../server/agent.mjs");
 const 服务端索引 = read("../server/index.mjs");
+const 执行句柄源码 = read("../server/执行句柄.mjs");
 const 运行记录 = read("../server/runs.mjs");
 const 事件注册表 = read("../server/事件注册表.mjs");
 const 事件展示 = read("../client/src/事件展示.js");
@@ -166,7 +167,7 @@ assert.match(智能体运行时, /function currentModelSpec\(entry\)/, "应能�
 assert.match(事件注册表, /\{ type: "model_switched", lifecycle: true, persist: true/, "model_switched 必须登记进事件注册表");
 assert.match(事件展示, /case "model_switched": \{/, "前端事件展示应有 model_switched 文案");
 assert.match(事件展示, /模型切换已排队：本轮结束后切到/, "排队文案应说明「本轮结束后生效」");
-assert.match(服务端索引, /model: effectiveModel \|\| null/, "beginRun 应记录本轮实际生效的模型");
+assert.match(执行句柄源码, /model: effectiveModel || null/, "beginRun 应记录本轮实际生效的模型（P1-1 起下沉到执行句柄）");
 assert.match(运行记录, /model: model \? String\(model\) : null/, "Run 记录应保存本轮模型");
 assert.match(运行展示投影, /model: String\(data\.model \|\| previous\?\.model \|\| ""\)/, "每轮摘要应携带本轮模型");
 assert.match(对话面板, /case "model_switched": \{/, "前端应消费 model_switched 事件");

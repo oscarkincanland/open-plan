@@ -247,6 +247,9 @@ P0-2（背压）与 P1-1（执行句柄）是强依赖前置：§4 领域工作�
   - 依赖：**P0-3（draining 属于句柄状态机的一部分）**
   - 输出：`server/执行句柄.mjs`；`index.mjs` 路由瘦身
   - 验证：`test:main-flow`、`test:cross-layer`、`test:pi-iteration` 全绿；新增 `scripts/执行句柄契约测试.mjs`（断言 7 个方法存在、`可用性()` 三态可达、`中断` 后可再次 `执行`）
+  - 🟡 **2026-10-25 部分落地（保持未勾选）**：① **契约已交付**——`server/执行句柄.mjs` 导出 `执行` / `中断` / `响应交互` / `释放` / `订阅` / `可用性`（三态） / `能力` 七个方法；② **Run 生命周期已下沉**——建 Run（含 steer 合并）、附件暂存、`prompt`/`steer`/`capability_plan`/`runtime_health` 事件记录、`capability_plan`/`run_admitted` 广播、后台回合收尾（原 `executeAgentRun` 整体迁入，判断与事件顺序逐字保留）；③ **三条路由已改为调用句柄**——`/api/agent/prompt`、`/api/agent/abort`、`/api/agent/answer`；④ **依赖注入**避免句柄反向依赖 `index.mjs`（`emit` / `recordDiagnostic` / `agentKey` 由路由注入）。
+  - ⚠️ **与原文口径的差异（准入未下沉）**：原文要求路由「只做参数校验与响应封装」。本批按「请求级预检 vs Run 生命周期」切分——**工作区写权限探针、运行时就绪、模型同步、引用解析、技能预检、任务信封构造仍留在路由**。把这部分也搬进句柄需连带迁出 7 个 `index.mjs` 局部助手（`recordAgentDiagnostic` / `readSessionHeader` / `findSessionFile` / `requireWorkspaceWriteForTask` / `scanSkills` / `preflightSkills` / `agentKey`），改动面覆盖核心执行链、回归风险高于收益，故留待后续批次。
+  - ✅ **验证**：新增 `scripts/执行句柄契约测试.mjs`（`npm run test:exec-handle`，**8 例**：七方法齐备 / 三态可达 / 执行准入应答 / **中断后可再次执行** / 订阅与退订 / 释放摘除会话 / 响应交互 / 能力自述）；`test:main-flow`、`test:cross-layer`、`test:pi-iteration`、`test:event-registry` 全绿；`npm run verify` 唯一失败项仍是基线既有的「Office 路由未识别」；**真实服务端到端**：`/api/agent/prompt` 事件序列 `run_started → prompt → capability_plan → runtime_health → … → assistant_final → run_finished`（终态 `completed`），`/api/agent/abort` 终态 `cancelled`（`run_cancel_requested → aborted → run_finished`）。
 
 - [ ] **P1-2 事件负载 schema 校验**
   - 输入：`server/事件注册表.mjs`（130+ 类型）、`scripts/能力契约测试.mjs`（复用其模式）
@@ -567,6 +570,7 @@ T0.1 ─┬─ P0-4 ─┬─ P1-7 ─┬─ §3.3 ─┐
 |---|---|---|---|
 | 2026-10-18 | — | 待评审 | 本文档由 `Qoder对标评审与交通规划Harness方案.html` 拆解生成，配套测试计划见 `docs/plans/2026-10-18-002-Qoder对标整改迭代测试计划.md` |
 | 2026-10-18 | 自动核对（待你签字） | T0.3 改动面与边界**核对通过**（6 项偏差已逐条记录；文档待补项 `DESIGN.md` 已于同日闭环） | 核对范围 `1b17294e..HEAD` 三个提交；详见下方「T0.3 改动面锁定评审」 |
+| 2026-10-25 | 自动核对 | **P1-1 落地**：新增 `server/执行句柄.mjs`（七方法统一契约）+ `scripts/执行句柄契约测试.mjs`（8 例）+ `GET /api/agent/handle` 只读自述端点；`index.mjs` 三条 Agent 路由改为调用句柄。改动面仍限于 `server/` + `scripts/` + 文档，**无新增工程/服务/框架/第三方依赖** | 差异：准入阶段（写权限探针/运行时就绪/模型同步/引用解析/技能预检/任务信封）按「请求级预检 vs Run 生命周期」切分留在路由，见 P1-1 条目 |
 
 ### T0.3 改动面锁定评审（2026-10-18 自动核对）
 
@@ -587,7 +591,7 @@ T0.1 ─┬─ P0-4 ─┬─ P1-7 ─┬─ §3.3 ─┐
 |---|---|
 | §4 列了但未改 `server/runs.mjs` | P0-3 的服务端有界排空落在 `server/agent.mjs`（`emitAbortedOnce`），Run 状态机本身无需改，`draining` 仅作为事件态呈现 |
 | §4 列了但未改 `client/src/theme.jsx` | P2-4 的 `data-visual-effects` 打标实际落在 `client/src/App.jsx`，语义相同 |
-| §4 列了但未新建 `server/执行句柄.mjs` | P1-1 未启动（会动 `runs.mjs`/`agent.mjs`/`Pi运行时管理.mjs` 的对外能力，属核心链路，待你确认） |
+| §4 列了但未新建 `server/执行句柄.mjs` | **已建（2026-10-25）**：P1-1 落地，`server/执行句柄.mjs` 导出七方法统一契约，`index.mjs` 的 prompt/abort/answer 三条路由改为调用句柄；准入阶段仍留路由（差异见 P1-1 条目） |
 | §4 列了但未新建 `client/src/components/成果验收台.jsx` | M5.1 评估后**不实施**：既有「工作产物面板」已覆盖逐产物验收/采纳/固定/回滚并消费 `GET /api/runs/:id/acceptance`，新建即重复渲染 |
 | §4 列了但未改 `client/src/components/MapViewer.jsx` | M5.2 地图↔对话联动未启动（会动地图组件） |
 | §4 的 `DESIGN.md` | **已补（2026-10-18）**：新增「设计令牌三层结构」「Qoder 视觉层（opt-in · 默认关）」「排版与字体（现状）」三节，并给旧「字体」小节加现状注（**原内容一字未删改，只追加**）；同时把「拆 `--font-sans` / `--font-mono` 令牌」登记为需确认项 |
