@@ -1132,6 +1132,7 @@ class AgentManager extends EventEmitter {
       pipelineProduced: Boolean(entry?.pipelineProduced),
       clarificationPending: entry?.clarificationPending || null,
       mode: entry?.mode || "agent",
+      manualAllowed: Boolean(entry?.manualOfficeAllowed),
     });
 
     /** 执行闸门：被拒时发 tool_gate_denied 并抛可读错误；放行时返回闸门结果（可能带 sanitizedInput）。 */
@@ -3887,6 +3888,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.officeGateOn = Boolean(RUNTIME_FLAGS.officeFormat);
     entry.pipelineProduced = false;
     entry.pipelineReminderSent = false;
+    entry.manualOfficeAllowed = /(脚本|代码|手工生成|自己生成|allow-manual)/i.test(String(entry.task?.goal || ""));
     {
       const plan = entry.task?.capabilityPlan;
       entry.clarificationPending = entry.officeGateOn

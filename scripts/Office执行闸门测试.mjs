@@ -82,6 +82,14 @@ test("澄清待回答 + bash 只读 → 放行", () => assert.equal(call("bash",
 test("澄清待回答 + pipeline → 拦截", () => assert.equal(call("editorial_pipeline", {}, { clarificationPending: { question: { text: "篇幅？" } } }).blocked, true));
 test("澄清待回答 + officecli view → 放行", () => assert.equal(call("officecli", { args: "view a.docx text" }, { clarificationPending: { question: { text: "篇幅？" } } }).blocked, false));
 
+console.log("\n▶ 脚本绕过拦截（6 例）");
+test("node .cjs 生成脚本 → 拦截", () => assert.equal(call("bash", { command: "node build_ppt_demo.cjs" }).blocked, true));
+test("python .py 生成脚本 → 拦截", () => assert.equal(call("bash", { command: "python build_ppt.py" }).blocked, true));
+test("node -e pptxgenjs → 拦截", () => assert.equal(call("bash", { command: "node -e \"const P=require('pptxgenjs')\"" }).blocked, true));
+test("python -c import pptx → 拦截", () => assert.equal(call("bash", { command: "python -c \"import pptx\"" }).blocked, true));
+test("write .cjs → 拦截", () => assert.equal(call("write", { path: "/ws/build.cjs" }).blocked, true));
+test("用户明确要脚本（manualAllowed）→ 放行", () => assert.equal(call("bash", { command: "node build.cjs" }, { manualAllowed: true }).blocked, false));
+
 console.log("\n▶ 逃逸阀与判定函数（4 例）");
 test("bash --allow-manual → 放行并剥离标记", () => {
   const r = call("bash", { command: "node build/build.mjs --allow-manual" });

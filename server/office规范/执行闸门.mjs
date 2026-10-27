@@ -7,6 +7,7 @@
  */
 
 const OFFICE_BINARY = /\.(?:docx|pptx)$/i;
+const SCRIPT_FILE = /\.(?:mjs|cjs|js|py)$/i;
 const READONLY_OFFICECLI = new Set(["view", "get", "query", "validate", "dump", "help", "watch", "unwatch", "save", "close", "refresh"]);
 const MUTATING_OFFICECLI = new Set(["create", "add", "set", "batch", "import", "remove", "move", "swap", "delete"]);
 
@@ -20,7 +21,10 @@ const READONLY_BASH = [
 
 /** bash 文档生成特征：命中即视为绕过管线。 */
 const DOCX_GENERATION = [
-  /\bnode\b[^\n]*\b[\w./-]+\.(?:mjs|js)\b/i,
+  /\bnode\b[^\n]*\b[\w./-]+\.(?:mjs|cjs|js)\b/i,
+  /\bpython3?\b[^\n]*\b[\w./-]+\.py\b/i,
+  /\bnode\s+-e\b[\s\S]*(?:pptxgenjs|Packer|Presentation|writeFileSync|createWriteStream)/i,
+  /\bpython3?\s+-c\b[\s\S]*(?:from\s+pptx|import\s+pptx|docx\.Document|Presentation\s*\()/i,
   /\bpython\b[^\n]*\bdocx\b/i,
   /\bpandoc\b[^\n]*\.(?:docx|pptx)/i,
   /\b(?:soffice|libreoffice)\b[^\n]*(?:--convert|--headless)/i,
@@ -102,7 +106,7 @@ function isWriteTool(tool, input = {}) {
  * @returns {{blocked:boolean, code?:string, reason?:string, suggestion?:string, sanitizedInput?:object}}
  */
 export function classifyToolCall({ tool = "", input = {}, context = {} } = {}) {
-  const { route, officeFormat, pipelineProduced = false, clarificationPending = null, mode = "agent" } = context;
+  const { route, officeFormat, pipelineProduced = false, clarificationPending = null, mode = "agent", manualAllowed = false } = context;
 
   // 开关关闭 / 非写作路由 / Chat / Review：完全放行
   if (!officeFormat) return allow();
@@ -119,6 +123,9 @@ export function classifyToolCall({ tool = "", input = {}, context = {} } = {}) {
       options.length ? `可选：${options.join(" / ")}` : "收到用户回答后再继续写操作。",
     );
   }
+
+  // 用户明确要求"脚本/手工生成"时放行（逃逸阀）
+  if (manualAllowed) return allow();
 
   // 编辑路由不强制管线（保留 OfficeCLI 精确定位）
   if (route === "edit") return allow();
@@ -157,12 +164,22 @@ export function classifyToolCall({ tool = "", input = {}, context = {} } = {}) {
     return allow();
   }
 
-  if ((tool === "write" || tool === "edit") && OFFICE_BINARY.test(String(input.path || ""))) {
-    return block(
-      "OFFICE_PIPELINE_REQUIRED",
-      "禁止直接写 Office 二进制文件。",
-      "请用 editorial_pipeline 生成 docx/pptx。",
-    );
+  if (tool === "write" || tool === "edit") {
+    const file = String(input.path || "");
+    if (OFFICE_BINARY.test(file)) {
+      return block(
+        "OFFICE_PIPELINE_REQUIRED",
+        "禁止直接写 Office 二进制文件。",
+        "请用 editorial_pipeline 生成 docx/pptx。",
+      );
+    }
+    if (SCRIPT_FILE.test(file)) {
+      return block(
+        "OFFICE_PIPELINE_REQUIRED",
+        "写作路由下禁止写文档生成脚本（.mjs/.cjs/.js/.py）。",
+        "请改用 editorial_pipeline；如确需脚本，请在需求中明确写“脚本/手工生成”以启用逃逸。",
+      );
+    }
   }
 
   return allow();
