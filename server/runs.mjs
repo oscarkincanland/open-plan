@@ -20,6 +20,7 @@ import {
 } from "./写入协调.mjs";
 import { validateArtifactFile } from "./产物验证.mjs";
 import { applyObjectiveDowngrade } from "./运行轨迹.mjs";
+import { appendJournal } from "./工作流日志.mjs";
 
 const PROJECT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const RUNS_DIR = process.env.OAW_RUNS_DIR || path.join(PROJECT_DIR, ".oaw", "runs");
@@ -645,6 +646,21 @@ export function updateRunStep(id, stepId, patch = {}) {
   run.events.push({ seq, type: "step_updated", data: { stepId: step.id, status: step.status }, at: new Date().toISOString() });
   const saved = saveRun(run);
   appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "step_updated", data: { stepId: step.id, status: step.status } });
+  if (RUNTIME_FLAGS.workflowJournal) {
+    const stage = step.id || step.name;
+    const journalStatus = nextStatus === "running" ? "started" : nextStatus;
+    try {
+      appendJournal(run.id, {
+        stage,
+        status: journalStatus,
+        artifacts: Array.isArray(patch.artifacts) ? patch.artifacts : [],
+        error: patch.error || null,
+        idempotent: patch.idempotent !== false,
+        at: step.finishedAt || new Date().toISOString(),
+      });
+      appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "workflow_journal_updated", data: { stage, status: journalStatus, workflowId: run.task?.workflowId || run.workflow?.id || null } });
+    } catch {}
+  }
   return saved;
 }
 

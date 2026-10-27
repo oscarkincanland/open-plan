@@ -21,6 +21,10 @@ import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor,
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
 import { workspaceTrustSummary, setWorkspaceTrust } from "./项目信任.mjs";
 import { runtimeFlagsSnapshot, RUNTIME_FLAGS } from "./运行开关.mjs";
+import { summarizeRunUsage, exportObservabilityJson } from "./观测导出.mjs";
+import { listPlans, writePlan } from "./计划文件.mjs";
+import { loadHookConfig, HOOK_EVENTS } from "./Hook事件层.mjs";
+import { listToolMetadata, metadataCoverageReport, TOOL_NAMES } from "./工具元数据.mjs";
 import { validateArtifacts } from "./产物验证.mjs";
 import { listPublishedArtifacts, publishArtifact, inspectRunAcceptance, confirmArtifactAcceptance, rollbackPublishedArtifact } from "./成果管理.mjs";
 import { atomicWriteFile, atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
@@ -348,6 +352,55 @@ app.get("/api/status", (req, res) => {
       identity: SERVICE_IDENTITY,
       sandboxIdentity: IS_SANDBOX_IDENTITY,
     },
+  });
+});
+
+// ---------- Harness 诊断（ZCode 对标，只读） ----------
+app.get("/api/harness/tools", (_req, res) => {
+  res.json({
+    ok: true,
+    coverage: metadataCoverageReport(TOOL_NAMES),
+    tools: listToolMetadata(),
+  });
+});
+
+app.get("/api/harness/usage", (req, res) => {
+  res.json({ ok: true, ...summarizeRunUsage({ runId: String(req.query.runId || "") }) });
+});
+
+app.get("/api/harness/observability", (req, res) => {
+  try {
+    res.json({ ok: true, report: JSON.parse(exportObservabilityJson({ runId: String(req.query.runId || "") })) });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error?.message || error) });
+  }
+});
+
+app.get("/api/harness/plans", (_req, res) => {
+  res.json({ ok: true, plans: listPlans(getWorkspace()) });
+});
+
+app.post("/api/harness/plans", express.json({ limit: "2mb" }), (req, res) => {
+  const { title = "任务计划", content = "", runId = null, name = null } = req.body || {};
+  const result = writePlan({ workspace: getWorkspace(), title, content, runId, name });
+  res.status(result.ok ? 200 : 400).json(result);
+});
+
+app.get("/api/harness/hooks", (_req, res) => {
+  const config = loadHookConfig({ workspace: getWorkspace() });
+  res.json({
+    ok: true,
+    events: HOOK_EVENTS,
+    requireTrust: config.requireTrust,
+    errors: config.errors,
+    hooks: config.hooks.map((hook) => ({
+      id: hook.id,
+      event: hook.event,
+      source: hook.source,
+      enabled: hook.enabled !== false,
+      script: hook.script || hook.args?.[0] || null,
+      timeoutMs: hook.timeoutMs || null,
+    })),
   });
 });
 
@@ -3152,6 +3205,23 @@ app.get("/api/runs/:id", (req, res) => {
   const run = getRun(req.params.id);
   if (!run) return res.status(404).json({ error: "run not found" });
   res.json({ run });
+});
+
+app.get("/api/runs/:id/workflow-journal", (req, res) => {
+  if (!RUNTIME_FLAGS.workflowJournal) return res.status(404).json({ ok: false, error: "工作流 journal 未启用" });
+  const run = getRun(req.params.id);
+  if (!run) return res.status(404).json({ ok: false, error: "run not found" });
+  const journal = readJournal(req.params.id);
+  res.json({ ok: true, runId: req.params.id, workflowId: run.task?.workflowId || run.workflow?.id || null, journalCount: journal.length, journal });
+});
+
+app.get("/api/runs/:id/workflow-replay", (req, res) => {
+  if (!RUNTIME_FLAGS.workflowJournal) return res.status(404).json({ ok: false, error: "工作流 journal 未启用" });
+  const run = getRun(req.params.id);
+  if (!run) return res.status(404).json({ ok: false, error: "run not found" });
+  const stages = (run.steps || []).map((step) => step.id || step.name);
+  const journal = readJournal(req.params.id);
+  res.json({ ok: true, runId: req.params.id, workflowId: run.task?.workflowId || run.workflow?.id || null, plan: planReplay(stages, journal), journalCount: journal.length });
 });
 
 app.post("/api/runs/:id/cancel", async (req, res) => {

@@ -29,6 +29,9 @@ import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
 import { inferCompletion } from "./运行轨迹.mjs";
 import { getWorkspace, safeName, PROJECT_DIR } from "./workspace.mjs";
 import { piRuntimeManager } from "./Pi运行时管理.mjs";
+import { RUNTIME_FLAGS } from "./运行开关.mjs";
+import { parseExtractionResult, shouldExtract } from "./记忆抽取调度.mjs";
+import { createMemoryProposal } from "./记忆管理.mjs";
 
 // ---------- 从 index.mjs 迁入的执行域工具 ----------
 
@@ -56,20 +59,40 @@ export function validateStagedArtifacts(runId) {
   return listStagedFilesForValidation(runId).map((item) => validateArtifactFile(item.file, item.root, item.path));
 }
 
+// before/after 既可能是快照对象（snapshotWorkspace 的 { files }），也可能是
+// 旧调用方传入的相对路径数组；统一取相对路径集合再比对，避免 new Set(object) 抛错。
+function snapshotPathSet(snapshot) {
+  if (!snapshot) return new Set();
+  if (Array.isArray(snapshot)) return new Set(snapshot.map((x) => String(x).split("|")[0]));
+  const files = snapshot.files && typeof snapshot.files === "object" ? Object.keys(snapshot.files) : [];
+  return new Set(files);
+}
+
 function diffWorkspace(before, after) {
-  const b = new Set(before);
-  return after.filter((x) => !b.has(x)).map((x) => x.split("|")[0]);
+  const b = snapshotPathSet(before);
+  return [...snapshotPathSet(after)].filter((x) => !b.has(x));
+}
+
+function snapshotSignature(snapshot) {
+  if (!snapshot) return "";
+  if (Array.isArray(snapshot)) return JSON.stringify(snapshot);
+  return JSON.stringify({ files: snapshot.files || {}, truncated: Boolean(snapshot.truncated) });
 }
 
 export async function waitForFlush(before, workspace = getWorkspace()) {
-  let last = before;
+  let lastSnapshot = before;
+  let lastSignature = snapshotSignature(before);
   for (let i = 0; i < 6; i++) {
     await new Promise((r) => setTimeout(r, 1500));
-    const snap = snapshotWorkspace(workspace);
-    if (JSON.stringify(snap) === JSON.stringify(last)) break;
-    last = snap;
+    // 只比较文件集合与哈希，不比较 capturedAt：否则每次快照时间戳都不同，
+    // 永远判不出“已稳定”，每轮固定等满 9 秒。
+    const snapshot = snapshotWorkspace(workspace);
+    const signature = snapshotSignature(snapshot);
+    if (signature === lastSignature) break;
+    lastSnapshot = snapshot;
+    lastSignature = signature;
   }
-  return diffWorkspace(before, last);
+  return diffWorkspace(before, lastSnapshot);
 }
 
 // 完成语义：显式 complete_task 优先；否则按 Run 终态推断（source:"inferred"），
@@ -314,6 +337,53 @@ export function 创建执行句柄(初始依赖 = {}) {
   }
 
   /**
+   * H2-2：Run 成功后异步判断是否抽取记忆；不阻塞 Run 终态。
+   */
+  async function 记忆抽取({ entry, runId, client, thread, workspace, userText, assistantText }) {
+    if (!RUNTIME_FLAGS.memoryExtract || !entry) return;
+    try {
+      const decision = shouldExtract({
+        userText,
+        hadDirectMemoryWrite: entry.memoryWrittenThisRun === true,
+        mode: entry.mode,
+      });
+      if (!decision.ok) {
+        deps.emit(entry, "memory_extraction_skipped", { runId, reason: decision.reason, words: decision.words });
+        return;
+      }
+      deps.emit(entry, "memory_extraction_started", { runId, words: decision.words });
+      const text = await deps.agentManager.extractMemory?.({
+        workspace,
+        threadId: thread || null,
+        userText,
+        assistantText,
+      });
+      if (!text) {
+        deps.emit(entry, "memory_extraction_skipped", { runId, reason: "empty" });
+        return;
+      }
+      const parsed = parseExtractionResult(text);
+      if (parsed.action !== "save") {
+        deps.emit(entry, "memory_extraction_skipped", { runId, reason: parsed.reason || parsed.action });
+        return;
+      }
+      const proposal = createMemoryProposal({
+        clientId: client || null,
+        threadId: thread || null,
+        threadKey: thread || client || null,
+        workspace,
+        runId,
+        category: parsed.category,
+        content: parsed.content,
+        source: { type: "agent", label: "自动抽取", runId, threadId: thread || null, clientId: client || null },
+      });
+      deps.emit(entry, "memory_extraction_finished", { runId, proposalId: proposal?.id || null, category: parsed.category });
+    } catch (error) {
+      try { deps.emit(entry, "memory_extraction_skipped", { runId, reason: "error", error: String(error?.message || error).slice(0, 300) }); } catch {}
+    }
+  }
+
+  /**
    * 后台执行回合：从 index.mjs 的 executeAgentRun 迁入，逐字保留原有判断与事件顺序。
    */
   async function 执行回合({
@@ -437,6 +507,17 @@ export function 创建执行句柄(初始依赖 = {}) {
         status: completed?.status || finalStatus,
       });
       if (run) deps.emit(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked", completion: completed?.completion || resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }), finalText: getRunFinalText(deps.runs.getRun(run.id)), model: deps.runs.getRun(run.id)?.model || null, finalMessageId: deps.runs.getRun(run.id)?.finalMessageId || null });
+    }
+    if (run) {
+      void 记忆抽取({
+        entry,
+        runId: run.id,
+        client,
+        thread,
+        workspace: runWorkspace,
+        userText: text,
+        assistantText: entry?.lastFinalText || completed?.summary || "",
+      });
     }
     通知("执行完成", { runId: run?.id || null, status: finalStatus });
   }

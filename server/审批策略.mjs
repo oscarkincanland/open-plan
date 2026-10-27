@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { PROJECT_DIR } from "./workspace.mjs";
 import { atomicWriteJson } from "./持久化工具.mjs";
+import { RUNTIME_FLAGS } from "./运行开关.mjs";
 
 // 工具级审批策略：参考 opencode 的 permission 模型（allow / ask / deny 三值，
 // 通配符匹配、最后匹配生效）。规则可持久化到 .oaw/permissions.json，
@@ -95,20 +96,69 @@ function savePendingApprovals(items) {
 
 /** 按 工具×输入 匹配规则，返回 action（allow/ask/deny）；最后匹配的规则生效。 */
 export function matchToolAction(tool, input) {
+  return matchToolDecision(tool, input).action;
+}
+
+function ruleSlug(value, max = 40) {
+  return String(value || "*")
+    .toLowerCase()
+    .replace(/[^a-z0-9_.*?-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, max) || "*";
+}
+
+function ruleIdFor(rule, index, source) {
+  return `${source}.${index}.${ruleSlug(rule.tool)}.${ruleSlug(rule.pattern)}.${ruleSlug(rule.action, 12)}`;
+}
+
+/**
+ * H1-2：权限决策对象。action 之外返回稳定 ruleId 与来源，便于审计与回放。
+ * 兼容：matchToolAction 仍只返回 action；旧调用方不受影响。
+ * @returns {{action:"allow"|"ask"|"deny", ruleId:string, ruleSource:string, matchedTool:string, matchedPattern:string, reason:string, mode:string}}
+ */
+export function matchToolDecision(tool, input) {
   const toolName = String(tool || "").trim().toLowerCase();
   const inputText = String(input || "").trim();
-  const rules = [...DEFAULT_RULES, ...readUserRules()];
-  let matched = "allow";
+  const config = readPermissionConfig();
+  const defaults = DEFAULT_RULES.map((rule, index) => ({ ...rule, __source: "default", __index: index }));
+  const users = (Array.isArray(config.rules) ? config.rules : []).map((rule, index) => ({ ...rule, __source: "user", __index: index }));
+  const rules = [...defaults, ...users];
+  let matched = {
+    action: "allow",
+    ruleId: ruleIdFor({ tool: "*", pattern: "*", action: "allow" }, 0, "default"),
+    ruleSource: "default",
+    matchedTool: "*",
+    matchedPattern: "*",
+    reason: "默认允许",
+  };
   for (const rule of rules) {
     if (!rule || !APPROVAL_ACTIONS.includes(rule.action)) continue;
     const ruleTool = String(rule.tool || "*").trim().toLowerCase();
     if (ruleTool !== "*" && ruleTool !== toolName) continue;
     if (wildcardToRegExp(rule.pattern || "*").test(inputText || "*")) {
-      matched = rule.action;
+      matched = {
+        action: rule.action,
+        ruleId: ruleIdFor(rule, rule.__index, rule.__source),
+        ruleSource: rule.__source,
+        matchedTool: ruleTool,
+        matchedPattern: String(rule.pattern || "*"),
+        reason: rule.__source === "user" ? "用户规则命中" : "默认规则命中",
+      };
     }
   }
   // 自动批准只放行默认的 ask；显式 deny 永远不能被自动批准绕过。
-  return readPermissionConfig().mode === "auto" && matched === "ask" ? "allow" : matched;
+  if (config.mode === "auto" && matched.action === "ask") {
+    return {
+      ...matched,
+      action: "allow",
+      originalAction: "ask",
+      ruleId: `auto.${matched.ruleId}`,
+      ruleSource: "auto",
+      reason: "自动批准将 ask 提升为 allow",
+      mode: config.mode,
+    };
+  }
+  return { ...matched, mode: config.mode };
 }
 
 export function getApprovalMode() {
@@ -197,12 +247,25 @@ export function normalizeOwner(owner) {
  * `session`（会话）。仅在传入且合法时进入 `tool_approval_request` 载荷。
  */
 export function requireToolApproval({ entry, tool, input, runId, threadId, workspace, emit, owner = null }) {
-  const action = matchToolAction(tool, input);
-  if (action === "allow") return Promise.resolve();
+  const decision = matchToolDecision(tool, input);
+  const action = decision.action;
+  const audit = (payload) => {
+    if (!RUNTIME_FLAGS.permissionAudit) return;
+    // allow 默认不逐次记录（高频）；显式打开 permissionAuditAllow 才记。
+    if (action === "allow" && !RUNTIME_FLAGS.permissionAuditAllow) return;
+    try { emit?.("permission_decision", payload); } catch {}
+  };
+  if (action === "allow") {
+    audit({ tool, input: String(input || "").slice(0, 600), ...decision, runId: runId || entry?.activeRunId || null, threadId: threadId || entry?.threadId || null });
+    return Promise.resolve();
+  }
   if (action === "deny") {
     const error = new Error(`工具调用被权限策略拒绝（${tool}）：${String(input || "").slice(0, 200)}`);
     error.code = "APPROVAL_DENIED";
     error.action = "deny";
+    error.ruleId = decision.ruleId;
+    error.decision = decision;
+    audit({ tool, input: String(input || "").slice(0, 600), ...decision, runId: runId || entry?.activeRunId || null, threadId: threadId || entry?.threadId || null });
     return Promise.reject(error);
   }
   const approvalId = `approval_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
@@ -214,6 +277,7 @@ export function requireToolApproval({ entry, tool, input, runId, threadId, works
     threadId: threadId || entry?.threadId || null,
     clientId: entry?.clientId || null,
     status: "pending",
+    policyDecision: decision,
     createdAt: new Date().toISOString(),
   };
   return new Promise((resolve, reject) => {
@@ -222,26 +286,31 @@ export function requireToolApproval({ entry, tool, input, runId, threadId, works
       updatePersistedApproval(approvalId, { status: "expired", decision: "expired" });
       const error = new Error(`工具审批等待超过 ${Math.round(APPROVAL_TIMEOUT_MS / 60000)} 分钟未获批准，已取消本次操作`);
       error.code = "APPROVAL_TIMEOUT";
+      error.ruleId = decision.ruleId;
+      error.decision = decision;
       reject(error);
     }, APPROVAL_TIMEOUT_MS);
-    const settled = (decision) => {
+    const settled = (decisionValue) => {
       clearTimeout(timer);
       pendingApprovals.delete(approvalId);
-      updatePersistedApproval(approvalId, { status: decision === "allow" ? "approved" : "rejected", decision });
+      updatePersistedApproval(approvalId, { status: decisionValue === "allow" ? "approved" : "rejected", decision: decisionValue });
       try {
-        emit?.("tool_approval_resolved", { id: approvalId, tool, input: item.input, runId: item.runId, decision });
+        emit?.("tool_approval_resolved", { id: approvalId, tool, input: item.input, runId: item.runId, decision: decisionValue, ...(RUNTIME_FLAGS.permissionAudit ? { ruleId: decision.ruleId, ruleSource: decision.ruleSource } : {}) });
       } catch {}
-      if (decision === "allow") {
+      if (decisionValue === "allow") {
         resolve();
       } else {
         const error = new Error(`工具调用被用户拒绝（${tool}）：${String(input || "").slice(0, 200)}`);
         error.code = "APPROVAL_DENIED";
         error.action = "deny";
+        error.ruleId = decision.ruleId;
+        error.decision = decision;
         reject(error);
       }
     };
     pendingApprovals.set(approvalId, { resolve: settled, reject: settled, item, timer });
     persistPendingApproval(item);
+    audit({ tool, input: String(input || "").slice(0, 600), ...decision, runId: item.runId, threadId: item.threadId || null, approvalId });
     try {
       const 归属 = normalizeOwner(owner);
       emit?.("tool_approval_request", {
@@ -252,6 +321,12 @@ export function requireToolApproval({ entry, tool, input, runId, threadId, works
         threadId: item.threadId,
         workspace: workspace || entry?.workspace || null,
         action,
+        ...(RUNTIME_FLAGS.permissionAudit ? {
+          ruleId: decision.ruleId,
+          ruleSource: decision.ruleSource,
+          matchedPattern: decision.matchedPattern,
+          reason: decision.reason,
+        } : {}),
         // Qoder P1-4：仅在归属合法时附带（未传/非法 → 载荷与基线逐字一致）。
         ...(归属 ? { owner: 归属 } : {}),
       });
