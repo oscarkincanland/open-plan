@@ -44,7 +44,10 @@ import { importLocalPiSessionFile, readCredentials, readModelsConfig, readModels
 import { resolveReferences, readReference, contextSummary } from "./context.mjs";
 import { recordRunEvent, updateRunTodo, getRun } from "./runs.mjs";
 import { markRunTiming, attachRunTimingSpans } from "./首字延迟.mjs";
-import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode } from "./task.mjs";
+import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode, routeTaskIntent } from "./task.mjs";
+
+/** OfficeCLI 工具约束（O-28）：Work/Review 两处 prompt 共用同一常量，避免措辞分叉。 */
+const OFFICE_TOOL_RULE = "- ALWAYS operate on office documents through the `officecli` tool — it resolves file names relative to the current workspace and runs on Windows natively. NEVER try to run `officecli` via the bash tool.";
 
 /**
  * 输出策略（A03）：Chat / Work / Review 共用同一套收尾口径，避免系统提示各要求一套收尾。
@@ -1078,14 +1081,16 @@ class AgentManager extends EventEmitter {
               "- **工作区与当前文件**: 每轮对话的「动态上下文」消息已给出当前工作区绝对路径、当前工作文件与上下文文件路径（`.agent-context.<thread>.md` 是权威版本；旧版 `.agent-context.md` 可能被同工作区其他会话覆盖）。不要假设默认工作区路径，需要细节时 read 动态上下文中给出的那个文件。",
               "- **表达语言（重要）**: 面向用户的正文回复、进度小结、待办标题，以及你的内部推理（thinking / reasoning）一律使用与用户相同的语言（默认中文）。工具名、代码、文件路径和专有名词保持原样；不要为了“显得专业”而把思考过程写成英文。",
               ...buildOutputPolicyLines({ mode: options.task?.mode || options.mode || "work" }),
-              "- ALWAYS operate on office documents through the `officecli` tool — it runs on Windows natively and resolves file names relative to the current workspace. NEVER try to run `officecli` via the bash tool.",
+              OFFICE_TOOL_RULE,
               "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text.",
               "- **Word 批注**: 先用 `officecli get <file> /body --depth 3 --json` 或 `query <file> paragraph --json` 找到真实段落路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"批注内容\\\" --json` 写入；一次 get 只传一个 DOM 路径，完成后用 `query <file> comment --json` 回读校验。若错误明确为 sharing violation 或另一个进程占用，再提示关闭 WPS/Word/OfficeCLI 预览；若是 Access denied、is denied、EPERM 或 EACCES，应说明服务进程缺少系统写权限，不要尝试绕过沙箱。",
               "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入 `.agent-context.md` 中的「当前工作区」绝对路径，禁止写入项目目录。否则产物不会被前端检测到。",
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
               "- **地图（GIS）**: 地图项目位于 `当前工作区/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。若改了 layers/*.geojson 数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
               "- **地图分析**: 用户说“在义乌生成热力图/等时圈”、要求 OD 期望线或公交分析时，优先使用 map_analyze 生成并显示临时结果；结果明确标记演示数据，用户确认后再保存为正式图层。",
-              "- **主动询问（重要）**: 当用户要求撰写/生成文字内容，但关键信息不明确（文档类型、格式、篇幅、受众、数据来源、风格、范围等）时，**必须调用 ask_user 工具主动提问**，等待用户回答后再继续，不要猜测。每次只问一个最关键的、阻塞后续工作的问题。",
+              "- **主动询问（重要）**: 当用户要求撰写/生成/修改文字内容，但关键信息不明确（文档类型、篇幅、受众、数据来源、风格、范围；修改类还包括改哪一段、改成什么、是否保留原格式）时，**必须调用 ask_user 主动提问**，等待回答后再继续，不要猜测。**只在缺失 ≥2 项时提问，每次只问一个最阻塞的问题**；只缺 1 项时按默认值继续，并在结果中注明假设。",
+              "- **模板优先（重要）**: 用户要求写工可/可研/规划/汇报/交评/预可/选址/物流园区/年度报告等交通规划文体时，先用 read 读取 `templates/traffic-material/` 下对应模板（14 个），按其章节骨架、必备图表与格式规则写作；不要凭记忆自造结构。",
+              "- **改文档先读后改**: 修改既有 Office 文档时，先 `officecli view <file> text|outline` 确认内容，再 `get` 取真实路径，最后 `set/add`；禁止直接 set 未知路径。",
               "- **复杂任务待办**: 预计超过两步的任务，先调用 `todo` 工具创建 2-6 项结构化待办；每完成一项或状态发生变化后，立即用 `todo` 提交完整清单。不要把每个工具调用都拆成待办项。Markdown 清单只能作为可选的人类可读摘要，任务区以 `todo` 工具状态为准。",
               "- **回合结束沉淀记忆**: 每轮任务真正完成后，检查本轮是否出现对后续任务仍有价值的新项目事实、稳定工作规则、用户偏好或可复用经验（纯问答或一次性咨询不必检查，也不必为此额外追问）。若有，主动调用一次 memory_update 生成一条待审核建议；若没有，不要强行生成。只记录短句，不记录临时状态、完整对话、敏感凭据或大段原文。",
               "- **显式收尾（complete_task）**: 回答最后一步调用 `complete_task`：status 用 success/partial/blocked/failed 如实声明本轮结果；partial 必须列出未完成项；blocked 必须列出阻塞原因；generated 产物用 read 回读验证后再声明 success。不要跳过此工具，跳过时系统只能按回合结束推断，用户无法区分“回答完了”和“任务真完成了”。",
@@ -1093,7 +1098,7 @@ class AgentManager extends EventEmitter {
               "- **内置浏览器（browser_*）**: 用户要求“打开浏览器/去网页上搜索/在网站里操作/看页面”时使用。搜索类需求直接 browser_open 打开引擎结果页（推荐 https://cn.bing.com/search?q={{关键词}}，百度易触发人机验证），随后 browser_snapshot 读取编号 → browser_click / browser_type 操作；页面跳转后必须重新快照。浏览器支持多标签页：用 browser_tabs 列表/新建/切换/关闭；链接在新标签页打开时用 browser_tabs 切换过去。用户可在右侧“浏览器”面板实时观看并接管（登录、验证码由用户完成）。**接管仲裁**：用户在操作浏览器时会持有短期 lease，期间你的写操作（open/click/type/press/scroll/back/reload/标签页变更）会被拒绝并返回 BROWSER_USER_TAKEOVER；此时不要反复重试，改为只读观察（browser_snapshot/browser_screenshot）或请用户点击「交还 Agent」，lease 到期会自动交还。web_search 未配置或需要真实浏览动态页面时，改用浏览器完成检索。**任务结束默认保留浏览器**（用户可能继续查看或接管），只有用户明确要求关闭时才调用 browser_close；用户在浏览器操作期间不要执行会打断页面的操作。",
               "- **模板引用（@模板）**: 用户以 `@模板[文件名或相对路径]` 引用模板库中的模板时，优先使用本轮结构化引用里的 `context_read(refId)` 读取，避免只凭模板标题猜路径；若需兼容旧版本，再用 find 在 `templates/`、`_报告模板/` 和 `.claude/skills/` 下按文件名包含匹配搜索，找到后用 read 读取全文，作为撰写文档的结构与风格参考。产出保存到当前工作区（见 .agent-context.md）。用户以 `@模板目录[相对路径]` 引用整个模板目录时（如 `@模板目录[templates/opendesign/templates/html-ppt-tech-sharing]`），用 find 列出该目录下所有文件并逐个 read 理解其风格与结构，产出时保持该风格。",
               "- **规划素材库（traffic-material）**: 项目 `templates/traffic-material/` 内置 14 份交通规划详版模板（00_总览通用规范、01_年度工作报告、02_五年发展规划、03_规划文本条文式、04_工程可行性研究报告、05_线位论证预可、06_选址用地预审、07_交通影响评价、08_汇报材料、09_物流园区规划、10_规划研究报告、11_PPT汇报、12_素材库深挖）。用户要求撰写交通规划/工可/汇报/年度报告等文档时，**先用 read 工具读取对应模板作为结构参考**（如 04_工程可行性研究报告模板.md、08_汇报材料模板.md），产出保存到当前工作区。完整列表可用 GET /api/templates?category=sucaiku 查看。",
-              "- **模板库（OpenDesign HTML PPT）**: 项目 `templates/opendesign/` 内置 157 个 HTML 模板（64 款 html-ppt-* 演示风格 + landing/dashboard 等），每个模板目录含 example.html 首页可直接预览（模版库页面已接入）。用户要求生成 PPT/演示/海报/网页作品时，优先用 read 工具读取 `templates/opendesign/<模板名>/example.html` 作为风格与结构参考（如 html-ppt-zhangzara-studio、html-ppt-tech-sharing、html-ppt-pitch-deck、html-ppt-taste-editorial），产出应保存到当前工作区。另项目 `.claude/skills/` 内置了 67 个办公/设计/飞书/工程流程技能（docx/pptx/xlsx/baoyu-*/lark-*/ultimate-ppt-master 等），需要对应能力时遵循其 SKILL.md 指引。",
+              "- **模板库（OpenDesign HTML PPT）**: 项目 `templates/opendesign/` 内置 157 个 HTML 模板（64 款 html-ppt-* 演示风格 + landing/dashboard 等），每个模板目录含 example.html 首页可直接预览（模版库页面已接入）。用户要求生成 PPT/演示/海报/网页作品时，优先用 read 工具读取 `templates/opendesign/<模板名>/example.html` 作为风格与结构参考（如 html-ppt-zhangzara-studio、html-ppt-tech-sharing、html-ppt-pitch-deck、html-ppt-taste-editorial），产出应保存到当前工作区。另项目 `.claude/skills/` 内置了 " + localSkillCatalog().length + " 个办公/设计/飞书/工程流程技能（docx/pptx/xlsx/baoyu-*/lark-*/ultimate-ppt-master 等），需要对应能力时遵循其 SKILL.md 指引。",
               "- When you modify a document, confirm what changed. Files are auto-refreshed in the browser.",
               "",
               // 工作区记忆（AGENTS.md + memory/）——每次对话前刷新在 .agent-context.md 的「工作区记忆」段
@@ -2630,6 +2635,14 @@ execute: async (_toolCallId, params) => {
         ]))),
       }),
       execute: async (_toolCallId, params) => {
+        // 单槽位保护（O-26）：同一会话同时只允许一个待回答问题。
+        // 直接拒绝第二个，而不是覆盖第一个的 resolve（否则前者要挂满 5 分钟）。
+        if (this.pendingAsks.has(clientId)) {
+          return {
+            content: [{ type: "text", text: "已有一个待回答的问题：请等待用户回答后再提问（同一会话同时只能有一个问题）。" }],
+            isError: true,
+          };
+        }
         // 归一化 options（对象 → 字符串）
         const opts = (params.options || []).map((o) => (typeof o === "string" ? o : o.label || JSON.stringify(o)));
         // 阻塞等待用户回答（最长 5 分钟），期间 SSE 推送 ask_user 事件
@@ -2991,6 +3004,8 @@ execute: async (_toolCallId, params) => {
         format: Type.Union([Type.Literal("docx"), Type.Literal("pptx")], { description: "产物格式：docx=Word 文档，pptx=演示文稿" }),
         outputPath: Type.Optional(Type.String({ maxLength: 200, description: "工作区相对输出路径（如 报告/初稿.docx）；缺省按目标命名" })),
         requirements: Type.Optional(Type.String({ maxLength: 1000, description: "额外要求：受众、字数、风格、必含章节等" })),
+        scene: Type.Optional(Type.String({ maxLength: 40, description: "场景 ID（academic/report/contract/official-doc/resume/exam/copywriting）；缺省自动选择" })),
+        clarificationAnswers: Type.Optional(Type.Array(Type.String({ maxLength: 500 }), { description: "用户对澄清问题的回答；有值则跳过澄清闸门" })),
       }),
       execute: async (_toolCallId, params, signal) => {
         const ctx = activeWriteContext("editorial_pipeline");
@@ -3028,6 +3043,10 @@ execute: async (_toolCallId, params) => {
             }
             return outcome?.text || "";
           };
+          const writingText = `${String(params.goal || "")} ${String(params.requirements || "")}`;
+          const writingIntent = RUNTIME_FLAGS.officeFormat
+            ? routeTaskIntent({ text: writingText, task: { mode: "agent" } })
+            : null;
           const result = await runEditorialPipeline({
             format,
             goal: String(params.goal || ""),
@@ -3036,8 +3055,45 @@ execute: async (_toolCallId, params) => {
             requirements: params.requirements ? String(params.requirements) : "",
             emit: (type, data) => writeEvent(type, { ...data, parentToolCallId: _toolCallId ? String(_toolCallId) : null }),
             runModelTask: runPipelineModelTask,
+            autoClarify: RUNTIME_FLAGS.officeFormat,
+            clarificationAnswers: Array.isArray(params.clarificationAnswers) ? params.clarificationAnswers.map(String) : [],
+            scene: params.scene ? String(params.scene) : (writingIntent?.scene?.scene || ""),
+            template: writingIntent?.template || null,
+            cover: RUNTIME_FLAGS.officeFormat && format === "docx"
+              ? { docType: writingIntent?.scene?.scene || "report" }
+              : null,
+            toc: RUNTIME_FLAGS.officeFormat && format === "docx",
+            pageNumbers: RUNTIME_FLAGS.officeFormat && format === "docx",
+            qa: RUNTIME_FLAGS.officeFormat && format === "docx",
             signal,
           });
+          if (result.status === "needs_clarification") {
+            const question = result.clarification?.question;
+            const text = question
+              ? `需要先向用户确认：${question.text}\n可选：${(question.options || []).join(" / ")}\n请调用 ask_user 提问；用户回答后再次调用本工具，并在 clarificationAnswers 里带上回答。`
+              : `需要先补充关键信息：${(result.clarification?.missing || []).join("、")}`;
+            return { content: [{ type: "text", text }], details: { pipeline: true, status: "needs_clarification", clarification: result.clarification } };
+          }
+          if (RUNTIME_FLAGS.officeFormat && (result.scene || result.template)) {
+            writeEvent("office_format_applied", {
+              runId: ctx.runId,
+              workspace: ctx.workspace,
+              scene: result.scene?.id || "report",
+              template: result.template?.relPath || "",
+              recipe: "",
+              route: result.template ? "template" : "generate",
+            });
+          }
+          if (RUNTIME_FLAGS.officeFormat && format === "docx" && result.deliverable) {
+            writeEvent("office_qa_finished", {
+              runId: ctx.runId,
+              workspace: ctx.workspace,
+              file: result.deliverable,
+              passed: !(result.issues || []).length,
+              issues: (result.issues || []).slice(0, 20),
+              checks: (result.checks || []).slice(0, 20),
+            });
+          }
           writeEvent("file_changed", { runId: ctx.runId, workspace: ctx.workspace, files: [result.deliverable].filter(Boolean) });
           const lines = [
             result.status === "completed" ? `流水线完成，产物：${result.deliverable}` : `流水线未完全通过验收（产物：${result.deliverable || "无"}）`,
@@ -4375,7 +4431,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         "# Open Plan（规聚）Workspace",
         "",
         `- **当前工作区（绝对路径）**: ${ws}`,
-        "- Office files live in the current workspace folder above. ALWAYS operate on office documents through the `officecli` tool — it resolves file names relative to the current workspace. NEVER try to run `officecli` via the bash tool.",
+        "Office files live in the current workspace folder above. " + OFFICE_TOOL_RULE,
         "- Word 批注：先 get/query 找真实 `/body/p[...]` 路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"...\\\" --json`，完成后 query comment 校验。仅在 sharing violation 或明确的进程占用错误时关闭 WPS/Word/OfficeCLI 预览；Access denied/is denied/EPERM/EACCES 应说明服务进程写权限受限。",
         "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text.",
         "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区（绝对路径见上），禁止写入项目目录。否则产物不会被前端检测到。",

@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "defaultScene": "report",
+  "scenes": {
+    "academic": {
+      "label": "学术论文",
+      "keywords": ["论文", "开题", "文献综述", "学术", "期刊", "学位", "研究综述"],
+      "page": { "margins": "normal" },
+      "font": { "body": "SimSun", "heading": "SimHei", "bodyPt": 12, "h1Pt": 16, "h2Pt": 14, "h3Pt": 12 },
+      "spacing": { "line": "relaxed", "firstLine": 480 },
+      "cover": { "recipe": "R3" },
+      "structure": ["摘要", "关键词", "引言", "文献综述", "研究方法", "结果与分析", "讨论", "结论", "参考文献"],
+      "forbidden": ["彩色封面", "口语化表达", "无依据结论"]
+    },
+    "report": {
+      "label": "研究报告",
+      "keywords": ["报告", "方案", "调研", "复盘", "汇报", "总结", "可行性", "规划", "研究"],
+      "page": { "margins": "normal" },
+      "font": { "body": "SimSun", "heading": "SimHei", "bodyPt": 14, "h1Pt": 16, "h2Pt": 14, "h3Pt": 14 },
+      "spacing": { "line": "normal", "firstLine": 480 },
+      "cover": { "recipe": "R2" },
+      "structure": ["执行摘要", "背景与目标", "现状分析", "方案设计", "实施计划", "风险与保障", "结论与建议"],
+      "forbidden": ["大段政策原文", "无数据支撑的结论"]
+    },
+    "contract": {
+      "label": "合同协议",
+      "keywords": ["合同", "协议", "条款", "甲方", "乙方", "NDA", "保密协议"],
+      "page": { "margins": "normal" },
+      "font": { "body": "SimSun", "heading": "SimHei", "bodyPt": 12, "h1Pt": 16, "h2Pt": 14, "h3Pt": 12 },
+      "spacing": { "line": "relaxed", "firstLine": 480 },
+      "cover": { "recipe": "R4" },
+      "structure": ["合同双方", "定义与解释", "服务内容", "费用与支付", "权利与义务", "保密条款", "违约责任", "争议解决", "附则"],
+      "forbidden": ["彩色强调", "口语化", "金额只写小写"]
+    },
+    "official-doc": {
+      "label": "公文",
+      "keywords": ["公文", "通知", "批复", "请示", "函", "纪要", "红头", "发文"],
+      "page": { "margins": "official" },
+      "font": { "body": "FangSong", "heading": "SimHei", "bodyPt": 16, "h1Pt": 22, "h2Pt": 16, "h3Pt": 16 },
+      "spacing": { "line": "fixed28", "firstLine": 480 },
+      "cover": { "recipe": "R1" },
+      "structure": ["标题", "主送机关", "正文", "附件说明", "发文机关署名", "成文日期", "印章"],
+      "forbidden": ["彩色正文", "英文缩写未解释", "日期用阿拉伯数字"]
+    },
+    "resume": {
+      "label": "简历",
+      "keywords": ["简历", "CV", "求职", "履历"],
+      "page": { "margins": "narrow" },
+      "font": { "body": "Microsoft YaHei", "heading": "Microsoft YaHei", "bodyPt": 10.5, "h1Pt": 18, "h2Pt": 12, "h3Pt": 10.5 },
+      "spacing": { "line": "compact", "firstLine": 0 },
+      "cover": { "recipe": "R5" },
+      "structure": ["个人信息", "教育背景", "工作经历", "项目经历", "技能证书", "自我评价"],
+      "forbidden": ["超过一页", "照片未处理", "虚假经历"]
+    },
+    "exam": {
+      "label": "试卷",
+      "keywords": ["试卷", "答题卡", "考试", "命题", "选择题"],
+      "page": { "margins": "normal" },
+      "font": { "body": "SimSun", "heading": "SimHei", "bodyPt": 12, "h1Pt": 16, "h2Pt": 14, "h3Pt": 12 },
+      "spacing": { "line": "normal", "firstLine": 0 },
+      "cover": { "recipe": "R6" },
+      "structure": ["试卷头", "注意事项", "选择题", "填空题", "简答题", "答题区域"],
+      "forbidden": ["自动编号列表", "项目符号", "答案与题目同页"]
+    },
+    "copywriting": {
+      "label": "文案口播",
+      "keywords": ["文案", "口播", "脚本", "演讲稿", "宣传语", "直播"],
+      "page": { "margins": "normal" },
+      "font": { "body": "Microsoft YaHei", "heading": "Microsoft YaHei", "bodyPt": 14, "h1Pt": 22, "h2Pt": 16, "h3Pt": 14 },
+      "spacing": { "line": "relaxed", "firstLine": 0 },
+      "cover": { "recipe": "R7" },
+      "structure": ["开场", "核心信息", "分点展开", "行动号召", "结尾"],
+      "forbidden": ["报告腔", "长句", "专业术语未解释"]
+    }
+  }
+}

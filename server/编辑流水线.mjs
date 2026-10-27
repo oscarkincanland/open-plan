@@ -21,6 +21,11 @@ import fs from "node:fs";
 import path from "node:path";
 import JSZip from "jszip";
 import { buildDocxFromBlocks, buildPptxFromSlides, runNativeOfficeCommand } from "./文档引擎.mjs";
+import { assessClarification } from "./task.mjs";
+import { selectScene, getScene } from "./office规范/场景选择.mjs";
+import { matchTemplate } from "./office规范/模板匹配.mjs";
+import { parseTemplateStructure, assertCoverage } from "./office规范/模板结构.mjs";
+import { runDocxQa } from "./office规范/验收规则.mjs";
 
 export const PIPELINE_STAGES = Object.freeze(["planner", "writer", "formatter", "evaluator"]);
 
@@ -153,8 +158,17 @@ export async function evaluateGeneratedFile(file, { format, outline }) {
  * @param {(prompt: string, ctx: {stage: string}) => Promise<string>} input.runModelTask
  *        模型内容生产器（Planner/Writer/Evaluator 复核；调用方接 worker 子代理或主会话）
  * @param {boolean} [input.modelReview=true] Evaluator 是否做模型语义复核
+ * @param {boolean} [input.autoClarify=false] 生成前是否执行澄清闸门（缺 ≥2 项时返回 needs_clarification）
+ * @param {string[]} [input.clarificationAnswers] 已获得的澄清答案（有值则跳过闸门）
+ * @param {string} [input.scene] 场景 ID（缺省自动选择）
+ * @param {object} [input.template] 模板信息（matchTemplate 的返回值）
+ * @param {object} [input.style] 版式覆盖（bodyPt/line/firstLine/font）
+ * @param {object} [input.cover] 封面配置（title/subtitle/metaLines/docType）
+ * @param {boolean} [input.toc] 是否插入目录
+ * @param {boolean} [input.pageNumbers] 是否设置正文页码
+ * @param {boolean} [input.qa=false] 是否执行规则闸门
  * @param {AbortSignal} [input.signal]
- * @returns {Promise<{status:"completed"|"failed", deliverable:string|null, stages:Array, checks:string[], issues:string[]}>}
+ * @returns {Promise<{status:"completed"|"failed"|"needs_clarification", deliverable:string|null, stages:Array, checks:string[], issues:string[], clarification?:object}>}
  */
 export async function runEditorialPipeline({
   format = "docx",
@@ -165,6 +179,15 @@ export async function runEditorialPipeline({
   emit = () => {},
   runModelTask,
   modelReview = true,
+  autoClarify = false,
+  clarificationAnswers = [],
+  scene = "",
+  template = null,
+  style = null,
+  cover = null,
+  toc = false,
+  pageNumbers = false,
+  qa = false,
   signal = null,
 }) {
   const normalizedFormat = format === "pptx" ? "pptx" : "docx";
@@ -179,8 +202,38 @@ export async function runEditorialPipeline({
     throw new Error("输出路径超出当前工作区");
   }
 
+  // ---- 场景与模板（O-04 / O-13 / O-14）----
+  const sceneInfo = scene ? getScene(scene) : selectScene(`${goal} ${requirements}`);
+  const sceneId = sceneInfo?.id || sceneInfo?.scene || scene || "report";
+  const templateInfo = template || matchTemplate({ text: `${goal} ${requirements}` });
+  const templateStructure = templateInfo?.absPath && fs.existsSync(templateInfo.absPath)
+    ? parseTemplateStructure(fs.readFileSync(templateInfo.absPath, "utf8"))
+    : null;
+
+  // ---- 澄清闸门（O-23 / O-25）：缺 ≥2 项时不产成品，交回父会话提问 ----
+  if (autoClarify && !(Array.isArray(clarificationAnswers) && clarificationAnswers.length)) {
+    const clarification = assessClarification({
+      text: `${goal} ${requirements}`,
+      route: templateInfo ? "template" : "generate",
+      template: templateInfo,
+      scene: sceneInfo,
+    });
+    if (clarification.shouldAsk) {
+      return {
+        status: "needs_clarification",
+        deliverable: null,
+        stages: [],
+        checks: [],
+        issues: [`缺少关键信息：${clarification.missing.join("、")}`],
+        clarification,
+        scene: { id: sceneId, label: sceneInfo?.label || sceneId },
+        template: templateInfo ? { relPath: templateInfo.relPath, title: templateInfo.title } : null,
+      };
+    }
+  }
+
   const stageResults = [];
-  emit("pipeline_started", { pipelineId, format: normalizedFormat, goal: String(goal).slice(0, 400), deliverable: deliverableRelative });
+  emit("pipeline_started", { pipelineId, format: normalizedFormat, goal: String(goal).slice(0, 400), deliverable: deliverableRelative, scene: sceneId, template: templateInfo?.relPath || null });
 
   const runStage = async (stage, fn) => {
     emit("pipeline_stage_started", { pipelineId, stage, label: STAGE_LABELS[stage] || stage, format: normalizedFormat });
@@ -219,6 +272,9 @@ export async function runEditorialPipeline({
         `请为以下目标规划${normalizedFormat === "pptx" ? "一份 PPT 演示文稿" : "一份 Word 文档"}的结构大纲：`,
         `【目标】${goal}`,
         requirements ? `【要求】${requirements}` : "",
+        templateStructure ? `【模板】${templateStructure.title}；必须覆盖章节：${templateStructure.chapters.join("、") || "（模板未标注）"}` : "",
+        templateStructure?.requiredSections?.length ? `【模板必备小节】${templateStructure.requiredSections.slice(0, 30).join("、")}` : "",
+        sceneInfo?.structure?.length ? `【场景结构】${sceneInfo.structure.join("、")}` : "",
         normalizedFormat === "pptx"
           ? '只输出 JSON：{"title":"文档标题","slides":[{"title":"页标题","points":["要点1","要点2"]}]}，页数 5–12，不要输出其它内容。'
           : '只输出 JSON：{"title":"文档标题","sections":[{"title":"章节标题","summary":"本章要点"}]}，章节 3–9 个，不要输出其它内容。',
@@ -236,6 +292,9 @@ export async function runEditorialPipeline({
     });
 
     // ---- Stage 2 Writer：大纲 → 正文内容（draft.md / slides.json）----
+    const effectiveCover = cover
+      ? { ...cover, title: String(cover.title || outline.outline?.title || goal).slice(0, 80) }
+      : null;
     const content = await runStage("writer", async () => {
       if (signal?.aborted) throw new Error("流水线已取消");
       const outlineText = JSON.stringify(outline.outline, null, 1);
@@ -297,8 +356,9 @@ export async function runEditorialPipeline({
           }
         }
         if (!blocks.length) throw new Error("没有可排版的内容块");
-        const built = await buildDocxFromBlocks(deliverablePath, blocks);
-        return { artifact: deliverableRelative, checks: [`原生生成 ${built.blocks} 个内容块`], built };
+        const useStyle = Boolean(scene || style || effectiveCover || toc || pageNumbers);
+        const built = await buildDocxFromBlocks(deliverablePath, blocks, useStyle ? { scene: sceneId, style, cover: effectiveCover, toc, pageNumbers } : {});
+        return { artifact: deliverableRelative, checks: [`原生生成 ${built.blocks} 个内容块`, ...(built.styled ? [`版式：${sceneId}`] : []), ...(built.postProcess || [])], built };
       });
 
       // ---- Stage 4 Evaluator：确定性检查（+ 可选模型语义复核）----
@@ -309,8 +369,18 @@ export async function runEditorialPipeline({
         const deterministic = await evaluateGeneratedFile(deliverablePath, { format: normalizedFormat, outline: outline.outline });
         checks.push(...deterministic.checks);
         issues.push(...deterministic.issues);
-        // pass=全过；structural（产物本身坏了）→ fail；内容缺漏 → revise（可回环补写）
-        let verdict = deterministic.ok ? "pass" : deterministic.structural ? "fail" : "revise";
+        // 规则闸门（O-20）+ 模板覆盖率（O-15）：只在显式开启时执行，保持旧行为可回退。
+        let qaPassed = true;
+        if (qa && normalizedFormat === "docx") {
+          const qaResult = await runDocxQa(deliverablePath, { structure: templateStructure });
+          checks.push(...qaResult.checks);
+          if (!qaResult.passed) {
+            qaPassed = false;
+            issues.push(...qaResult.issues.map((item) => `[${item.rule}] ${item.message}`));
+          }
+        }
+        // pass=全过；structural（产物本身坏了）→ fail；内容/版式缺漏 → revise（可回环补写）
+        let verdict = deterministic.ok && qaPassed ? "pass" : deterministic.structural ? "fail" : "revise";
         if (modelReview && deterministic.ok && runModelTask) {
           try {
             const view = await runNativeOfficeCommand(["view", deliverableRelative, "text"], { cwd: workspace });
@@ -376,6 +446,9 @@ export async function runEditorialPipeline({
       checks: evaluation?.checks || [],
       issues: evaluation?.issues || [],
       outline: outline.outline,
+      scene: { id: sceneId, label: sceneInfo?.label || sceneId },
+      template: templateInfo ? { relPath: templateInfo.relPath, title: templateInfo.title } : null,
+      clarification: null,
     };
   } catch (error) {
     emit("pipeline_finished", {
