@@ -131,4 +131,35 @@ test("report → 08 汇报材料", () => assert.match(templateForScene("report")
 test("contract 无模板（null）", () => assert.equal(templateForScene("contract"), null));
 test("模板文件哈希未变化（只读）", () => assert.equal(hashTemplates(), before));
 
+console.log("\n▶ 08 汇报材料结构（5 例）");
+const tpl08 = catalog.find((item) => item.file.startsWith("08_"));
+const structure08 = parseTemplateStructure(fs.readFileSync(tpl08.absPath, "utf8"));
+test("08 解析出四段式章节", () => assert.equal(structure08.chapters.length, 4));
+test("08 必备/可选来自标注表", () => {
+  assert.ok(structure08.requiredSections.length >= 8);
+  assert.ok(structure08.optionalSections.length >= 1);
+});
+test("08 必备图表 3 表 2 图", () => {
+  assert.equal(structure08.tables.length, 3);
+  assert.equal(structure08.figures.length, 2);
+});
+test("08 覆盖率完整文本 100%", () => {
+  const text = [...structure08.chapters, ...structure08.requiredSections, ...structure08.figures, ...structure08.tables].join(" ");
+  const coverage = assertCoverage(structure08, text);
+  assert.equal(coverage.ok, true);
+  assert.equal(coverage.coverage, 1);
+});
+test("08 漏一章 → 报错", () => {
+  const missing = structure08.chapters[0];
+  const key = missing.replace(/^[一二三四五六七八九十]+、\s*/, "");
+  const text = [
+    ...structure08.chapters.slice(1),
+    ...structure08.requiredSections.filter((item) => !item.includes(key)),
+    ...structure08.figures,
+    ...structure08.tables,
+  ].join(" ");
+  const coverage = assertCoverage(structure08, text);
+  assert.equal(coverage.ok, false);
+});
+
 process.exitCode = failed ? 1 : 0;

@@ -151,5 +151,36 @@ await test("旧调用（无新选项）保持兼容", async () => {
   assert.equal(result.status, "completed");
 });
 
+console.log("\n▶ Markdown 直通（3 例）");
+await test("sourceMarkdown 跳过模型并生成 docx", async () => {
+  const workspace = fs.mkdtempSync(path.join(tmp, "md-"));
+  const md = ["# 测试报告", "", "## 一、前期工作进展", "", "这是正文内容，长度足够用于中文首行缩进检查。", "", "| 项目 | 数值 |", "| --- | --- |", "| 投资 | 100 |"].join("\n");
+  let modelCalls = 0;
+  const result = await runEditorialPipeline({
+    format: "docx", goal: "写一份汇报", workspace, sourceMarkdown: md, scene: "report",
+    cover: { docType: "report" }, toc: true, pageNumbers: true, qa: true, modelReview: false,
+    runModelTask: async () => { modelCalls += 1; throw new Error("不应调用模型"); },
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(result.source, "markdown");
+  assert.equal(modelCalls, 0);
+  const view = await runNativeOfficeCommand(["view", result.deliverable, "outline"], { cwd: workspace });
+  assert.ok(String(view.text).includes("一、前期工作进展"));
+});
+await test("sourceMarkdown 的表格保留", async () => {
+  const workspace = fs.mkdtempSync(path.join(tmp, "md-"));
+  const md = "# 报告\n\n## 章节\n\n| A | B |\n| --- | --- |\n| 1 | 2 |";
+  const result = await runEditorialPipeline({ format: "docx", goal: "写报告", workspace, sourceMarkdown: md, scene: "report", modelReview: false, runModelTask: async () => { throw new Error("no model"); } });
+  const view = await runNativeOfficeCommand(["view", result.deliverable, "text"], { cwd: workspace });
+  assert.ok(String(view.text).includes("A"));
+});
+await test("sourceMarkdown 仅支持 docx", async () => {
+  const workspace = fs.mkdtempSync(path.join(tmp, "md-"));
+  await assert.rejects(
+    () => runEditorialPipeline({ format: "pptx", goal: "x", workspace, sourceMarkdown: "# x", modelReview: false, runModelTask: async () => "" }),
+    /sourceMarkdown 仅支持 docx/,
+  );
+});
+
 fs.rmSync(tmp, { recursive: true, force: true });
 process.exitCode = failed ? 1 : 0;

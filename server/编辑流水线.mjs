@@ -20,7 +20,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import JSZip from "jszip";
-import { buildDocxFromBlocks, buildPptxFromSlides, runNativeOfficeCommand } from "./文档引擎.mjs";
+import { buildDocxFromBlocks, buildPptxFromSlides, runNativeOfficeCommand, markdownToBlocks } from "./文档引擎.mjs";
 import { assessClarification } from "./task.mjs";
 import { selectScene, getScene } from "./office规范/场景选择.mjs";
 import { matchTemplate } from "./office规范/模板匹配.mjs";
@@ -188,6 +188,7 @@ export async function runEditorialPipeline({
   toc = false,
   pageNumbers = false,
   qa = false,
+  sourceMarkdown = "",
   signal = null,
 }) {
   const normalizedFormat = format === "pptx" ? "pptx" : "docx";
@@ -232,6 +233,12 @@ export async function runEditorialPipeline({
     }
   }
 
+  // P1-2：已有 Markdown 时跳过 Planner/Writer，直接解析为 blocks（不调用模型）。
+  const sourceBlocks = sourceMarkdown ? markdownToBlocks(sourceMarkdown) : null;
+  const sourceHeadings = sourceBlocks
+    ? sourceBlocks.filter((block) => block.type === "heading").map((block) => block.text)
+    : [];
+
   const stageResults = [];
   emit("pipeline_started", { pipelineId, format: normalizedFormat, goal: String(goal).slice(0, 400), deliverable: deliverableRelative, scene: sceneId, template: templateInfo?.relPath || null });
 
@@ -265,8 +272,24 @@ export async function runEditorialPipeline({
 
   let finalStatus = "completed";
   try {
+    // ---- Stage 1 Planner + Stage 2 Writer ----
+    // sourceMarkdown 提供时跳过两个模型阶段，直接把 Markdown 解析成 blocks（P1-2）。
+    let outline;
+    let content;
+    let effectiveCover;
+    if (sourceBlocks) {
+      const title = sourceHeadings[0] || safePipelineName(goal);
+      outline = {
+        outline: { title, sections: sourceHeadings.map((text) => ({ title: text })) },
+        checks: [`Markdown 直通：${sourceBlocks.length} 个内容块`],
+      };
+      content = { content: { sections: [] }, checks: [] };
+      effectiveCover = cover ? { ...cover, title: String(cover.title || title).slice(0, 80) } : null;
+      emit("pipeline_stage_finished", { pipelineId, stage: "planner", label: STAGE_LABELS.planner, status: "skipped", checks: ["sourceMarkdown 直通，跳过 Planner"] });
+      emit("pipeline_stage_finished", { pipelineId, stage: "writer", label: STAGE_LABELS.writer, status: "skipped", checks: ["sourceMarkdown 直通，跳过 Writer"] });
+    } else {
     // ---- Stage 1 Planner：目标 → 结构大纲（outline.json）----
-    const outline = await runStage("planner", async () => {
+    outline = await runStage("planner", async () => {
       if (signal?.aborted) throw new Error("流水线已取消");
       const prompt = [
         `请为以下目标规划${normalizedFormat === "pptx" ? "一份 PPT 演示文稿" : "一份 Word 文档"}的结构大纲：`,
@@ -292,10 +315,10 @@ export async function runEditorialPipeline({
     });
 
     // ---- Stage 2 Writer：大纲 → 正文内容（draft.md / slides.json）----
-    const effectiveCover = cover
+    effectiveCover = cover
       ? { ...cover, title: String(cover.title || outline.outline?.title || goal).slice(0, 80) }
       : null;
-    const content = await runStage("writer", async () => {
+    content = await runStage("writer", async () => {
       if (signal?.aborted) throw new Error("流水线已取消");
       const outlineText = JSON.stringify(outline.outline, null, 1);
       const prompt = normalizedFormat === "pptx"
@@ -324,11 +347,13 @@ export async function runEditorialPipeline({
         checks: [normalizedFormat === "pptx" ? `撰写 ${parsed.slides?.length || 0} 页内容` : `撰写 ${parsed.sections?.length || 0} 章内容`],
       };
     });
+    }
 
     // ---- Stage 3 Formatter（原生直写）+ Evaluator 回环（≤1 轮 revise）----
+    if (sourceBlocks && normalizedFormat === "pptx") throw new Error("sourceMarkdown 仅支持 docx");
     let formatterResult = null;
     let evaluation = null;
-    for (let round = 0; round <= 1; round += 1) {
+    for (let round = 0; round <= (sourceBlocks ? 0 : 1); round += 1) {
       formatterResult = await runStage("formatter", async () => {
         if (signal?.aborted) throw new Error("流水线已取消");
         if (round > 0) {
@@ -344,14 +369,16 @@ export async function runEditorialPipeline({
           const built = await buildPptxFromSlides(deliverablePath, slides);
           return { artifact: deliverableRelative, checks: [`原生生成 ${built.slides} 页`], built };
         }
-        const blocks = [];
-        for (const section of content.content?.sections || []) {
-          blocks.push({ type: "heading", text: String(section?.title || ""), level: 1 });
-          for (const block of Array.isArray(section?.blocks) ? section.blocks : []) {
-            if (String(block?.type || "").toLowerCase() === "table" && Array.isArray(block?.rows)) {
-              blocks.push({ type: "table", rows: block.rows });
-            } else if (String(block?.text || "").trim()) {
-              blocks.push({ type: "paragraph", text: String(block.text) });
+        const blocks = sourceBlocks ? [...sourceBlocks] : [];
+        if (!sourceBlocks) {
+          for (const section of content.content?.sections || []) {
+            blocks.push({ type: "heading", text: String(section?.title || ""), level: 1 });
+            for (const block of Array.isArray(section?.blocks) ? section.blocks : []) {
+              if (String(block?.type || "").toLowerCase() === "table" && Array.isArray(block?.rows)) {
+                blocks.push({ type: "table", rows: block.rows });
+              } else if (String(block?.text || "").trim()) {
+                blocks.push({ type: "paragraph", text: String(block.text) });
+              }
             }
           }
         }
@@ -381,7 +408,7 @@ export async function runEditorialPipeline({
         }
         // pass=全过；structural（产物本身坏了）→ fail；内容/版式缺漏 → revise（可回环补写）
         let verdict = deterministic.ok && qaPassed ? "pass" : deterministic.structural ? "fail" : "revise";
-        if (modelReview && deterministic.ok && runModelTask) {
+        if (modelReview && !sourceBlocks && deterministic.ok && runModelTask) {
           try {
             const view = await runNativeOfficeCommand(["view", deliverableRelative, "text"], { cwd: workspace });
             const reviewPrompt = [
@@ -408,7 +435,7 @@ export async function runEditorialPipeline({
         return { status: verdict === "pass" ? "done" : verdict, checks, issues, verdict };
       });
 
-      if (evaluation.verdict === "pass" || evaluation.verdict === "fail" || round >= 1) break;
+      if (evaluation.verdict === "pass" || evaluation.verdict === "fail" || round >= 1 || sourceBlocks) break;
       // revise → 回 Writer 补内容，再由 Formatter 重渲染（回环最多 1 轮）
       emit("pipeline_stage_finished", {
         pipelineId, stage: "writer", label: STAGE_LABELS.writer, status: "revise",
@@ -449,6 +476,7 @@ export async function runEditorialPipeline({
       scene: { id: sceneId, label: sceneInfo?.label || sceneId },
       template: templateInfo ? { relPath: templateInfo.relPath, title: templateInfo.title } : null,
       clarification: null,
+      source: sourceBlocks ? "markdown" : "model",
     };
   } catch (error) {
     emit("pipeline_finished", {

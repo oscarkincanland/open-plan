@@ -153,4 +153,14 @@ test("技能计数与 OfficeCLI 约束单一来源（O-28）", () => {
   assert.equal((source.match(/ALWAYS operate on office documents/g) || []).length, 1);
 });
 
+console.log("\n▶ Chat 模式提示（2 例）");
+test("Chat 写作意图 → MODE_SWITCH_REQUIRED", () => {
+  const p = planTaskCapabilities({ text: "帮我写一篇汇报材料", task: { mode: "chat" } });
+  assert.equal(p.hint?.code, "MODE_SWITCH_REQUIRED");
+});
+test("Work 模式不返回提示", () => {
+  const p = planTaskCapabilities({ text: "帮我写一篇汇报材料", task: { mode: "agent" } });
+  assert.equal(p.hint, null);
+});
+
 process.exitCode = failed ? 1 : 0;

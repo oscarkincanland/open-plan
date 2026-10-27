@@ -447,6 +447,52 @@ export async function buildPptxFromSlides(target, slides = []) {
 }
 
 /**
+ * Markdown → blocks v2（计划 008 / P1-2）。
+ * 支持标题、段落、管道表格；代码块跳过；图片按段落文本保留。
+ */
+export function markdownToBlocks(markdown) {
+  const lines = String(markdown || "").split(/\r?\n/);
+  const blocks = [];
+  let paragraph = [];
+  let table = [];
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    blocks.push({ type: "paragraph", text: paragraph.join(" ").trim() });
+    paragraph = [];
+  };
+  const flushTable = () => {
+    if (table.length >= 2) {
+      const rows = table.map((line) => line.replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim()));
+      const data = rows.filter((row) => !row.every((cell) => !cell || /^:?-{2,}:?$/.test(cell)));
+      if (data.length) blocks.push({ type: "table", rows: data });
+    }
+    table = [];
+  };
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) { flushParagraph(); flushTable(); continue; }
+    if (/^```/.test(trimmed)) { flushParagraph(); flushTable(); continue; }
+    const heading = trimmed.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushTable();
+      blocks.push({ type: "heading", text: heading[2].trim(), level: Math.min(3, heading[1].length) });
+      continue;
+    }
+    if (/^\|/.test(trimmed)) {
+      flushParagraph();
+      table.push(trimmed);
+      continue;
+    }
+    flushTable();
+    paragraph.push(trimmed);
+  }
+  flushParagraph();
+  flushTable();
+  return blocks;
+}
+
+/**
  * P2-A Formatter：按结构化大纲生成 .docx（标题/段落/表格）。
  *
  * v2（O-17）：新增 style / scene / cover / toc / header / footer / pageNumbers 选项。
@@ -538,7 +584,7 @@ export async function buildDocxFromBlocks(target, blocks = [], options = {}) {
   for (const block of blocks) {
     const kind = String(block?.type || "paragraph").toLowerCase();
     const text = String(block?.text ?? "").trim();
-    if (!text && kind !== "image" && kind !== "pagebreak" && kind !== "toc") continue;
+    if (!text && kind !== "image" && kind !== "table" && kind !== "pagebreak" && kind !== "toc") continue;
     if (kind === "heading" || kind === "h1" || kind === "h2" || kind === "h3") {
       const level = kind === "h1" || block?.level === 1 ? HeadingLevel.HEADING_1
         : kind === "h3" || block?.level === 3 ? HeadingLevel.HEADING_3 : HeadingLevel.HEADING_2;
@@ -550,7 +596,11 @@ export async function buildDocxFromBlocks(target, blocks = [], options = {}) {
           margins: { top: 80, bottom: 80, left: 120, right: 120 },
         })),
       }));
-      children.push(new Table({ rows, width: { size: 100, type: WidthType.PERCENTAGE } }));
+      children.push(new Table({
+        rows,
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        margins: { top: 80, bottom: 80, left: 120, right: 120 },
+      }));
     } else if (kind === "image" && block?.path) {
       // G8：图集嵌入——读取本地图片（相对/绝对路径均可，调用方负责路径安全），
       // 尺寸由调用方以 transformation 传入（等比缩放由 probeImageSize 提供）。

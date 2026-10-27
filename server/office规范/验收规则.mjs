@@ -256,11 +256,13 @@ export async function runDocxQa(file, { structure = null } = {}) {
     const coverage = assertCoverage(structure, text);
     checks.push(`模板覆盖率 ${(coverage.coverage * 100).toFixed(0)}%（${coverage.covered}/${coverage.total}）`);
     if (!coverage.ok) {
+      const severity = coverage.inferred ? "warn" : "error";
       for (const item of coverage.missing.slice(0, 20)) {
-        issues.push({ rule: "template_coverage", severity: "error", message: `模板必备项缺失：${item}` });
+        issues.push({ rule: "template_coverage", severity, message: `模板必备项缺失：${item}` });
       }
     }
   }
 
-  return { passed: issues.length === 0, issues, checks, text };
+  const hasError = issues.some((item) => item.severity === "error");
+  return { passed: !hasError, issues, checks, text };
 }

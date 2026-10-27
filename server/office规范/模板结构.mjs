@@ -59,6 +59,66 @@ function parseMarkedItems(sectionText, mark) {
   return unique(out);
 }
 
+/**
+ * 解析「标注」表格（08 等模板的格式）：
+ * | 章节 | 标注 | 说明 |
+ * | 一、前期工作进展 | ✅ 必备 | ... |
+ */
+function parseMarkedTable(sectionText) {
+  const lines = splitLines(sectionText);
+  let headerIndex = -1;
+  let markerIndex = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!/^\s*\|/.test(lines[i])) continue;
+    const cells = lines[i].split("|").map((cell) => cell.trim());
+    const idx = cells.findIndex((cell) => /标注|必备/.test(cell));
+    if (idx >= 0) {
+      headerIndex = i;
+      markerIndex = idx;
+      break;
+    }
+  }
+  if (headerIndex < 0) return { required: [], optional: [] };
+  const required = [];
+  const optional = [];
+  for (let i = headerIndex + 1; i < lines.length; i += 1) {
+    if (!/^\s*\|/.test(lines[i])) {
+      if (lines[i].trim()) break;
+      continue;
+    }
+    if (/^\s*\|?\s*:?-{2,}/.test(lines[i])) continue;
+    const cells = lines[i].split("|").map((cell) => cell.trim());
+    const name = cells[1] || cells[0];
+    const marker = cells[markerIndex] || "";
+    if (!name) continue;
+    if (/✅/.test(marker)) required.push(cleanTitle(name));
+    else if (/🔧/.test(marker)) optional.push(cleanTitle(name));
+  }
+  return { required: unique(required), optional: unique(optional) };
+}
+
+/** 结构骨架代码块里的顶层章节：一、二、三、四、。 */
+function parseChaptersFromCodeBlock(sectionText) {
+  const out = [];
+  for (const match of String(sectionText || "").matchAll(/```[\s\S]*?```/g)) {
+    for (const line of splitLines(match[0])) {
+      const hit = line.match(/^\s*([一二三四五六七八九十百]+)、\s*(.+?)\s*$/u);
+      if (hit) out.push(`${hit[1]}、${cleanTitle(hit[2])}`);
+    }
+  }
+  return unique(out);
+}
+
+/** `### ...（必备）` 形式的必备段落。 */
+function parseRequiredHeadings(sectionText) {
+  const out = [];
+  for (const line of splitLines(sectionText)) {
+    const hit = line.match(/^###\s+(.+?)\s*（必备）\s*$/u);
+    if (hit) out.push(cleanTitle(hit[1]));
+  }
+  return unique(out);
+}
+
 function parseTableFirstColumn(sectionText) {
   const rows = [];
   for (const line of splitLines(sectionText)) {
@@ -99,17 +159,24 @@ export function parseTemplateStructure(markdown) {
   const title = (text.match(/^#\s+(.+)$/m)?.[1] || "").trim();
 
   const structureSection = level2Section(lines, /^##\s*二、\s*结构骨架/);
-  const chapters = unique(
-    [...structureSection.matchAll(/^###\s+(第[一二三四五六七八九十百]+章[^\n]*)$/gm)]
-      .map((match) => cleanTitle(match[1])),
-  );
-  const requiredSections = parseMarkedItems(structureSection, "✅");
-  const optionalSections = parseMarkedItems(structureSection, "🔧");
+  const marked = parseMarkedTable(structureSection);
+  const chapterHeadings = [...structureSection.matchAll(/^###\s+(第[一二三四五六七八九十百]+章[^\n]*)$/gm)]
+    .map((match) => cleanTitle(match[1]));
+  const chapters = unique([...chapterHeadings, ...parseChaptersFromCodeBlock(structureSection)]);
+  const requiredSections = unique([
+    ...parseMarkedItems(structureSection, "✅"),
+    ...marked.required,
+    ...parseRequiredHeadings(structureSection),
+  ]);
+  const optionalSections = unique([
+    ...parseMarkedItems(structureSection, "🔧"),
+    ...marked.optional,
+  ]);
 
-  const figureSection = level3Section(lines, /^###\s*5\.2\s*必备图件清单/);
+  const figureSection = level3Section(lines, /^###\s*5\.2\s*必备图[件表]清单/);
   const tableSection = level3Section(lines, /^###\s*5\.3\s*必备表格清单/);
-  const figures = parseFigureNumbers(figureSection);
-  const tables = parseTableNumbers(tableSection);
+  const figures = unique([...parseFigureNumbers(figureSection), ...parseFigureNumbers(structureSection)]);
+  const tables = unique([...parseTableNumbers(tableSection), ...parseTableNumbers(figureSection)]);
 
   const formatSection = level2Section(lines, /^##\s*三、\s*格式规范/);
   const formatRules = unique(
@@ -121,7 +188,23 @@ export function parseTemplateStructure(markdown) {
   const pitfallSection = level2Section(lines, /^##\s*七、\s*常见错误/);
   const pitfalls = parseTableFirstColumn(pitfallSection).slice(0, 40);
 
-  return { title, chapters, requiredSections, optionalSections, figures, tables, formatRules, pitfalls };
+  // 没有任何显式标记时标记为推断结构，覆盖率缺失项降为告警。
+  const inferred = !parseMarkedItems(structureSection, "✅").length
+    && !parseMarkedItems(structureSection, "🔧").length
+    && !marked.required.length
+    && !marked.optional.length;
+
+  return { title, chapters, requiredSections, optionalSections, figures, tables, formatRules, pitfalls, inferred };
+}
+
+function sectionCandidates(name) {
+  const clean = cleanTitle(name);
+  const out = new Set([clean]);
+  out.add(clean.replace(/^\d+(?:\.\d+)+\s*/, ""));
+  out.add(clean.replace(/^[一二三四五六七八九十百]+、\s*/, ""));
+  out.add(clean.replace(/^.*?（[^）]*）\s*/, ""));
+  out.add(clean.split("、").pop());
+  return [...out].map((item) => item.trim()).filter(Boolean);
 }
 
 function normalize(text) {
@@ -154,7 +237,8 @@ export function assertCoverage(structure, producedText) {
     total += 1;
     const number = chapter.match(/第[一二三四五六七八九十百]+章/)?.[0] || "";
     const name = cleanTitle(chapter.replace(/^第[一二三四五六七八九十百]+章\s*/, ""));
-    if ((number && produced.includes(number)) || (name && produced.includes(normalize(name)))) covered += 1;
+    const candidates = sectionCandidates(name).map(normalize);
+    if ((number && produced.includes(number)) || candidates.some((item) => produced.includes(item))) covered += 1;
     else missing.push(chapter);
   }
 
@@ -162,7 +246,8 @@ export function assertCoverage(structure, producedText) {
     total += 1;
     const number = section.match(/^\d+(?:\.\d+)+/)?.[0] || "";
     const name = cleanTitle(section.replace(/^\d+(?:\.\d+)+\s*/, ""));
-    if ((number && produced.includes(number)) || (name && produced.includes(normalize(name)))) covered += 1;
+    const candidates = sectionCandidates(name).map(normalize);
+    if ((number && produced.includes(number)) || candidates.some((item) => produced.includes(item))) covered += 1;
     else missing.push(section);
   }
 
@@ -179,5 +264,5 @@ export function assertCoverage(structure, producedText) {
   }
 
   const coverage = total ? Number((covered / total).toFixed(4)) : 1;
-  return { ok: missing.length === 0, total, covered, coverage, missing };
+  return { ok: missing.length === 0, total, covered, coverage, missing, inferred: Boolean(structure?.inferred) };
 }

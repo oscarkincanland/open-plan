@@ -137,7 +137,23 @@
 
 ---
 
-## 10. 验证入口
+## 10. 执行闸门与澄清前置
+
+来源：`server/office规范/执行闸门.mjs`，在 `server/agent.mjs` 的 bash / officecli / write / edit 工具入口执行。
+
+- **生效条件**：`OAW_OFFICE_FORMAT=1`、Work 模式、`route=template|generate|edit`。
+- **写作路由（template/generate）**：
+  - bash 生成或转换 docx/pptx（node 生成脚本、python-docx、pandoc、重定向、通过 bash 调 officecli）→ `OFFICE_PIPELINE_REQUIRED`；
+  - officecli 在管线产出前的 `create/add/set/batch/import/remove/move/swap/delete` → 拒绝；
+  - `add --type markdown` 始终拒绝（改用 `sourceMarkdown`）；
+  - write/edit 写 `.docx` / `.pptx` → 拒绝；
+  - 只读命令（`view/get/query`、`ls/grep/unzip -p`、只读 `node -e`）放行。
+- **澄清前置**：`clarification.shouldAsk=true` 时，回答前拒绝一切写操作（含 `editorial_pipeline`），只允许信息收集工具与 `ask_user`。
+- **逃逸阀**：命令带 `--allow-manual` 时放行并剥离标记。
+- **回退**：关闭 `OAW_OFFICE_FORMAT` 即完全放行，行为与 v0.11.55 基线一致。
+- **Markdown 直通**：`editorial_pipeline` 的 `sourceMarkdown` 跳过 Planner/Writer，`markdownToBlocks` 解析标题/段落/表格后统一排版与验收。
+
+## 11. 验证入口
 
 ```bash
 npm run test:office-route      # 四路由与触发词
@@ -153,7 +169,7 @@ npm run verify
 
 ---
 
-## 11. 不做
+## 12. 不做
 
 - 不引入 LibreOffice / pandoc / poppler 运行时依赖。
 - 不做多模态视觉判定；渲染抽检只进人工 L4。

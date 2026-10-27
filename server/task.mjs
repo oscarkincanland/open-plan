@@ -238,6 +238,10 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
   const intent = routeTaskIntent({ text, task, references, attachments });
   const clarification = assessClarification({ text, route: intent.route, template: intent.template, scene: intent.scene });
   const { mode, source, refList, document, output } = ctx;
+  // Chat 模式下识别到写作意图时，前端提示切换到 Work（不改变只读边界）。
+  const hint = mode === "chat" && ctx.output && ctx.office
+    ? { code: "MODE_SWITCH_REQUIRED", message: "当前是 Chat 只读模式；生成文档请切换到 Work。" }
+    : null;
   const knowledge = refList.some((item) => ["knowledge", "knowledge_dir"].includes(item.kind)) || containsAny(source, ["知识库", "知识库搜索", "知识检索", "参考资料"]);
   const map = containsAny(source, ["地图", "图层", "geojson", "等时圈", "热力图", "od图", "空间分析"]) || /(?:^|[\\/])maps(?:[\\/]|$)/i.test(ctx.files);
   const workflow = Boolean(task.workflowId) || /@工作流\[|@技能\[|工作流|skill|workflow/i.test(String(text || ""));
@@ -313,6 +317,7 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
     template: intent.template ? { relPath: intent.template.relPath, title: intent.template.title, source: intent.template.source } : null,
     scene: intent.scene ? { id: intent.scene.scene, label: intent.scene.label, confidence: intent.scene.confidence } : null,
     clarification,
+    hint,
     capabilities,
     routing: {
       // preferred=编辑既有文档（admission 阻塞预检）；lazy=生成类任务（原生直写优先，

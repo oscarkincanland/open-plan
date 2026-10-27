@@ -45,6 +45,7 @@ import { resolveReferences, readReference, contextSummary } from "./context.mjs"
 import { recordRunEvent, updateRunTodo, getRun } from "./runs.mjs";
 import { markRunTiming, attachRunTimingSpans } from "./首字延迟.mjs";
 import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode, routeTaskIntent } from "./task.mjs";
+import { classifyToolCall } from "./office规范/执行闸门.mjs";
 
 /** OfficeCLI 工具约束（O-28）：Work/Review 两处 prompt 共用同一常量，避免措辞分叉。 */
 const OFFICE_TOOL_RULE = "- ALWAYS operate on office documents through the `officecli` tool — it resolves file names relative to the current workspace and runs on Windows natively. NEVER try to run `officecli` via the bash tool.";
@@ -1123,6 +1124,32 @@ class AgentManager extends EventEmitter {
       return { runId, workspace: entry.workspace, threadId: entry.threadId, kind };
     };
     const writeEvent = (type, data) => emitChannelSafe(entry, type, data);
+
+    /** Office 执行闸门上下文（计划 008）：路由、管线产出、澄清待回答。 */
+    const officeGateContext = () => ({
+      route: entry?.task?.capabilityPlan?.route,
+      officeFormat: Boolean(entry?.officeGateOn ?? RUNTIME_FLAGS.officeFormat),
+      pipelineProduced: Boolean(entry?.pipelineProduced),
+      clarificationPending: entry?.clarificationPending || null,
+      mode: entry?.mode || "agent",
+    });
+
+    /** 执行闸门：被拒时发 tool_gate_denied 并抛可读错误；放行时返回闸门结果（可能带 sanitizedInput）。 */
+    const enforceOfficeGate = (tool, input) => {
+      const gate = classifyToolCall({ tool, input, context: officeGateContext() });
+      if (!gate.blocked) return gate;
+      writeEvent("tool_gate_denied", {
+        runId: entry?.activeRunId || null,
+        kind: tool,
+        name: tool,
+        code: gate.code,
+        reason: gate.reason,
+        suggestion: gate.suggestion || "",
+      });
+      const error = new Error([gate.reason, gate.suggestion].filter(Boolean).join(" "));
+      error.code = gate.code;
+      throw error;
+    };
     const mcpToolRegistrations = configuredMcpTools.map(({ server, tool }) => {
       const hash = crypto.createHash("sha1").update(`${server.id}:${tool.name}`).digest("hex").slice(0, 6);
       const name = safePiToolName(`mcp_${server.id.slice(0, 18)}_${tool.name.slice(0, 30)}_${hash}`, 62);
@@ -1230,6 +1257,7 @@ class AgentManager extends EventEmitter {
         mkdir: async (directory) => ensureStagedDirectory({ ...activeWriteContext("write"), targetPath: directory, kind: "write" }),
         writeFile: async (absolutePath, content) => {
           const ctx = activeWriteContext("write");
+          enforceOfficeGate("write", { path: absolutePath });
           assertReviewWriteAllowed(absolutePath, "write");
           // 敏感文件（.env 等）写入被规则表直接拒绝
           await requireToolApproval({
@@ -1255,6 +1283,7 @@ class AgentManager extends EventEmitter {
         },
         writeFile: async (absolutePath, content) => {
           assertReviewWriteAllowed(absolutePath, "edit");
+          enforceOfficeGate("edit", { path: absolutePath });
           return stageWrite({ ...activeWriteContext("edit"), targetPath: absolutePath, content, onEvent: writeEvent });
         },
       },
@@ -1316,12 +1345,15 @@ class AgentManager extends EventEmitter {
 exec: async (command, cwd, options) => {
           const ctx = activeWriteContext("bash");
           const commandText = String(command || "");
+          // 计划 008：写作路由下拦截 docx 生成脚本/转换命令（--allow-manual 可逃逸）
+          const bashGate = enforceOfficeGate("bash", { command: commandText });
+          const effectiveCommand = String(bashGate.sanitizedInput?.command || commandText);
           // 删除/破坏类命令默认进入用户审批（规则表见 审批策略.mjs）
           await requireToolApproval({
-            entry, tool: "bash", input: commandText,
+            entry, tool: "bash", input: effectiveCommand,
             runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
           });
-          if (isGlobalSearchCommand(commandText)) {
+          if (isGlobalSearchCommand(effectiveCommand)) {
             const error = new Error("禁止从系统根目录执行全盘搜索，请限定在当前工作区内，并使用绝对路径或当前工作区相对路径。");
             error.code = "BASH_SCOPE_BLOCKED";
             writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error.code, message: error.message });
@@ -1329,8 +1361,8 @@ exec: async (command, cwd, options) => {
             writeEvent("tool_gate_denied", { runId: ctx.runId, kind: "bash", code: error.code, name: "bash", reason: error.message });
             throw error;
           }
-          const targetsProtectedMemory = isProtectedMemoryTarget(ctx.workspace, path.resolve(cwd || ctx.workspace, ".")) || /(?:memory[\\/]|(?:^|[\s"'\\/])AGENTS\.md\b)/i.test(commandText);
-          if (targetsProtectedMemory && /(?:>|>>|tee|set-content|out-file|write[_-]?text|writefile|sed\s+-i|perl\s+-i|\b(?:mv|cp|rm|del)\b)/i.test(commandText)) {
+          const targetsProtectedMemory = isProtectedMemoryTarget(ctx.workspace, path.resolve(cwd || ctx.workspace, ".")) || /(?:memory[\\/]|(?:^|[\s"'\\/])AGENTS\.md\b)/i.test(effectiveCommand);
+          if (targetsProtectedMemory && /(?:>|>>|tee|set-content|out-file|write[_-]?text|writefile|sed\s+-i|perl\s+-i|\b(?:mv|cp|rm|del)\b)/i.test(effectiveCommand)) {
             const error = new Error("长期记忆不能通过 Bash 直接修改，请使用 memory_update 提交待审核建议");
             error.code = "MEMORY_WRITE_REQUIRES_PROPOSAL";
             writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error.code, message: error.message });
@@ -1339,14 +1371,14 @@ exec: async (command, cwd, options) => {
             throw error;
           }
           return withWorkspaceWriteLock(ctx, "bash", async () => {
-            writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", command: commandText.slice(0, 500) });
+            writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", command: effectiveCommand.slice(0, 500) });
             writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash" });
             try {
               // U5：flag on 时经侧车管理器执行（独立进程 + 并发上限 + 执行统计）；
               // off（默认）走 createLocalBashOperations 原路径，行为与基线一致。
               const result = RUNTIME_FLAGS.piBashSidecar
-                ? await getBashSidecar().execute(commandText, { cwd: cwd || ctx.workspace })
-                : await localBash.exec(command, cwd, normalizeBashOptions(options));
+                ? await getBashSidecar().execute(effectiveCommand, { cwd: cwd || ctx.workspace })
+                : await localBash.exec(effectiveCommand, cwd, normalizeBashOptions(options));
               return result;
             } catch (error) {
               writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error?.code || "BASH_FAILED", message: String(error?.message || error) });
@@ -1366,13 +1398,17 @@ exec: async (command, cwd, options) => {
         "PROP VALUES: write them as key=value tokens; values with spaces are fine as one token (--prop author=规聚 Agent is parsed as one value) — do NOT wrap them in escaped quotes like \\\"...\\\". " +
         "For Word comments, first locate a real paragraph path with get/query, use one get path per command, then verify with query <file> comment --json. " +
         "STRICT RULES (avoid wasted retries): (1) the file path must be a workspace-relative path such as '报告.docx' or '初稿/报告.docx' — absolute paths and ../ are rejected; (2) 'view' requires a mode from the list above, never call bare 'view'; (3) only these options exist: --json, --find, --compact, --fields, -o/--output, -h/--help — there is NO --limit/--page/--offset, unknown options abort the command; (4) 'query <file> <selector>' takes a CSS-like selector as its own argument ('paragraph', 'paragraph[style=Normal]', 'table', 'run', '*'); do not pass subcommand names or paths as the selector; (5) 'add <file> / --type markdown --prop src=<file.md>' reads the source from disk: if you just wrote that .md with the write tool it may still be staged, so pass it through this tool's args (it gets materialized) and do not retry more than twice; (6) very large workbooks may return code 'decompression_bomb' (>3,000,000 XML elements): do not retry the same command, tell the user the file must be split, or read the data with a script instead; (7) an internal '.NET' assembly error (e.g. FileNotFoundException: System.Private.Xml) means the officecli installation is mid-update: retry the same command once, and if it fails again tell the user to re-run the officecli installer instead of looping. " +
+        "KNOWN ERRORS (avoid loops): (a) 'Style Normal not found' means the style is absent — add it first via 'add <file> /styles --type style --prop id=Normal --prop name=Normal --prop type=paragraph'; (b) table paths only support '/body/tbl[1]' — never 'tbl[*]' or '//p'; iterate rows/cells one by one; (c) table elements do not accept 'size' — set font size on paragraphs inside cells. " +
         "File names are relative to the current workspace folder (may include subfolder paths). The user's CURRENT WORKING FILE is noted in the context file — when the user asks to modify a document, operate on that file unless they say otherwise. If the operating system reports access denied, is denied, EPERM, or EACCES, explain that the service process lacks write access (sandbox, mount, or directory permissions); only report a file lock for a sharing violation or another-process lock error; for a sharing violation tell the user to close WPS/Word/Excel and do not retry more than twice. Use --json for structured output. Prefer this tool over bash for all document operations.",
       parameters: Type.Object({
         args: Type.String({ description: "officecli command arguments (single string)" }),
       }),
 execute: async (_toolCallId, params) => {
         const { runOfficecli, validateOfficecliArgs } = await import("./office.mjs");
-        const args = parseArgs(String(params.args || ""));
+        // 计划 008：写作路由下，管线产出前禁止 create/add/set/batch 与 markdown 转换
+        const officeGate = enforceOfficeGate("officecli", { args: String(params.args || "") });
+        let args = parseArgs(String(params.args || ""));
+        if (officeGate.sanitizedInput?.args) args = parseArgs(officeGate.sanitizedInput.args);
         const ctx = activeWriteContext("officecli");
         let parsed;
         try {
@@ -2645,6 +2681,8 @@ execute: async (_toolCallId, params) => {
         }
         // 归一化 options（对象 → 字符串）
         const opts = (params.options || []).map((o) => (typeof o === "string" ? o : o.label || JSON.stringify(o)));
+        // 计划 008：提问一旦发出，解除写操作前的澄清闸门（超时也按专业判断继续）。
+        entry.clarificationPending = null;
         // 阻塞等待用户回答（最长 5 分钟），期间 SSE 推送 ask_user 事件
         return await new Promise((resolve) => {
           const pendingAskId = `ask_${crypto.randomUUID()}`;
@@ -3006,6 +3044,7 @@ execute: async (_toolCallId, params) => {
         requirements: Type.Optional(Type.String({ maxLength: 1000, description: "额外要求：受众、字数、风格、必含章节等" })),
         scene: Type.Optional(Type.String({ maxLength: 40, description: "场景 ID（academic/report/contract/official-doc/resume/exam/copywriting）；缺省自动选择" })),
         clarificationAnswers: Type.Optional(Type.Array(Type.String({ maxLength: 500 }), { description: "用户对澄清问题的回答；有值则跳过澄清闸门" })),
+        sourceMarkdown: Type.Optional(Type.String({ maxLength: 200000, description: "已有 Markdown 正文；提供时跳过 Planner/Writer，直接排版并验收" })),
       }),
       execute: async (_toolCallId, params, signal) => {
         const ctx = activeWriteContext("editorial_pipeline");
@@ -3057,6 +3096,7 @@ execute: async (_toolCallId, params) => {
             runModelTask: runPipelineModelTask,
             autoClarify: RUNTIME_FLAGS.officeFormat,
             clarificationAnswers: Array.isArray(params.clarificationAnswers) ? params.clarificationAnswers.map(String) : [],
+            sourceMarkdown: params.sourceMarkdown ? String(params.sourceMarkdown) : "",
             scene: params.scene ? String(params.scene) : (writingIntent?.scene?.scene || ""),
             template: writingIntent?.template || null,
             cover: RUNTIME_FLAGS.officeFormat && format === "docx"
@@ -3068,12 +3108,14 @@ execute: async (_toolCallId, params) => {
             signal,
           });
           if (result.status === "needs_clarification") {
+            entry.clarificationPending = result.clarification || entry.clarificationPending;
             const question = result.clarification?.question;
             const text = question
               ? `需要先向用户确认：${question.text}\n可选：${(question.options || []).join(" / ")}\n请调用 ask_user 提问；用户回答后再次调用本工具，并在 clarificationAnswers 里带上回答。`
               : `需要先补充关键信息：${(result.clarification?.missing || []).join("、")}`;
             return { content: [{ type: "text", text }], details: { pipeline: true, status: "needs_clarification", clarification: result.clarification } };
           }
+          if (result.deliverable && result.status === "completed") entry.pipelineProduced = true;
           if (RUNTIME_FLAGS.officeFormat && (result.scene || result.template)) {
             writeEvent("office_format_applied", {
               runId: ctx.runId,
@@ -3228,6 +3270,16 @@ execute: async (_toolCallId, params) => {
                 ? entry.session?.followUp?.(notice)
                 : entry.session?.steer?.(notice);
               Promise.resolve(deliverPromise).catch(() => {});
+            }
+          }
+          // 计划 008：写作路由下 10 回合仍未走管线时，提醒一次（不阻断，靠执行闸门兜底）
+          if (entry.officeGateOn && !entry.pipelineProduced && !entry.pipelineReminderSent && entry.turnCount >= 10) {
+            const route = entry.task?.capabilityPlan?.route;
+            if (route === "template" || route === "generate") {
+              entry.pipelineReminderSent = true;
+              const message = "本轮尚未使用 editorial_pipeline。请立即改用编辑流水线生成文档；不要用 bash 写生成脚本，也不要用 officecli add --type markdown 后再手工调样式。";
+              emitChannelSafe(entry, "steer", { source: "office-pipeline", message, turnCount: entry.turnCount });
+              Promise.resolve(entry.session?.steer?.(message)).catch(() => {});
             }
           }
           // E02：运行预算回合评估——软预算发可见提醒，硬预算发阻断事件（hard 模式下停止本 Run）
@@ -3831,6 +3883,19 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.officeLockFailures = new Map();
     entry.task = runContext?.task || null;
     entry.mode = normalizeTaskMode(runContext?.task?.mode || entry.mode || "agent");
+    // 计划 008：执行闸门状态按 Run 重置。只在开关开启时生效；关闭时完全放行。
+    entry.officeGateOn = Boolean(RUNTIME_FLAGS.officeFormat);
+    entry.pipelineProduced = false;
+    entry.pipelineReminderSent = false;
+    {
+      const plan = entry.task?.capabilityPlan;
+      entry.clarificationPending = entry.officeGateOn
+        && plan?.clarification?.shouldAsk
+        && entry.mode !== "chat"
+        && entry.mode !== "review"
+        ? { missing: plan.clarification.missing || [], question: plan.clarification.question || null }
+        : null;
+    }
     if (!isStreaming) {
       entry.reviewConfirmed = false;
       entry.reviewAwaitingConfirmation = false;

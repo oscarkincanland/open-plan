@@ -3832,6 +3832,14 @@ case "runtime_connecting":
             onAnswered={(blockId, answer) => handleMessageAskAnswered(pendingAsk?.messageId, blockId, answer)}
             onExpired={(blockId) => markAskExpired(pendingAsk?.messageId, blockId)}
           />
+          {runState.capabilityPlan?.hint?.code === "MODE_SWITCH_REQUIRED" && (
+            <div className="pending-action-bar mode-switch-hint" role="status" aria-live="polite">
+              <span className="pending-action-label">{runState.capabilityPlan.hint.message}</span>
+              <span className="pending-action-buttons">
+                <button type="button" className="btn-xs" onClick={() => setEditMode("agent")}>切到 Work</button>
+              </span>
+            </div>
+          )}
           <div className="chat-input-row">
             {composerMenu && composerItems.length > 0 && (
               <div className="composer-suggestions" role="listbox" aria-label="输入建议">
