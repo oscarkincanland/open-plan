@@ -216,7 +216,7 @@ export function checkFontFloor(xml) {
  * @param {string} file docx 绝对路径
  * @param {{structure?:object}} [options] 模板结构（提供时追加覆盖率检查）
  */
-export async function runDocxQa(file, { structure = null } = {}) {
+export async function runDocxQa(file, { structure = null, coverageMode = "balanced" } = {}) {
   const checks = [];
   const issues = [];
   if (!fs.existsSync(file)) {
@@ -255,11 +255,13 @@ export async function runDocxQa(file, { structure = null } = {}) {
   if (structure) {
     const coverage = assertCoverage(structure, text);
     checks.push(`模板覆盖率 ${(coverage.coverage * 100).toFixed(0)}%（${coverage.covered}/${coverage.total}）`);
-    if (!coverage.ok) {
-      const severity = coverage.inferred ? "warn" : "error";
-      for (const item of coverage.missing.slice(0, 20)) {
-        issues.push({ rule: "template_coverage", severity, message: `模板必备项缺失：${item}` });
-      }
+    const sectionSeverity = coverage.inferred || coverageMode === "advisory" ? "warn" : "error";
+    const assetSeverity = coverage.inferred || coverageMode !== "strict" ? "warn" : "error";
+    for (const item of (coverage.missingSections || []).slice(0, 20)) {
+      issues.push({ rule: "template_coverage", severity: sectionSeverity, message: `模板必备章节缺失：${item}` });
+    }
+    for (const item of (coverage.missingAssets || []).slice(0, 20)) {
+      issues.push({ rule: "template_coverage", severity: assetSeverity, message: `模板必备图表缺失：${item}` });
     }
   }
 

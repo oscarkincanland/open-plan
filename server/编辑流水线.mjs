@@ -238,6 +238,13 @@ export async function runEditorialPipeline({
   const sourceHeadings = sourceBlocks
     ? sourceBlocks.filter((block) => block.type === "heading").map((block) => block.text)
     : [];
+  // 精简稿/框架/草稿：模板图表与章节缺失降为告警，避免 1000 字版本被全量模板要求卡住。
+  const coverageMode = sourceBlocks || /(精简|字左右|框架|初稿|草案)/.test(`${goal} ${requirements}`)
+    ? "advisory"
+    : "balanced";
+  const answersText = Array.isArray(clarificationAnswers) && clarificationAnswers.length
+    ? `【已确认信息】${clarificationAnswers.map((item) => String(item)).join("；")}`
+    : "";
 
   const stageResults = [];
   emit("pipeline_started", { pipelineId, format: normalizedFormat, goal: String(goal).slice(0, 400), deliverable: deliverableRelative, scene: sceneId, template: templateInfo?.relPath || null });
@@ -295,12 +302,13 @@ export async function runEditorialPipeline({
         `请为以下目标规划${normalizedFormat === "pptx" ? "一份 PPT 演示文稿" : "一份 Word 文档"}的结构大纲：`,
         `【目标】${goal}`,
         requirements ? `【要求】${requirements}` : "",
+        answersText,
         templateStructure ? `【模板】${templateStructure.title}；必须覆盖章节：${templateStructure.chapters.join("、") || "（模板未标注）"}` : "",
         templateStructure?.requiredSections?.length ? `【模板必备小节】${templateStructure.requiredSections.slice(0, 30).join("、")}` : "",
         sceneInfo?.structure?.length ? `【场景结构】${sceneInfo.structure.join("、")}` : "",
         normalizedFormat === "pptx"
-          ? '只输出 JSON：{"title":"文档标题","slides":[{"title":"页标题","points":["要点1","要点2"]}]}，页数 5–12，不要输出其它内容。'
-          : '只输出 JSON：{"title":"文档标题","sections":[{"title":"章节标题","summary":"本章要点"}]}，章节 3–9 个，不要输出其它内容。',
+          ? '只输出 JSON：{"title":"文档标题","slides":[{"title":"页标题","points":["要点1","要点2"]}]}；页数按【已确认信息】执行，未指定时 5–12 页；不要输出其它内容。'
+          : '只输出 JSON：{"title":"文档标题","sections":[{"title":"章节标题","summary":"本章要点"}]}；章节 3–9 个，按【已确认信息】执行；不要输出其它内容。',
       ].filter(Boolean).join("\n");
       const raw = runModelTask ? await runModelTask(prompt, { stage: "planner" }) : "";
       const parsed = parseLooseJson(raw);
@@ -326,6 +334,7 @@ export async function runEditorialPipeline({
             `请把大纲扩写为 PPT 页面内容（每页要点完整、可直接上稿）：`,
             `【目标】${goal}`,
             requirements ? `【要求】${requirements}` : "",
+            answersText,
             `【大纲】${outlineText}`,
             '只输出 JSON：{"slides":[{"title":"页标题","bullets":["要点…"],"table":{"headers":[...],"rows":[[...]]}}]}（table 可省略），不要输出其它内容。',
           ].filter(Boolean).join("\n")
@@ -333,6 +342,7 @@ export async function runEditorialPipeline({
             `请按大纲撰写完整正文（直接可用的文档内容，不要元话语）：`,
             `【目标】${goal}`,
             requirements ? `【要求】${requirements}` : "",
+            answersText,
             `【大纲】${outlineText}`,
             '只输出 JSON：{"sections":[{"title":"章节标题","blocks":[{"type":"heading|paragraph|table","text":"…","rows":[[...]]}]}]}，不要输出其它内容。',
           ].filter(Boolean).join("\n");
@@ -399,7 +409,7 @@ export async function runEditorialPipeline({
         // 规则闸门（O-20）+ 模板覆盖率（O-15）：只在显式开启时执行，保持旧行为可回退。
         let qaPassed = true;
         if (qa && normalizedFormat === "docx") {
-          const qaResult = await runDocxQa(deliverablePath, { structure: templateStructure });
+          const qaResult = await runDocxQa(deliverablePath, { structure: templateStructure, coverageMode });
           checks.push(...qaResult.checks);
           if (!qaResult.passed) {
             qaPassed = false;

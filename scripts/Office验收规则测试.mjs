@@ -138,6 +138,18 @@ await test("空结构 → 跳过覆盖率", async () => {
   const result = await runDocxQa(file, { structure: {} });
   assert.equal(result.passed, true);
 });
+await test("coverageMode=advisory：缺失降为告警且 passed", async () => {
+  const file = await makeDocx(paragraph("正文"));
+  const result = await runDocxQa(file, { structure, coverageMode: "advisory" });
+  assert.equal(result.passed, true);
+  assert.ok(result.issues.every((item) => item.severity !== "error"));
+});
+await test("coverageMode=strict：图表缺失也是 error", async () => {
+  const file = await makeDocx(paragraph("正文"));
+  const result = await runDocxQa(file, { structure, coverageMode: "strict" });
+  assert.equal(result.passed, false);
+  assert.ok(result.issues.some((item) => item.rule === "template_coverage" && item.severity === "error"));
+});
 
 console.log("\n▶ 端到端与产物验证（4 例）");
 await test("合规文档（场景+封面+目录+页码）→ 通过", async () => {

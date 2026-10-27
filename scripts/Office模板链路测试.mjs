@@ -162,4 +162,19 @@ test("08 漏一章 → 报错", () => {
   assert.equal(coverage.ok, false);
 });
 
+test("08 不再把 meta 标题算作必备", () => {
+  assert.equal(structure08.requiredSections.some((item) => item.includes("四段式")), false);
+});
+test("二（一）发展基础 能匹配简写", () => {
+  const text = [
+    ...structure08.chapters,
+    ...structure08.requiredSections.filter((item) => !item.includes("发展基础")),
+    "（一）发展基础",
+    ...structure08.figures,
+    ...structure08.tables,
+  ].join(" ");
+  const coverage = assertCoverage(structure08, text);
+  assert.equal(coverage.missingSections.some((item) => item.includes("发展基础")), false);
+});
+
 process.exitCode = failed ? 1 : 0;

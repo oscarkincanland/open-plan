@@ -167,7 +167,7 @@ export function parseTemplateStructure(markdown) {
     ...parseMarkedItems(structureSection, "✅"),
     ...marked.required,
     ...parseRequiredHeadings(structureSection),
-  ]);
+  ]).filter((item) => !/(结构骨架|四段式|标注|字数占比|写作要点|格式规范|图表规范|案例出处|常见错误|检查清单|附录)/.test(item));
   const optionalSections = unique([
     ...parseMarkedItems(structureSection, "🔧"),
     ...marked.optional,
@@ -202,6 +202,8 @@ function sectionCandidates(name) {
   const out = new Set([clean]);
   out.add(clean.replace(/^\d+(?:\.\d+)+\s*/, ""));
   out.add(clean.replace(/^[一二三四五六七八九十百]+、\s*/, ""));
+  out.add(clean.replace(/^[一二三四五六七八九十百]+(?=\S)/, ""));
+  out.add(clean.replace(/^[一二三四五六七八九十百]+、\s*/, "").replace(/(若干|有关|相关|主要)/g, ""));
   out.add(clean.replace(/^.*?（[^）]*）\s*/, ""));
   out.add(clean.split("、").pop());
   return [...out].map((item) => item.trim()).filter(Boolean);
@@ -229,7 +231,8 @@ export function assertCoverage(structure, producedText) {
     return { ok: true, total: 0, covered: 0, coverage: 1, missing: [], skipped: true };
   }
 
-  const missing = [];
+  const missingSections = [];
+  const missingAssets = [];
   let total = 0;
   let covered = 0;
 
@@ -239,7 +242,7 @@ export function assertCoverage(structure, producedText) {
     const name = cleanTitle(chapter.replace(/^第[一二三四五六七八九十百]+章\s*/, ""));
     const candidates = sectionCandidates(name).map(normalize);
     if ((number && produced.includes(number)) || candidates.some((item) => produced.includes(item))) covered += 1;
-    else missing.push(chapter);
+    else missingSections.push(chapter);
   }
 
   for (const section of required) {
@@ -248,21 +251,22 @@ export function assertCoverage(structure, producedText) {
     const name = cleanTitle(section.replace(/^\d+(?:\.\d+)+\s*/, ""));
     const candidates = sectionCandidates(name).map(normalize);
     if ((number && produced.includes(number)) || candidates.some((item) => produced.includes(item))) covered += 1;
-    else missing.push(section);
+    else missingSections.push(section);
   }
 
   for (const figure of figures) {
     total += 1;
     if (produced.includes(figure)) covered += 1;
-    else missing.push(figure);
+    else missingAssets.push(figure);
   }
 
   for (const table of tables) {
     total += 1;
     if (produced.includes(table)) covered += 1;
-    else missing.push(table);
+    else missingAssets.push(table);
   }
 
+  const missing = [...missingSections, ...missingAssets];
   const coverage = total ? Number((covered / total).toFixed(4)) : 1;
-  return { ok: missing.length === 0, total, covered, coverage, missing, inferred: Boolean(structure?.inferred) };
+  return { ok: missing.length === 0, total, covered, coverage, missing, missingSections, missingAssets, inferred: Boolean(structure?.inferred) };
 }

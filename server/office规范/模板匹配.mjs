@@ -105,8 +105,14 @@ export function matchTemplate({ text = "", references = [] } = {}) {
     if (hit) return { ...hit, matched: [target], source: "explicit", score: 1000 };
   }
 
-  // 3) 文体关键词
+  // 3) 明确格式信号优先：PPT/演示/幻灯片 → 11_PPT汇报模板
   const source = String(text || "").toLowerCase();
+  if (/\bppt\b|演示文稿|幻灯片|\bdeck\b/i.test(source)) {
+    const hit = findByFile("11_PPT汇报模板.md");
+    if (hit) return { ...hit, matched: ["PPT"], source: "keyword", score: 100 };
+  }
+
+  // 4) 文体关键词
   let best = null;
   for (const rule of TEMPLATE_RULES) {
     const matched = rule.keywords.filter((keyword) => source.includes(String(keyword).toLowerCase()));
