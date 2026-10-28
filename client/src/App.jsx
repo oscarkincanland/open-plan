@@ -2199,7 +2199,9 @@ export default function App() {
          {activeModule === "settings" && (
            <div className="module-view">
              <div className="module-head">
-               <button className="module-back" onClick={closeExternalModules} title="返回对话"><Icon name="back" size={15} /></button>
+               <提示气泡 label="返回对话">
+                 <button className="module-back" onClick={closeExternalModules} aria-label="返回对话"><Icon name="back" size={15} /></button>
+               </提示气泡>
                <div className="module-brand-heading"><Logo size={22} /><span><h2>设置</h2><p>外观、模型、项目运行和工作区记忆</p></span></div>
                <div className="module-head-tabs">
                  <button className={settingsModuleTab === "settings" ? "active" : ""} onClick={() => setSettingsModuleTab("settings")}>设置</button>
@@ -2216,7 +2218,9 @@ export default function App() {
          {activeModule === "artifacts" && (
            <div className="module-view">
              <div className="module-head">
-               <button className="module-back" onClick={closeExternalModules} title="返回对话"><Icon name="back" size={15} /></button>
+               <提示气泡 label="返回对话">
+                 <button className="module-back" onClick={closeExternalModules} aria-label="返回对话"><Icon name="back" size={15} /></button>
+               </提示气泡>
                <div className="module-brand-heading"><Logo size={22} /><span><h2>成果</h2><p>查看、验收、固定和回滚工作产物</p></span></div>
              </div>
              <div className="module-body module-artifacts-body">

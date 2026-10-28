@@ -69,10 +69,16 @@ export default function ImageViewer({ doc, onPreviewState, onPreviewError }) {
         <span className="image-viewer-spacer" />
         <button type="button" className={`btn-xs ${scale === "fit" ? "active" : ""}`} onClick={() => setScale("fit")} title="适应窗口">适应窗口</button>
         <button type="button" className={`btn-xs ${scale === 1 ? "active" : ""}`} onClick={() => setScale(1)} title="原始大小（100%）">100%</button>
-        <button type="button" className="btn-xs" onClick={() => step(-1)} title="缩小"><Icon name="minus" size={12} /></button>
-        <button type="button" className="btn-xs" onClick={() => step(1)} title="放大"><Icon name="plus" size={12} /></button>
+        <提示气泡 label="缩小">
+          <button type="button" className="btn-xs" onClick={() => step(-1)} aria-label="缩小"><Icon name="minus" size={12} /></button>
+        </提示气泡>
+        <提示气泡 label="放大">
+          <button type="button" className="btn-xs" onClick={() => step(1)} aria-label="放大"><Icon name="plus" size={12} /></button>
+        </提示气泡>
         <button type="button" className="btn-xs" onClick={handleOpenOriginal} title="用系统默认应用打开原图"><Icon name="externalLink" size={12} /> 打开原图</button>
-        <button type="button" className="btn-xs" onClick={handleReveal} title="在文件管理器中显示"><Icon name="folderOpen" size={12} /></button>
+        <提示气泡 label="在文件管理器中显示">
+          <button type="button" className="btn-xs" onClick={handleReveal} aria-label="在文件管理器中显示"><Icon name="folderOpen" size={12} /></button>
+        </提示气泡>
       </div>
       {state === PREVIEW_STATE.FAILED && (
         <div className="image-viewer-error" role="alert">

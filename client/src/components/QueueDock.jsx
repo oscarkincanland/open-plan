@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
+import 提示气泡 from "./提示气泡.jsx";
 
 const PREVIEW_LIMIT = 200;
 
@@ -151,21 +152,31 @@ export default function QueueDock({
                 <span className="chat-queue-actions">
                   {editing ? (
                     <>
-                      <button type="button" onClick={saveEdit} disabled={!draft.trim()} title="保存（Enter）"><Icon name="check" size={11} /></button>
-                      <button type="button" onClick={cancelEdit} title="放弃（Esc）"><Icon name="close" size={11} /></button>
+                      <提示气泡 label="保存排队消息">
+                        <button type="button" onClick={saveEdit} disabled={!draft.trim()} aria-label="保存排队消息（Enter）"><Icon name="check" size={11} /></button>
+                      </提示气泡>
+                      <提示气泡 label="放弃编辑">
+                        <button type="button" onClick={cancelEdit} aria-label="放弃编辑（Esc）"><Icon name="close" size={11} /></button>
+                      </提示气泡>
                     </>
                   ) : (
                     <>
-                      <button type="button" onClick={() => startEdit(item)} title="编辑排队消息"><Icon name="penTool" size={11} /></button>
-                      <button
-                        type="button"
-                        onClick={() => onPromote?.(item.id)}
-                        disabled={compacting}
-                        title={item.status === "failed" ? "重试发送" : busy ? "中断当前回合并立即发送" : "立即发送"}
-                      >
-                        <Icon name={item.status === "failed" ? "refresh" : "send"} size={11} />
-                      </button>
-                      <button type="button" className="danger" onClick={() => onDelete?.(item.id)} title="删除排队消息"><Icon name="trash" size={11} /></button>
+                      <提示气泡 label="编辑排队消息">
+                        <button type="button" onClick={() => startEdit(item)} aria-label="编辑排队消息"><Icon name="penTool" size={11} /></button>
+                      </提示气泡>
+                      <提示气泡 label={item.status === "failed" ? "重试发送" : busy ? "中断当前回合并立即发送" : "立即发送"}>
+                        <button
+                          type="button"
+                          onClick={() => onPromote?.(item.id)}
+                          disabled={compacting}
+                          aria-label={item.status === "failed" ? "重试发送" : busy ? "中断当前回合并立即发送" : "立即发送"}
+                        >
+                          <Icon name={item.status === "failed" ? "refresh" : "send"} size={11} />
+                        </button>
+                      </提示气泡>
+                      <提示气泡 label="删除排队消息">
+                        <button type="button" className="danger" onClick={() => onDelete?.(item.id)} aria-label="删除排队消息"><Icon name="trash" size={11} /></button>
+                      </提示气泡>
                     </>
                   )}
                 </span>

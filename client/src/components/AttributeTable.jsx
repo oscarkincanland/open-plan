@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import Icon from "./Icon.jsx";
+import 提示气泡 from "./提示气泡.jsx";
 import { mapGetLayer } from "../api.js";
 
 const PAGE_SIZE = 100;
@@ -91,7 +92,9 @@ export default function AttributeTable({ project, layerId, layerName, onClose, o
               onChange={(e) => setQ(e.target.value)}
             />
             <button className="btn-sm" onClick={exportCsv} title="导出 CSV"><Icon name="download" size={12} /> 导出</button>
-            <button className="mp-op" onClick={onClose} title="关闭"><Icon name="close" size={14} /></button>
+            <提示气泡 label="关闭属性表">
+              <button className="mp-op" onClick={onClose} aria-label="关闭属性表"><Icon name="close" size={14} /></button>
+            </提示气泡>
           </div>
         </div>
         {err ? (

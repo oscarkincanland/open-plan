@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { cancelRun, getRun, getRunAcceptance, listRuns, resumeRun, retryRun } from "../api.js";
 import { verificationLabel } from "../运行轨迹.js";
 import Icon from "./Icon.jsx";
+import 提示气泡 from "./提示气泡.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
 import MarkdownBody from "./MarkdownBody.jsx";
 import { artifactAcceptanceText, acceptanceSummaryText } from "./验收状态.js";
@@ -319,12 +320,16 @@ function TaskCenterInternal({ sessions = [], projects = [], currentProjectId = "
           {...(fullPage ? {} : { role: "dialog", "aria-label": "任务中心" })}
         >
           {fullPage && <div className="module-head task-center-page-head">
-            <button className="module-back" onClick={onClose} title="返回对话"><Icon name="back" size={15} /></button>
+            <提示气泡 label="返回对话">
+              <button className="module-back" onClick={onClose} aria-label="返回对话"><Icon name="back" size={15} /></button>
+            </提示气泡>
             <div><h2>任务中心</h2><p>并行任务、运行状态与历史会话</p></div>
           </div>}
           <div className="task-center-head">
             <span><Icon name="list" size={14} /> 并行任务</span>
-            <button className="btn-xs" onClick={refresh} title="刷新任务状态"><Icon name="refresh" size={12} /></button>
+            <提示气泡 label="刷新任务状态">
+              <button className="btn-xs" onClick={refresh} aria-label="刷新任务状态"><Icon name="refresh" size={12} /></button>
+            </提示气泡>
           </div>
           <div className="task-center-filters">
             <select value={projectScope} onChange={(e) => setProjectScope(e.target.value)} title="项目范围">

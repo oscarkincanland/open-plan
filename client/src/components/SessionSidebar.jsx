@@ -712,12 +712,18 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           <strong>Open Plan</strong>
           <span>规聚工作台</span>
         </div>
-        <button className="sidebar-brand-action" onClick={onToggleTheme} title={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}>
-          <Icon name={theme === "dark" ? "sun" : "moon"} size={15} />
-        </button>
-        <button className="sidebar-brand-action" onClick={onOpenCommandPalette} title="命令面板（Ctrl/Cmd+K）"><Icon name="search" size={15} /></button>
+        <提示气泡 label={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}>
+          <button className="sidebar-brand-action" onClick={onToggleTheme} aria-label={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}>
+            <Icon name={theme === "dark" ? "sun" : "moon"} size={15} />
+          </button>
+        </提示气泡>
+        <提示气泡 label="命令面板（Ctrl/Cmd+K）">
+          <button className="sidebar-brand-action" onClick={onOpenCommandPalette} aria-label="打开命令面板"><Icon name="search" size={15} /></button>
+        </提示气泡>
         {onCollapseSidebar && (
-          <button className="sidebar-brand-action sidebar-collapse" onClick={onCollapseSidebar} title="收起侧栏" aria-label="收起侧栏"><Icon name="chevronLeft" size={15} /></button>
+          <提示气泡 label="收起侧栏">
+            <button className="sidebar-brand-action sidebar-collapse" onClick={onCollapseSidebar} aria-label="收起侧栏"><Icon name="chevronLeft" size={15} /></button>
+          </提示气泡>
         )}
       </div>
       <div className="sidebar-primary-tabs" role="tablist" aria-label="工作台导航">
