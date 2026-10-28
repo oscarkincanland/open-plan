@@ -204,10 +204,16 @@ function buildHistoryMessages(entries = []) {
     // 若 assistant 有纯文本且没有 text block，追加为文本块；用户消息仍保留原始文本。
     if (role === "assistant" && text && !blocks.some((b) => b.type === "text")) blocks.push({ type: "text", text });
     const displayText = role === "user" ? cleanPersistedMessage(text) : text;
+    // 任务封装里的“当前工作文件: （无）”只是占位，不是真实文件；否则恢复会话后
+    // 用户气泡会凭空多出一行“当前文件:（无）”，与实时态不一致。
     const currentDocMatch = text.match(/当前(?:打开|工作)文件:\s*([^\]\n]+)/);
+    const currentDocValue = currentDocMatch?.[1]?.trim() || "";
+    const currentDoc = /^(?:[（(]无[）)]|none|null|[—-])$/i.test(currentDocValue) ? null : currentDocValue || null;
+    // 历史 assistant 条目自带当轮 provider/model；带上它，恢复后不会被当前选中的模型覆盖。
+    const entryModel = role === "assistant" && m.provider && m.model ? `${m.provider}/${m.model}` : (m.model || "");
     msgs.push({
       id: e.id, role, text: displayText, images, blocks, references: historyReferences(text),
-      currentDoc: currentDocMatch?.[1]?.trim() || null, status: "done", createdAt: entryCreatedAt(e, m),
+      currentDoc, status: "done", createdAt: entryCreatedAt(e, m), model: entryModel,
       entryId: e.id || null, parentId: e.parentId || null,
     });
   }

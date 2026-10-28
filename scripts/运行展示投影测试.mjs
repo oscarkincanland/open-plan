@@ -21,6 +21,8 @@ import {
   associateRunMessages,
   deriveTimeline,
   deriveWorkPhase,
+  findAssistantEntryByText,
+  isInternalHarnessMessage,
   isInternalChangePath,
   lifecycleLabel,
   normalizeFileChange,
@@ -271,6 +273,38 @@ test("同一 Run 的过程消息归组且真实用户消息保持边界", () => 
   assert.equal(grouped[7].runId, undefined, "下一轮助手答复不应被旧 Run 吸收");
 });
 
+test("自动续跑提示按内部消息处理，不截断同一 Run 归约", () => {
+  const legacyContinuation = "上一个回合的模型连接中断了。请基于当前会话中已经完成的步骤和工具结果，从中断位置继续原任务；不要重复已经成功的副作用操作，完成后给出完整结果。";
+  const source = [
+    { id: "assistant-1", role: "assistant", text: "第一步" },
+    { id: "reminder-1", role: "user", text: "[系统提醒] 本轮已经进行 6 个模型回合" },
+    { id: "assistant-2", role: "assistant", text: "第二步" },
+    { id: "continuation-1", role: "user", text: legacyContinuation },
+    { id: "assistant-3", role: "assistant", text: "第三步" },
+    { id: "summary-1", role: "system", summary: true, runId: "run_continuation" },
+  ];
+  assert.equal(isInternalHarnessMessage(source[1]), true);
+  assert.equal(isInternalHarnessMessage(source[3]), true, "旧格式的自动续跑提示必须识别为内部消息");
+  assert.equal(isInternalHarnessMessage({ role: "user", text: "我想聊聊模型连接中断的问题" }), false, "普通用户文本不能被误判");
+  assert.equal(isInternalHarnessMessage({ role: "assistant", text: "[系统提醒] 由模型生成的正文" }), false);
+  const grouped = associateRunMessages(source);
+  assert.equal(grouped[0].runId, "run_continuation");
+  assert.equal(grouped[2].runId, "run_continuation", "跨过续跑提示后仍应归入同一 Run");
+  assert.equal(grouped[3].internalProcess, true);
+  assert.equal(grouped[4].runId, "run_continuation");
+});
+
+test("从会话条目尾部匹配权威终稿，供实时气泡回填 entryId", () => {
+  const entries = [
+    { type: "message", id: "e1", parentId: null, message: { role: "assistant", content: [{ type: "text", text: "最终答复：目录结构如下" }] } },
+    { type: "message", id: "e2", parentId: "e1", message: { role: "toolResult", toolCallId: "t1", content: [{ type: "text", text: "工具输出" }] } },
+  ];
+  assert.equal(findAssistantEntryByText(entries, "最终答复：目录结构如下")?.id, "e1");
+  assert.equal(findAssistantEntryByText(entries, "另一段完全不同的回答"), null);
+  assert.equal(findAssistantEntryByText(entries, ""), null);
+  assert.equal(findAssistantEntryByText([], "最终答复：目录结构如下"), null);
+});
+
 test("agent_summary 与 run_finished 合并为同一条摘要，并保留早到的文件信息", () => {
   const initial = upsertRunSummaryMessage([{ id: "user-1", role: "user", text: "修改报告" }], {
     runId: "run_merge",
@@ -402,15 +436,18 @@ test("记忆建议不插主消息流，改挂结果卡入口", () => {
 
 test("服务端不再把全部文件名塞进总结正文（A02-3）", () => {
   const index = fs.readFileSync(path.join(ROOT, "server/index.mjs"), "utf8");
+  const execHandle = fs.readFileSync(path.join(ROOT, "server/执行句柄.mjs"), "utf8");
   assert.doesNotMatch(index, /个文件：\$\{[^}]*\.join\(", "\)\}/, "agent_summary 不应再拼接全部文件名");
-  // 终态总结与 run 记录同文案（只保留数量/未检测到文件变更），并且无条件发出
-  assert.match(index, /summary: completed\?\.summary \|\|/, "成功/取消路径沿用 run 记录文案");
-  assert.match(index, /本轮对话完成，共处理 \$\{publishedCount\} 个文件/, "成功路径只保留数量");
-  assert.match(index, /本轮对话完成，未检测到文件变更/, "无产物轮次也要有明确文案");
-  assert.match(index, /summary: `对话异常结束，仍处理了 \$\{changed\.length\} 个文件`/, "异常路径同样只保留数量");
+  assert.doesNotMatch(execHandle, /个文件：\$\{[^}]*\.join\(", "\)\}/, "执行句柄的总结同样只给数量");
+  // 终态总结与 run 记录同文案（只保留数量/未检测到文件变更），并且无条件发出。
+  // 成功/异常收口已迁到 server/执行句柄.mjs；恢复路径仍在 server/index.mjs。
+  assert.match(execHandle, /summary: completed\?\.summary \|\|/, "成功/取消路径沿用 run 记录文案");
+  assert.match(execHandle, /本轮对话完成，共处理 \$\{publishedCount\} 个文件/, "成功路径只保留数量");
+  assert.match(execHandle, /本轮对话完成，未检测到文件变更/, "无产物轮次也要有明确文案");
+  assert.match(execHandle, /summary: `对话异常结束，仍处理了 \$\{changed\.length\} 个文件`/, "异常路径同样只保留数量");
   assert.match(index, /summary: finished\?\.summary \|\|/, "恢复路径沿用 run 记录文案");
   assert.match(index, /恢复任务完成，共处理 \$\{productPaths\.length\} 个文件/, "恢复路径只保留数量");
-  assert.match(index, /if \(productPaths\.length\) emitChannel\(entry, "file_changed"/, "总结无条件，file_changed 仍按需");
+  assert.match(execHandle, /if \(productPaths\.length\) deps\.emit\(entry, "file_changed"/, "总结无条件，file_changed 仍按需");
 });
 
 console.log("\n▶ W7/E01+E03 工作阶段与时间线");

@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
 import { createPortal } from "react-dom";
-import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, branchAgentSession, getSessionMessageVersions, getSessionGoal, setSessionGoal, sessionGoalAction, clearSessionGoal, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns } from "../api.js";
+import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, branchAgentSession, getSession, getSessionMessageVersions, getSessionGoal, setSessionGoal, sessionGoalAction, clearSessionGoal, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon, { ProviderIcon } from "./Icon.jsx";
 import ToolIdentityIcon from "./工具语义图标.jsx";
@@ -11,7 +11,7 @@ import GoalBar from "./GoalBar.jsx";
 import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
 import { completionLabel, formatDuration, formatTokenCount, reduceRunTrace, reduceTurnMetrics, runToolDetailText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, summarizeTurnMetrics, turnMetricsText, verificationLabel } from "../运行轨迹.js";
-import { associateRunMessages, projectLegacyRunSummary, upsertRunSummaryMessage } from "../运行展示投影.js";
+import { associateRunMessages, findAssistantEntryByText, isInternalHarnessMessage, projectLegacyRunSummary, upsertRunSummaryMessage } from "../运行展示投影.js";
 import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, toolIdentity } from "../事件展示.js";
 import { buildArtifactIndex } from "../产物类型.js";
 import { SessionList } from "./SessionSidebar.jsx";
@@ -437,7 +437,7 @@ export function normalizeHistoryMessages(items) {
   for (const message of items) {
     if (!message || !message.role) continue;
     // harness 的轮次/收尾提醒只用于驱动运行边界，不得在恢复会话后显示为“You”消息。
-    if (message.role === "user" && /^\s*(?:\[系统提醒\]|系统提醒[：:])/.test(String(message.text || ""))) continue;
+    if (isInternalHarnessMessage(message)) continue;
     const blocks = Array.isArray(message.blocks) ? message.blocks : [];
     const meaningful = Boolean(
       String(message.text || "").trim()
@@ -1391,6 +1391,27 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     if (!mountedRef.current) return;
     setMessages((ms) => ms.map((m) => (m.id === id ? fn(m) : m)));
   }, []);
+
+  // 实时运行结束后把 Pi 的 assistant entry 坐标回填到本地气泡，让“分叉/第 N 版”
+  // 与恢复历史后的操作一致；找不到对应条目（文件尚未落盘/终稿不匹配）时静默跳过。
+  const backfillAssistantEntryId = useCallback(async (messageId, finalText) => {
+    if (!messageId || !sessionId || !String(finalText || "").trim()) return;
+    const attempt = async () => {
+      try {
+        const d = await getSession(sessionId, { view: "chat", limit: 20 });
+        const entry = findAssistantEntryByText(d?.entries || [], finalText);
+        if (!entry) return false;
+        patch(messageId, (m) => (m.entryId ? m : { ...m, entryId: entry.id, parentId: entry.parentId || null }));
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    if (await attempt()) return;
+    // 会话文件由 Pi 异步落盘：首次未命中时短延迟再试一次，仍失败则放弃。
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await attempt();
+  }, [sessionId, patch]);
 
   const flushToolOutput = useCallback(() => {
     if (toolOutputRafRef.current) {
@@ -2908,6 +2929,9 @@ case "runtime_connecting":
           }
         }
         upsertRunSummary({ ...data, fresh: Boolean(data.runId) && data.runId === knownRunId });
+        // 实时气泡补 Pi entry 坐标：否则运行结束后只能“复制/重新生成”，
+        // 切回历史才会多出“分叉/版本”，同一轮在两种状态下操作条不一致。
+        if (finalTextAllowed && data.finalText && sessionId && aid) void backfillAssistantEntryId(aid, String(data.finalText));
         // run_finished 才是本轮产物完整可用的时点；交给 App 自动打开首个产物。
         onRunFinished?.(data);
         if (data.runId && !["cancelled", "aborted"].includes(data.status)) flushQueued(true);
@@ -4098,7 +4122,7 @@ case "runtime_connecting":
               m = { ...latestAssistant, runId: originalMessage.runId, blocks, authoritativeFinalText };
             }
             // 兜底：没有 runId/未被分组消费的提醒消息同样不渲染（例如终态后才到达的收尾提醒）。
-            if (m?.role === "user" && /^\s*(?:\[系统提醒\]|系统提醒[：:])/.test(String(m.text || ""))) return null;
+            if (isInternalHarnessMessage(m)) return null;
             const runSummary = m?.role === "assistant" && m.runId ? runSummaryById.get(m.runId) || null : null;
             // 本轮实际使用的模型（服务端 run.model 优先，其次消息自带），用于按轮显示"由谁执行"。
             const roundModel = m?.role === "assistant" ? String(m.model || runSummary?.model || "") : "";

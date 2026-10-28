@@ -4364,7 +4364,10 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
               await waitForAgentRetry(300);
               try {
                 await promptWithFirstEventTimeout(entry,
-                  "上一个回合的模型连接中断了。请基于当前会话中已经完成的步骤和工具结果，从中断位置继续原任务；不要重复已经成功的副作用操作，完成后给出完整结果。",
+                  // 内部续跑指令必须以 [系统提醒] 开头：它是写进会话文件的一条 user 消息，
+                  // 前端只按该前缀识别内部提示；否则恢复历史时会把它当成真实用户提问，
+                  // 截断同一 Run 的归约，导致一条回复被拆成多条气泡。
+                  "[系统提醒] 上一个回合的模型连接中断了。请基于当前会话中已经完成的步骤和工具结果，从中断位置继续原任务；不要重复已经成功的副作用操作，完成后给出完整结果。",
                   {},
                 );
                 const continuationError = entry.lastSettledError;
