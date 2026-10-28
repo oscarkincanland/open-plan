@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
 import 提示气泡 from "./提示气泡.jsx";
-import { browserClose, browserFullpage, browserInput, browserOpen, browserPdf, browserReset, browserState, browserStreamPause } from "../api.js";
+import { browserClose, browserFullpage, browserInput, browserOpen, browserPdf, browserReset, browserState, browserStreamPause, getTabId } from "../api.js";
 import { acquireStream, waitForStreamSlot } from "../长连接预算.js";
 import { flag } from "../运行开关.js";
 import { setBrowserStreamState } from "../浏览器联动.js";
@@ -93,7 +93,7 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
 
     const connect = () => {
       if (stopped) return;
-      const params = new URLSearchParams({ client: clientId, thread: threadId || "", frames: "1" });
+      const params = new URLSearchParams({ client: clientId, tab: getTabId(), thread: threadId || "", frames: "1" });
       source = new EventSource(`/api/browser/stream?${params.toString()}`);
       slot?.attach(() => source?.close());
       sourceRef.current = source;

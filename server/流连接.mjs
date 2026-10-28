@@ -4,39 +4,51 @@
  * 为什么需要它：浏览器同源 HTTP/1.1 连接池只有 6 个槽位，SSE 长期占位。
  * 客户端反复重连（切换会话/工作区、半开连接、多标签页）时，服务端如果不主动
  * 收掉旧连接，旧连接会一直挂在连接池里——用户看到的就是"整站卡死、切不动"。
- * 这里做两件事：
- *   1. 同键去重：同一个 (path, client, thread) 只保留最新一条流，旧流主动收尾；
- *   2. 诊断：GET /api/diagnostics/streams 能直接看到当前挂了哪些流、各挂了多久。
+ * 这里做三件事：
+ *   1. 同键去重：同一个 (path, client, tab, thread) 只保留最新一条流，旧流主动收尾；
+ *   2. 配额与寿命：同一 client+tab 最多 4 条，超过 2 小时的流强制回收（客户端会自动重连）；
+ *   3. 诊断：GET /api/diagnostics/streams 能直接看到当前挂了哪些流、各挂了多久。
  */
 
 const streams = new Map();
 let seq = 0;
 
 /**
- * 同一 (path, client, thread) 允许同时存活的流条数。
+ * 同一 (path, client, tab, thread) 允许同时存活的流条数。
  *
- * 早先是 1（最新者胜）：好处是不累积，但**同一会话的多个读者会互相踢**——
- * 两个标签页共享同一个 client id（存在 localStorage），加上外部监测工具，
- * 会陷入"你连我断、我连你断"的重连循环。放宽到 2：允许一个备用读者并存，
- * 仍由 MAX_PER_CLIENT 与周期清扫兜住上限。
+ * S1：加入 tab 维度后，同一标签页内的同键流只保留 1 条；两个标签页不再互相
+ * 踢掉对方（此前共享 client id 时只能放宽到 2，导致重复流长期占池）。
  */
-const MAX_SAME_KEY = 2;
-/** 同一个 client 允许同时存活的总流条数（多标签页时的兜底）。 */
-const MAX_PER_CLIENT = 8;
+const MAX_SAME_KEY = 1;
+/** 同一个 client + tab 允许同时存活的总流条数（留出浏览器池的其余槽位给控制面请求）。 */
+const MAX_PER_CLIENT = Math.max(2, Number(process.env.OAW_STREAM_MAX_PER_TAB || 4) || 4);
+/** 单条流的最长存活时间：超过后强制回收，客户端 EventSource 会自动重连。 */
+const MAX_STREAM_AGE_MS = Math.max(60_000, Number(process.env.OAW_STREAM_MAX_AGE_MS || 2 * 60 * 60_000) || 2 * 60 * 60_000);
 /**
- * 同 (path, client) 的"最新者胜"规则：页面重载/切会话时浏览器可能已经不用旧连接，
+ * 同 (path, client, tab) 的"最新者胜"规则：页面重载/切会话时浏览器可能已经不用旧连接，
  * 但服务端迟迟收不到 FIN（半开连接），旧流就会一直挂在登记表里。
  * keep 是保留条数；graceMs 内不判旧（覆盖组件切换时新旧流短暂并存）。
  */
 const SUPERSEDE = {
-  "/api/agent/stream": { keep: 2, graceMs: 60000 },
-  "/api/browser/stream": { keep: 2, graceMs: 5000 },
-  "/api/agent/events": { keep: 2, graceMs: 5000 },
+  "/api/agent/stream": { keep: 1, graceMs: 10000 },
+  "/api/browser/stream": { keep: 1, graceMs: 5000 },
+  "/api/agent/events": { keep: 1, graceMs: 5000 },
   "/api/memory/stream": { keep: 1, graceMs: 5000 },
 };
 
-export function streamKeyOf({ path, client = "", thread = "" }) {
-  return `${path}|${client}|${thread}`;
+export function streamKeyOf({ path, client = "", thread = "", tab = "" }) {
+  return `${path}|${client}|${tab}|${thread}`;
+}
+
+/** 诊断/测试用：当前配额策略快照（只读，不修改运行时状态）。 */
+export function streamQuotaPolicy() {
+  return { maxSameKey: MAX_SAME_KEY, maxPerClientTab: MAX_PER_CLIENT, maxAgeMs: MAX_STREAM_AGE_MS, supersede: SUPERSEDE };
+}
+
+/** 单条流是否超过寿命上限（S1：超时强制回收，客户端会自动重连）。 */
+export function isStreamExpired(entry, now = Date.now()) {
+  if (!entry) return false;
+  return now - Number(entry.openedAt || 0) > MAX_STREAM_AGE_MS;
 }
 
 /**
@@ -86,8 +98,8 @@ export function rejectStreamQuota(res, { path, current, limit, retryAfterSeconds
  * @param {{path: string, client?: string, thread?: string, close: () => void, note?: string, probe?: () => boolean}} options
  *        probe 用于判断连接是否还活着（默认看响应/socket 状态），供清扫使用。
  */
-export function registerServerStream({ path, client = "", thread = "", close, note = "", probe = null }) {
-  const key = streamKeyOf({ path, client, thread });
+export function registerServerStream({ path, client = "", thread = "", tab = "", close, note = "", probe = null }) {
+  const key = streamKeyOf({ path, client, tab, thread });
   const replaced = [];
   // 同键去重：旧连接不主动收掉的话，客户端每次重连都会多占一个池槽位。
   const sameKey = [...streams.values()].filter((entry) => entry.key === key);
@@ -97,19 +109,21 @@ export function registerServerStream({ path, client = "", thread = "", close, no
     replaced.push({ id: victim.id, reason: "same-key" });
     safeClose(victim);
   }
-  // 同一 client 总量兜底：超过上限时收掉最旧的非最新流。
-  const sameClient = [...streams.values()].filter((entry) => entry.client && entry.client === client);
+  // 同一 client+tab 总量兜底：超过上限时收掉最旧的流。
+  const sameClient = [...streams.values()]
+    .filter((entry) => entry.client && entry.client === client && (entry.tab || "") === (tab || ""))
+    .sort((a, b) => a.openedAt - b.openedAt);
   while (sameClient.length >= MAX_PER_CLIENT) {
     const victim = sameClient.shift();
     streams.delete(victim.id);
     replaced.push({ id: victim.id, reason: "client-limit" });
     safeClose(victim);
   }
-  // 最新者胜：同类型同客户端只留最新 keep 条，超宽限期的旧流一律收掉。
+  // 最新者胜：同类型同客户端同标签页只留最新 keep 条，超宽限期的旧流一律收掉。
   const rule = SUPERSEDE[path];
   if (rule && client) {
     const samePath = [...streams.values()]
-      .filter((entry) => entry.path === path && entry.client === client)
+      .filter((entry) => entry.path === path && entry.client === client && (entry.tab || "") === (tab || ""))
       .sort((a, b) => b.openedAt - a.openedAt);
     const now = Date.now();
     for (const entry of samePath.slice(rule.keep)) {
@@ -120,17 +134,26 @@ export function registerServerStream({ path, client = "", thread = "", close, no
     }
   }
   const id = `stream-${++seq}`;
-  streams.set(id, { id, key, path, client, thread, note, probe, openedAt: Date.now(), bytes: 0, lastWriteAt: 0, close });
+  streams.set(id, { id, key, path, client, tab: tab || "", thread, note, probe, openedAt: Date.now(), bytes: 0, lastWriteAt: 0, close });
   return { id, release: () => releaseServerStream(id), replaced };
 }
 
 /**
  * 清扫已经断开的流：客户端被强杀/网络静默断开时不发 FIN，
  * req.on("close") 不会触发，登记表里就留下一条永远"存活"的僵尸流。
+ * S1：同时回收超过 MAX_STREAM_AGE_MS 的流——即使心跳还在，长期占用也只会
+ * 挤掉控制面请求；客户端 EventSource 会自动重连。
  */
 export function sweepServerStreams() {
   let closed = 0;
+  const now = Date.now();
   for (const entry of [...streams.values()]) {
+    if (isStreamExpired(entry, now)) {
+      streams.delete(entry.id);
+      safeClose(entry);
+      closed += 1;
+      continue;
+    }
     if (typeof entry.probe !== "function") continue;
     let alive = true;
     try { alive = entry.probe() !== false; } catch { alive = false; }
@@ -155,6 +178,7 @@ export function listServerStreams() {
     id: entry.id,
     path: entry.path,
     client: entry.client,
+    tab: entry.tab || "",
     thread: entry.thread,
     note: entry.note,
     ageMs: now - entry.openedAt,

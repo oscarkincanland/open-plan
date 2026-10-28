@@ -82,15 +82,16 @@ function snapshotSignature(snapshot) {
 export async function waitForFlush(before, workspace = getWorkspace()) {
   let lastSnapshot = before;
   let lastSignature = snapshotSignature(before);
-  for (let i = 0; i < 6; i++) {
-    await new Promise((r) => setTimeout(r, 1500));
-    // 只比较文件集合与哈希，不比较 capturedAt：否则每次快照时间戳都不同，
-    // 永远判不出“已稳定”，每轮固定等满 9 秒。
+  // T1：先做一次即时快照。没有变化时直接返回，不再固定等 1.5s；
+  // 只有确实检测到变化才进入轮询，等待异步写入稳定（最多 4 轮 / 4.5s）。
+  // 只比较文件集合与哈希，不比较 capturedAt，否则永远判不出“已稳定”。
+  for (let i = 0; i < 4; i++) {
     const snapshot = snapshotWorkspace(workspace);
     const signature = snapshotSignature(snapshot);
     if (signature === lastSignature) break;
     lastSnapshot = snapshot;
     lastSignature = signature;
+    if (i < 3) await new Promise((r) => setTimeout(r, 1500));
   }
   return diffWorkspace(before, lastSnapshot);
 }

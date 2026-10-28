@@ -390,6 +390,26 @@ export function getClientId() {
   return id;
 }
 
+/**
+ * 标签页身份（S1）：clientId 存在 localStorage，同源多标签页共享同一个值；
+ * 服务端据此做流去重时无法区分“同一页重连”和“另一个标签页”，只能放宽配额，
+ * 结果多标签页各开一组 SSE 把浏览器 6 个连接槽占满。
+ * 这里用 sessionStorage 生成每标签页独立、刷新后仍稳定的 tabId，仅用于长连接键，
+ * 不参与会话/游标身份，避免影响既有数据。
+ */
+export function getTabId() {
+  try {
+    let id = sessionStorage.getItem("oaw_tab_id");
+    if (!id) {
+      id = "tab-" + Math.random().toString(36).slice(2, 10);
+      sessionStorage.setItem("oaw_tab_id", id);
+    }
+    return id;
+  } catch {
+    return "tab-default";
+  }
+}
+
 // ---------- 知识库（本地索引 + IMA） ----------
 export const kbStatus = () => api("/api/kb/status");
 export const kbAddRoot = (path) => api("/api/kb/roots", { method: "POST", body: JSON.stringify({ path }) });

@@ -126,8 +126,9 @@ async function ensureRuntimeWithTimeout(key, options = {}) {
   }
 }
 
-const recoveredRunIds = recoverActiveRuns();
-if (recoveredRunIds.length) console.warn(`[runs] 已将 ${recoveredRunIds.length} 个中断前活动 Run 标记为 recovering，等待用户继续。`);
+// R1：中断 Run 的恢复必须在 listen 成功之后执行（见下方 listen 回调）。
+// 此前放在模块顶层，任何重复实例（端口被占、启动失败）都会在退出前把活跃 Run
+// 标记为 recovering/failed，造成“任务没完成、产物被清空”的误判。
 
 app.use(express.json({ limit: "256mb" }));
 
@@ -2258,6 +2259,7 @@ app.get("/api/browser/stream", (req, res) => {
   ({ id: streamId } = registerServerStream({
     path: "/api/browser/stream",
     client,
+    tab: String(req.query.tab || ""),
     thread,
     note: withFrames ? "frames" : "state",
     probe: () => !closed && !res.writableEnded && !res.socket?.destroyed,
@@ -3168,6 +3170,7 @@ app.get("/api/agent/events", (req, res) => {
   ({ id: streamId } = registerServerStream({
     path: "/api/agent/events",
     client: clientId,
+    tab: String(req.query.tab || ""),
     thread: threadId,
     probe: () => !closed && !res.writableEnded && !res.socket?.destroyed,
     close: () => { cleanup(); try { res.end(); } catch {} },
@@ -4860,6 +4863,7 @@ app.get("/api/agent/stream", async (req, res) => {
   ({ id: streamId } = registerServerStream({
     path: "/api/agent/stream",
     client,
+    tab: String(req.query.tab || ""),
     thread,
     probe: () => !closed && !res.writableEnded && !res.socket?.destroyed,
     close: () => { cleanup(); try { res.end(); } catch {} },
@@ -5185,6 +5189,7 @@ app.get("/api/memory/stream", (req, res) => {
   ({ id: streamId } = registerServerStream({
     path: "/api/memory/stream",
     client: String(req.query.client || ""),
+    tab: String(req.query.tab || ""),
     probe: () => !closed && !res.writableEnded && !res.socket?.destroyed,
     close: () => { cleanup(); try { res.end(); } catch {} },
   }));
@@ -6047,6 +6052,14 @@ httpServer = app.listen(PORT, HOST, () => {
   void agentManager.modelRuntime().catch((error) => {
     console.warn(`[prewarm] ModelRuntime 预热失败（将在会话创建时重试）：${String(error?.message || error).slice(0, 300)}`);
   });
+  // R1：恢复必须在监听成功之后执行。端口被占的重复实例会在 listen 失败后退出，
+  // 不能让它改写磁盘上的活跃 Run；同时把这段 IO 从启动关键路径移到可用之后。
+  try {
+    const recoveredRunIds = recoverActiveRuns();
+    if (recoveredRunIds.length) console.warn(`[runs] 已将 ${recoveredRunIds.length} 个中断前活动 Run 标记为 recovering，等待用户继续。`);
+  } catch (error) {
+    console.warn(`[runs] 恢复中断 Run 失败：${String(error?.message || error).slice(0, 200)}`);
+  }
 });
 // SSE 连接由 15 秒 heartbeat 保活；关闭 Node 默认的请求/Socket 空闲超时，
 // 避免长文档任务超过默认时限后断流，而 Agent 实际仍在继续执行。

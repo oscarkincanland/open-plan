@@ -25,7 +25,7 @@ import 工作流启动器 from "./components/工作流启动器.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
 import { acquireStream } from "./长连接预算.js";
-import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun } from "./api.js";
+import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, getTabId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun } from "./api.js";
 import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
 import FeedbackHost, { notifyError } from "./components/Feedback.jsx";
 import 提示气泡 from "./components/提示气泡.jsx";
@@ -691,7 +691,7 @@ export default function App() {
         } catch {}
       }
       if (cancelled) return;
-      source = new EventSource(`/api/agent/events?client=${encodeURIComponent(clientId)}&after=${encodeURIComponent(cursor)}`);
+      source = new EventSource(`/api/agent/events?client=${encodeURIComponent(clientId)}&tab=${encodeURIComponent(getTabId())}&after=${encodeURIComponent(cursor)}`);
       slot?.attach(() => source?.close());
       source.onopen = () => { retryDelay = 800; };
       source.onmessage = (message) => {
