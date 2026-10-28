@@ -168,7 +168,7 @@
 |---|---|---|---|
 | U1 | CI 第 18 步 | ✅ 已落地 | `.github/workflows/ci.yml` 新增 `Office写作契约回归测试` |
 | U2 | Word/WPS 人工 L4 | 未验证 | 封面/目录/页码/批注双端目检未做（需人工） |
-| U3 | 并发双任务 E2E | 弱验证 | `test:write-lock` 单测覆盖不同文件并行；真实双 Run 未跑 |
+| U3 | 并发双任务 E2E | ✅ 已落地（确定性） | `test:office-concurrency` 两个 pipeline 同时写 Word/PPT；真实模型双 Run 未跑 |
 | U4 | 12 个模板结构基线 | ✅ 已落地 | `test:office-template` 新增 14 个模板逐一解析 |
 | U5 | `view issues` / `validate` | ✅ 已落地 | `officecli检查.mjs` 接入流水线 QA |
 | U6 | 高级命令引导 | ✅ 已落地 | 工具描述新增 ADVANCED COMMANDS；`test:office-cli-full:live` 全覆盖 |

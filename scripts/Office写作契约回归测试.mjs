@@ -19,6 +19,7 @@ const scripts = [
   "Office模板链路测试.mjs",
   "Office验收规则测试.mjs",
   "Office执行闸门测试.mjs",
+  "Office并发写入验证.mjs",
 ];
 
 let failed = 0;
