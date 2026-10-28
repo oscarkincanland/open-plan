@@ -9232,8 +9232,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   user-select: none;
 }
 .agent-capability-preview > summary::-webkit-details-marker { display: none; }
-.agent-capability-preview > summary::before { content: "▸"; color: var(--accent); font-family: monospace; }
-.agent-capability-preview[open] > summary::before { content: "▾"; }
+.agent-capability-preview > summary::before { content: ""; width: 0; height: 0; flex: 0 0 auto; border-left: 4px solid var(--accent); border-top: 3px solid transparent; border-bottom: 3px solid transparent; transition: transform 0.15s; }
+.agent-capability-preview[open] > summary::before { transform: rotate(90deg); }
 .agent-capability-preview > summary span:first-of-type { color: var(--accent); font-weight: 700; }
 .agent-capability-preview > summary span:last-of-type { color: var(--dim); }
 .agent-capability-details {

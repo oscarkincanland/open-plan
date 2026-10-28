@@ -6483,7 +6483,7 @@ function TaskProgressCard({ tasks, running = false }) {
   return (
     <div className={`task-card ${open ? "open" : ""}`} ref={cardRef} onMouseEnter={keepOpen} onMouseLeave={scheduleClose}>
       <button type="button" className="task-head" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-label="查看任务进度">
-        <span className="task-chevron">{open ? "▾" : "▸"}</span>
+        <span className="task-chevron"><Icon name={open ? "chevronDown" : "chevronRight"} size={12} /></span>
         <Icon name="list" size={12} />
         <span className="task-title">任务</span>
         <span className="task-progress">{done}/{tasks.length} 完成{failed ? ` · ${failed} 失败` : ""}</span>
@@ -6582,7 +6582,7 @@ function ToolCard({ tool, onToggle }) {
         {tool.startMissing && <span className="tool-recovered" title="开始事件已丢失，状态由结束事件恢复">已恢复</span>}
         {isCmd && <code className="cmd-code" title={fullInput}>$ {cmdPreview}</code>}
         {duration && <span className="tool-duration">{duration}s</span>}
-        <span className={`tool-chevron ${expanded ? "open" : ""}`}>{expanded ? "▾" : "▸"}</span>
+        <span className={`tool-chevron ${expanded ? "open" : ""}`}><Icon name="chevronRight" size={12} /></span>
       </div>
       {expanded && (
         <div className="tool-detail">
