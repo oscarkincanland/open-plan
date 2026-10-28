@@ -49,6 +49,10 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
   const hostRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  // 浏览器 docx-preview 对复杂 Word 不总是可靠：保留 OfficeCLI HTML 只读回退，
+  // 由用户手动切换（避免每次预览都启动一次服务端渲染进程）。
+  const [renderMode, setRenderMode] = useState("native"); // native | office
+  const officeFrameRef = useRef(null);
   const [showComments, setShowComments] = useState(true);
   const [showChanges, setShowChanges] = useState(true); // 修订模式默认开启
   const [renderKey, setRenderKey] = useState(0);
@@ -289,13 +293,14 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
   };
 
   useEffect(() => {
+    if (renderMode !== "native") return undefined;
     const seq = ++renderSeqRef.current;
     renderAbortRef.current?.abort();
     const controller = new AbortController();
     renderAbortRef.current = controller;
     renderDoc({ signal: controller.signal, isCurrent: () => seq === renderSeqRef.current });
     return () => { try { controller.abort(); } catch {} };
-  }, [renderDoc, renderKey]);
+  }, [renderDoc, renderKey, renderMode]);
 
   // 提取标题大纲：优先使用 docx 内部样式（heading N / 标题 N）解析出的真实层级；
   // 解析不到时才退回"编号开头的短段落"启发式，且不再把加粗正文全部列进来。
@@ -488,6 +493,14 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
   // ===== 保存：docx 库重打包 =====
   const handleSave = async () => {
     if (!dirty) { setSaveMsg("没有需要保存的修改"); setTimeout(() => setSaveMsg(""), 2000); return; }
+    // 这里的“编辑”是把当前渲染结果重建为新的 docx，不是原包增量修改：
+    // 页眉页脚、图片、表格和未识别的复杂样式都可能丢失，必须显式确认。
+    const editingHost = hostRef.current;
+    const complex = Boolean(editingHost?.querySelector("table, img, header, footer"));
+    const warning = complex
+      ? "当前文档包含表格/图片/页眉页脚。简化编辑保存会重建 docx，这些结构可能丢失。\n\n建议改用 Agent + officecli 修改。仍要保存吗？"
+      : "简化编辑保存会把当前预览重建为新的 docx，复杂样式可能丢失。仍要保存吗？";
+    if (typeof window !== "undefined" && !window.confirm(warning)) return;
     setSaving(true);
     setSaveMsg("保存中...");
     try {
@@ -604,6 +617,18 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
             <Icon name="penTool" size={12} /> 编辑
           </button>
         </div>
+        <button
+          className={`toolbar-btn ${renderMode === "office" ? "active" : ""}`}
+          onClick={() => {
+            if (renderMode === "native" && mode === "edit") exitEditMode();
+            setError("");
+            if (renderMode === "native") { setLoading(true); onPreviewState?.(PREVIEW_STATE.LOADING); }
+            setRenderMode(renderMode === "office" ? "native" : "office");
+          }}
+          title={renderMode === "office" ? "切回浏览器渲染（可编辑）" : "OfficeCLI 高保真只读渲染：适合复杂版式，渲染失败时自动提示"}
+        >
+          <Icon name={renderMode === "office" ? "eye" : "globe"} size={14} />
+        </button>
         <button className={`toolbar-btn ${showComments ? "active" : ""}`} onClick={() => setShowComments(!showComments)} title="显示批注">
           <Icon name="comment" size={14} />
         </button>
@@ -745,8 +770,29 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
       )}
 
       {loading && <div className="oaw-docx-loading"><div className="loading-spinner"></div><div>正在渲染文档...</div></div>}
-      {error && <div className="oaw-docx-error"><Icon name="warning" size={14} /> {error}</div>}
+      {error && (
+        <div className="oaw-docx-error">
+          <Icon name="warning" size={14} /> {error}
+          {renderMode === "native" && (
+            <button className="btn-xs" onClick={() => { setError(""); setLoading(true); onPreviewState?.(PREVIEW_STATE.LOADING); setRenderMode("office"); }}>
+              尝试高保真预览
+            </button>
+          )}
+        </div>
+      )}
 
+      {renderMode === "office" ? (
+        <div className="oaw-docx-office">
+          <iframe
+            ref={officeFrameRef}
+            title={`${name} 高保真预览`}
+            src={urls.html}
+            className="oaw-docx-office-frame"
+            onLoad={() => { setLoading(false); onPreviewState?.(PREVIEW_STATE.PARTIAL); }}
+          />
+          <div className="oaw-docx-office-hint">OfficeCLI 高保真只读渲染；排版异常时可切回浏览器渲染。</div>
+        </div>
+      ) : (
       <div className="oaw-docx-body">
         {outlineOpen && outline.length > 0 && (
           <div className="oaw-docx-outline" style={{ width: outlineW, minWidth: outlineW, maxWidth: outlineW }}>
@@ -782,6 +828,7 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
           />
         )}
       </div>
+      )}
     </div>
   );
 }

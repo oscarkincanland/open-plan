@@ -257,6 +257,8 @@ export default function App() {
   // B03：右栏三页签（预览 / 改动 / 产物）；改动与产物默认看“本轮”，可切回“会话”
   const [changesRunId, setChangesRunId] = useState("");
   const [artifactScope, setArtifactScope] = useState("session");
+  // 自动打开被“用户正在看别的文件/正在输入”挡住时，记录新产物入口，避免静默丢失。
+  const [artifactNotice, setArtifactNotice] = useState(null); // { path, name, runId, at }
   const [browserPanelOpen, setBrowserPanelOpen] = useState(false); // 内置浏览器独立侧栏
   const [browserFullscreen, setBrowserFullscreen] = useState(false);
   const [subagentDetail, setSubagentDetail] = useState(null); // 点开子代理卡片后，右栏展示的该子代理完整过程
@@ -429,6 +431,10 @@ export default function App() {
   const eventNoticeKeysRef = useRef(new Set());
   const autoOpenedRunRef = useRef(new Set());
   const changedFilesTimerRef = useRef(null);
+  // file_changed 会成串到达：合并 500ms 后统一刷新文件树/当前预览，
+  // 避免同一文件在一次任务里被反复 open() 重渲染。
+  const pendingFileChangesRef = useRef(new Set());
+  const fileChangeTimerRef = useRef(null);
   const previewToggleRef = useRef(null);
   const taskCenterRef = useRef(null);
   const topbarToolsRef = useRef(null);
@@ -1033,6 +1039,7 @@ export default function App() {
     // 避免上一个会话的“本轮产物”污染到当前会话（用户反馈的跨会话污染）。
     setChangesRunId("");
     setArtifactScope("session");
+    setArtifactNotice(null);
     const loadSeq = ++sessionLoadSeqRef.current;
     // 选择历史同样推进统一导航代际：在途的新建/工作区切换不得覆盖本次结果。
     navGenerationRef.current += 1;
@@ -1334,17 +1341,30 @@ export default function App() {
     });
   }, [currentProject?.id, currentWorkspace, handleSelectSession]);
 
-  const handleFileChanged = useCallback((changed) => {
-    const changedPaths = new Set((Array.isArray(changed) ? changed : []).map((item) => String(item || "").replace(/\\/g, "/")));
+  const flushFileChanges = useCallback(() => {
+    if (fileChangeTimerRef.current) {
+      window.clearTimeout(fileChangeTimerRef.current);
+      fileChangeTimerRef.current = null;
+    }
+    const pending = pendingFileChangesRef.current;
+    if (!pending.size) return;
+    const changedPaths = new Set(pending);
+    pending.clear();
     refreshFiles();
     const active = tabs.find((t) => (t.id || t.name) === activeTab);
     if (active && changedPaths.has(String(active.name).replace(/\\/g, "/"))) {
-      // 添加延迟避免与 agent_end 竞态
-      setTimeout(() => {
-        open(active.name, undefined, active.identity?.cwd || active.identity?.workspaceId || currentWorkspace);
-      }, 100);
+      void open(active.name, undefined, active.identity?.cwd || active.identity?.workspaceId || currentWorkspace);
     }
   }, [activeTab, tabs, currentWorkspace, refreshFiles, open]);
+
+  const handleFileChanged = useCallback((changed) => {
+    const paths = (Array.isArray(changed) ? changed : []).map((item) => String(item || "").replace(/\\/g, "/")).filter(Boolean);
+    if (!paths.length) return;
+    for (const path of paths) pendingFileChangesRef.current.add(path);
+    if (!fileChangeTimerRef.current) {
+      fileChangeTimerRef.current = window.setTimeout(flushFileChanges, 500);
+    }
+  }, [flushFileChanges]);
 
   // 暴露 refreshSessions 给 ChatPanel（agent_end 时刷新）
   const handleAgentEnd = useCallback(() => {
@@ -1374,6 +1394,12 @@ export default function App() {
     setWorkspaceTabPref("preview");
     setPreviewTab("artifacts");
   }, []);
+  // 面板里的“本轮/会话”切换是范围语义，不是选中某个历史 Run：
+  // 点“本轮”回到最新一轮（清掉钉住的 runId），点“会话”保留当前 Run 选择但不展示。
+  const handleArtifactScopeChange = useCallback((scope) => {
+    setArtifactScope(scope === "session" ? "session" : "run");
+    if (scope !== "session") setChangesRunId("");
+  }, []);
 
   const handleRunFinished = useCallback((result = {}) => {
     const runId = String(result.runId || "");
@@ -1389,6 +1415,8 @@ export default function App() {
     const artifacts = (Array.isArray(result.artifacts) ? result.artifacts : [])
       .map((item) => typeof item === "string" ? { path: item } : item)
       .filter((item) => item?.path && item.status !== "deleted");
+    // 收尾时统一刷新一次当前预览，避免运行中漏掉最后一次 file_changed。
+    flushFileChanges();
     // 文件树的短时高亮：本轮确实改了文件就打标（部分失败也算），
     // 由上面的 runId 去重保证重连回放不重播；2.6s 后自动清除，不常驻。
     if (artifacts.length) {
@@ -1413,11 +1441,24 @@ export default function App() {
       const acceptanceStatus = String(firstArtifact.acceptanceStatus || firstArtifact.acceptance?.status || "");
       if (!["passed", "warning", "manual_review"].includes(acceptanceStatus)) return;
     }
+    // 不抢用户焦点：正在输入、或正在看另一个文件时，只登记“本轮新产物”，
+    // 由用户自己从工具菜单打开；同一文件已打开时允许刷新修订。
+    const activeElement = typeof document !== "undefined" ? document.activeElement : null;
+    const typing = Boolean(activeElement && (activeElement.tagName === "TEXTAREA" || activeElement.tagName === "INPUT" || activeElement.isContentEditable));
+    const active = tabs.find((t) => (t.id || t.name) === activeTab);
+    const activePath = String(active?.name || "").replace(/\\/g, "/");
+    const artifactPath = String(firstArtifact.path || "").replace(/\\/g, "/");
+    const viewingOther = Boolean(previewOpen && active && activePath !== artifactPath);
+    if (typing || viewingOther) {
+      setArtifactNotice({ path: firstArtifact.path, name: fileBasename(firstArtifact.path), runId, at: Date.now() });
+      return;
+    }
+    setArtifactNotice(null);
     setPreviewOpen(true);
     setWorkspaceTabPref("preview");
     setPreviewTab("document");
     void open(firstArtifact.path, result.threadId || threadId, result.cwd || currentWorkspace);
-  }, [currentWorkspace, open, previewAutoOpen, threadId]);
+  }, [activeTab, currentWorkspace, flushFileChanges, open, previewAutoOpen, previewOpen, tabs, threadId]);
 
   // 关闭右预览后把焦点还给顶栏的预览开关，键盘用户不丢位置（对应计划 4.2 面板/命令入口）
   const closePreview = useCallback(() => {
@@ -1449,7 +1490,18 @@ export default function App() {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [topbarMenuOpen]);
-  useEffect(() => () => { if (changedFilesTimerRef.current) window.clearTimeout(changedFilesTimerRef.current); }, []);
+  useEffect(() => () => {
+    if (changedFilesTimerRef.current) window.clearTimeout(changedFilesTimerRef.current);
+    if (fileChangeTimerRef.current) window.clearTimeout(fileChangeTimerRef.current);
+    pendingFileChangesRef.current.clear();
+  }, []);
+
+  // 用户自己打开了“本轮新产物”后，工具菜单里的提示自动消失。
+  useEffect(() => {
+    if (!artifactNotice) return;
+    const noticeId = fileIdentityKey(makeFileIdentity({ workspaceId: currentWorkspace, relativePath: artifactNotice.path }));
+    if (activeTab && activeTab === noticeId) setArtifactNotice(null);
+  }, [activeTab, artifactNotice, currentWorkspace]);
 
   // ChatPanel 上报 pi 会话 id → 持久化（刷新后恢复当前对话）
   const handleSessionChange = useCallback((id) => {
@@ -1830,10 +1882,24 @@ export default function App() {
                 aria-haspopup="menu"
               >
                 <Icon name="more" size={14} />
-                {Object.values(unreadByThread).reduce((sum, count) => sum + Number(count || 0), 0) > 0 && <i className="topbar-tools-dot" aria-hidden="true" />}
+                {(Object.values(unreadByThread).reduce((sum, count) => sum + Number(count || 0), 0) > 0 || artifactNotice) && <i className="topbar-tools-dot" aria-hidden="true" />}
               </button>
               {topbarMenuOpen && (
                 <div className="topbar-tools-menu" role="menu" aria-label="工作区工具菜单">
+                  {artifactNotice && (
+                    <button
+                      role="menuitem"
+                      onClick={() => {
+                        const target = artifactNotice;
+                        setTopbarMenuOpen(false);
+                        setArtifactNotice(null);
+                        void open(target.path, threadId, currentWorkspace);
+                      }}
+                      title={`打开本轮新产物：${artifactNotice.path}`}
+                    >
+                      <Icon name="file" size={14} /><span>本轮新产物：{artifactNotice.name}</span>
+                    </button>
+                  )}
                   <button role="menuitem" onClick={() => { setTopbarMenuOpen(false); handleNewSession(); }} disabled={creatingSession} title="新建对话">
                     <Icon name="chatPlus" size={14} /><span>新建对话</span>
                   </button>
@@ -2028,7 +2094,8 @@ export default function App() {
                   currentSessionId={currentSessionId}
                   selectedRunId={changesRunId}
                   artifactScope={artifactScope}
-                  onArtifactScopeChange={setArtifactScope}
+                  artifactScopePinned={Boolean(changesRunId)}
+                  onArtifactScopeChange={handleArtifactScopeChange}
                   refreshToken={artifactVersion}
                   onOpenFile={open}
                   subagentBlock={subagentDetail}

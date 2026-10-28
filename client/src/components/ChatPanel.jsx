@@ -940,6 +940,32 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   // ChatPanel 本身持续挂载时，按 thread 保存界面状态，切换子对话不会把原对话的流式内容丢掉。
   const threadCacheRef = useRef(new Map());
   const previousThreadRef = useRef(threadId);
+  // 终态 Run 围栏：已收到 run_finished 的 Run，后续迟到的 token/assistant_final/agent_end
+  // 一律不再进入消息渲染，避免任务结束后文本继续增长或界面复活成“运行中”。
+  const finishedRunIdsRef = useRef(new Set());
+  const finishedRunsThreadRef = useRef("");
+  const rememberFinishedRun = useCallback((runId) => {
+    const id = String(runId || "");
+    if (!id) return;
+    finishedRunIdsRef.current.add(id);
+    if (finishedRunIdsRef.current.size > 240) {
+      const first = finishedRunIdsRef.current.values().next().value;
+      if (first) finishedRunIdsRef.current.delete(first);
+    }
+  }, []);
+  const seedFinishedRuns = useCallback((thread, items) => {
+    const key = String(thread || "");
+    if (finishedRunsThreadRef.current !== key) {
+      finishedRunIdsRef.current.clear();
+      finishedRunsThreadRef.current = key;
+    }
+    for (const item of Array.isArray(items) ? items : []) {
+      const runId = String(item?.runId || "");
+      if (runId && ["completed", "failed", "cancelled", "aborted"].includes(String(item?.runStatus || ""))) {
+        rememberFinishedRun(runId);
+      }
+    }
+  }, [rememberFinishedRun]);
 
   const currentMode = MODE_META[normalizeUiMode(editMode)] || MODE_META.chat;
   const selectedModelInfo = models.find((item) => item.id === model) || null;
@@ -1165,6 +1191,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     if (historyMessages) {
       followLatestRef.current = true;
       const normalizedHistory = normalizeHistoryMessages(historyMessages);
+      seedFinishedRuns(threadId, normalizedHistory);
       setMessages(normalizedHistory);
       const latestRun = [...normalizedHistory].reverse().find((item) => item?.runId && item?.runStatus);
       const isLiveRun = Boolean(latestRun && LIVE_RUN_STATUSES.has(latestRun.runStatus));
@@ -1244,6 +1271,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       editMode,
     });
     const cached = threadCacheRef.current.get(threadId);
+    seedFinishedRuns(threadId, hydratingHistory ? hydratedMessages : (cached?.messages || []));
     if (!hydratingHistory) {
       setMessages(cached?.messages || []);
       setMessageWindowSize(MAX_VISIBLE_MESSAGES);
@@ -2041,6 +2069,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       return;
     }
     const eventRunId = data?.runId || null;
+    // 终态围栏：Run 已经 run_finished 后，服务端/通道回放仍可能送来迟到增量。
+    // 这些事件只允许 connected/run_finished 通过，避免文本继续增长或界面复活。
+    if (eventRunId && finishedRunIdsRef.current.has(String(eventRunId)) && !["connected", "run_finished"].includes(type)) return;
     // 重连会回放历史事件。已知当前 Run 时，旧 Run 的事件不能污染当前对话。
     if (eventRunId && activeRunIdRef.current && eventRunId !== activeRunIdRef.current) return;
     // 断线重连可能从 capability_plan 之后开始回放；run_admitted 也可以作为
@@ -2154,7 +2185,11 @@ case "runtime_connecting":
         break;
       case "run_admitted":
         setAgentPhase("任务已受理");
-        if (data.runId) setRunState((s) => ({ ...s, runId: data.runId }));
+        if (data.runId) {
+          // Run ID 全局唯一；这里防御性移除，允许同一 ID 的恢复/重试重新进入运行态。
+          finishedRunIdsRef.current.delete(String(data.runId));
+          setRunState((s) => ({ ...s, runId: data.runId }));
+        }
         // 新的一轮任务开始：上一轮的系统提示摘要不再跟随，避免长期堆在顶部
         clearSystemNotes();
         break;
@@ -2723,10 +2758,14 @@ case "runtime_connecting":
         });
         break;
       case "agent_end": {
+        // 终态围栏：Run 已经 run_finished 后，Pi 的迟到 agent_end 不得把界面重新拉回
+        // “收尾中/运行中”。只有本客户端确实认为还有在途运行时才处理。
+        if (!runInProgressRef.current && !busy && !LIVE_RUN_STATUSES.has(String(runState.status || ""))) break;
         const endedWithError = agentErrorRef.current;
         flushToolOutput();
         if (streamBufRef.current) flushNow(aid);
-        if (aid) finishTextReveal(aid);
+        const finalizeId = aid || lastAssistantIdRef.current;
+        if (finalizeId) finishTextReveal(finalizeId);
         assistantIdRef.current = null;
         streamBufRef.current = null;
         streamingMsgIdRef.current = null;
@@ -2742,7 +2781,7 @@ case "runtime_connecting":
         stoppingRef.current = false;
         stopRequestedRef.current = false;
         setStopping(false);
-        setAgentPhase(endedWithError ? "模型调用失败" : "");
+        setAgentPhase(endedWithError ? "模型调用失败" : "正在收尾（验收/发布产物）");
         setRunState((s) => ({ ...s, status: roundStoppedRef.current ? "aborted" : (endedWithError ? "failed" : "finishing") }));
         if (!endedWithError && onAgentEnd) onAgentEnd();
         break;
@@ -2884,6 +2923,16 @@ case "runtime_connecting":
         break;
       case "run_finished":
         flushToolOutput();
+        // 同一个 Run 的 run_finished 只处理一次。重连回放/迟到帧不得再次触发
+        // 自动打开、队列冲刷或文本补齐，否则任务结束后界面会被“重新收尾”一次。
+        {
+          const finishedRunId = String(data?.runId || "");
+          if (finishedRunId && finishedRunIdsRef.current.has(finishedRunId)) {
+            const repeatId = lastAssistantIdRef.current;
+            if (repeatId) finishTextReveal(repeatId);
+            break;
+          }
+        }
         // 首字延迟结算：run_finished 是本轮唯一的终态信号，
         // 成功后上报一次（sendBeacon，刷新/关闭页面也不丢）。
         finalizeLatencyProbe({ runId: data?.runId || activeRunIdRef.current || runState.runId || null, finalStatus: data?.status || null });
@@ -2925,9 +2974,15 @@ case "runtime_connecting":
             setStopping(false);
             setAgentPhase("");
             if (finalStatus === "failed") agentErrorRef.current = true;
-            if (aid) finishTextReveal(aid);
+            // 即使没有权威终稿（failed/cancelled/无 finalText），也要把最后一个流式气泡
+            // 从 streaming 收尾；否则它会永远停在四瓣/正在思考状态。
+            const finalizeId = aid || lastAssistantIdRef.current;
+            if (finalizeId) finishTextReveal(finalizeId);
+            assistantIdRef.current = null;
+            streamingMsgIdRef.current = null;
           }
         }
+        rememberFinishedRun(data?.runId);
         upsertRunSummary({ ...data, fresh: Boolean(data.runId) && data.runId === knownRunId });
         // 实时气泡补 Pi entry 坐标：否则运行结束后只能“复制/重新生成”，
         // 切回历史才会多出“分叉/版本”，同一轮在两种状态下操作条不一致。
@@ -3095,7 +3150,7 @@ case "runtime_connecting":
   }, []);
 
   const finalizeStopped = useCallback(() => {
-    const id = assistantIdRef.current;
+    const id = assistantIdRef.current || streamingMsgIdRef.current;
     cancelTextReveal({ preserveText: true });
     // 中断收尾必须清掉错误文案：否则结果卡里会留一条「模型调用失败：Request aborted」，
     // 与「本轮已中断」并存，看起来像"中断顺带把模型弄坏了"。
@@ -4136,6 +4191,7 @@ case "runtime_connecting":
             const executionFlow = attachExecutionFlow ? {
               events: eventsForMessage,
               running: isExecutionAnchor && showExecutionFlow ? busy : false,
+              finishing: isExecutionAnchor && showExecutionFlow && runState.status === "finishing",
               onFocusTool: focusTool,
               notes: isExecutionAnchor ? systemNotes : [],
               note: isExecutionAnchor ? recentNarration : "",
@@ -4574,7 +4630,9 @@ function artifactsFromView(view) {
   const byPath = new Map();
   const pick = (change) => String(change?.relativePath || change?.path || change?.name || "").replace(/\\/g, "/").trim();
   const confirmedOf = (change) => change?.source === "write-ledger" || change?.role === "deliverable";
-  const attributedOf = (change) => change?.attributed !== false && change?.source !== "unattributed";
+  // run-window/unattributed 只是窗口内疑似变更，不能计成本轮“已归属产物”；
+  // 它们会走 leadProducts（待确认线索）展示。
+  const attributedOf = (change) => change?.attributed !== false && change?.source !== "unattributed" && change?.source !== "run-window";
   const put = (change, deliverable) => {
     const path = pick(change);
     if (!path) return;
@@ -5067,6 +5125,9 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
   // 本轮是否被中断：本地标记只管当下，刷新/切回会话后靠 Run 终态
   const runInterrupted = /^(cancelled|aborted)$/.test(String(runSummary?.runStatus || m.runStatus || ""));
   const isTaskLive = streaming || Boolean(executionFlow?.running) || LIVE_RUN_STATUSES.has(String(runSummary?.runStatus || ""));
+  // 模型已结束但 Run 还在验收/发布产物：过程区仍展开，但标签必须是“收尾中”，
+  // 不能再显示“实时”，否则用户会以为任务还在生成。
+  const isTaskFinishing = Boolean(executionFlow?.finishing);
   const processBlockTypes = new Set(["thinking", "tool", "subagent", "pipeline", "ask", "approval", "process_note"]);
   // 模型发言（text）不再归入过程区：它是这一小节的结论，必须留在消息正文里。
   // 过去只有"最后一个文本块"能留在外面，于是每写一段新小结，上一段就被折进
@@ -5203,7 +5264,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
         <summary>
           <Icon name="flow" size={12} />
           {isTaskActivity ? "执行过程" : foldedProcessBlocks.some((block) => block.type === "tool") ? "思考与工具过程" : "思考记录"}
-          {isLiveFold && <span>实时</span>}
+          {isLiveFold && <span>{isTaskFinishing ? "收尾中" : "实时"}</span>}
         </summary>
         <div className="message-process-fold-body">
           <div className="message-process-scroll" ref={isLastProcess ? processScrollRef : undefined} onScroll={isLastProcess ? handleProcessScroll : undefined}>

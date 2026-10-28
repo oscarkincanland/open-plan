@@ -239,6 +239,10 @@ body.resizing .map-chat-resizer {
 .badge.preview-state-partial { color: var(--warn, var(--accent)); border-color: var(--warn, var(--accent)); }
 .badge.preview-state-unsupported { color: var(--dim); border-style: dashed; }
 .badge.preview-state-failed { color: var(--error); border-color: var(--error); }
+.badge.preview-capability { white-space: nowrap; border-style: dashed; }
+.badge.preview-capability-partial { color: var(--muted); }
+.badge.preview-capability-values-only { color: var(--warning); border-color: var(--warning); }
+.badge.preview-capability-unsupported { color: var(--error); border-color: var(--error); }
 select, input[type="text"], textarea {
   font-family: inherit; font-size: 12px;
   background: var(--panel2-bg); color: var(--text);
@@ -602,6 +606,9 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .excel-wrap { display: flex; flex-direction: column; height: 100%; }
 .excel-toolbar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: var(--panel-bg); border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .excel-host { flex: 1; min-height: 0; overflow: hidden; }
+.excel-office { flex: 1; display: flex; flex-direction: column; min-height: 0; background: #fff; }
+.excel-office-frame { flex: 1; width: 100%; min-height: 0; border: 0; background: #fff; }
+.excel-office-hint { padding: 4px 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: 10px; background: var(--panel2-bg); }
 .excel-empty {
   flex: 1;
   display: flex;
@@ -4198,6 +4205,9 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   min-height: 0;
   overflow: hidden;
 }
+.oaw-docx-office { flex: 1; display: flex; flex-direction: column; min-height: 0; background: #fff; }
+.oaw-docx-office-frame { flex: 1; width: 100%; min-height: 0; border: 0; background: #fff; }
+.oaw-docx-office-hint { padding: 4px 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: 10px; background: var(--panel2-bg); }
 .oaw-docx-outline {
   width: 200px;
   min-width: 180px;
@@ -10307,6 +10317,8 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .artifact-scope-switch button { border: 0; background: transparent; color: var(--muted); font-size: 10px; padding: 3px 10px; cursor: pointer; }
 .artifact-scope-switch button.active { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
 .artifact-scope-switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.artifact-scope-wrap { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.artifact-pinned-hint { color: var(--warning); font-size: 9px; white-space: nowrap; }
 .run-changes-workspace .run-changes-picker { margin: 0 0 8px; }
 .run-changes-workspace .run-changes-picker label { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--muted); }
 .run-changes-workspace .run-changes-picker select { flex: 1; min-width: 0; }

@@ -387,7 +387,7 @@ try {
   assert.match(appSource, /const previewAutoOpen = appearance\.previewAutoOpen;/, "App 应消费自动打开预览策略");
   assert.match(appSource, /if \(previewAutoOpen === "never"\) return;/, "never 应从不自动打开");
   assert.match(appSource, /if \(previewAutoOpen === "deliverable"\) \{[\s\S]{0,200}?acceptanceStatus/, "deliverable 应只认通过验收的交付文件");
-  assert.match(appSource, /\}, \[currentWorkspace, open, previewAutoOpen, threadId\]\)/, "策略变化应立即生效（依赖数组）");
+  assert.match(appSource, /\}, \[activeTab, currentWorkspace, flushFileChanges, open, previewAutoOpen, previewOpen, tabs, threadId\]\)/, "策略变化、焦点守卫与刷新合并应立即生效（依赖数组）");
 
   // 卡死防护：同源 HTTP/1.1 只有 6 个连接槽位，SSE 长期占位。
   // App 不再为"浏览器活跃"常驻第二条 /api/browser/stream，改由对话流的工具事件驱动。

@@ -45,7 +45,7 @@ import {
 } from "./运行预算.mjs";
 import { importLocalPiSessionFile, readCredentials, readModelsConfig, readModelsStore, readRuntimeSettings, writeCredentials } from "./Pi配置管理.mjs";
 import { resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { recordRunEvent, updateRunTodo, getRun } from "./runs.mjs";
+import { recordRunEvent, updateRunTodo, getRun, isRunTerminal } from "./runs.mjs";
 import { markRunTiming, attachRunTimingSpans } from "./首字延迟.mjs";
 import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode } from "./task.mjs";
 
@@ -3335,6 +3335,12 @@ execute: async (_toolCallId, params) => {
       const id = ++channel.seq;
       const at = new Date().toISOString();
       const scopedRunId = piEventDepth > 0 ? (entry?.turnRunId || entry?.activeRunId) : entry?.activeRunId;
+      // 终态围栏：恢复/看门狗可能先收尾 Run，而 Pi 仍会继续发出 assistant_final/agent_end。
+      // 这些迟到事件只能进审计，不能再推给前端，否则会复活已结束的运行。
+      if (scopedRunId && isRunTerminal(scopedRunId)) {
+        try { recordRunEvent(scopedRunId, type, data || {}); } catch {}
+        return;
+      }
       const eventData = data && typeof data === "object" && !Array.isArray(data)
         ? { ...data, runId: data.runId ?? scopedRunId ?? null }
         : { value: data, runId: scopedRunId ?? null };
