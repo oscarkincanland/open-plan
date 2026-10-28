@@ -4028,8 +4028,20 @@ case "runtime_connecting":
       <div className={`chat${embedded ? " chat-embedded" : ""}${compact ? " chat-compact" : ""}`}>
         {/* 会话历史抽屉（对话栏一侧，可折叠隐藏） */}
         <div className={`chat-hist ${histOpen ? "open" : ""}`}>
-          <div className="chat-hist-head" onClick={() => setHistOpen((v) => !v)}>
-            <span className="chat-hist-chevron">{histOpen ? "▾" : "▸"}</span>
+          <div
+            className="chat-hist-head"
+            role="button"
+            tabIndex={0}
+            aria-expanded={histOpen}
+            onClick={() => setHistOpen((v) => !v)}
+            onKeyDown={(e) => {
+              if (e.target !== e.currentTarget) return;
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.preventDefault();
+              setHistOpen((v) => !v);
+            }}
+          >
+            <span className="chat-hist-chevron"><Icon name={histOpen ? "chevronDown" : "chevronRight"} size={12} /></span>
             <Icon name="history" size={12} />
             <span className="chat-hist-title">{historyLoading ? "切换中…" : "历史"}</span>
             <span className="chat-hist-count">{sessions.length}</span>
@@ -5636,7 +5648,7 @@ function ThinkingBlock({ text, startTime, streaming, embedded = false }) {
         aria-controls={idRef.current}
         onClick={() => setExpanded((v) => !v)}
       >
-        <span className="thinking-icon" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
+        <span className="thinking-icon" aria-hidden="true"><Icon name={expanded ? "chevronDown" : "chevronRight"} size={12} /></span>
         <span className="thinking-label"><ToolIdentityIcon name="__thinking__" size={12} /> 思考</span>
         {streaming && <span className="thinking-status">思考中…</span>}
         {!streaming && duration && <span className="thinking-status">思考了 {duration}s</span>}
@@ -5677,7 +5689,7 @@ function PipelineCard({ block, onOpenFile }) {
           <small>{stages.length ? stages.map((stage) => stage.label || stage.stage).join(" → ") : "规划 → 撰写 → 排版 → 验收"}</small>
         </span>
         <span className="pipeline-card-status">{block.status === "running" && <i />} {statusText}</span>
-        <span className={`pipeline-card-chevron ${expanded ? "open" : ""}`}>▸</span>
+        <span className={`pipeline-card-chevron ${expanded ? "open" : ""}`}><Icon name="chevronRight" size={12} /></span>
       </button>
       {expanded && <div className="pipeline-card-body">
         <ol className="pipeline-stages">
@@ -5721,7 +5733,7 @@ function SubagentCard({ block, onOpenDetail }) {
         <span className="subagent-card-title"><strong>子 Agent · {roleText}</strong><small>{block.activity || "隔离上下文 · 不继承主对话"}</small></span>
         {tools.length > 0 && <span className="subagent-card-toolcount">{runningTools ? `${tools.length} 个工具 · ${runningTools} 进行中` : `${tools.length} 个工具`}</span>}
         <span className="subagent-card-status">{block.status === "running" && <i />} {statusText}</span>
-        <span className={`subagent-card-chevron ${expanded ? "open" : ""}`}>▸</span>
+        <span className={`subagent-card-chevron ${expanded ? "open" : ""}`}><Icon name="chevronRight" size={12} /></span>
       </button>
       {expanded && <div className="subagent-card-body">
         <div className="subagent-card-actions">
@@ -6331,7 +6343,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
     <div className={`execution-flow ${expanded ? "expanded" : ""} ${running ? "live" : ""}`}>
       <div className="execution-flow-head">
         <button type="button" className="execution-flow-toggle" onClick={toggleExpanded} aria-expanded={expanded}>
-          <span className="execution-flow-chevron">{expanded ? "▾" : "▸"}</span>
+          <span className="execution-flow-chevron"><Icon name={expanded ? "chevronDown" : "chevronRight"} size={12} /></span>
           <Icon name="flow" size={12} />
           <strong>执行过程</strong>
           <span className="execution-flow-count">{contentEvents.length ? `${contentEvents.length} 个事件` : "等待首个事件"}</span>
@@ -6385,7 +6397,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
             {Number(compaction?.count) > 0 && <span className="efn-chip">上下文压缩 {compaction.count} 次</span>}
             {notes.some((item) => item.kind === "file") && <span className="efn-chip">文件变更</span>}
             {notes.some((item) => item.kind === "progress") && <span className="efn-chip">进度播报</span>}
-            <span className="efn-chevron">{notesOpen ? "▾" : "▸"}</span>
+            <span className="efn-chevron"><Icon name={notesOpen ? "chevronDown" : "chevronRight"} size={12} /></span>
           </button>
           {notesOpen && (
             <div className="efn-list">
