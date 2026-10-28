@@ -31,6 +31,17 @@ if (!defined.size) {
   process.exit(1);
 }
 
+// 1.1) 图形唯一性：不同名称不得指向完全相同的 path 数据（防止 doc/file、close/x 这类同形异名回归）
+const 图形值 = new Map();
+const 重复图形 = [];
+for (const line of iconSrc.split(/\r?\n/)) {
+  const m = /^  ([A-Za-z][\w-]*): \((.*)\),$/.exec(line);
+  if (!m) continue;
+  const [, key, value] = m;
+  if (图形值.has(value)) 重复图形.push(`${key} ≡ ${图形值.get(value)}`);
+  else 图形值.set(value, key);
+}
+
 // 2) 扫描所有 JSX 对 Icon 的引用
 function* walk(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -68,6 +79,10 @@ for (const file of walk(path.join(root, "client", "src"))) {
 console.log(`▶ Icon 断言：${defined.size} 个已定义图标 / ${files} 个 JSX 文件 / ${references} 处引用`);
 if (duplicates.size) {
   console.error(`✗ Icon.jsx 存在重复定义：${[...duplicates].join("、")}`);
+  process.exitCode = 1;
+}
+if (重复图形.length) {
+  console.error(`✗ Icon.jsx 存在同形异名（不同语义复用同一图形）：${重复图形.join("、")}`);
   process.exitCode = 1;
 }
 if (usage.size) {

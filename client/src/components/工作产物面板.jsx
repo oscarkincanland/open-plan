@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { confirmArtifactAcceptance, getRun, getRunAcceptance, listPublishedArtifacts, listRuns, publishArtifact, rollbackPublishedArtifact } from "../api.js";
 import Icon from "./Icon.jsx";
-import { notifyError } from "./Feedback.jsx";
+import { notifyError, askText, askConfirm } from "./Feedback.jsx";
 import { artifactStatusInfo } from "./验收状态.js";
 import FileChangesPanel from "./FileChangesPanel.jsx";
 import 子代理详情面板 from "./子代理详情面板.jsx";
@@ -163,7 +163,7 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
         {!isStaged && artifact.source === "unattributed" && <span className="preview-artifact-status suspect" title="本轮没有写入台账记录该文件，可能来自并发运行；仅作线索，未自动计入交付">未归属线索</span>}
         {!isStaged && artifact.source === "run-window" && <span className="preview-artifact-status suspect" title="本轮确有写入（台账只到工作区级，bash / officecli 不回报具体路径），按“运行窗口内变更”归属到本轮；若同一工作区有并行运行，可能来自它">待确认</span>}
         {!isStaged && <span className={`preview-artifact-status ${info.tone}`} title={info.hint}>{info.label}</span>}
-        {canConfirm && <button className="btn-xs" disabled={action === `confirm-${artifact.artifactId}`} onClick={() => runAction(`confirm-${artifact.artifactId}`, async () => { const note = window.prompt("请输入人工确认说明（可选）", "已检查内容、格式和页面显示"); if (note !== null) await confirmArtifactAcceptance(run.id, artifact.artifactId, note); })}>人工确认</button>}
+        {canConfirm && <button className="btn-xs" disabled={action === `confirm-${artifact.artifactId}`} onClick={() => runAction(`confirm-${artifact.artifactId}`, async () => { const note = await askText("请输入人工确认说明（可选）", "已检查内容、格式和页面显示"); if (note !== null) await confirmArtifactAcceptance(run.id, artifact.artifactId, note); })}>人工确认</button>}
         {canPublish && <button className="btn-xs" disabled={action === `publish-${artifact.artifactId}`} onClick={() => runAction(`publish-${artifact.artifactId}`, () => publishArtifact(run.id, artifact.artifactId))}>固定成果</button>}
       </div>
     );
@@ -214,7 +214,14 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
           </div>
         )}
         {loading && <div className="preview-empty">正在读取产物清单…</div>}
-        {!loading && !loadError && !allEntries.length && <div className="preview-empty"><Icon name="file" size={20} />{artifactScope === "run" ? "本轮暂未生成产物" : "当前会话暂未生成产物"}{runs.some((run) => run.snapshotTruncated) ? "（工作区过大，部分轮次的产物检测可能不完整）" : ""}</div>}
+        {!loading && !loadError && !allEntries.length && (
+          <div className="preview-empty">
+            <Icon name="file" size={20} />
+            <strong>{artifactScope === "run" ? "本轮暂未生成产物" : "当前会话暂未生成产物"}</strong>
+            <small>在 Work 模式下让 Agent 生成文件后会自动出现在这里；也可以刷新重试。{runs.some((run) => run.snapshotTruncated) ? "（工作区过大，部分轮次的产物检测可能不完整）" : ""}</small>
+            <button className="btn-xs" onClick={() => refresh()} disabled={loading}>{loading ? "刷新中…" : "刷新"}</button>
+          </div>
+        )}
         {entries.map(renderArtifactRow)}
         {suspectedEntries.length > 0 && (
           <>
@@ -226,7 +233,7 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
       {published.length > 0 && <div className="preview-publications artifact-publications"><div className="artifact-list-head"><span>正式成果版本</span><small>{rollbackableCount ? `可回滚 ${rollbackableCount} 个（回到上一正式版本）` : "当前没有可回滚的历史版本"}</small></div>{published.map((item) => {
         const rolledBack = item.status === "rolled_back";
         const canRollback = !rolledBack && !!item.rollbackTarget;
-        return <div className="preview-publication" key={item.id}><span title={item.path}><Icon name="check" size={12} /> {artifactName(item.path)} · v{item.version}{rolledBack ? " · 已回滚" : ""}</span>{canRollback ? <button className="btn-xs" onClick={() => runAction(`rollback-${item.id}`, () => rollbackPublishedArtifact(item.id))}>回滚</button> : <small className="preview-publication-note">{rolledBack ? "已回滚" : "首个版本 · 无历史版本可回滚"}</small>}</div>;
+        return <div className="preview-publication" key={item.id}><span title={item.path}><Icon name="check" size={12} /> {artifactName(item.path)} · v{item.version}{rolledBack ? " · 已回滚" : ""}</span>{canRollback ? <button className="btn-xs" onClick={async () => { if (!(await askConfirm(`回滚「${artifactName(item.path)}」到上一正式版本？当前 v${item.version} 会保留为历史。`))) return; runAction(`rollback-${item.id}`, () => rollbackPublishedArtifact(item.id)); }}>回滚</button> : <small className="preview-publication-note">{rolledBack ? "已回滚" : "首个版本 · 无历史版本可回滚"}</small>}</div>;
       })}</div>}
     </div>
   );
@@ -376,7 +383,11 @@ function LinksPanel({ links = [] }) {
         <span className="links-count" aria-label={`共 ${links.length} 条链接`}>{links.length} 条</span>
       </div>
       {!links.length ? (
-        <div className="preview-empty"><Icon name="link" size={20} />当前会话暂无访问链接</div>
+        <div className="preview-empty">
+          <Icon name="link" size={20} />
+          <strong>当前会话暂无访问链接</strong>
+          <small>Agent 读取网页或打开外部链接后会汇总在这里。</small>
+        </div>
       ) : (
         <div className="links-list" role="list">
           {links.map((link) => (

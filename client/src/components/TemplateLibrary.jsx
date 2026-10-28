@@ -363,19 +363,19 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
         {/* 左栏：分类 */}
         <div className="tpl-left" style={{ width: leftW, minWidth: leftW, maxWidth: leftW }}>
           <div className="tpl-cat-title">分类</div>
-          <div className={"tpl-cat-item" + (activeCategory === "all" ? " active" : "")} onClick={() => setActiveCategory("all")}>
+          <button type="button" className={"tpl-cat-item" + (activeCategory === "all" ? " active" : "")} onClick={() => setActiveCategory("all")}>
             <span className="tpl-cat-icon"><Icon name="grid" size={12} /></span>
             <span>全部</span>
             <span className="tpl-cat-count">{templates.length}</span>
-          </div>
+          </button>
           {categories.map((c) => {
             const count = templates.filter((t) => t.category === c.id).length;
             return (
-              <div key={c.id} className={"tpl-cat-item" + (activeCategory === c.id ? " active" : "")} onClick={() => setActiveCategory(c.id)}>
+              <button type="button" key={c.id} className={"tpl-cat-item" + (activeCategory === c.id ? " active" : "")} onClick={() => setActiveCategory(c.id)}>
                 <span className="tpl-cat-icon"><Icon name={c.icon} size={12} /></span>
                 <span>{c.name}</span>
                 <span className="tpl-cat-count">{count}</span>
-              </div>
+              </button>
             );
           })}
         </div>
@@ -388,7 +388,7 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
           {viewMode === "grid" ? (
             <div className="tpl-grid">
               {filtered.map((t) => (
-                <div key={t.id} className={"tpl-card" + (preview?.relPath === t.relPath ? " active" : "")} onClick={() => openPreview(t)}>
+                <button type="button" key={t.id} className={"tpl-card" + (preview?.relPath === t.relPath ? " active" : "")} onClick={() => openPreview(t)}>
                   <div className="tpl-card-icon"><Icon name={extIcon(t.ext)} size={32} /></div>
                   <div className="tpl-card-title">{t.title}</div>
                   <div className="tpl-card-meta">
@@ -396,19 +396,19 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
                     <span className="tpl-card-size">{formatSize(t.size)}</span>
                   </div>
                   <div className="tpl-card-cat">{categories.find((c) => c.id === t.category)?.name || t.category}</div>
-                </div>
+                </button>
               ))}
             </div>
           ) : (
             <div className="tpl-list">
               {filtered.map((t) => (
-                <div key={t.id} className={"tpl-list-item" + (preview?.relPath === t.relPath ? " active" : "")} onClick={() => openPreview(t)}>
+                <button type="button" key={t.id} className={"tpl-list-item" + (preview?.relPath === t.relPath ? " active" : "")} onClick={() => openPreview(t)}>
                   <Icon name={extIcon(t.ext)} size={16} />
                   <span className="tpl-list-title">{t.title}</span>
                   <span className="tpl-list-ext">{t.ext.toUpperCase()}</span>
                   <span className="tpl-list-size">{formatSize(t.size)}</span>
                   <span className="tpl-list-cat"><Icon name={categories.find((c) => c.id === t.category)?.icon || "file"} size={12} /></span>
-                </div>
+                </button>
               ))}
             </div>
           )}

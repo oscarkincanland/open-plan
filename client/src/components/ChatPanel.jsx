@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, branchAgentSession, getSession, getSessionMessageVersions, getSessionGoal, setSessionGoal, sessionGoalAction, clearSessionGoal, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon, { ProviderIcon } from "./Icon.jsx";
+import 提示气泡 from "./提示气泡.jsx";
 import ToolIdentityIcon from "./工具语义图标.jsx";
 import Logo from "./Logo.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
@@ -20,7 +21,7 @@ import { isStaleChunkError, recoverFromStaleChunk } from "../分包恢复.js";
 import { isMotionReduced, motionScrollBehavior, useAppearance, useAppearanceSetter } from "../界面外观.js";
 import { startLatencyProbe, markLatency, patchLatencyMeta, markFirstDomText, finalizeLatencyProbe } from "../首字延迟埋点.js";
 import { acquireStream, closeEventSourceQuietly, noteCursorGap } from "../长连接预算.js";
-import { notifyError, askConfirm } from "./Feedback.jsx";
+import { notifyError, askConfirm, askText } from "./Feedback.jsx";
 import { flag, flagsReady, numberFlag } from "../运行开关.js";
 import { getBrowserStreamState } from "../浏览器联动.js";
 
@@ -3715,7 +3716,7 @@ case "runtime_connecting":
   };
 
   const handleMemoryReject = async (id) => {
-    const reason = window.prompt("拒绝原因（可选）", "用户拒绝该记忆建议");
+    const reason = await askText("拒绝原因（可选）", "用户拒绝该记忆建议");
     if (reason === null) return;
     try {
       const d = await rejectMemoryProposal(id, reason);
@@ -5670,7 +5671,7 @@ function PipelineCard({ block, onOpenFile }) {
   return (
     <section className={`pipeline-card ${block.status || "running"}`} aria-label={`编辑流水线（${block.format === "pptx" ? "PPT" : "Word"}）`}>
       <button type="button" className="pipeline-card-head" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
-        <span className="pipeline-card-icon"><Icon name={failed ? "x" : block.status === "completed" ? "check" : "flow"} size={14} /></span>
+        <span className="pipeline-card-icon"><Icon name={failed ? "close" : block.status === "completed" ? "check" : "flow"} size={14} /></span>
         <span className="pipeline-card-title">
           <strong>编辑流水线 · {block.format === "pptx" ? "PPT" : "Word"}</strong>
           <small>{stages.length ? stages.map((stage) => stage.label || stage.stage).join(" → ") : "规划 → 撰写 → 排版 → 验收"}</small>
@@ -5682,7 +5683,7 @@ function PipelineCard({ block, onOpenFile }) {
         <ol className="pipeline-stages">
           {stages.map((stage) => (
             <li key={stage.stage} className={`pipeline-stage ${stage.status || "running"}`}>
-              <span className="pipeline-stage-icon"><Icon name={stage.status === "done" || stage.status === "pass" || stage.status === "completed" ? "check" : stage.status === "running" ? "flow" : "x"} size={12} /></span>
+              <span className="pipeline-stage-icon"><Icon name={stage.status === "done" || stage.status === "pass" || stage.status === "completed" ? "check" : stage.status === "running" ? "flow" : "close"} size={12} /></span>
               <div className="pipeline-stage-info">
                 <b>{stage.label || stage.stage}</b>
                 <em>{stage.status === "done" || stage.status === "pass" || stage.status === "completed" ? "完成" : stage.status === "revise" ? "需修订" : stage.status === "failed" ? "失败" : "进行中"}{stage.artifact ? ` · ${stage.artifact}` : ""}</em>
@@ -5716,7 +5717,7 @@ function SubagentCard({ block, onOpenDetail }) {
   return (
     <section className={`subagent-card ${block.status || "running"}`} aria-label={`子 Agent：${roleText}`}>
       <button type="button" className="subagent-card-head" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
-        <span className="subagent-card-icon"><Icon name={block.status === "completed" ? "check" : block.status === "failed" ? "x" : "robot"} size={14} /></span>
+        <span className="subagent-card-icon"><Icon name={block.status === "completed" ? "check" : block.status === "failed" ? "close" : "robot"} size={14} /></span>
         <span className="subagent-card-title"><strong>子 Agent · {roleText}</strong><small>{block.activity || "隔离上下文 · 不继承主对话"}</small></span>
         {tools.length > 0 && <span className="subagent-card-toolcount">{runningTools ? `${tools.length} 个工具 · ${runningTools} 进行中` : `${tools.length} 个工具`}</span>}
         <span className="subagent-card-status">{block.status === "running" && <i />} {statusText}</span>
@@ -5812,7 +5813,7 @@ function PendingActionBar({ approval, ask, onLocateApproval, onLocateAsk, client
           <span className="pending-action-buttons">
             <button className="btn primary" onClick={() => decide("allow")} disabled={Boolean(sending)}>允许一次</button>
             <button className="btn" onClick={() => decide("deny")} disabled={Boolean(sending)}>拒绝</button>
-            <button className="btn-xs" onClick={onLocateApproval} title="滚动到审批卡片">定位</button>
+            <提示气泡 label="滚动到审批卡片"><button className="btn-xs" onClick={onLocateApproval} aria-label="定位到审批卡片"><Icon name="locate" size={12} /></button></提示气泡>
           </span>
         </>
       )}
@@ -5841,7 +5842,7 @@ function PendingActionBar({ approval, ask, onLocateApproval, onLocateAsk, client
             </>
           )}
           <span className="pending-action-buttons">
-            <button className="btn-xs" onClick={onLocateAsk} title="滚动到提问卡片">定位</button>
+            <提示气泡 label="滚动到提问卡片"><button className="btn-xs" onClick={onLocateAsk} aria-label="定位到提问卡片"><Icon name="locate" size={12} /></button></提示气泡>
           </span>
         </>
       )}

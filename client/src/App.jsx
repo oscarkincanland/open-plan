@@ -28,6 +28,7 @@ import { acquireStream } from "./长连接预算.js";
 import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun } from "./api.js";
 import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
 import FeedbackHost, { notifyError } from "./components/Feedback.jsx";
+import 提示气泡 from "./components/提示气泡.jsx";
 import { initRuntimeFlags, flag, flagsReady } from "./运行开关.js";
 
 function historyReferences(text = "") {
@@ -1872,18 +1873,19 @@ export default function App() {
             </div>
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
             <div className="topbar-tools" ref={topbarToolsRef}>
-              <button
-                ref={previewToggleRef}
-                className={`btn-sm topbar-tools-toggle ${topbarMenuOpen ? "active" : ""}`}
-                onClick={() => setTopbarMenuOpen((v) => !v)}
-                title="工作区工具：新建对话 / 工作产物 / 内置浏览器 / 任务中心"
-                aria-label="工作区工具"
-                aria-expanded={topbarMenuOpen}
-                aria-haspopup="menu"
-              >
-                <Icon name="more" size={14} />
-                {(Object.values(unreadByThread).reduce((sum, count) => sum + Number(count || 0), 0) > 0 || artifactNotice) && <i className="topbar-tools-dot" aria-hidden="true" />}
-              </button>
+              <提示气泡 label="工作区工具">
+                <button
+                  ref={previewToggleRef}
+                  className={`btn-sm topbar-tools-toggle ${topbarMenuOpen ? "active" : ""}`}
+                  onClick={() => setTopbarMenuOpen((v) => !v)}
+                  aria-label="工作区工具"
+                  aria-expanded={topbarMenuOpen}
+                  aria-haspopup="menu"
+                >
+                  <Icon name="more" size={14} />
+                  {(Object.values(unreadByThread).reduce((sum, count) => sum + Number(count || 0), 0) > 0 || artifactNotice) && <i className="topbar-tools-dot" aria-hidden="true" />}
+                </button>
+              </提示气泡>
               {topbarMenuOpen && (
                 <div className="topbar-tools-menu" role="menu" aria-label="工作区工具菜单">
                   {artifactNotice && (

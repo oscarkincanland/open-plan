@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
+import 提示气泡 from "./提示气泡.jsx";
 import { browserClose, browserFullpage, browserInput, browserOpen, browserPdf, browserReset, browserState, browserStreamPause } from "../api.js";
 import { acquireStream, waitForStreamSlot } from "../长连接预算.js";
 import { flag } from "../运行开关.js";
@@ -575,8 +576,8 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
       </div>
       <div className="browser-toolbar">
         <div className="browser-nav-actions">
-          <button className="btn-icon" onClick={() => send({ action: "back" })} disabled={busy} title="后退" aria-label="后退"><Icon name="back" size={14} /></button>
-          <button className="btn-icon" onClick={() => send({ action: "reload" })} disabled={busy} title="刷新页面" aria-label="刷新页面"><Icon name="refresh" size={14} /></button>
+          <提示气泡 label="后退"><button className="btn-icon" onClick={() => send({ action: "back" })} disabled={busy} aria-label="后退"><Icon name="back" size={14} /></button></提示气泡>
+          <提示气泡 label="刷新页面"><button className="btn-icon" onClick={() => send({ action: "reload" })} disabled={busy} aria-label="刷新页面"><Icon name="refresh" size={14} /></button></提示气泡>
         </div>
         <form
           className="browser-url-form"
@@ -611,20 +612,21 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
         </button>
         {flag("browserFullpage") && (
           <>
-            <button type="button" className="btn-icon" onClick={captureFullpage} disabled={busy || !state.active} title="整页截图（长页面完整保存）" aria-label="整页截图"><Icon name="image" size={14} /></button>
-            <button type="button" className="btn-icon" onClick={exportPdf} disabled={busy || !state.active} title="导出整页 PDF" aria-label="导出整页 PDF"><Icon name="download" size={14} /></button>
+            <提示气泡 label="整页截图（长页面完整保存）"><button type="button" className="btn-icon" onClick={captureFullpage} disabled={busy || !state.active} aria-label="整页截图"><Icon name="image" size={14} /></button></提示气泡>
+            <提示气泡 label="导出整页 PDF"><button type="button" className="btn-icon" onClick={exportPdf} disabled={busy || !state.active} aria-label="导出整页 PDF"><Icon name="download" size={14} /></button></提示气泡>
           </>
         )}
-        <button
-          type="button"
-          className="browser-fullscreen-toggle"
-          onClick={onToggleFullscreen}
-          title={fullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
-          aria-label={fullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
-        >
-          <Icon name={fullscreen ? "minimize" : "maximize"} size={14} />
-        </button>
-        <button className="btn-icon" onClick={handleClose} disabled={busy} title="关闭浏览器" aria-label="关闭浏览器"><Icon name="close" size={14} /></button>
+        <提示气泡 label={fullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}>
+          <button
+            type="button"
+            className="browser-fullscreen-toggle"
+            onClick={onToggleFullscreen}
+            aria-label={fullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
+          >
+            <Icon name={fullscreen ? "minimize" : "maximize"} size={14} />
+          </button>
+        </提示气泡>
+        <提示气泡 label="关闭浏览器"><button className="btn-icon" onClick={handleClose} disabled={busy} aria-label="关闭浏览器"><Icon name="close" size={14} /></button></提示气泡>
       </div>
       {state.title && <div className="browser-title" title={state.title}>{state.title}</div>}
       <div ref={viewRef} className="browser-view" title="滚轮滚动 · 单击接管 · 按住拖动可操作滑块">

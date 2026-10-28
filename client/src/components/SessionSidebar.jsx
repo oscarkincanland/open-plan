@@ -9,7 +9,8 @@ import Logo from "./Logo.jsx";
 import MemoryTab from "./MemoryTab.jsx";
 import SettingsPanel from "./SettingsPanel.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
-import { notifyError, notifySuccess, askConfirm } from "./Feedback.jsx";
+import 提示气泡 from "./提示气泡.jsx";
+import { notifyError, notifySuccess, askConfirm, askText } from "./Feedback.jsx";
 
 // 运行中的状态集合：这些会话的名字用跑马灯 + 灯效展示，一眼看出"还在跑"
 const RUNNING_SESSION_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
@@ -264,21 +265,31 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
       {s.cwd && <div className="session-cwd" title={s.cwd}>{shortenCwd(s.cwd)}</div>}
       {!selecting && actionsId === s.id && (
         <div className="session-actions" onClick={(e) => e.stopPropagation()}>
-        <button className="btn-icon" onClick={() => handleTogglePin(s)} title={isPinned ? "取消置顶" : "置顶"}>
-          <Icon name="pin" size={12} className={isPinned ? "pinned" : ""} />
-        </button>
-        <button
-          className="btn-icon"
-          onClick={() => { setEditingId(s.id); setEditValue(s.label || s.title || ""); }}
-          title="重命名"
-        ><Icon name="penTool" size={12} /></button>
-        <button className="btn-icon" onClick={async () => { if (onFork) await onFork(s.id, `${s.title || s.label || "会话"}（分支）`); }} title="从此会话创建分支"><Icon name="copy" size={12} /></button>
-        <button className="btn-icon" onClick={() => handleToggleFreeze(s)} title={s.frozen ? "解冻会话" : "冻结会话"}><Icon name={s.frozen ? "check" : "stop"} size={12} /></button>
-        <button
-          className="btn-icon danger"
-          onClick={async () => { if (await askConfirm("确认删除此会话?")) { await onDelete(s.id); } }}
-          title="删除"
-        ><Icon name="trash" size={12} /></button>
+        <提示气泡 label={isPinned ? "取消置顶" : "置顶"}>
+          <button className="btn-icon" onClick={() => handleTogglePin(s)} aria-label={isPinned ? "取消置顶" : "置顶"}>
+            <Icon name="pin" size={12} className={isPinned ? "pinned" : ""} />
+          </button>
+        </提示气泡>
+        <提示气泡 label="重命名">
+          <button
+            className="btn-icon"
+            onClick={() => { setEditingId(s.id); setEditValue(s.label || s.title || ""); }}
+            aria-label="重命名"
+          ><Icon name="penTool" size={12} /></button>
+        </提示气泡>
+        <提示气泡 label="从此会话创建分支">
+          <button className="btn-icon" onClick={async () => { if (onFork) await onFork(s.id, `${s.title || s.label || "会话"}（分支）`); }} aria-label="从此会话创建分支"><Icon name="copy" size={12} /></button>
+        </提示气泡>
+        <提示气泡 label={s.frozen ? "解冻会话" : "冻结会话"}>
+          <button className="btn-icon" onClick={() => handleToggleFreeze(s)} aria-label={s.frozen ? "解冻会话" : "冻结会话"}><Icon name="lock" size={12} /></button>
+        </提示气泡>
+        <提示气泡 label="删除">
+          <button
+            className="btn-icon danger"
+            onClick={async () => { if (await askConfirm("确认删除此会话?")) { await onDelete(s.id); } }}
+            aria-label="删除"
+          ><Icon name="trash" size={12} /></button>
+        </提示气泡>
         </div>
       )}
     </div>
@@ -776,7 +787,9 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           {fileRoots.map((root) => (
             <div className="external-root-item" key={root.id} title={root.path}>
               <span>{root.label || root.path}</span>
-              <button className="btn-icon danger" onClick={async () => { await removeFileRoot(root.id); refreshFileRoots(); }} title="移除目录" aria-label="移除目录"><Icon name="close" size={12} /></button>
+              <提示气泡 label="移除目录">
+                <button className="btn-icon danger" onClick={async () => { await removeFileRoot(root.id); refreshFileRoots(); }} aria-label="移除目录"><Icon name="close" size={12} /></button>
+              </提示气泡>
             </div>
           ))}
           {!fileRoots.length && <div className="external-root-empty">尚未登记外部目录</div>}
@@ -1006,12 +1019,21 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
               <div
                 key={filePath}
                 className={`file-item ${!f.isDir && f.name === currentName ? "active" : ""} ${isNew ? "new-file" : ""} ${isChanged ? "changed" : ""}`}
+                role="button"
+                tabIndex={0}
                 onClick={() => {
                   if (f.isDir) {
                     navigateDir(filePath);
                   } else {
                     onOpenFile(filePath);
                   }
+                }}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return;
+                  if (e.key !== "Enter" && e.key !== " ") return;
+                  e.preventDefault();
+                  if (f.isDir) navigateDir(filePath);
+                  else onOpenFile(filePath);
                 }}
                 onContextMenu={(e) => handleContextMenu(e, f)}
                 title={f.name}
@@ -1024,16 +1046,36 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                 </span>
                 <span
                   className="file-at"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`引用 ${f.name}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     onAtMention && onAtMention(filePath, f.isDir);
                   }}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter" && e.key !== " ") return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onAtMention && onAtMention(filePath, f.isDir);
+                  }}
                   title="@ 到对话中作为参考"
-                  role="button"
-                  aria-label={`引用 ${f.name}`}
                 >@</span>
                 {!f.isDir && (
-                  <span className="file-del" onClick={(e) => { e.stopPropagation(); handleDeleteFile(filePath); }} role="button" aria-label={`删除 ${f.name}`} title={`删除 ${f.name}`}><Icon name="close" size={12} /></span>
+                  <span
+                    className="file-del"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`删除 ${f.name}`}
+                    title={`删除 ${f.name}`}
+                    onClick={(e) => { e.stopPropagation(); handleDeleteFile(filePath); }}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter" && e.key !== " ") return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      handleDeleteFile(filePath);
+                    }}
+                  ><Icon name="close" size={12} /></span>
                 )}
               </div>
             );
@@ -1056,7 +1098,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       {/* 项目会话历史：会话归属项目，不再和文件列表混在一起 */}
       {modal === "history" && (
         <div className="sb-modal-backdrop" onClick={() => { setModal(null); setHistoryEditSessionId(null); }}>
-          <div className="sb-modal project-history-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="sb-modal project-history-modal" role="dialog" aria-modal="true" aria-label="项目会话历史" onClick={(e) => e.stopPropagation()}>
             <div className="sb-modal-head">
               <Icon name="history" size={14} />
               <span className="sb-modal-title">{historyProject?.name || "项目"} · 会话历史</span>
@@ -1084,7 +1126,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       {/* 产物弹窗 */}
       {modal === "artifacts" && (
         <div className="sb-modal-backdrop" onClick={() => setModal(null)}>
-          <div className="sb-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="sb-modal" role="dialog" aria-modal="true" aria-label="成果" onClick={(e) => e.stopPropagation()}>
             <div className="sb-modal-head">
               <Icon name="package" size={14} />
               <span className="sb-modal-title">成果（{artifactEntries.length}）</span>
@@ -1119,7 +1161,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                         <span className={`artifact-status ${published ? "published" : acceptanceStatus === "failed" ? "failed" : acceptanceStatus === "passed" ? "ready" : "pending"}`} title={acceptance?.summary || "尚未完成成果验收"}>{published ? `v${published.version} 已固定` : acceptance?.readyToPublish ? "验收通过·待固定" : acceptanceStatus === "failed" ? "验收失败" : "待人工确认"}</span>
                         {canConfirm && <button className="btn-xs artifact-publish-btn" onClick={async (e) => {
                           e.stopPropagation();
-                          const note = window.prompt("请输入人工确认说明（可选）", "已检查内容、格式和页面显示");
+                          const note = await askText("请输入人工确认说明（可选）", "已检查内容、格式和页面显示");
                           if (note === null) return;
                           try { await confirmArtifactAcceptance(item.run.id, item.artifactId, note); await refreshArtifacts(); } catch (error) { notifyError("人工确认失败: " + error.message); }
                         }}>人工确认</button>}
@@ -1155,7 +1197,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       {/* 设置弹窗（含记忆） */}
       {modal === "settings" && (
         <div className="sb-modal-backdrop" onClick={() => setModal(null)}>
-          <div className="sb-modal sb-modal-wide" onClick={(e) => e.stopPropagation()}>
+          <div className="sb-modal sb-modal-wide" role="dialog" aria-modal="true" aria-label="设置" onClick={(e) => e.stopPropagation()}>
             <div className="sb-modal-head">
               <Icon name="gear" size={14} />
               <span className="sb-modal-title">设置</span>

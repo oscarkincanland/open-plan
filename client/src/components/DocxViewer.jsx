@@ -6,6 +6,7 @@ import CommentMarker from "./CommentMarker.jsx";
 import { repaginateDocx } from "./文档分页.js";
 import { extractDocxOutline } from "./文档目录.js";
 import { motionScrollBehavior } from "../界面外观.js";
+import { askConfirm } from "./Feedback.jsx";
 import { buildDocUrls, makeFileIdentity, identityMatches, readIdentityHeader, previewStateFromError, PREVIEW_STATE } from "../文件地址.js";
 
 /**
@@ -500,7 +501,7 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
     const warning = complex
       ? "当前文档包含表格/图片/页眉页脚。简化编辑保存会重建 docx，这些结构可能丢失。\n\n建议改用 Agent + officecli 修改。仍要保存吗？"
       : "简化编辑保存会把当前预览重建为新的 docx，复杂样式可能丢失。仍要保存吗？";
-    if (typeof window !== "undefined" && !window.confirm(warning)) return;
+    if (!(await askConfirm(warning))) return;
     setSaving(true);
     setSaveMsg("保存中...");
     try {

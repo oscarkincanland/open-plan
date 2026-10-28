@@ -106,7 +106,18 @@ export default function AttributeTable({ project, layerId, layerName, onClose, o
                   <tr>
                     <th className="lp-attr-idx">#</th>
                     {data.fields.map((f) => (
-                      <th key={f} onClick={() => setSort((s) => ({ field: f, dir: s?.field === f && s.dir === "asc" ? "desc" : "asc" }))} title="点击排序">
+                      <th
+                        key={f}
+                        tabIndex={0}
+                        aria-sort={sort?.field === f ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+                        onClick={() => setSort((s) => ({ field: f, dir: s?.field === f && s.dir === "asc" ? "desc" : "asc" }))}
+                        onKeyDown={(e) => {
+                          if (e.key !== "Enter" && e.key !== " ") return;
+                          e.preventDefault();
+                          setSort((s) => ({ field: f, dir: s?.field === f && s.dir === "asc" ? "desc" : "asc" }));
+                        }}
+                        title="点击排序"
+                      >
                         {f}
                         {sort?.field === f && <span className="lp-attr-sort">{sort.dir === "asc" ? "▲" : "▼"}</span>}
                       </th>
@@ -117,7 +128,18 @@ export default function AttributeTable({ project, layerId, layerName, onClose, o
                   {pageRows.map((r, i) => {
                     const globalIdx = page * PAGE_SIZE + i;
                     return (
-                      <tr key={r.id ?? globalIdx} className={selIdx === r ? "selected" : ""} onClick={() => handleLocate(r)} title="点击定位到地图">
+                      <tr
+                        key={r.id ?? globalIdx}
+                        className={selIdx === r ? "selected" : ""}
+                        tabIndex={0}
+                        onClick={() => handleLocate(r)}
+                        onKeyDown={(e) => {
+                          if (e.key !== "Enter" && e.key !== " ") return;
+                          e.preventDefault();
+                          handleLocate(r);
+                        }}
+                        title="点击定位到地图"
+                      >
                         <td className="lp-attr-idx">{globalIdx + 1}</td>
                         {data.fields.map((f) => (
                           <td key={f}>{r.props[f] == null ? "" : String(r.props[f])}</td>

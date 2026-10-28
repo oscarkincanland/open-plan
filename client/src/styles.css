@@ -26,6 +26,13 @@
   --chat-max: 720px;
   --map-chat-w: 360px;
   --map-topbar-h: 78px;
+  /* 层级令牌：弹层叠放统一从这里取值，禁止在组件里写裸 z-index */
+  --z-canvas: 200;
+  --z-overlay: 260;
+  --z-drawer: 270;
+  --z-modal: 300;
+  --z-toast: 1000;
+  --z-tooltip: 10000;
   /* B05 语义 token 别名：新代码优先使用（text/surface/border/status），旧变量保留兼容 */
   --text-primary: var(--text);
   --text-secondary: var(--muted);
@@ -91,6 +98,11 @@ body {
   color: var(--text);
 }
 body.resizing { cursor: col-resize; user-select: none; }
+/* 键盘焦点兜底：具体组件可用更高优先级规则覆盖；鼠标点击不出现轮廓。 */
+:where(button, a, summary, select, input, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 .app { display: flex; height: 100vh; overflow: hidden; }
 .app-refresh-bloom {
   position: fixed;
@@ -435,7 +447,9 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .task-center-item-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
 .task-center-item-title, .task-center-detail-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600; }
 .task-center-item-meta, .task-center-detail-meta { color: var(--muted); font-size: 10px; }
-.task-center-empty { padding: 26px 10px; color: var(--muted); text-align: center; font-size: 11px; }
+.task-center-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 26px 12px; color: var(--muted); text-align: center; font-size: 11px; }
+.task-center-empty strong { color: var(--text); font-size: 12px; font-weight: 600; }
+.task-center-empty .btn-xs { margin-top: 2px; }
 .task-center-error { padding: 7px 10px; color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); border-bottom: 1px solid var(--border); font-size: 10px; }
 .task-center-detail { overflow-y: auto; max-height: 520px; padding: 10px 12px 12px; }
 .task-center-back { display: inline-flex; align-items: center; gap: 5px; margin-bottom: 10px; padding: 0; border: 0; color: var(--muted); background: transparent; cursor: pointer; font: inherit; font-size: 10px; }
@@ -922,9 +936,9 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   font-size: 11px;
   overflow: hidden;
 }
-.tool-card.pending { background: var(--tool-pending); border-color: var(--border); }
-.tool-card.success { background: var(--tool-success); border-color: color-mix(in srgb, var(--success) 35%, var(--border)); }
-.tool-card.error { background: var(--tool-error); border-color: color-mix(in srgb, var(--error) 35%, var(--border)); }
+.tool-card.pending { background: var(--tool-pending); border-color: #3a4a5c; }
+.tool-card.success { background: var(--tool-success); border-color: #2a4a2a; }
+.tool-card.error { background: var(--tool-error); border-color: #5a2a2a; }
 .tool-header {
   padding: 5px 8px;
 }
@@ -3094,6 +3108,29 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .agent-icon.tone-success { background: var(--success); }
 .agent-icon.tone-neutral { background: var(--muted); }
 .kb-ima-warn { margin-left: 3px; color: var(--warning); }
+
+/* 统一名称提示（DESIGN §5.8）：portal + fixed，避免被滚动容器裁切 */
+.op-tooltip {
+  position: fixed;
+  z-index: var(--z-tooltip);
+  max-width: 240px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel2-bg);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+  pointer-events: none;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--body-bg) 45%, transparent);
+  animation: oaw-tooltip-in 120ms ease-out;
+}
+@keyframes oaw-tooltip-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+[data-reduce-motion] .op-tooltip,
+[data-motion-level="off"] .op-tooltip { animation: none; }
 .agent-info { flex: 1; min-width: 0; }
 .agent-name {
   font-size: 13px;
@@ -3991,9 +4028,14 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
   padding: 6px 12px;
+  border: 0;
+  background: transparent;
   cursor: pointer;
+  font: inherit;
   font-size: 12px;
+  text-align: left;
   color: var(--text);
   transition: background 0.1s;
 }
@@ -4016,6 +4058,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   gap: 12px;
 }
 .tpl-card {
+  width: 100%;
   background: var(--panel-bg);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -4025,6 +4068,9 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   display: flex;
   flex-direction: column;
   gap: 6px;
+  font: inherit;
+  text-align: left;
+  color: inherit;
 }
 .tpl-card:hover { border-color: var(--accent); box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
 .tpl-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
@@ -4041,10 +4087,16 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
   padding: 6px 10px;
+  border: 0;
+  background: transparent;
   border-radius: 4px;
   cursor: pointer;
+  font: inherit;
   font-size: 12px;
+  text-align: left;
+  color: inherit;
 }
 .tpl-list-item:hover { background: var(--selected); }
 .tpl-list-item.active { background: var(--selected); color: var(--accent); }
@@ -5778,6 +5830,9 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .preview-muted { color: var(--dim); }
 .preview-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 140px; color: var(--dim); font-size: 11px; text-align: center; }
 .preview-empty .icon { color: var(--accent); }
+.preview-empty strong { color: var(--text); font-size: 12px; font-weight: 600; }
+.preview-empty small { color: var(--muted); font-size: 11px; max-width: 320px; line-height: 1.5; }
+.preview-empty .btn-xs { margin-top: 2px; }
 .preview-event { margin-bottom: 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel2-bg); }
 .preview-event summary { display: flex; align-items: center; gap: 7px; padding: 8px 9px; color: var(--muted); cursor: pointer; list-style: none; font-size: 10px; }
 .preview-event summary::-webkit-details-marker { display: none; }
@@ -5838,8 +5893,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .conversation-mode-option:hover { color: var(--text); background: color-mix(in srgb, var(--selected) 70%, transparent); }
 .conversation-mode-option:active { transform: translateY(1px); }
 .conversation-mode-option.active { color: var(--body-bg); background: var(--text); box-shadow: 0 4px 12px color-mix(in srgb, #000 18%, transparent); }
-.conversation-mode-option.work.active { color: #18200f; background: var(--accent); }
-.conversation-mode-option.review.active { color: #2b210f; background: color-mix(in srgb, var(--warning) 76%, #fff); }
+.conversation-mode-option.work.active,
+.conversation-mode-option.review.active { color: var(--body-bg); background: var(--accent); }
 .conversation-mode-option:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .conversation-status { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; color: var(--muted);  }
 .conversation-status i { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
@@ -10118,6 +10173,22 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   .sidebar-brand-action { width: 24px; height: 24px; border-radius: 5px; }
   .sidebar-brand-copy strong { font-size: 14px; }
 }
+/* 2.5) 781–820px 缝隙：收紧对话最小宽度，右侧画布直接覆盖，避免三栏最小宽度之和溢出 */
+@media (max-width: 820px) {
+  .app { --chat-min: 240px; }
+  .center-area { min-width: 240px; }
+  .app-canvas-slot,
+  .app-preview-slot,
+  .app-browser-slot {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-overlay);
+    width: 100vw;
+    max-width: 100vw;
+    flex: 0 0 auto;
+    border-left: 0;
+  }
+}
 /* 3) 极窄：右侧面板改为覆盖层，不再与对话抢宽度。
    此前只是把宽度设为 100vw 并保留 flex 位置：侧栏 210 + 主区 300 + 预览 100vw
    三项之和远超视口，而 .app 是 overflow:hidden，发送键与顶部操作被推到屏幕外
@@ -10966,6 +11037,9 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .fb-btn:hover { border-color: var(--accent); }
 .fb-btn-danger { background: var(--error); border-color: var(--error); color: #fff; }
 .fb-btn-danger:hover { filter: brightness(1.1); }
+.fb-btn-primary { background: var(--accent); border-color: var(--accent); color: var(--body-bg); }
+.fb-prompt-input { width: 100%; margin-top: 10px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel-bg); color: var(--text); font: inherit; font-size: 12px; }
+.fb-prompt-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .fb-btn:focus-visible, .fb-toast-close:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 
 /* ===== 交互优化配套（O-P3 徽标 / O-P5 截图回看 / O-P8 对账提示） ===== */
