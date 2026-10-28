@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import Spreadsheet from "x-data-spreadsheet";
 import "x-data-spreadsheet/dist/xspreadsheet.css";
 import { saveCells } from "../api.js";
+import Icon from "./Icon.jsx";
 
 function indexToCol(i) { let s = ""; while (i > 0) { const r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = Math.floor((i - r) / 26); } return s; }
 
@@ -52,7 +53,7 @@ export default function ExcelGrid({ name, sheets, grids, officeHtmlUrl = "" }) {
           <span className="badge">可编辑</span>
         </div>
         <div className="excel-empty">
-          <div>⚠ 无法读取工作表</div>
+          <div><Icon name="warning" size={14} /> 无法读取工作表</div>
           <div className="hint">文件可能已损坏、被占用（Excel 打开中），或格式不受支持</div>
         </div>
       </div>

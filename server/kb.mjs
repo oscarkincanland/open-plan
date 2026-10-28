@@ -580,7 +580,7 @@ export function getGraph({ rootIdx = null, include = ["links"], maxNodes = 800 }
       const fid = `dir/${topDir}`;
       if (!folderNodeIds.has(fid)) {
         folderNodeIds.set(fid, nodes.length);
-        nodes.push({ id: fid, label: "📁 " + topDir, size: 6, type: "folder" });
+        nodes.push({ id: fid, label: topDir, size: 6, type: "folder" });
       }
       const k = edgeKey(nodeId(f), fid, "folder");
       if (!seenEdges.has(k)) {

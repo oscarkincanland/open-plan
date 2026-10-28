@@ -931,8 +931,8 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
         <div className="sidebar-capabilities">
           <div className="sidebar-view-title"><span>工作能力</span><span>按需打开</span></div>
           <button onClick={onOpenKnowledgeBase}><Icon name="book" size={16} /><span><strong>知识库</strong><small>检索与引用</small></span></button>
-          <button onClick={onOpenSkills}><Icon name="skills" size={16} /><span><strong>Skills</strong><small>技能搜索与调用</small></span></button>
-          <button onClick={onOpenTemplates}><Icon name="doc" size={16} /><span><strong>模板库</strong><small>结构与样式</small></span></button>
+          <button onClick={onOpenSkills}><Icon name="sparkles" size={16} /><span><strong>Skills</strong><small>技能搜索与调用</small></span></button>
+          <button onClick={onOpenTemplates}><Icon name="file" size={16} /><span><strong>模板库</strong><small>结构与样式</small></span></button>
           <button onClick={onOpenMap}><Icon name="map" size={16} /><span><strong>地图</strong><small>GIS 分析</small></span></button>
           <button onClick={onOpenAgents}><Icon name="robot" size={16} /><span><strong>智能体广场</strong><small>预置 Agent</small></span></button>
           <button onClick={onOpenTasks}><Icon name="list" size={16} /><span><strong>任务中心</strong><small>并行任务与历史</small></span></button>

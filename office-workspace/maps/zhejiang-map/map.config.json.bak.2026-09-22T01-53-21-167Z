@@ -1,0 +1,114 @@
+{
+  "name": "浙江省交通路网与区划图",
+  "project": "zhejiang-map",
+  "center": [
+    120,
+    29.2
+  ],
+  "zoom": 7,
+  "basemap": "maptiler-basic",
+  "layers": [
+    {
+      "id": "boundary-city",
+      "name": "地市边界",
+      "type": "boundary",
+      "visible": true,
+      "minzoom": 0,
+      "maxzoom": 9,
+      "group": "行政区划"
+    },
+    {
+      "id": "boundary-county",
+      "name": "区县边界",
+      "type": "boundary",
+      "visible": true,
+      "minzoom": 0,
+      "maxzoom": 11,
+      "group": "行政区划"
+    },
+    {
+      "id": "highways",
+      "name": "高速公路",
+      "type": "road",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 13,
+      "group": "公路网"
+    },
+    {
+      "id": "roads-trunk",
+      "name": "国省道",
+      "type": "road",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 13,
+      "group": "公路网"
+    },
+    {
+      "id": "toll-stations",
+      "name": "收费站",
+      "type": "point",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 14,
+      "group": "设施点"
+    },
+    {
+      "id": "junctions",
+      "name": "枢纽",
+      "type": "point",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 14,
+      "group": "设施点"
+    },
+    {
+      "id": "roads-province",
+      "name": "省道",
+      "type": "road",
+      "group": "公路网",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 13
+    },
+    {
+      "id": "gis_osm_railways_free_1",
+      "name": "铁路",
+      "type": "road",
+      "group": "公路网",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 13
+    },
+    {
+      "id": "gis_osm_roads_free_1",
+      "name": "gis_osm_roads_free_1",
+      "type": "road",
+      "group": "公路网",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 13
+    },
+    {
+      "id": "taizhou_od",
+      "name": "taizhou_od",
+      "type": "road",
+      "group": "公路网",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 13
+    },
+    {
+      "id": "ningbo-zhoushan-port-areas",
+      "name": "ningbo-zhoushan-port-areas",
+      "type": "point",
+      "group": "设施点",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 13
+    }
+  ],
+  "groups": [
+    "测试demo"
+  ]
+}

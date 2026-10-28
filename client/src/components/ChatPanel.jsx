@@ -4302,7 +4302,7 @@ case "runtime_connecting":
                 <Icon name="file" size={14} />
                 <span className="att-name">{att.name}</span>
                 <button className="att-remove" onClick={() => setAttachments((at) => at.filter((_, j) => j !== i))}>
-                  <Icon name="x" size={12} />
+                  <Icon name="close" size={12} />
                 </button>
               </div>
             ))}
@@ -4675,7 +4675,7 @@ function SafeMarkdown({ text, onOpenFile, artifacts }) {
   if (!showRaw) {
     return (
       <button className="large-msg-reveal" onClick={() => setShowRaw(true)}>
-        ⚠ 内容过长（{(text.length / 1024).toFixed(0)} KB），点击查看全文
+        <Icon name="warning" size={14} /> 内容过长（{(text.length / 1024).toFixed(0)} KB），点击查看全文
       </button>
     );
   }
@@ -6561,7 +6561,7 @@ function ToolCard({ tool, onToggle }) {
     <div className={`tool-card ${done ? (isError ? "error" : "success") : "pending"} ${isMapTool ? "tool-card-map" : ""}`} onClick={onToggle}>
       <div className="tool-header">
         <span className={`tool-icon ${done ? (isError ? "err" : "ok") : "run"}`}>
-          {done ? (isError ? <Icon name="x" size={12} /> : <Icon name="check" size={12} />) : <Icon name="loading" size={12} className="icon-loading" />}
+          {done ? (isError ? <Icon name="close" size={12} /> : <Icon name="check" size={12} />) : <Icon name="loading" size={12} className="icon-loading" />}
         </span>
         <ToolIdentityIcon name={name} size={12} className="tool-identity-inline" />
         {isMapTool && <span className="tool-map-badge" title="地图操作：结果会实时反映到地图上">地图</span>}

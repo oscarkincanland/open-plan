@@ -504,7 +504,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
         <button className="btn-sm" onClick={() => onExit?.(atMarks)} title="返回主工作区（@选中的内容将插入对话）">
           <Icon name="back" size={12} /> 返回{atMarks.length > 0 ? ` · @${atMarks.length}项` : ""}
         </button>
-        <span className="kb-title">📚 知识库</span>
+        <span className="kb-title">知识库</span>
         <select className="kb-root-select" value={rootIdx} onChange={(e) => loadRoot(parseInt(e.target.value, 10))}>
           {roots.map((r, i) => (
             <option key={i} value={i}>{r.name}{r.exists ? "" : "（缺失）"}</option>
@@ -530,7 +530,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
         </button>
         <button className={"btn-sm kb-ima-btn" + (imaOpen ? " active" : "")}
           onClick={() => { setImaOpen((v) => !v); if (!imaOpen && !imaBases.length) loadImaBases(); }}
-          title="IMA 云端知识库"><Icon name="cloud" size={14} /> IMA{imaConfigured ? "" : " ⚠"}</button>
+          title="IMA 云端知识库"><Icon name="cloud" size={14} /> IMA{imaConfigured ? null : <Icon name="warning" size={12} className="kb-ima-warn" />}</button>
       </div>
 
       {chatOpen && (
@@ -624,7 +624,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
               {doc ? (
                 <>
                   <div className="kb-right-section">
-                    <div className="kb-right-title">📄 {doc.title}</div>
+                    <div className="kb-right-title">{doc.title}</div>
                     <div className="kb-meta-path">{doc.rootIdx !== undefined ? roots[doc.rootIdx]?.name + " / " : ""}{doc.relPath}</div>
                     {doc.tags.length > 0 && <div className="kb-doc-tags">{doc.tags.map((t) => <span key={t} className="tag kb-tag-click" onClick={() => { setSearchQ(t); doSearch(t); }}>#{t}</span>)}</div>}
                   </div>

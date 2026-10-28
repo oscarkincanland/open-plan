@@ -5,8 +5,8 @@
   --panel2-bg: #1e1e3a;
   --surface: #222240;
   --text: #d4d4d4;
-  --muted: #808080;
-  --dim: #666666;
+  --muted: #8a8a8a;
+  --dim: #8a8d99;
   --accent: #8abeb7;
   --border: #3a3a5c;
   --selected: #3a3a4a;
@@ -42,7 +42,7 @@
   --surface: #e4e7f0;
   --text: #2d3142;
   --muted: #5c6270;
-  --dim: #8a8fa3;
+  --dim: #6f7480;
   --accent: #2a8c82;
   --border: #d4d8e4;
   --selected: #dfe4ee;
@@ -922,9 +922,9 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   font-size: 11px;
   overflow: hidden;
 }
-.tool-card.pending { background: var(--tool-pending); border-color: #3a4a5c; }
-.tool-card.success { background: var(--tool-success); border-color: #2a4a2a; }
-.tool-card.error { background: var(--tool-error); border-color: #5a2a2a; }
+.tool-card.pending { background: var(--tool-pending); border-color: var(--border); }
+.tool-card.success { background: var(--tool-success); border-color: color-mix(in srgb, var(--success) 35%, var(--border)); }
+.tool-card.error { background: var(--tool-error); border-color: color-mix(in srgb, var(--error) 35%, var(--border)); }
 .tool-header {
   padding: 5px 8px;
 }
@@ -1248,10 +1248,6 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 .streaming-dot .petal-se { animation-delay: .8s; }
 .streaming-dot .petal-sw { animation-delay: 1.2s; }
 .streaming-dot .open-plan-logo-centers { opacity: .95; }
-@keyframes dot-breathe {
-  0%, 100% { opacity: 0.25; transform: scale(0.85); }
-  50% { opacity: 0.85; transform: scale(1.1); }
-}
 /* 思考过程耗时/状态 */
 .thinking-status {
   font-size: 9px;
@@ -3090,9 +3086,14 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  color: var(--body-bg);
   flex-shrink: 0;
 }
+.agent-icon.tone-accent { background: var(--accent); }
+.agent-icon.tone-warning { background: var(--warning); }
+.agent-icon.tone-success { background: var(--success); }
+.agent-icon.tone-neutral { background: var(--muted); }
+.kb-ima-warn { margin-left: 3px; color: var(--warning); }
 .agent-info { flex: 1; min-width: 0; }
 .agent-name {
   font-size: 13px;
@@ -3177,7 +3178,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   position: absolute;
   left: 0;
   bottom: -23px;
-  color: #7b8490;
+  color: var(--muted);
   font: 10px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
   letter-spacing: .04em;
 }
@@ -6447,10 +6448,10 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 :root[data-skin="ocean"][data-theme="light"] { --accent: #2e7db8; }
 :root[data-skin="forest"] { --accent: #7cb342; --success: #aed581; }
 :root[data-skin="forest"][data-theme="light"] { --accent: #558b2f; }
-:root[data-skin="sunset"] { --accent: #e69138; --success: #f0a868; }
-:root[data-skin="sunset"][data-theme="light"] { --accent: #c96a1e; }
-:root[data-skin="violet"] { --accent: #b39ddb; --success: #ce93d8; }
-:root[data-skin="violet"][data-theme="light"] { --accent: #7e57c2; }
+:root[data-skin="sunset"] { --accent: #e69138; --success: #9dbb61; }
+:root[data-skin="sunset"][data-theme="light"] { --accent: #c96a1e; --success: #5c7a1f; }
+:root[data-skin="violet"] { --accent: #b39ddb; --success: #9ccc65; }
+:root[data-skin="violet"][data-theme="light"] { --accent: #7e57c2; --success: #4f7a2f; }
 
 /* ================= v0.8.13 侧栏弹窗/搜索/会话布局 ================= */
 .sb-modal-backdrop {
@@ -6591,8 +6592,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   --panel2-bg: #2a2a2a;
   --surface: #303030;
   --text: #e8e8e8;
-  --muted: #a3a3a3;
-  --dim: #737373;
+  --muted: #a8a8a8;
+  --dim: #8a8a8a;
   --accent: #60a5fa;
   --border: #3f3f46;
   --selected: #303b4d;
@@ -6612,7 +6613,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   --surface: #e7e7e7;
   --text: #1a1a1a;
   --muted: #606060;
-  --dim: #8a8a8a;
+  --dim: #6f6f6f;
   --accent: #2563eb;
   --border: #dedede;
   --selected: #e8f0ff;
@@ -7116,7 +7117,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   outline: none;
 }
 .cmd-input::placeholder {
-  color: var(--muted, #808080);
+  color: var(--muted);
 }
 
 .cmd-results {
@@ -7133,7 +7134,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   padding: 8px 18px 4px;
   font-size: 10px;
   font-weight: 600;
-  color: var(--muted, #808080);
+  color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -7179,7 +7180,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 
 .cmd-item-sub {
   font-size: 11px;
-  color: var(--muted, #808080);
+  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -7189,7 +7190,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   padding: 28px 18px;
   text-align: center;
   font-size: 12px;
-  color: var(--muted, #808080);
+  color: var(--muted);
 }
 
 .cmd-foot {
@@ -7201,7 +7202,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   border-top: 1px solid var(--border, #3a3a5c);
   background: var(--surface, #222240);
   font-size: 10px;
-  color: var(--muted, #808080);
+  color: var(--muted);
 }
 .cmd-foot kbd {
   font-family: inherit;
@@ -7501,7 +7502,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   margin-left: auto;
   background: none;
   border: none;
-  color: var(--muted, #808080);
+  color: var(--muted);
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 3px;
@@ -7534,7 +7535,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 
 .m2-stat-label {
   font-size: 10px;
-  color: var(--muted, #808080);
+  color: var(--muted);
   margin-top: 2px;
 }
 
@@ -7550,7 +7551,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   align-items: center;
   gap: 8px;
   font-size: 11px;
-  color: var(--muted, #808080);
+  color: var(--muted);
 }
 
 .m2-legend-color {
@@ -7562,7 +7563,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 
 .m2-hint {
   font-size: 11px;
-  color: var(--muted, #808080);
+  color: var(--muted);
   font-style: italic;
   margin: 0;
 }
@@ -7631,14 +7632,14 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 
 .m2-road-group {
   font-size: 10px;
-  color: var(--muted, #808080);
+  color: var(--muted);
 }
 
 /* M2 标签按钮 */
 .m2-tab-btn {
   background: var(--panel2-bg, #1e1e3a);
   border: 1px solid var(--border, #3a3a5c);
-  color: var(--muted, #808080);
+  color: var(--muted);
   padding: 4px 10px;
   border-radius: 3px;
   cursor: pointer;
@@ -8075,7 +8076,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   gap: 12px;
   margin-bottom: 8px;
   font-size: 11px;
-  color: var(--muted, #808080);
+  color: var(--muted);
 }
 
 .m3-filter label {
@@ -8123,7 +8124,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 
 .m3-hint {
   font-size: 11px;
-  color: var(--muted, #808080);
+  color: var(--muted);
   font-style: italic;
   margin: 0;
 }
@@ -8132,7 +8133,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .m3-tab-btn {
   background: var(--panel2-bg, #1e1e3a);
   border: 1px solid var(--border, #3a3a5c);
-  color: var(--muted, #808080);
+  color: var(--muted);
 }
 
 .m3-tab-btn:hover {
@@ -8222,7 +8223,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 
 .m3-btn-clear {
   background: var(--panel2-bg, #1e1e3a);
-  color: var(--muted, #808080);
+  color: var(--muted);
 }
 
 .m3-btn-clear:hover {
@@ -8256,7 +8257,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 
 .m3-stat-label {
   font-size: 11px;
-  color: var(--muted, #808080);
+  color: var(--muted);
   margin-top: 4px;
 }
 
@@ -8268,7 +8269,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .m3-filter-label {
   display: block;
   font-size: 11px;
-  color: var(--muted, #808080);
+  color: var(--muted);
   margin-bottom: 8px;
 }
 
@@ -8345,7 +8346,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   display: flex;
   justify-content: space-between;
   font-size: 10px;
-  color: var(--muted, #808080);
+  color: var(--muted);
 }
 
 /* 解释框 */
@@ -8400,7 +8401,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .m3-bar-label {
   width: 60px;
   font-size: 11px;
-  color: var(--muted, #808080);
+  color: var(--muted);
 }
 
 .m3-bar-track {
@@ -8429,7 +8430,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 /* 注释 */
 .m3-note {
   font-size: 11px;
-  color: var(--muted, #808080);
+  color: var(--muted);
   font-style: italic;
   margin: 0;
 }
@@ -9384,7 +9385,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   --surface: rgba(75, 112, 104, .48);
   --text: #effaf5;
   --muted: #b1cac2;
-  --dim: #78968d;
+  --dim: #9bb5ab;
   --accent: #b4f2df;
   --border: rgba(222, 255, 245, .18);
   --selected: rgba(180, 242, 223, .14);
@@ -9404,7 +9405,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   --surface: rgba(210, 235, 227, .64);
   --text: #17332e;
   --muted: #5b7b72;
-  --dim: #87a39a;
+  --dim: #4f6b63;
   --accent: #2c8977;
   --border: rgba(40, 104, 88, .18);
   --selected: rgba(63, 157, 132, .13);
@@ -11060,7 +11061,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
    ========================================================================== */
 :root[data-oaw-style="qoder"] {
   /* ---- 第 1 层：基础色阶（P1-7 三层化的最底层；只声明取值，不负责任何语义）----
-     中性灰阶 000→900：越小编号越接近纯黑；对齐 Qoder #141414 / #181818 / #F0F0F0。 */
+     中性灰阶 000→900：越小编号越接近纯黑；对齐 Qoder 的深底色、中底色与浅文字。 */
   --op-gray-000: #0b0b0b;
   --op-gray-050: #111111;
   --op-gray-100: #141414;
@@ -11096,7 +11097,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   --surface: var(--oaw-gray-200);
   --text: var(--op-gray-900);
   --muted: #f0f0f0bd;
-  --dim: #f0f0f05c;
+  --dim: #f0f0f094;
   /* 分隔线统一改用低透明度前景色（Qoder 手法），而非实色灰 */
   --border: #f0f0f01a;
   --selected: #40404099;
@@ -11164,7 +11165,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   --surface: var(--op-gray-150);
   --text: var(--op-gray-900);
   --muted: #141414bd;
-  --dim: #1414148a;
+  --dim: #14141499;
   --border: #14141414;
   --selected: #dfe4ee;
   --accent: var(--op-blue-500);
