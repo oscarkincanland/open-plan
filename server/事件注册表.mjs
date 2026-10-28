@@ -115,6 +115,8 @@ const REGISTRY = [
   { type: "runtime_error", lifecycle: true, persist: true, note: "运行环境错误" },
   { type: "runtime_health", lifecycle: true, persist: true, note: "运行健康快照" },
   { type: "officecli_failed", lifecycle: true, persist: true, note: "Office CLI 失败" },
+  { type: "office_format_applied", lifecycle: true, persist: true, note: "Office 版式规范命中（场景/模板/配方）", schema: { required: ["scene"], types: { scene: "string", template: "string", recipe: "string", route: "string" } } },
+  { type: "office_qa_finished", lifecycle: true, persist: true, note: "Office 规则闸门完成（含模板覆盖率）", schema: { required: ["passed"], types: { passed: "boolean", issues: "array", checks: "array", file: "string" } } },
   { type: "review_write_blocked", lifecycle: true, persist: true, note: "Review 原文写回被保护拦截" },
 
   // ---- 完成语义与总结 ----

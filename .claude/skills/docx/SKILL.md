@@ -6,6 +6,10 @@ license: Proprietary. LICENSE.txt has complete terms
 
 # DOCX creation, editing, and analysis
 
+> **本项目排版规范**：字号、行距、缩进、页边距、封面配方、场景参数与规则闸门以
+> `docs/规范/Office排版规范.md` 为准；交通规划文体模板在 `templates/traffic-material/`。
+> 本技能只作为通用 DOCX 操作参考，不复制上述参数。
+
 ## Overview
 
 A .docx file is a ZIP archive containing XML files.

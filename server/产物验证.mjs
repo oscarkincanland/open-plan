@@ -23,7 +23,7 @@ function readSignature(file) {
 }
 
 /** 对本轮新增/修改文件做轻量结构校验，不替代 Word/Excel/PPT 的视觉验收。 */
-export function validateArtifactFile(file, root = path.dirname(file), relativePath = path.basename(file)) {
+export function validateArtifactFile(file, root = path.dirname(file), relativePath = path.basename(file), options = {}) {
   const checkedAt = new Date().toISOString();
   const target = path.resolve(file);
   const rel = String(relativePath || path.basename(target)).replace(/\\/g, "/");
@@ -40,13 +40,20 @@ export function validateArtifactFile(file, root = path.dirname(file), relativePa
     if (OFFICE_EXTENSIONS.has(ext)) {
       const signature = readSignature(target);
       const zipContainer = signature[0] === 0x50 && signature[1] === 0x4b;
+      const qa = options?.qa || null;
+      const qaFailed = Boolean(qa && qa.passed === false);
       return {
         path: rel,
         format: ext,
-        status: zipContainer ? "passed" : "failed",
-        message: zipContainer ? "Office ZIP 容器签名正常" : "不是有效的 Office ZIP 容器",
+        status: zipContainer && !qaFailed ? "passed" : "failed",
+        message: !zipContainer
+          ? "不是有效的 Office ZIP 容器"
+          : qaFailed
+            ? `规则闸门未通过：${(qa.issues || []).slice(0, 3).map((item) => item.message || item.rule).join("；")}`
+            : "Office ZIP 容器签名正常",
         checkedAt,
         size: stat.size,
+        ...(qa ? { qa: { passed: qa.passed !== false, issueCount: (qa.issues || []).length, checks: qa.checks || [] } } : {}),
       };
     }
     if (ext === "pdf") {

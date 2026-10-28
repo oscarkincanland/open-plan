@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+import { RUNTIME_FLAGS } from "./运行开关.mjs";
+import { matchTemplate } from "./office规范/模板匹配.mjs";
+import { selectScene, sceneLabels, defaultScene } from "./office规范/场景选择.mjs";
 
 const OFFICE_EXTENSIONS = /\.(?:docx|xlsx|pptx|xls|doc)$/i;
 const DOCUMENT_EXTENSIONS = /\.(?:docx|xlsx|pptx|xls|doc|pdf|csv|json|md|markdown|txt|html|htm)$/i;
@@ -38,6 +41,58 @@ const AGENT_TOOLS = Object.freeze([
   // P2-A：编辑流水线（生成 Word/PPT 初稿的原生流水线，仅 Work 模式）
   "editorial_pipeline",
   "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close",
+]);
+
+/** Office/写作意图词（O-01）：覆盖中文最自然的说法，避免"写个文档"完全空转。 */
+const OFFICE_INTENT_WORDS = Object.freeze([
+  "officecli", "word", "excel", "ppt", "docx", "xlsx", "pptx", "表格", "文档排版", "修改文档",
+  "文档", "报告", "汇报", "方案", "材料", "公文", "合同", "论文", "简历", "试卷", "文案", "纪要", "通知",
+]);
+/** 输出/写作意图词（O-01）。用双字词降低"做/拟"这类单字的误命中。 */
+const OUTPUT_WORDS = Object.freeze([
+  "生成", "创建", "导出", "写入", "制作", "做个", "做一份", "修改", "编辑", "排版", "整理", "输出",
+  "写", "撰写", "起草", "编制", "拟一份", "拟定", "帮我写", "出一份",
+]);
+/** 编辑意图词：与"是否有既有文件"共同决定编辑路由。 */
+const EDIT_WORDS = Object.freeze([
+  "修改", "编辑", "调整", "润色", "替换", "删除", "批注", "标注", "补充",
+  "改一下", "改成", "改为", "改短", "改长", "改写", "改错",
+]);
+/** 模板意图词：显式要求按模板写。 */
+const TEMPLATE_INTENT_WORDS = Object.freeze(["按模板", "照着模板", "参考模板", "套模板", "模板写"]);
+
+/** 澄清最小信息集（O-23）。 */
+const MIN_INFO_FIELDS = Object.freeze([
+  {
+    id: "type",
+    label: "文档类型",
+    question: "这份文档要写成哪种类型？",
+    options: () => sceneLabels().map((item) => item.label),
+  },
+  {
+    id: "length",
+    label: "篇幅",
+    question: "期望的篇幅大概多少？",
+    options: () => ["1-3 页", "5-10 页", "10-20 页", "20 页以上"],
+  },
+  {
+    id: "audience",
+    label: "受众",
+    question: "这份材料主要给谁看？",
+    options: () => ["主管部门", "行业专家", "投资方", "内部团队", "公众"],
+  },
+  {
+    id: "source",
+    label: "素材/数据来源",
+    question: "素材和数据从哪里来？",
+    options: () => ["使用当前工作区已有资料", "我稍后提供附件", "按公开资料撰写"],
+  },
+  {
+    id: "style",
+    label: "风格",
+    question: "希望用什么风格写？",
+    options: () => ["正式严谨", "简洁直接", "学术规范", "通俗易懂"],
+  },
 ]);
 
 export function normalizeTaskMode(mode) {
@@ -84,25 +139,113 @@ function containsAny(text, words) {
   return words.some((word) => text.includes(String(word).toLowerCase()));
 }
 
-/** 根据输入和引用生成可解释的本轮能力计划，供 Run、前端和 Pi prompt 共用。 */
-export function planTaskCapabilities({ text = "", task = {}, references = [], attachments = [] } = {}) {
+function collectContext({ text = "", task = {}, references = [], attachments = [] } = {}) {
   const mode = normalizeTaskMode(task.mode);
   const source = String(text || "").toLowerCase();
   const refList = Array.isArray(references) ? references : [];
   const attachmentNames = (Array.isArray(attachments) ? attachments : []).map((item) => String(item?.name || item || ""));
   const refTargets = refList.map((item) => String(item?.target || "")).join(" ");
-  const files = [String(task.currentFile || ""), refTargets, ...attachmentNames].join(" ");
-  const document = DOCUMENT_EXTENSIONS.test(files) || refList.some((item) => item.kind === "file" || item.kind === "template");
-  const office = OFFICE_EXTENSIONS.test(files) || containsAny(source, ["officecli", "word", "excel", "ppt", "docx", "xlsx", "pptx", "表格", "文档排版", "修改文档"]);
-  const knowledge = refList.some((item) => ["knowledge", "knowledge_dir"].includes(item.kind)) || containsAny(source, ["知识库", "知识库搜索", "知识检索", "参考资料"]);
-  const map = containsAny(source, ["地图", "图层", "geojson", "等时圈", "热力图", "od图", "空间分析"]) || /(?:^|[\\/])maps(?:[\\/]|$)/i.test(files);
-  const workflow = Boolean(task.workflowId) || /@工作流\[|@技能\[|工作流|skill|workflow/i.test(String(text || ""));
-  const output = containsAny(source, ["生成", "创建", "导出", "写入", "制作", "修改", "编辑", "排版"]);
-  // 方案 §5.3：把"生成新文档"与"精确编辑既有文档"分流。
-  // 生成类（有输出意图但没有引用既有 Office 文件）优先原生 OOXML 直写—— admission 不做
-  // officecli 预检（消除冷启动阻塞）；编辑类引用了既有文档，保留 CLI 精确定位能力。
+  const files = [String(task.currentFile || ""), refTargets, ...attachmentNames].join(" ").trim();
   const officeRefExists = OFFICE_EXTENSIONS.test(files);
-  const officeGenerate = office && output && !officeRefExists;
+  const document = DOCUMENT_EXTENSIONS.test(files) || refList.some((item) => item.kind === "file" || item.kind === "template");
+  const office = officeRefExists || containsAny(source, OFFICE_INTENT_WORDS);
+  const output = containsAny(source, OUTPUT_WORDS);
+  const editIntent = containsAny(source, EDIT_WORDS);
+  const templateIntent = containsAny(source, TEMPLATE_INTENT_WORDS) || /@模板\[/.test(String(text || ""));
+  return { mode, source, refList, files, officeRefExists, document, office, output, editIntent, templateIntent };
+}
+
+/**
+ * 四路由判定（O-02）：template / edit / generate / read。
+ * @returns {{route:"template"|"edit"|"generate"|"read", reason:string, template:object|null, scene:object, needsFile:boolean}}
+ */
+export function routeTaskIntent({ text = "", task = {}, references = [], attachments = [] } = {}) {
+  const ctx = collectContext({ text, task, references, attachments });
+  const scene = selectScene(text);
+  const template = ctx.mode === "chat" ? null : matchTemplate({ text, references: ctx.refList });
+
+  if (ctx.mode === "chat") {
+    return { route: "read", reason: "Chat 只读：不触发 Office 写入", template: null, scene, needsFile: false };
+  }
+  if (ctx.mode === "review") {
+    return { route: "read", reason: "Review 只读审查：不生成或改写用户文档", template: null, scene, needsFile: false };
+  }
+  if (template && (ctx.templateIntent || ctx.output || ctx.officeRefExists)) {
+    return {
+      route: "template",
+      reason: `命中模板 ${template.file}（${template.source === "explicit" ? "显式引用" : "文体关键词"}）`,
+      template,
+      scene,
+      needsFile: false,
+    };
+  }
+  if (ctx.officeRefExists && ctx.editIntent) {
+    return { route: "edit", reason: "既有 Office 文件 + 编辑意图：走 CLI 精确定位", template: null, scene, needsFile: false };
+  }
+  if (ctx.editIntent && !ctx.officeRefExists) {
+    return { route: "read", reason: "编辑意图但未指定文件：先向用户确认目标文件", template: null, scene, needsFile: true };
+  }
+  if (ctx.output && (ctx.office || template)) {
+    return { route: "generate", reason: "生成意图且无模板/既有文件：走原生生成", template: null, scene, needsFile: false };
+  }
+  return { route: "read", reason: "未命中写入意图：按只读处理", template: null, scene, needsFile: false };
+}
+
+/** 判断最小信息集里哪些字段缺失（O-23）。 */
+export function missingInfoFields({ text = "", route = "read", template = null, scene = null } = {}) {
+  if (route !== "template" && route !== "generate") return [];
+  const source = String(text || "");
+  const missing = [];
+  const hasType = Boolean(template) || Number(scene?.confidence) > 0 || /(文档|报告|汇报|方案|公文|合同|论文|简历|试卷|文案|纪要|通知)/.test(source);
+  if (!hasType) missing.push("type");
+  if (!/(\d+\s*(页|字|章|节)|篇幅|字数|不少于|不超过|控制在)/.test(source)) missing.push("length");
+  if (!/(受众|读者|给|面向|领导|专家|群众|客户|投资人|主管部门)/.test(source)) missing.push("audience");
+  if (!/(数据|资料|素材|附件|引用|调研|统计|问卷|已有|工作区)/.test(source)) missing.push("source");
+  if (!/(风格|正式|简洁|学术|口语|严谨|通俗|专业)/.test(source)) missing.push("style");
+  return missing;
+}
+
+/**
+ * 澄清闸门（O-23）：缺 ≥2 项才问，只问最阻塞的一项。
+ * @returns {{shouldAsk:boolean, missing:string[], question:{field:string,label:string,text:string,options:string[]}|null, assumption:string}}
+ */
+export function assessClarification({ text = "", route = "read", template = null, scene = null } = {}) {
+  const missing = missingInfoFields({ text, route, template, scene });
+  // 用户显式授权"你看着办"时不再追问，直接按默认值并在产物里标注。
+  if (/(你看着办|随便|按你的判断|你决定|都行)/.test(String(text || ""))) {
+    return { shouldAsk: false, missing, question: null, assumption: "用户授权按默认值处理，产物中标注假设" };
+  }
+  if (missing.length < 2) {
+    return {
+      shouldAsk: false,
+      missing,
+      question: null,
+      assumption: missing.length === 1 ? `按默认值补齐「${MIN_INFO_FIELDS.find((f) => f.id === missing[0])?.label || missing[0]}」并在产物中标注` : "",
+    };
+  }
+  const field = MIN_INFO_FIELDS.find((item) => item.id === missing[0]) || MIN_INFO_FIELDS[0];
+  return {
+    shouldAsk: true,
+    missing,
+    question: { field: field.id, label: field.label, text: field.question, options: field.options() },
+    assumption: "",
+  };
+}
+
+/** 根据输入和引用生成可解释的本轮能力计划，供 Run、前端和 Pi prompt 共用。 */
+export function planTaskCapabilities({ text = "", task = {}, references = [], attachments = [] } = {}) {
+  const ctx = collectContext({ text, task, references, attachments });
+  const intent = routeTaskIntent({ text, task, references, attachments });
+  const clarification = assessClarification({ text, route: intent.route, template: intent.template, scene: intent.scene });
+  const { mode, source, refList, document, output } = ctx;
+  // Chat 模式下识别到写作意图时，前端提示切换到 Work（不改变只读边界）。
+  const hint = mode === "chat" && ctx.output && ctx.office
+    ? { code: "MODE_SWITCH_REQUIRED", message: "当前是 Chat 只读模式；生成文档请切换到 Work。" }
+    : null;
+  const knowledge = refList.some((item) => ["knowledge", "knowledge_dir"].includes(item.kind)) || containsAny(source, ["知识库", "知识库搜索", "知识检索", "参考资料"]);
+  const map = containsAny(source, ["地图", "图层", "geojson", "等时圈", "热力图", "od图", "空间分析"]) || /(?:^|[\\/])maps(?:[\\/]|$)/i.test(ctx.files);
+  const workflow = Boolean(task.workflowId) || /@工作流\[|@技能\[|工作流|skill|workflow/i.test(String(text || ""));
+  const officeGenerate = (intent.route === "generate" || intent.route === "template") && mode !== "chat" && mode !== "review";
   const capabilities = [
     mode === "chat"
       ? { id: "chat", label: "Chat 检索", status: "ready", required: true, provider: "pi", reason: "只读检索知识库、Skills 和工作区资料" }
@@ -113,27 +256,37 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
         : { id: "agent", label: "Agent 对话", status: "ready", required: true, provider: "pi", reason: "处理本轮任务并保持会话上下文" },
   ];
   // provider 表示该能力由谁实现：native=工作台原生代码，officecli=外部 Office CLI 二进制，pi=Pi Agent 运行时。
-  // 契约 v2 把"路由建议"升级为"可据以分派的来源声明"，为后续"原生直写优先、CLI 兜底"提供判定依据。
+  // 契约 v3 把"路由建议"升级为四路由（template/edit/generate/read）与澄清闸门。
   if (document) capabilities.push({ id: "document", label: "文档读取", status: "planned", required: true, provider: "native", reason: "本轮存在文档、文件引用或附件" });
   if (knowledge) capabilities.push({ id: "knowledge", label: "知识库检索", status: "planned", required: false, provider: "native", reason: "本轮出现知识库引用或检索意图" });
+  if (intent.route === "template") {
+    capabilities.push({
+      id: "template",
+      label: "模板写作",
+      status: "preferred",
+      required: true,
+      provider: "native",
+      reason: `命中既有模板 ${intent.template.file}，按其章节与规则写作`,
+    });
+  }
   // Chat 只负责检索与解释，即使用户提到 docx/xlsx，也不能触发 Office CLI
   // 预检或写入路由；Office CLI 仅作为 Office 兼容模式或 Agent 内部能力使用。
-  if (office && mode !== "chat") {
+  if ((intent.route === "edit" || intent.route === "generate" || intent.route === "template") && mode !== "chat") {
     capabilities.push({
       id: "officecli",
       label: "Office CLI",
-      // 生成类任务原生直写优先，CLI 只兜底高级操作（图表/透视/Morph 等）；编辑类仍 preferred。
-      status: officeRefExists ? "preferred" : "fallback",
-      required: Boolean(output) && officeRefExists,
+      // 编辑类 preferred；模板/生成类原生直写优先，CLI 只兜底高级操作。
+      status: intent.route === "edit" ? "preferred" : "fallback",
+      required: intent.route === "edit" && Boolean(output),
       provider: "officecli",
-      reason: officeRefExists
+      reason: intent.route === "edit"
         ? "本轮涉及编辑既有 Office 文档，需要 CLI 精确定位能力"
-        : "生成类任务优先原生直写，Office CLI 仅兜底高级操作",
+        : "模板/生成类任务优先原生直写，Office CLI 仅兜底高级操作",
     });
   }
   // 原生 Office 生成能力（§5.4/§5.5）：新建 Word/Excel/PPT 走工作台内置 OOXML 引擎。
-  if (officeGenerate && mode !== "chat" && mode !== "review") {
-    capabilities.push({ id: "office_generate", label: "Office 原生生成", status: "preferred", required: false, provider: "native", reason: "新建 Word/Excel/PPT 由内置 OOXML 引擎直写，无需外部二进制预检" });
+  if (officeGenerate) {
+    capabilities.push({ id: "office_generate", label: "Office 原生生成", status: "preferred", required: false, provider: "native", reason: "新建文档由内置 OOXML 引擎直写，无需外部二进制预检" });
   }
   if (mode === "review") capabilities.push({ id: "reviewEvidence", label: "规范依据台账", status: "required", required: true, provider: "native", reason: "每条审查结论必须绑定实际读取的规范文件" });
   // 子代理能力只在 Chat 与 Work 声明；与 toolPolicyForMode 的 run_subagent 白名单保持一致，
@@ -157,13 +310,26 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
   }
   if (workflow) capabilities.push({ id: "skills", label: "Skills / 工作流", status: "planned", required: Boolean(task.workflowId), provider: "native", reason: task.workflowId ? `工作流 ${task.workflowId} 声明了技能依赖` : "本轮出现工作流或技能意图" });
   return {
-    version: 2,
+    version: 3,
     mode,
+    route: intent.route,
+    routeReason: intent.reason,
+    template: intent.template ? { relPath: intent.template.relPath, title: intent.template.title, source: intent.template.source } : null,
+    scene: intent.scene ? { id: intent.scene.scene, label: intent.scene.label, confidence: intent.scene.confidence } : null,
+    clarification,
+    hint,
     capabilities,
     routing: {
       // preferred=编辑既有文档（admission 阻塞预检）；lazy=生成类任务（原生直写优先，
       // 预检后台惰性执行，不阻塞 admission）；not_needed=无 Office 意图。
-      officecli: office && mode !== "chat" ? (officeRefExists ? "preferred" : "lazy") : "not_needed",
+      officecli: intent.route === "edit"
+        ? "preferred"
+        : (intent.route === "generate" || intent.route === "template") && mode !== "chat"
+          ? "lazy"
+          : "not_needed",
+      template: intent.route === "template" ? "preferred" : "not_needed",
+      // 规范层开关：默认关；只有模板/生成路由且开关打开时才生效。
+      officeFormat: RUNTIME_FLAGS.officeFormat && (intent.route === "template" || intent.route === "generate") ? "auto" : "off",
       documentRead: document ? "enabled" : "not_needed",
       knowledge: knowledge ? "enabled" : "not_needed",
       // read_only / read_write：让前端与提示词都能区分"能不能落盘"。
@@ -218,6 +384,7 @@ export function taskSummary(task) {
     task.currentFile ? `当前文件：${task.currentFile}` : "",
     task.mapProject ? `当前地图项目：${task.mapProject}` : "",
     mapCapabilityHint(task),
+    officeWritingHint(task),
     task.references?.length ? `引用：${task.references.length} 项` : "",
     task.mode === "chat" ? "边界：只读检索，不修改文件。" : "边界：按任务执行工具，面向用户直接给出结论；过程与产物详情留在任务记录中，按需说明。",
   ].filter(Boolean).join("\n");
@@ -240,3 +407,27 @@ function mapCapabilityHint(task = {}) {
     "当用户要求写操作时，明确说明需要切到 Work 模式，不要尝试绕过，也不要假装已完成。",
   ].join("\n");
 }
+
+/**
+ * 写作路由提示（O-05）：只从能力计划读取，避免提示词另写一份路由事实。
+ * 仅在 template/edit/generate 路由下注入，read 不占上下文。
+ */
+function officeWritingHint(task = {}) {
+  const plan = task.capabilityPlan;
+  const route = plan?.route;
+  if (!route || route === "read") return "";
+  const scene = plan?.scene?.label || plan?.scene?.id || "";
+  const template = plan?.template?.relPath || "";
+  if (route === "template") {
+    return `写作路由：模板优先（${template}${scene ? `；场景：${scene}` : ""}）。先读取模板，按其章节骨架、必备图表与格式规则写作。`;
+  }
+  if (route === "edit") {
+    return "写作路由：编辑既有文档。先 view 确认内容，再 get 取真实路径，最后 set/add；保留未触及的格式。";
+  }
+  if (route === "generate") {
+    return `写作路由：生成新文档（场景：${scene || "report"}）。按场景参数生成，完成后走规则闸门。`;
+  }
+  return "";
+}
+
+export { defaultScene, MIN_INFO_FIELDS };

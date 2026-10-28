@@ -44,7 +44,11 @@ import { importLocalPiSessionFile, readCredentials, readModelsConfig, readModels
 import { resolveReferences, readReference, contextSummary } from "./context.mjs";
 import { recordRunEvent, updateRunTodo, getRun } from "./runs.mjs";
 import { markRunTiming, attachRunTimingSpans } from "./首字延迟.mjs";
-import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode } from "./task.mjs";
+import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode, routeTaskIntent } from "./task.mjs";
+import { classifyToolCall, isReadonlyBash } from "./office规范/执行闸门.mjs";
+
+/** OfficeCLI 工具约束（O-28）：Work/Review 两处 prompt 共用同一常量，避免措辞分叉。 */
+const OFFICE_TOOL_RULE = "- ALWAYS operate on office documents through the `officecli` tool — it resolves file names relative to the current workspace and runs on Windows natively. NEVER try to run `officecli` via the bash tool.";
 
 /**
  * 输出策略（A03）：Chat / Work / Review 共用同一套收尾口径，避免系统提示各要求一套收尾。
@@ -70,6 +74,7 @@ import {
   acquireWriteLockWithRetry,
   ensureStagedDirectory,
   isProtectedMemoryTarget,
+  listStagedFiles,
   materializeStagedReferences,
   releaseWriteLock,
   resolveReadablePath,
@@ -418,7 +423,7 @@ import {
   orchestrateSubagents,
 } from "./子代理编排器.mjs";
 // Editorial Pipeline（P2-A）：Planner→Writer→Formatter（原生）→Evaluator 的确定性编排
-import { runEditorialPipeline } from "./编辑流水线.mjs";
+import { runEditorialPipeline, safePipelineName } from "./编辑流水线.mjs";
 
 export function noteRepeatedToolCall(entry, session, ev, emit) {
   try {
@@ -1078,14 +1083,17 @@ class AgentManager extends EventEmitter {
               "- **工作区与当前文件**: 每轮对话的「动态上下文」消息已给出当前工作区绝对路径、当前工作文件与上下文文件路径（`.agent-context.<thread>.md` 是权威版本；旧版 `.agent-context.md` 可能被同工作区其他会话覆盖）。不要假设默认工作区路径，需要细节时 read 动态上下文中给出的那个文件。",
               "- **表达语言（重要）**: 面向用户的正文回复、进度小结、待办标题，以及你的内部推理（thinking / reasoning）一律使用与用户相同的语言（默认中文）。工具名、代码、文件路径和专有名词保持原样；不要为了“显得专业”而把思考过程写成英文。",
               ...buildOutputPolicyLines({ mode: options.task?.mode || options.mode || "work" }),
-              "- ALWAYS operate on office documents through the `officecli` tool — it runs on Windows natively and resolves file names relative to the current workspace. NEVER try to run `officecli` via the bash tool.",
+              OFFICE_TOOL_RULE,
               "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text.",
               "- **Word 批注**: 先用 `officecli get <file> /body --depth 3 --json` 或 `query <file> paragraph --json` 找到真实段落路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"批注内容\\\" --json` 写入；一次 get 只传一个 DOM 路径，完成后用 `query <file> comment --json` 回读校验。若错误明确为 sharing violation 或另一个进程占用，再提示关闭 WPS/Word/OfficeCLI 预览；若是 Access denied、is denied、EPERM 或 EACCES，应说明服务进程缺少系统写权限，不要尝试绕过沙箱。",
               "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入 `.agent-context.md` 中的「当前工作区」绝对路径，禁止写入项目目录。否则产物不会被前端检测到。",
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
               "- **地图（GIS）**: 地图项目位于 `当前工作区/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。若改了 layers/*.geojson 数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
               "- **地图分析**: 用户说“在义乌生成热力图/等时圈”、要求 OD 期望线或公交分析时，优先使用 map_analyze 生成并显示临时结果；结果明确标记演示数据，用户确认后再保存为正式图层。",
-              "- **主动询问（重要）**: 当用户要求撰写/生成文字内容，但关键信息不明确（文档类型、格式、篇幅、受众、数据来源、风格、范围等）时，**必须调用 ask_user 工具主动提问**，等待用户回答后再继续，不要猜测。每次只问一个最关键的、阻塞后续工作的问题。",
+              "- **主动询问（重要）**: 当用户要求撰写/生成/修改文字内容，但关键信息不明确（文档类型、篇幅、受众、数据来源、风格、范围；修改类还包括改哪一段、改成什么、是否保留原格式）时，**必须调用 ask_user 主动提问**，等待回答后再继续，不要猜测。**只在缺失 ≥2 项时提问，每次只问一个最阻塞的问题**；只缺 1 项时按默认值继续，并在结果中注明假设。",
+              "- **模板优先（重要）**: 用户要求写工可/可研/规划/汇报/交评/预可/选址/物流园区/年度报告等交通规划文体时，先用 read 读取 `templates/traffic-material/` 下对应模板（14 个），按其章节骨架、必备图表与格式规则写作；不要凭记忆自造结构。",
+              "- **改文档先读后改**: 修改既有 Office 文档时，先 `officecli view <file> text|outline` 确认内容，再 `get` 取真实路径，最后 `set/add`；禁止直接 set 未知路径。",
+              "- **草稿确认**: 如果已经生成 Markdown 草稿，调用 ask_user 时用 `previewFile` 指向该草稿（工作区相对路径），让用户先看内容再继续写入。",
               "- **复杂任务待办**: 预计超过两步的任务，先调用 `todo` 工具创建 2-6 项结构化待办；每完成一项或状态发生变化后，立即用 `todo` 提交完整清单。不要把每个工具调用都拆成待办项。Markdown 清单只能作为可选的人类可读摘要，任务区以 `todo` 工具状态为准。",
               "- **回合结束沉淀记忆**: 每轮任务真正完成后，检查本轮是否出现对后续任务仍有价值的新项目事实、稳定工作规则、用户偏好或可复用经验（纯问答或一次性咨询不必检查，也不必为此额外追问）。若有，主动调用一次 memory_update 生成一条待审核建议；若没有，不要强行生成。只记录短句，不记录临时状态、完整对话、敏感凭据或大段原文。",
               "- **显式收尾（complete_task）**: 回答最后一步调用 `complete_task`：status 用 success/partial/blocked/failed 如实声明本轮结果；partial 必须列出未完成项；blocked 必须列出阻塞原因；generated 产物用 read 回读验证后再声明 success。不要跳过此工具，跳过时系统只能按回合结束推断，用户无法区分“回答完了”和“任务真完成了”。",
@@ -1093,7 +1101,7 @@ class AgentManager extends EventEmitter {
               "- **内置浏览器（browser_*）**: 用户要求“打开浏览器/去网页上搜索/在网站里操作/看页面”时使用。搜索类需求直接 browser_open 打开引擎结果页（推荐 https://cn.bing.com/search?q={{关键词}}，百度易触发人机验证），随后 browser_snapshot 读取编号 → browser_click / browser_type 操作；页面跳转后必须重新快照。浏览器支持多标签页：用 browser_tabs 列表/新建/切换/关闭；链接在新标签页打开时用 browser_tabs 切换过去。用户可在右侧“浏览器”面板实时观看并接管（登录、验证码由用户完成）。**接管仲裁**：用户在操作浏览器时会持有短期 lease，期间你的写操作（open/click/type/press/scroll/back/reload/标签页变更）会被拒绝并返回 BROWSER_USER_TAKEOVER；此时不要反复重试，改为只读观察（browser_snapshot/browser_screenshot）或请用户点击「交还 Agent」，lease 到期会自动交还。web_search 未配置或需要真实浏览动态页面时，改用浏览器完成检索。**任务结束默认保留浏览器**（用户可能继续查看或接管），只有用户明确要求关闭时才调用 browser_close；用户在浏览器操作期间不要执行会打断页面的操作。",
               "- **模板引用（@模板）**: 用户以 `@模板[文件名或相对路径]` 引用模板库中的模板时，优先使用本轮结构化引用里的 `context_read(refId)` 读取，避免只凭模板标题猜路径；若需兼容旧版本，再用 find 在 `templates/`、`_报告模板/` 和 `.claude/skills/` 下按文件名包含匹配搜索，找到后用 read 读取全文，作为撰写文档的结构与风格参考。产出保存到当前工作区（见 .agent-context.md）。用户以 `@模板目录[相对路径]` 引用整个模板目录时（如 `@模板目录[templates/opendesign/templates/html-ppt-tech-sharing]`），用 find 列出该目录下所有文件并逐个 read 理解其风格与结构，产出时保持该风格。",
               "- **规划素材库（traffic-material）**: 项目 `templates/traffic-material/` 内置 14 份交通规划详版模板（00_总览通用规范、01_年度工作报告、02_五年发展规划、03_规划文本条文式、04_工程可行性研究报告、05_线位论证预可、06_选址用地预审、07_交通影响评价、08_汇报材料、09_物流园区规划、10_规划研究报告、11_PPT汇报、12_素材库深挖）。用户要求撰写交通规划/工可/汇报/年度报告等文档时，**先用 read 工具读取对应模板作为结构参考**（如 04_工程可行性研究报告模板.md、08_汇报材料模板.md），产出保存到当前工作区。完整列表可用 GET /api/templates?category=sucaiku 查看。",
-              "- **模板库（OpenDesign HTML PPT）**: 项目 `templates/opendesign/` 内置 157 个 HTML 模板（64 款 html-ppt-* 演示风格 + landing/dashboard 等），每个模板目录含 example.html 首页可直接预览（模版库页面已接入）。用户要求生成 PPT/演示/海报/网页作品时，优先用 read 工具读取 `templates/opendesign/<模板名>/example.html` 作为风格与结构参考（如 html-ppt-zhangzara-studio、html-ppt-tech-sharing、html-ppt-pitch-deck、html-ppt-taste-editorial），产出应保存到当前工作区。另项目 `.claude/skills/` 内置了 67 个办公/设计/飞书/工程流程技能（docx/pptx/xlsx/baoyu-*/lark-*/ultimate-ppt-master 等），需要对应能力时遵循其 SKILL.md 指引。",
+              "- **模板库（OpenDesign HTML PPT）**: 项目 `templates/opendesign/` 内置 157 个 HTML 模板（64 款 html-ppt-* 演示风格 + landing/dashboard 等），每个模板目录含 example.html 首页可直接预览（模版库页面已接入）。用户要求生成 PPT/演示/海报/网页作品时，优先用 read 工具读取 `templates/opendesign/<模板名>/example.html` 作为风格与结构参考（如 html-ppt-zhangzara-studio、html-ppt-tech-sharing、html-ppt-pitch-deck、html-ppt-taste-editorial），产出应保存到当前工作区。另项目 `.claude/skills/` 内置了 " + localSkillCatalog().length + " 个办公/设计/飞书/工程流程技能（docx/pptx/xlsx/baoyu-*/lark-*/ultimate-ppt-master 等），需要对应能力时遵循其 SKILL.md 指引。",
               "- When you modify a document, confirm what changed. Files are auto-refreshed in the browser.",
               "",
               // 工作区记忆（AGENTS.md + memory/）——每次对话前刷新在 .agent-context.md 的「工作区记忆」段
@@ -1118,6 +1126,33 @@ class AgentManager extends EventEmitter {
       return { runId, workspace: entry.workspace, threadId: entry.threadId, kind };
     };
     const writeEvent = (type, data) => emitChannelSafe(entry, type, data);
+
+    /** Office 执行闸门上下文（计划 008）：路由、管线产出、澄清待回答。 */
+    const officeGateContext = () => ({
+      route: entry?.task?.capabilityPlan?.route,
+      officeFormat: Boolean(entry?.officeGateOn ?? RUNTIME_FLAGS.officeFormat),
+      pipelineProduced: Boolean(entry?.pipelineProduced),
+      clarificationPending: entry?.clarificationPending || null,
+      mode: entry?.mode || "agent",
+      manualAllowed: Boolean(entry?.manualOfficeAllowed),
+    });
+
+    /** 执行闸门：被拒时发 tool_gate_denied 并抛可读错误；放行时返回闸门结果（可能带 sanitizedInput）。 */
+    const enforceOfficeGate = (tool, input) => {
+      const gate = classifyToolCall({ tool, input, context: officeGateContext() });
+      if (!gate.blocked) return gate;
+      writeEvent("tool_gate_denied", {
+        runId: entry?.activeRunId || null,
+        kind: tool,
+        name: tool,
+        code: gate.code,
+        reason: gate.reason,
+        suggestion: gate.suggestion || "",
+      });
+      const error = new Error([gate.reason, gate.suggestion].filter(Boolean).join(" "));
+      error.code = gate.code;
+      throw error;
+    };
     const mcpToolRegistrations = configuredMcpTools.map(({ server, tool }) => {
       const hash = crypto.createHash("sha1").update(`${server.id}:${tool.name}`).digest("hex").slice(0, 6);
       const name = safePiToolName(`mcp_${server.id.slice(0, 18)}_${tool.name.slice(0, 30)}_${hash}`, 62);
@@ -1225,6 +1260,7 @@ class AgentManager extends EventEmitter {
         mkdir: async (directory) => ensureStagedDirectory({ ...activeWriteContext("write"), targetPath: directory, kind: "write" }),
         writeFile: async (absolutePath, content) => {
           const ctx = activeWriteContext("write");
+          enforceOfficeGate("write", { path: absolutePath });
           assertReviewWriteAllowed(absolutePath, "write");
           // 敏感文件（.env 等）写入被规则表直接拒绝
           await requireToolApproval({
@@ -1250,6 +1286,7 @@ class AgentManager extends EventEmitter {
         },
         writeFile: async (absolutePath, content) => {
           assertReviewWriteAllowed(absolutePath, "edit");
+          enforceOfficeGate("edit", { path: absolutePath });
           return stageWrite({ ...activeWriteContext("edit"), targetPath: absolutePath, content, onEvent: writeEvent });
         },
       },
@@ -1311,12 +1348,15 @@ class AgentManager extends EventEmitter {
 exec: async (command, cwd, options) => {
           const ctx = activeWriteContext("bash");
           const commandText = String(command || "");
+          // 计划 008：写作路由下拦截 docx 生成脚本/转换命令（--allow-manual 可逃逸）
+          const bashGate = enforceOfficeGate("bash", { command: commandText });
+          const effectiveCommand = String(bashGate.sanitizedInput?.command || commandText);
           // 删除/破坏类命令默认进入用户审批（规则表见 审批策略.mjs）
           await requireToolApproval({
-            entry, tool: "bash", input: commandText,
+            entry, tool: "bash", input: effectiveCommand,
             runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
           });
-          if (isGlobalSearchCommand(commandText)) {
+          if (isGlobalSearchCommand(effectiveCommand)) {
             const error = new Error("禁止从系统根目录执行全盘搜索，请限定在当前工作区内，并使用绝对路径或当前工作区相对路径。");
             error.code = "BASH_SCOPE_BLOCKED";
             writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error.code, message: error.message });
@@ -1324,8 +1364,8 @@ exec: async (command, cwd, options) => {
             writeEvent("tool_gate_denied", { runId: ctx.runId, kind: "bash", code: error.code, name: "bash", reason: error.message });
             throw error;
           }
-          const targetsProtectedMemory = isProtectedMemoryTarget(ctx.workspace, path.resolve(cwd || ctx.workspace, ".")) || /(?:memory[\\/]|(?:^|[\s"'\\/])AGENTS\.md\b)/i.test(commandText);
-          if (targetsProtectedMemory && /(?:>|>>|tee|set-content|out-file|write[_-]?text|writefile|sed\s+-i|perl\s+-i|\b(?:mv|cp|rm|del)\b)/i.test(commandText)) {
+          const targetsProtectedMemory = isProtectedMemoryTarget(ctx.workspace, path.resolve(cwd || ctx.workspace, ".")) || /(?:memory[\\/]|(?:^|[\s"'\\/])AGENTS\.md\b)/i.test(effectiveCommand);
+          if (targetsProtectedMemory && /(?:>|>>|tee|set-content|out-file|write[_-]?text|writefile|sed\s+-i|perl\s+-i|\b(?:mv|cp|rm|del)\b)/i.test(effectiveCommand)) {
             const error = new Error("长期记忆不能通过 Bash 直接修改，请使用 memory_update 提交待审核建议");
             error.code = "MEMORY_WRITE_REQUIRES_PROPOSAL";
             writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error.code, message: error.message });
@@ -1333,16 +1373,24 @@ exec: async (command, cwd, options) => {
             writeEvent("tool_gate_denied", { runId: ctx.runId, kind: "bash", code: error.code, name: "bash", reason: error.message });
             throw error;
           }
+          // bash 只认真实磁盘：先把本轮暂存文件物化，避免 write 后 bash 看不到而反复重写。
+          try {
+            const stagedPaths = listStagedFiles(ctx.runId).map((item) => item.path).filter(Boolean);
+            const materialized = materializeStagedReferences({ runId: ctx.runId, workspace: ctx.workspace, paths: stagedPaths });
+            if (materialized.length) {
+              writeEvent("artifact_materialized", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, paths: materialized, reason: "bash_visibility" });
+            }
+          } catch {}
+          const runBash = async () => RUNTIME_FLAGS.piBashSidecar
+            ? await getBashSidecar().execute(effectiveCommand, { cwd: cwd || ctx.workspace })
+            : await localBash.exec(effectiveCommand, cwd, normalizeBashOptions(options));
+          // 只读命令（ls/grep/unzip -p 等）不占工作区写锁，避免 Word/PPT 两个任务互相挡。
+          if (isReadonlyBash(effectiveCommand)) return runBash();
           return withWorkspaceWriteLock(ctx, "bash", async () => {
-            writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", command: commandText.slice(0, 500) });
+            writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", command: effectiveCommand.slice(0, 500) });
             writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash" });
             try {
-              // U5：flag on 时经侧车管理器执行（独立进程 + 并发上限 + 执行统计）；
-              // off（默认）走 createLocalBashOperations 原路径，行为与基线一致。
-              const result = RUNTIME_FLAGS.piBashSidecar
-                ? await getBashSidecar().execute(commandText, { cwd: cwd || ctx.workspace })
-                : await localBash.exec(command, cwd, normalizeBashOptions(options));
-              return result;
+              return await runBash();
             } catch (error) {
               writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error?.code || "BASH_FAILED", message: String(error?.message || error) });
               throw error;
@@ -1361,13 +1409,18 @@ exec: async (command, cwd, options) => {
         "PROP VALUES: write them as key=value tokens; values with spaces are fine as one token (--prop author=规聚 Agent is parsed as one value) — do NOT wrap them in escaped quotes like \\\"...\\\". " +
         "For Word comments, first locate a real paragraph path with get/query, use one get path per command, then verify with query <file> comment --json. " +
         "STRICT RULES (avoid wasted retries): (1) the file path must be a workspace-relative path such as '报告.docx' or '初稿/报告.docx' — absolute paths and ../ are rejected; (2) 'view' requires a mode from the list above, never call bare 'view'; (3) only these options exist: --json, --find, --compact, --fields, -o/--output, -h/--help — there is NO --limit/--page/--offset, unknown options abort the command; (4) 'query <file> <selector>' takes a CSS-like selector as its own argument ('paragraph', 'paragraph[style=Normal]', 'table', 'run', '*'); do not pass subcommand names or paths as the selector; (5) 'add <file> / --type markdown --prop src=<file.md>' reads the source from disk: if you just wrote that .md with the write tool it may still be staged, so pass it through this tool's args (it gets materialized) and do not retry more than twice; (6) very large workbooks may return code 'decompression_bomb' (>3,000,000 XML elements): do not retry the same command, tell the user the file must be split, or read the data with a script instead; (7) an internal '.NET' assembly error (e.g. FileNotFoundException: System.Private.Xml) means the officecli installation is mid-update: retry the same command once, and if it fails again tell the user to re-run the officecli installer instead of looping. " +
+        "KNOWN ERRORS (avoid loops): (a) 'Style Normal not found' means the style is absent — add it first via 'add <file> /styles --type style --prop id=Normal --prop name=Normal --prop type=paragraph'; (b) table paths only support '/body/tbl[1]' — never 'tbl[*]' or '//p'; iterate rows/cells one by one; (c) table elements do not accept 'size' — set font size on paragraphs inside cells. " +
+        "ADVANCED COMMANDS (use when needed): 'batch' (atomic multi-op with rollback), 'dump' (replayable script), 'raw'/'raw-set'/'add-part' (XML escape hatch), 'validate' (OpenXML schema), 'refresh' (TOC/page fields; Word+Windows), 'merge <template> <output> --data <json>' ({{key}} placeholders), 'import' (CSV→xlsx), 'watch mark'/'get-marks'/'goto' (human-in-loop). Use --json for structured output. " +
         "File names are relative to the current workspace folder (may include subfolder paths). The user's CURRENT WORKING FILE is noted in the context file — when the user asks to modify a document, operate on that file unless they say otherwise. If the operating system reports access denied, is denied, EPERM, or EACCES, explain that the service process lacks write access (sandbox, mount, or directory permissions); only report a file lock for a sharing violation or another-process lock error; for a sharing violation tell the user to close WPS/Word/Excel and do not retry more than twice. Use --json for structured output. Prefer this tool over bash for all document operations.",
       parameters: Type.Object({
         args: Type.String({ description: "officecli command arguments (single string)" }),
       }),
 execute: async (_toolCallId, params) => {
         const { runOfficecli, validateOfficecliArgs } = await import("./office.mjs");
-        const args = parseArgs(String(params.args || ""));
+        // 计划 008：写作路由下，管线产出前禁止 create/add/set/batch 与 markdown 转换
+        const officeGate = enforceOfficeGate("officecli", { args: String(params.args || "") });
+        let args = parseArgs(String(params.args || ""));
+        if (officeGate.sanitizedInput?.args) args = parseArgs(officeGate.sanitizedInput.args);
         const ctx = activeWriteContext("officecli");
         let parsed;
         try {
@@ -1386,9 +1439,10 @@ execute: async (_toolCallId, params) => {
         });
         let officeLock = null;
         if (mutating) {
+          // 按目标文件加锁（而不是整个工作区）：Word 与 PPT 两个任务写不同文件时可以并行。
           officeLock = await acquireWriteLockWithRetry({
             workspace: ctx.workspace,
-            targetPath: ctx.workspace,
+            targetPath: parsed.path || ctx.workspace,
             runId: ctx.runId,
             threadId: ctx.threadId,
             kind: "officecli",
@@ -2628,10 +2682,33 @@ execute: async (_toolCallId, params) => {
           Type.String({ description: "快捷选项文本" }),
           Type.Object({ label: Type.String(), description: Type.Optional(Type.String()) }),
         ]))),
+        previewFile: Type.Optional(Type.String({ description: "可选：工作区相对路径，指向已生成的 Markdown/草稿；提问时前端自动打开供用户确认" })),
       }),
       execute: async (_toolCallId, params) => {
+        // 单槽位保护（O-26）：同一会话同时只允许一个待回答问题。
+        // 直接拒绝第二个，而不是覆盖第一个的 resolve（否则前者要挂满 5 分钟）。
+        if (this.pendingAsks.has(clientId)) {
+          return {
+            content: [{ type: "text", text: "已有一个待回答的问题：请等待用户回答后再提问（同一会话同时只能有一个问题）。" }],
+            isError: true,
+          };
+        }
         // 归一化 options（对象 → 字符串）
         const opts = (params.options || []).map((o) => (typeof o === "string" ? o : o.label || JSON.stringify(o)));
+        // 计划 008：提问时自动打开已生成的草稿，让用户先确认内容。
+        const previewFile = String(params.previewFile || entry.clarificationPreview || "").trim() || null;
+        if (previewFile) {
+          entry.clarificationPreview = null;
+          // 预览前把暂存文件物化到磁盘，确保前端打开的是最新内容。
+          try {
+            const materialized = materializeStagedReferences({ runId: entry.activeRunId, workspace: entry.workspace, paths: [previewFile] });
+            if (materialized.length) {
+              emitChannelSafe(entry, "artifact_materialized", { runId: entry.activeRunId, workspace: entry.workspace, paths: materialized, reason: "ask_preview" });
+            }
+          } catch {}
+        }
+        // 计划 008：提问一旦发出，解除写操作前的澄清闸门（超时也按专业判断继续）。
+        entry.clarificationPending = null;
         // 阻塞等待用户回答（最长 5 分钟），期间 SSE 推送 ask_user 事件
         return await new Promise((resolve) => {
           const pendingAskId = `ask_${crypto.randomUUID()}`;
@@ -2642,6 +2719,7 @@ execute: async (_toolCallId, params) => {
             runId: entry.activeRunId || null,
             question: String(params.question || ""),
             options: opts,
+            previewFile: previewFile || null,
             status: "pending",
             createdAt: new Date().toISOString(),
             expiresAt,
@@ -2677,6 +2755,7 @@ execute: async (_toolCallId, params) => {
             options: opts,
             // 前端据此显示/收起"待回答"卡片：到期后服务端不再接受回答，卡片必须同步失效。
             expiresAt,
+            ...(previewFile ? { previewFile } : {}),
           };
           // Qoder P1-4（开关 qoderInteractionOwner，默认关）：标记提问归属。
           // ask_user 目前只对父会话开放（子代理角色工具集不含它），因此归属是「本轮」；
@@ -2991,6 +3070,9 @@ execute: async (_toolCallId, params) => {
         format: Type.Union([Type.Literal("docx"), Type.Literal("pptx")], { description: "产物格式：docx=Word 文档，pptx=演示文稿" }),
         outputPath: Type.Optional(Type.String({ maxLength: 200, description: "工作区相对输出路径（如 报告/初稿.docx）；缺省按目标命名" })),
         requirements: Type.Optional(Type.String({ maxLength: 1000, description: "额外要求：受众、字数、风格、必含章节等" })),
+        scene: Type.Optional(Type.String({ maxLength: 40, description: "场景 ID（academic/report/contract/official-doc/resume/exam/copywriting）；缺省自动选择" })),
+        clarificationAnswers: Type.Optional(Type.Array(Type.String({ maxLength: 500 }), { description: "用户对澄清问题的回答；有值则跳过澄清闸门" })),
+        sourceMarkdown: Type.Optional(Type.String({ maxLength: 200000, description: "已有 Markdown 正文；提供时跳过 Planner/Writer，直接排版并验收" })),
       }),
       execute: async (_toolCallId, params, signal) => {
         const ctx = activeWriteContext("editorial_pipeline");
@@ -2999,12 +3081,17 @@ execute: async (_toolCallId, params) => {
           entry, tool: "editorial_pipeline", input: `${format} ${String(params.goal || "").slice(0, 160)}`,
           runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
         });
-        // 与 officecli 写入同一治理：工作区级写锁 + write_started/locked 事件
+        // 按交付文件加锁（而不是整个工作区）：不同产物的 Word/PPT 任务可以并行。
+        const lockTarget = path.resolve(
+          ctx.workspace,
+          params.outputPath ? String(params.outputPath) : `${safePipelineName(String(params.goal || ""))}.${format}`,
+        );
         const lock = await acquireWriteLockWithRetry({
-          workspace: ctx.workspace, targetPath: ctx.workspace,
+          workspace: ctx.workspace, targetPath: lockTarget,
           runId: ctx.runId, threadId: ctx.threadId, kind: "editorial_pipeline",
         });
-        writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "editorial_pipeline", command: `${format} ${String(params.goal || "").slice(0, 200)}` });
+        const lockRel = path.relative(ctx.workspace, lockTarget).replace(/\\/g, "/") || ".";
+        writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: lockRel, kind: "editorial_pipeline", command: `${format} ${String(params.goal || "").slice(0, 200)}` });
         writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "editorial_pipeline" });
         try {
           // Planner/Writer/Evaluator 是只读模型会话：复用 SubagentProvider seam（planner 只读角色）
@@ -3028,6 +3115,10 @@ execute: async (_toolCallId, params) => {
             }
             return outcome?.text || "";
           };
+          const writingText = `${String(params.goal || "")} ${String(params.requirements || "")}`;
+          const writingIntent = RUNTIME_FLAGS.officeFormat
+            ? routeTaskIntent({ text: writingText, task: { mode: "agent" } })
+            : null;
           const result = await runEditorialPipeline({
             format,
             goal: String(params.goal || ""),
@@ -3036,8 +3127,49 @@ execute: async (_toolCallId, params) => {
             requirements: params.requirements ? String(params.requirements) : "",
             emit: (type, data) => writeEvent(type, { ...data, parentToolCallId: _toolCallId ? String(_toolCallId) : null }),
             runModelTask: runPipelineModelTask,
+            autoClarify: RUNTIME_FLAGS.officeFormat,
+            clarificationAnswers: Array.isArray(params.clarificationAnswers) ? params.clarificationAnswers.map(String) : [],
+            sourceMarkdown: params.sourceMarkdown ? String(params.sourceMarkdown) : "",
+            scene: params.scene ? String(params.scene) : (writingIntent?.scene?.scene || ""),
+            template: writingIntent?.template || null,
+            cover: RUNTIME_FLAGS.officeFormat && format === "docx"
+              ? { docType: writingIntent?.scene?.scene || "report" }
+              : null,
+            toc: RUNTIME_FLAGS.officeFormat && format === "docx",
+            pageNumbers: RUNTIME_FLAGS.officeFormat && format === "docx",
+            qa: RUNTIME_FLAGS.officeFormat && format === "docx",
             signal,
           });
+          if (result.status === "needs_clarification") {
+            entry.clarificationPending = result.clarification || entry.clarificationPending;
+            entry.clarificationPreview = result.clarification?.previewPath || entry.clarificationPreview;
+            const question = result.clarification?.question;
+            const text = question
+              ? `需要先向用户确认：${question.text}\n可选：${(question.options || []).join(" / ")}\n请调用 ask_user 提问；用户回答后再次调用本工具，并在 clarificationAnswers 里带上回答。`
+              : `需要先补充关键信息：${(result.clarification?.missing || []).join("、")}`;
+            return { content: [{ type: "text", text }], details: { pipeline: true, status: "needs_clarification", clarification: result.clarification } };
+          }
+          if (result.deliverable && result.status === "completed") entry.pipelineProduced = true;
+          if (RUNTIME_FLAGS.officeFormat && (result.scene || result.template)) {
+            writeEvent("office_format_applied", {
+              runId: ctx.runId,
+              workspace: ctx.workspace,
+              scene: result.scene?.id || "report",
+              template: result.template?.relPath || "",
+              recipe: "",
+              route: result.template ? "template" : "generate",
+            });
+          }
+          if (RUNTIME_FLAGS.officeFormat && format === "docx" && result.deliverable) {
+            writeEvent("office_qa_finished", {
+              runId: ctx.runId,
+              workspace: ctx.workspace,
+              file: result.deliverable,
+              passed: !(result.issues || []).length,
+              issues: (result.issues || []).slice(0, 20),
+              checks: (result.checks || []).slice(0, 20),
+            });
+          }
           writeEvent("file_changed", { runId: ctx.runId, workspace: ctx.workspace, files: [result.deliverable].filter(Boolean) });
           const lines = [
             result.status === "completed" ? `流水线完成，产物：${result.deliverable}` : `流水线未完全通过验收（产物：${result.deliverable || "无"}）`,
@@ -3172,6 +3304,16 @@ execute: async (_toolCallId, params) => {
                 ? entry.session?.followUp?.(notice)
                 : entry.session?.steer?.(notice);
               Promise.resolve(deliverPromise).catch(() => {});
+            }
+          }
+          // 计划 008：写作路由下 10 回合仍未走管线时，提醒一次（不阻断，靠执行闸门兜底）
+          if (entry.officeGateOn && !entry.pipelineProduced && !entry.pipelineReminderSent && entry.turnCount >= 10) {
+            const route = entry.task?.capabilityPlan?.route;
+            if (route === "template" || route === "generate") {
+              entry.pipelineReminderSent = true;
+              const message = "本轮尚未使用 editorial_pipeline。请立即改用编辑流水线生成文档；不要用 bash 写生成脚本，也不要用 officecli add --type markdown 后再手工调样式。";
+              emitChannelSafe(entry, "steer", { source: "office-pipeline", message, turnCount: entry.turnCount });
+              Promise.resolve(entry.session?.steer?.(message)).catch(() => {});
             }
           }
           // E02：运行预算回合评估——软预算发可见提醒，硬预算发阻断事件（hard 模式下停止本 Run）
@@ -3775,6 +3917,21 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.officeLockFailures = new Map();
     entry.task = runContext?.task || null;
     entry.mode = normalizeTaskMode(runContext?.task?.mode || entry.mode || "agent");
+    // 计划 008：执行闸门状态按 Run 重置。只在开关开启时生效；关闭时完全放行。
+    entry.officeGateOn = Boolean(RUNTIME_FLAGS.officeFormat);
+    entry.pipelineProduced = false;
+    entry.pipelineReminderSent = false;
+    entry.manualOfficeAllowed = /(脚本|代码|手工生成|自己生成|allow-manual)/i.test(String(entry.task?.goal || ""));
+    {
+      const plan = entry.task?.capabilityPlan;
+      entry.clarificationPending = entry.officeGateOn
+        && plan?.clarification?.shouldAsk
+        && entry.mode !== "chat"
+        && entry.mode !== "review"
+        ? { missing: plan.clarification.missing || [], question: plan.clarification.question || null }
+        : null;
+      entry.clarificationPreview = null;
+    }
     if (!isStreaming) {
       entry.reviewConfirmed = false;
       entry.reviewAwaitingConfirmation = false;
@@ -4375,7 +4532,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         "# Open Plan（规聚）Workspace",
         "",
         `- **当前工作区（绝对路径）**: ${ws}`,
-        "- Office files live in the current workspace folder above. ALWAYS operate on office documents through the `officecli` tool — it resolves file names relative to the current workspace. NEVER try to run `officecli` via the bash tool.",
+        "Office files live in the current workspace folder above. " + OFFICE_TOOL_RULE,
         "- Word 批注：先 get/query 找真实 `/body/p[...]` 路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"...\\\" --json`，完成后 query comment 校验。仅在 sharing violation 或明确的进程占用错误时关闭 WPS/Word/OfficeCLI 预览；Access denied/is denied/EPERM/EACCES 应说明服务进程写权限受限。",
         "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text.",
         "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区（绝对路径见上），禁止写入项目目录。否则产物不会被前端检测到。",

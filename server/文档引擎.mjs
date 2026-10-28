@@ -20,6 +20,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import JSZip from "jszip";
+import { resolveFontSize, resolveLineSpacing, resolvePageMargins, PAGE_SIZE } from "./office规范/设计令牌.mjs";
+import { calcTitleLayout, calcCoverSpacing } from "./office规范/封面布局.mjs";
+import { selectCoverRecipe } from "./office规范/封面配方.mjs";
+import { getScene } from "./office规范/场景选择.mjs";
+import { postProcessDocx } from "./office规范/后处理.mjs";
 
 const DOCX_EXT = /\.docx$/i;
 const XLSX_EXT = /\.(?:xlsx|xls)$/i;
@@ -41,7 +46,7 @@ const NATIVE_VIEW_MODES = new Set(["text", "outline", "stats"]);
 
 const CAPABILITY_MATRIX = Object.freeze({
   docx: Object.freeze({
-    native: Object.freeze(["create", "view:text", "view:outline", "view:stats", "set:find_replace"]),
+    native: Object.freeze(["create", "create:styled", "view:text", "view:outline", "view:stats", "set:find_replace"]),
     requiresCli: Object.freeze(["get", "query", "batch", "add", "remove", "move", "swap", "delete", "import", "export", "open", "close", "save", "validate", "refresh", "dump", "watch", "view:html", "view:svg", "view:screenshot", "view:annotated", "view:issues", "view:forms", "set:style", "set:prop", "chart", "revision", "comment", "form", "protect", "pdf_export"]),
   }),
   xlsx: Object.freeze({
@@ -68,8 +73,8 @@ export function needsCli(command, args = []) {
   const list = Array.isArray(args) ? args.map(String) : [];
   switch (cmd) {
     case "create":
-      // create 全格式原生（docx/xlsx/pptx）
-      return { needsCli: false, reason: "create 原生直写" };
+      // create 全格式原生（docx/xlsx/pptx）；--styled 表示带版式参数直写（O-17）
+      return { needsCli: false, reason: list.includes("--styled") ? "create --styled 原生直写（含版式）" : "create 原生直写" };
     case "view": {
       const mode = String(list[2] || "").trim().toLowerCase();
       if (NATIVE_VIEW_MODES.has(mode)) return { needsCli: false, reason: `view ${mode} 原生读取` };
@@ -442,27 +447,160 @@ export async function buildPptxFromSlides(target, slides = []) {
 }
 
 /**
- * P2-A Formatter：按结构化大纲生成 .docx（标题/段落/表格）。
- * @returns {{file:string, blocks:number, engine:"native"}}
+ * Markdown → blocks v2（计划 008 / P1-2）。
+ * 支持标题、段落、管道表格；代码块跳过；图片按段落文本保留。
  */
-export async function buildDocxFromBlocks(target, blocks = []) {
-  const { Document, Packer, Paragraph, HeadingLevel, Table, TableRow, TableCell, WidthType } = await import("docx");
+export function markdownToBlocks(markdown) {
+  const lines = String(markdown || "").split(/\r?\n/);
+  const blocks = [];
+  let paragraph = [];
+  let table = [];
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    blocks.push({ type: "paragraph", text: paragraph.join(" ").trim() });
+    paragraph = [];
+  };
+  const flushTable = () => {
+    if (table.length >= 2) {
+      const rows = table.map((line) => line.replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim()));
+      const data = rows.filter((row) => !row.every((cell) => !cell || /^:?-{2,}:?$/.test(cell)));
+      if (data.length) blocks.push({ type: "table", rows: data });
+    }
+    table = [];
+  };
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) { flushParagraph(); flushTable(); continue; }
+    if (/^```/.test(trimmed)) { flushParagraph(); flushTable(); continue; }
+    const heading = trimmed.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushTable();
+      blocks.push({ type: "heading", text: heading[2].trim(), level: Math.min(3, heading[1].length) });
+      continue;
+    }
+    if (/^\|/.test(trimmed)) {
+      flushParagraph();
+      table.push(trimmed);
+      continue;
+    }
+    flushTable();
+    paragraph.push(trimmed);
+  }
+  flushParagraph();
+  flushTable();
+  return blocks;
+}
+
+/**
+ * P2-A Formatter：按结构化大纲生成 .docx（标题/段落/表格）。
+ *
+ * v2（O-17）：新增 style / scene / cover / toc / header / footer / pageNumbers 选项。
+ * 不传任何选项时行为与旧版逐字一致（旧 blocks 兼容）。
+ * @returns {{file:string, blocks:number, engine:"native", styled?:boolean, postProcess?:string[]}}
+ */
+export async function buildDocxFromBlocks(target, blocks = [], options = {}) {
+  const {
+    Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType,
+    AlignmentType, Header, Footer, PageNumber, TableOfContents, PageBreak,
+  } = await import("docx");
+
+  const styled = Boolean(options.style || options.scene || options.cover || options.toc || options.header || options.footer || options.pageNumbers || options.margins);
+  const scene = typeof options.scene === "string" ? getScene(options.scene) : options.scene || null;
+  const bodyPt = resolveFontSize(options.style?.bodyPt ?? scene?.font?.bodyPt, 12);
+  const headingPt = resolveFontSize(options.style?.headingPt ?? scene?.font?.h1Pt, 16);
+  const line = resolveLineSpacing(options.style?.line ?? scene?.spacing?.line, "normal");
+  const firstLine = Number(options.style?.firstLine ?? scene?.spacing?.firstLine ?? 480) || 0;
+  const bodyFont = options.style?.font || scene?.font?.body || "SimSun";
+  const headingFont = scene?.font?.heading || "SimHei";
+  const margins = resolvePageMargins(options.margins || scene?.page?.margins, "normal");
+  const recipe = options.cover ? selectCoverRecipe(options.cover.docType || scene?.cover?.recipe || "report") : null;
+
+  const bodyParagraph = (text, extra = {}) => new Paragraph({
+    children: [new TextRun({ text: String(text), font: bodyFont, size: bodyPt.halfPoints })],
+    spacing: { line: line.line, lineRule: line.rule },
+    indent: firstLine ? { firstLine } : undefined,
+    alignment: AlignmentType.JUSTIFIED,
+    ...extra,
+  });
+
+  const headingParagraph = (text, level) => new Paragraph({
+    children: [new TextRun({ text: String(text), font: headingFont, size: headingPt.halfPoints, bold: true })],
+    heading: level,
+    spacing: { line: line.line, lineRule: line.rule, before: 240, after: 120 },
+  });
+
   const children = [];
+
+  // ---- 封面（O-07/O-08）：只走配方，不自由布局 ----
+  if (options.cover) {
+    const title = String(options.cover.title || "").trim();
+    const layout = calcTitleLayout({ title, maxWidthTwips: PAGE_SIZE.width - margins.left - margins.right });
+    const spacing = calcCoverSpacing({ contentHeightTwips: layout.totalHeightTwips + 2400 });
+    const titleColor = recipe?.titleColor || "#1F2933";
+    if (spacing.top > 0) children.push(new Paragraph({ spacing: { before: spacing.top } }));
+    for (const lineText of layout.lines) {
+      children.push(new Paragraph({
+        children: [new TextRun({ text: lineText, font: headingFont, size: layout.halfPoints, bold: true, color: titleColor.replace("#", "") })],
+        alignment: recipe?.titleAlign === "left" ? AlignmentType.LEFT : AlignmentType.CENTER,
+        spacing: { line: 360, lineRule: "auto", after: 160 },
+      }));
+    }
+    const subtitle = String(options.cover.subtitle || "").trim();
+    if (subtitle) {
+      children.push(new Paragraph({
+        children: [new TextRun({ text: subtitle, font: bodyFont, size: 28, color: (recipe?.subtitleColor || "#333333").replace("#", "") })],
+        alignment: recipe?.titleAlign === "left" ? AlignmentType.LEFT : AlignmentType.CENTER,
+        spacing: { line: 312, lineRule: "auto", after: 120 },
+      }));
+    }
+    const metaLines = Array.isArray(options.cover.metaLines) ? options.cover.metaLines : [];
+    if (spacing.gap > 0) children.push(new Paragraph({ spacing: { before: spacing.gap } }));
+    for (const meta of metaLines) {
+      children.push(new Paragraph({
+        children: [new TextRun({ text: String(meta), font: bodyFont, size: 24, color: "444444" })],
+        alignment: recipe?.titleAlign === "left" ? AlignmentType.LEFT : AlignmentType.CENTER,
+        spacing: { line: 312, lineRule: "auto", after: 80 },
+      }));
+    }
+    children.push(new Paragraph({ children: [new PageBreak()] }));
+  }
+
+  // ---- 目录（O-18）：TableOfContents + updateFields 后处理 ----
+  if (options.toc) {
+    children.push(new Paragraph({
+      children: [new TextRun({ text: "目录", font: headingFont, size: headingPt.halfPoints, bold: true })],
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 200 },
+    }));
+    children.push(new TableOfContents("目录", { hyperlink: true, headingStyleRange: "1-3" }));
+    children.push(new Paragraph({
+      children: [new TextRun({ text: "（右键目录 → 更新域，可刷新页码）", italics: true, size: 21, color: "888888" })],
+      spacing: { before: 120, after: 120 },
+    }));
+    children.push(new Paragraph({ children: [new PageBreak()] }));
+  }
+
   for (const block of blocks) {
     const kind = String(block?.type || "paragraph").toLowerCase();
     const text = String(block?.text ?? "").trim();
-    if (!text && kind !== "image") continue;
+    if (!text && kind !== "image" && kind !== "table" && kind !== "pagebreak" && kind !== "toc") continue;
     if (kind === "heading" || kind === "h1" || kind === "h2" || kind === "h3") {
       const level = kind === "h1" || block?.level === 1 ? HeadingLevel.HEADING_1
         : kind === "h3" || block?.level === 3 ? HeadingLevel.HEADING_3 : HeadingLevel.HEADING_2;
-      children.push(new Paragraph({ text, heading: level }));
+      children.push(styled ? headingParagraph(text, level) : new Paragraph({ text, heading: level }));
     } else if (kind === "table" && Array.isArray(block?.rows)) {
       const rows = block.rows.map((row) => new TableRow({
         children: (Array.isArray(row) ? row : [row]).map((cell) => new TableCell({
           children: [new Paragraph(String(cell ?? ""))],
+          margins: { top: 80, bottom: 80, left: 120, right: 120 },
         })),
       }));
-      children.push(new Table({ rows, width: { size: 100, type: WidthType.PERCENTAGE } }));
+      children.push(new Table({
+        rows,
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        margins: { top: 80, bottom: 80, left: 120, right: 120 },
+      }));
     } else if (kind === "image" && block?.path) {
       // G8：图集嵌入——读取本地图片（相对/绝对路径均可，调用方负责路径安全），
       // 尺寸由调用方以 transformation 传入（等比缩放由 probeImageSize 提供）。
@@ -475,15 +613,46 @@ export async function buildDocxFromBlocks(target, blocks = []) {
           transformation: { width: Number(block.width) || 480, height: Number(block.height) || 320 },
         })],
       }));
+    } else if (kind === "pagebreak") {
+      children.push(new Paragraph({ children: [new PageBreak()] }));
     } else {
-      children.push(new Paragraph(text));
+      children.push(styled ? bodyParagraph(text) : new Paragraph(text));
     }
   }
   if (!children.length) children.push(new Paragraph(""));
-  const doc = new Document({ sections: [{ children }] });
+
+  const sectionProperties = {
+    page: {
+      size: { width: PAGE_SIZE.width, height: PAGE_SIZE.height },
+      margin: { top: margins.top, bottom: margins.bottom, left: margins.left, right: margins.right },
+      ...(options.pageNumbers ? { pageNumbers: { start: 1 } } : {}),
+    },
+  };
+  const headers = options.header ? { default: new Header({ children: [new Paragraph(String(options.header))] }) } : undefined;
+  const footers = options.footer
+    ? {
+        default: new Footer({
+          children: [new Paragraph({
+            children: [
+              new TextRun({ text: `${String(options.footer)} `, size: 18 }),
+              new TextRun({ children: [PageNumber.CURRENT], size: 18 }),
+            ],
+            alignment: AlignmentType.CENTER,
+          })],
+        }),
+      }
+    : undefined;
+
+  const doc = new Document({ sections: [{ properties: sectionProperties, headers, footers, children }] });
   await fs.promises.mkdir(path.dirname(target), { recursive: true });
   await fs.promises.writeFile(target, await Packer.toBuffer(doc));
-  return { file: target, blocks: blocks.length, engine: "native" };
+
+  let postProcess = [];
+  if (options.toc || options.pageNumbers) {
+    const result = await postProcessDocx(target, { toc: Boolean(options.toc), pageNumbers: Boolean(options.pageNumbers) });
+    postProcess = result.changes;
+  }
+  return { file: target, blocks: blocks.length, engine: "native", styled, postProcess };
 }
 
 function nativeCreateResult(command, file, format) {
