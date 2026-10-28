@@ -22,6 +22,7 @@ const settingsSource = fs.readFileSync(new URL("../client/src/components/Setting
 const appearanceSource = fs.readFileSync(new URL("../client/src/界面外观.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const agentSource = fs.readFileSync(new URL("../server/agent.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const serverSource = fs.readFileSync(new URL("../server/index.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const execHandleSource = fs.readFileSync(new URL("../server/执行句柄.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const excelSource = fs.readFileSync(new URL("../client/src/components/ExcelGrid.jsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const eventDisplaySource = fs.readFileSync(new URL("../client/src/事件展示.js", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const piRuntimeSource = fs.readFileSync(new URL("../server/Pi运行时管理.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
@@ -292,11 +293,12 @@ try {
   assert.match(chatPanelSource, /markLatency\("firstTextDeltaAt"\)/, "首个正文 token 应打点");
   assert.match(chatPanelSource, /if \(hasVisibleAnswer\) markFirstDomText\(\)/, "正文真正进 DOM 时应打点（不是 token 到达内存）");
   assert.match(chatPanelSource, /finalizeLatencyProbe\(\{ runId: data\?\.runId/, "run_finished 时结算一次样本");
-  assert.match(serverSource, /markRunTiming\(run\.id, "admissionReadyAt", admissionReadyAt\)/, "服务端应记录 admission 完成时刻");
+  // P1-1 后 admission 打点随 Run 生命周期迁入执行句柄；断言跟着代码搬家，契约不变。
+  assert.match(execHandleSource, /deps\.timing\.markRunTiming\(run\.id, "admissionReadyAt", readyAt\)/, "服务端应记录 admission 完成时刻");
   // 细分耗时（准入/派发内部构成）：只看"准入慢"无法优化，必须能看到段内在等什么。
-  assert.match(serverSource, /attachRunTimingSpans\(run\.id, \{ \.\.\.admissionSpans/, "准入阶段应记录细分耗时");
+  assert.match(execHandleSource, /deps\.timing\.attachRunTimingSpans\(run\.id, \{ \.\.\.admissionSpans/, "准入阶段应记录细分耗时");
   assert.match(agentSource, /attachRunTimingSpans\(entry\.activeRunId, \{[\s\S]{0,260}?queueWait/, "派发阶段应记录排队/工具边界/上下文细分耗时");
-  assert.match(serverSource, /const admissionReadyAt = Date\.now\(\);/, "admission 完成时刻要有单一变量，避免打点与 span 口径不一致");
+  assert.match(execHandleSource, /const readyAt = admissionReadyAt \|\| Date\.now\(\);/, "admission 完成时刻要有单一变量，避免打点与 span 口径不一致");
   assert.match(serverSource, /if \(type === "run_finished" && eventData\.runId\) \{\s*finishRunTiming\(eventData\.runId\);/, "所有终态路径统一结算样本");
 
   // UI 的模式说明不可混入用户输入；普通 Agent 任务不应因此误触发 Office 或 Skills。
@@ -385,7 +387,7 @@ try {
   assert.match(appSource, /const previewAutoOpen = appearance\.previewAutoOpen;/, "App 应消费自动打开预览策略");
   assert.match(appSource, /if \(previewAutoOpen === "never"\) return;/, "never 应从不自动打开");
   assert.match(appSource, /if \(previewAutoOpen === "deliverable"\) \{[\s\S]{0,200}?acceptanceStatus/, "deliverable 应只认通过验收的交付文件");
-  assert.match(appSource, /\}, \[currentWorkspace, open, previewAutoOpen, threadId\]\)/, "策略变化应立即生效（依赖数组）");
+  assert.match(appSource, /\}, \[activeTab, currentWorkspace, flushFileChanges, open, previewAutoOpen, previewOpen, tabs, threadId\]\)/, "策略变化、焦点守卫与刷新合并应立即生效（依赖数组）");
 
   // 卡死防护：同源 HTTP/1.1 只有 6 个连接槽位，SSE 长期占位。
   // App 不再为"浏览器活跃"常驻第二条 /api/browser/stream，改由对话流的工具事件驱动。

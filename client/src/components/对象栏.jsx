@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Icon from "./Icon.jsx";
+import 提示气泡 from "./提示气泡.jsx";
 import {
   listArtifacts,
   listSkills,
@@ -82,10 +83,12 @@ export default function 对象栏({ workspace = "", projectId = "", model = "", 
           <Icon name="layers" size={13} /> 本轮对象 <b>{视图.objectCount}</b>
         </span>
         <span className="object-bar-actions">
-          <button className="btn-icon" onClick={() => void 刷新()} disabled={loading} title="刷新对象栏" aria-label="刷新对象栏">
-            <Icon name={loading ? "loading" : "refresh"} size={14} />
-          </button>
-          {onClose && <button className="btn-icon" onClick={onClose} title="隐藏对象栏" aria-label="隐藏对象栏"><Icon name="close" size={14} /></button>}
+          <提示气泡 label="刷新对象栏">
+            <button className="btn-icon" onClick={() => void 刷新()} disabled={loading} aria-label="刷新对象栏">
+              <Icon name={loading ? "loading" : "refresh"} size={14} />
+            </button>
+          </提示气泡>
+          {onClose && <提示气泡 label="隐藏对象栏"><button className="btn-icon" onClick={onClose} aria-label="隐藏对象栏"><Icon name="close" size={14} /></button></提示气泡>}
         </span>
       </div>
 

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { confirmArtifactAcceptance, getRun, getRunAcceptance, listPublishedArtifacts, listRuns, publishArtifact, rollbackPublishedArtifact } from "../api.js";
 import Icon from "./Icon.jsx";
-import { notifyError } from "./Feedback.jsx";
+import { notifyError, askText, askConfirm } from "./Feedback.jsx";
 import { artifactStatusInfo } from "./验收状态.js";
 import FileChangesPanel from "./FileChangesPanel.jsx";
 import 子代理详情面板 from "./子代理详情面板.jsx";
@@ -13,10 +13,16 @@ function artifactName(path) {
   return String(path || "").split(/[\\/]/).pop() || "未命名产物";
 }
 
+// run-window / unattributed 只是“运行窗口内疑似变更”，不能计入本轮产物；
+// 只有 write-ledger（或有旧数据里的明确 artifact 来源）才进入交付计数。
+function isSuspectedArtifact(artifact) {
+  return artifact?.source === "run-window" || artifact?.source === "unattributed";
+}
+
 // O-P4：原 EventStream 组件（tab === "events"）为不可达死代码，已整体移除；
 // 事件轨迹由「改动」页签的 Run 事件与子代理详情面板承接。
 
-function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", onArtifactScopeChange, refreshToken = 0, onOpenFile }) {
+function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", artifactScopePinned = false, onArtifactScopeChange, refreshToken = 0, onOpenFile }) {
   const [runs, setRuns] = useState([]);
   const [published, setPublished] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -28,6 +34,7 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
   const [loadError, setLoadError] = useState(null); // { message, source }
   const [staleAt, setStaleAt] = useState(null); // 保留旧数据时的最后成功时间
   const refreshSeqRef = useRef(0);
+  const refreshRef = useRef(null);
 
   const refresh = async () => {
     const requestSeq = ++refreshSeqRef.current;
@@ -63,7 +70,7 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
       setRuns(nextRuns);
       setPublished(publishedData.artifacts || []);
       setStaleAt(null);
-      const acceptanceEntries = await Promise.all(nextRuns.slice(0, 12).map(async (run) => {
+      const acceptanceEntries = await Promise.all(nextRuns.filter((run) => (run.artifacts || []).length).slice(0, 12).map(async (run) => {
         try { const result = await getRunAcceptance(run.id); return [run.id, result.run?.acceptance || result.acceptance || null]; } catch { return [run.id, null]; }
       }));
       if (requestSeq !== refreshSeqRef.current) return;
@@ -76,9 +83,33 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
 
   // 根级事件流每收到一次重要事件都会递增 refreshToken；任务完成后必须立即
   // 重新读取 Run 和固定成果，否则用户会看到旧的“暂无产物”，直到手动刷新。
-  useEffect(() => { refresh(); }, [workspace, projectId, currentSessionId, selectedRunId, artifactScope, refreshToken]);
+  refreshRef.current = refresh;
+  useEffect(() => {
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return undefined;
+    // 同一次收尾会连续收到 file_changed/artifact_published/run_finished，
+    // 合并成一次读取，避免面板在任务结束时反复 loading。
+    const timer = window.setTimeout(() => { void refreshRef.current?.(); }, 350);
+    return () => window.clearTimeout(timer);
+  }, [workspace, projectId, currentSessionId, selectedRunId, artifactScope, refreshToken]);
 
-  const entries = useMemo(() => runs.flatMap((run) => (run.artifacts || []).filter((item) => item.status !== "deleted").map((artifact) => ({ artifact, run }))), [runs]);
+  const allEntries = useMemo(() => {
+    const seen = new Set();
+    const list = [];
+    for (const run of runs) {
+      for (const artifact of run.artifacts || []) {
+        if (artifact.status === "deleted") continue;
+        const path = String(artifact.path || "").replace(/\\/g, "/");
+        // 会话范围按路径去重：runs 已按最新在前排序，保留最新一轮的版本，
+        // 避免同一个文件跨轮重复出现成多条“产物”。
+        if (artifactScope === "session" && path && seen.has(path)) continue;
+        if (path) seen.add(path);
+        list.push({ artifact, run });
+      }
+    }
+    return list;
+  }, [runs, artifactScope]);
+  const entries = useMemo(() => allEntries.filter(({ artifact }) => !isSuspectedArtifact(artifact)), [allEntries]);
+  const suspectedEntries = useMemo(() => allEntries.filter(({ artifact }) => isSuspectedArtifact(artifact)), [allEntries]);
   const publishedByArtifact = useMemo(() => new Map(published.map((item) => [item.artifactId, item])), [published]);
   const readyCount = entries.filter(({ artifact, run }) => {
     const result = acceptance[run.id]?.artifacts?.find((item) => item.path === artifact.path) || artifact.acceptance;
@@ -106,21 +137,61 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
     setAction("");
   };
 
+  const renderArtifactRow = ({ artifact, run }, index) => {
+    const name = artifactName(artifact.path);
+    const isStaged = artifact.source === "staged"; // O-P1：运行中暂存条目（仅展示，不可打开/固定）
+    const publication = publishedByArtifact.get(artifact.artifactId);
+    const result = acceptance[run.id]?.artifacts?.find((item) => item.path === artifact.path) || artifact.acceptance;
+    const resultStatus = result?.status || artifact.acceptanceStatus || "not_checked";
+    const info = artifactStatusInfo({ publication, result, resultStatus, runStatus: run.status });
+    const canConfirm = !isStaged && run.status === "completed" && !publication && result && !result.readyToPublish && resultStatus !== "failed";
+    const canPublish = !isStaged && info.canPublish;
+    return (
+      <div className="preview-artifact" key={`${artifact.artifactId || artifact.path}-${index}`}>
+        {isStaged ? (
+          <span className="preview-artifact-main" title={`${artifact.path}（任务结束后可预览）`}>
+            <Icon name="file" size={14} />
+            <span><strong>{name}</strong><small>任务执行中 · 暂存未落盘</small></span>
+          </span>
+        ) : (
+          <button className="preview-artifact-main" onClick={() => onOpenFile?.(artifact.path, undefined, run.cwd)} title={artifact.path}>
+            <Icon name="file" size={14} />
+            <span><strong>{name}</strong><small>{statusText[run.status] || run.status || "已完成"} · {String(artifact.path || "").replace(name, "").replace(/[\\/]$/, "") || "工作区根目录"}</small></span>
+          </button>
+        )}
+        {isStaged && <span className="preview-artifact-status suspect" title="任务仍在执行，文件已暂存、尚未物化到工作区；任务结束后可预览与固定">任务中暂存</span>}
+        {!isStaged && artifact.source === "unattributed" && <span className="preview-artifact-status suspect" title="本轮没有写入台账记录该文件，可能来自并发运行；仅作线索，未自动计入交付">未归属线索</span>}
+        {!isStaged && artifact.source === "run-window" && <span className="preview-artifact-status suspect" title="本轮确有写入（台账只到工作区级，bash / officecli 不回报具体路径），按“运行窗口内变更”归属到本轮；若同一工作区有并行运行，可能来自它">待确认</span>}
+        {!isStaged && <span className={`preview-artifact-status ${info.tone}`} title={info.hint}>{info.label}</span>}
+        {canConfirm && <button className="btn-xs" disabled={action === `confirm-${artifact.artifactId}`} onClick={() => runAction(`confirm-${artifact.artifactId}`, async () => { const note = await askText("请输入人工确认说明（可选）", "已检查内容、格式和页面显示"); if (note !== null) await confirmArtifactAcceptance(run.id, artifact.artifactId, note); })}>人工确认</button>}
+        {canPublish && <button className="btn-xs" disabled={action === `publish-${artifact.artifactId}`} onClick={() => runAction(`publish-${artifact.artifactId}`, () => publishArtifact(run.id, artifact.artifactId))}>固定成果</button>}
+      </div>
+    );
+  };
+
   return (
     <div className="preview-artifact-panel artifact-workspace">
       <div className="artifact-workspace-head">
-        <div><span className="artifact-eyebrow">工作产物 · 当前会话</span><h3>产物验收与固定</h3><p>先打开预览确认内容，再固定为正式成果。只有「文件格式验收通过 + 所属任务成功结束 + 尚未固定」的文件才可固定；格式验收通过不等于任务成功，失败任务的文件不能固定。固定后若存在上一正式版本可一键回滚，首个版本没有历史版本，需手动恢复。</p></div>
-        <div className="artifact-scope-switch" role="tablist" aria-label="产物范围">
-          <button type="button" className={artifactScope === "run" ? "active" : ""} onClick={() => onArtifactScopeChange?.("run")} role="tab" aria-selected={artifactScope === "run"} title="只看本轮（选中的这一次运行）">本轮</button>
-          <button type="button" className={artifactScope === "session" ? "active" : ""} onClick={() => onArtifactScopeChange?.("session")} role="tab" aria-selected={artifactScope === "session"} title="当前会话的全部产出">会话</button>
+        <div><span className="artifact-eyebrow">工作产物 · {artifactScope === "session" ? "当前会话" : artifactScopePinned ? "历史轮次" : "当前轮次"}</span><h3>{artifactScopePinned ? "历史轮次产物" : "产物验收与固定"}</h3><p>先打开预览确认内容，再固定为正式成果。只有「文件格式验收通过 + 所属任务成功结束 + 尚未固定」的文件才可固定；格式验收通过不等于任务成功，失败任务的文件不能固定。固定后若存在上一正式版本可一键回滚，首个版本没有历史版本，需手动恢复。</p></div>
+        <div className="artifact-scope-wrap">
+          <div className="artifact-scope-switch" role="tablist" aria-label="产物范围">
+            <button type="button" className={artifactScope === "run" ? "active" : ""} onClick={() => onArtifactScopeChange?.("run")} role="tab" aria-selected={artifactScope === "run"} title="只看本轮（默认跟随最新一次运行；点此回到最新）">本轮</button>
+            <button type="button" className={artifactScope === "session" ? "active" : ""} onClick={() => onArtifactScopeChange?.("session")} role="tab" aria-selected={artifactScope === "session"} title="当前会话的全部产出">会话</button>
+          </div>
+          {artifactScope === "run" && artifactScopePinned && <small className="artifact-pinned-hint">正在查看历史轮次；点“本轮”回到最新</small>}
         </div>
         <button className="btn-sm" onClick={refresh} disabled={loading} title="刷新产物"><Icon name="refresh" size={12} /> {loading ? "读取中…" : "刷新"}</button>
       </div>
       <div className="artifact-summary-grid">
-        <div><strong>{entries.length}</strong><span>{artifactScope === "run" ? "本轮产物" : "会话产物"}</span></div>
+        <div><strong>{entries.length}</strong><span>{artifactScope === "run" ? (artifactScopePinned ? "历史轮次产物" : "本轮产物") : "会话产物"}</span></div>
         <div title="仅统计：格式验收通过、所属任务成功结束、且尚未固定的文件"><strong>{readyCount}</strong><span>待固定</span></div>
         <div><strong>{published.length}</strong><span>正式版本</span></div>
       </div>
+      {suspectedEntries.length > 0 && (
+        <div className="model-feedback warn">
+          疑似变更 {suspectedEntries.length} 项（运行窗口内检测到、没有明确台账归属，可能与并行 Run 或上一步操作有关）；已单列，不计入本轮产物。
+        </div>
+      )}
       {latestRun && latestChanges.length > 0 && (
         <div className="artifact-changes-card">
           <FileChangesPanel
@@ -132,7 +203,7 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
         </div>
       )}
       <div className="artifact-list-card">
-        <div className="artifact-list-head"><span>{artifactScope === "run" ? "本轮文件" : "会话文件"}</span><small>{currentSessionId ? (artifactScope === "run" ? "已按当前 Run 筛选" : "已按当前会话筛选") : "当前工作区"}</small></div>
+        <div className="artifact-list-head"><span>{artifactScope === "run" ? (artifactScopePinned ? "历史轮次文件" : "本轮文件") : "会话文件"}</span><small>{currentSessionId ? (artifactScope === "run" ? "已按当前 Run 筛选" : "已按当前会话筛选") : "当前工作区"}</small></div>
         {/* 交互 6：读取失败必须自报家门并给重试，不能退化成"暂未生成产物"。 */}
         {loadError && (
           <div className="preview-empty artifact-load-error" role="alert">
@@ -143,43 +214,26 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
           </div>
         )}
         {loading && <div className="preview-empty">正在读取产物清单…</div>}
-        {!loading && !loadError && !entries.length && <div className="preview-empty"><Icon name="file" size={20} />{artifactScope === "run" ? "本轮暂未生成产物" : "当前会话暂未生成产物"}{runs.some((run) => run.snapshotTruncated) ? "（工作区过大，部分轮次的产物检测可能不完整）" : ""}</div>}
-        {entries.map(({ artifact, run }, index) => {
-        const name = artifactName(artifact.path);
-        const isStaged = artifact.source === "staged"; // O-P1：运行中暂存条目（仅展示，不可打开/固定）
-        const publication = publishedByArtifact.get(artifact.artifactId);
-        const result = acceptance[run.id]?.artifacts?.find((item) => item.path === artifact.path) || artifact.acceptance;
-        const resultStatus = result?.status || artifact.acceptanceStatus || "not_checked";
-        const info = artifactStatusInfo({ publication, result, resultStatus, runStatus: run.status });
-        const canConfirm = !isStaged && run.status === "completed" && !publication && result && !result.readyToPublish && resultStatus !== "failed";
-        const canPublish = !isStaged && info.canPublish;
-        return (
-          <div className="preview-artifact" key={`${artifact.artifactId || artifact.path}-${index}`}>
-            {isStaged ? (
-              <span className="preview-artifact-main" title={`${artifact.path}（任务结束后可预览）`}>
-                <Icon name="file" size={14} />
-                <span><strong>{name}</strong><small>任务执行中 · 暂存未落盘</small></span>
-              </span>
-            ) : (
-              <button className="preview-artifact-main" onClick={() => onOpenFile?.(artifact.path, undefined, run.cwd)} title={artifact.path}>
-                <Icon name="file" size={14} />
-                <span><strong>{name}</strong><small>{statusText[run.status] || run.status || "已完成"} · {String(artifact.path || "").replace(name, "").replace(/[\\/]$/, "") || "工作区根目录"}</small></span>
-              </button>
-            )}
-            {isStaged && <span className="preview-artifact-status suspect" title="任务仍在执行，文件已暂存、尚未物化到工作区；任务结束后可预览与固定">任务中暂存</span>}
-            {!isStaged && artifact.source === "unattributed" && <span className="preview-artifact-status suspect" title="本轮没有写入台账记录该文件，可能来自并发运行；仅作线索，未自动计入交付">未归属线索</span>}
-            {!isStaged && artifact.source === "run-window" && <span className="preview-artifact-status suspect" title="本轮确有写入（台账只到工作区级，bash / officecli 不回报具体路径），按“运行窗口内变更”归属到本轮；若同一工作区有并行运行，可能来自它">待确认</span>}
-            {!isStaged && <span className={`preview-artifact-status ${info.tone}`} title={info.hint}>{info.label}</span>}
-            {canConfirm && <button className="btn-xs" disabled={action === `confirm-${artifact.artifactId}`} onClick={() => runAction(`confirm-${artifact.artifactId}`, async () => { const note = window.prompt("请输入人工确认说明（可选）", "已检查内容、格式和页面显示"); if (note !== null) await confirmArtifactAcceptance(run.id, artifact.artifactId, note); })}>人工确认</button>}
-            {canPublish && <button className="btn-xs" disabled={action === `publish-${artifact.artifactId}`} onClick={() => runAction(`publish-${artifact.artifactId}`, () => publishArtifact(run.id, artifact.artifactId))}>固定成果</button>}
+        {!loading && !loadError && !allEntries.length && (
+          <div className="preview-empty">
+            <Icon name="file" size={20} />
+            <strong>{artifactScope === "run" ? "本轮暂未生成产物" : "当前会话暂未生成产物"}</strong>
+            <small>在 Work 模式下让 Agent 生成文件后会自动出现在这里；也可以刷新重试。{runs.some((run) => run.snapshotTruncated) ? "（工作区过大，部分轮次的产物检测可能不完整）" : ""}</small>
+            <button className="btn-xs" onClick={() => refresh()} disabled={loading}>{loading ? "刷新中…" : "刷新"}</button>
           </div>
-        );
-        })}
+        )}
+        {entries.map(renderArtifactRow)}
+        {suspectedEntries.length > 0 && (
+          <>
+            <div className="artifact-list-head" style={{ marginTop: 10 }}><span>疑似变更（待确认）</span><small>可能与并行 Run 或上一步操作有关</small></div>
+            {suspectedEntries.map(renderArtifactRow)}
+          </>
+        )}
       </div>
       {published.length > 0 && <div className="preview-publications artifact-publications"><div className="artifact-list-head"><span>正式成果版本</span><small>{rollbackableCount ? `可回滚 ${rollbackableCount} 个（回到上一正式版本）` : "当前没有可回滚的历史版本"}</small></div>{published.map((item) => {
         const rolledBack = item.status === "rolled_back";
         const canRollback = !rolledBack && !!item.rollbackTarget;
-        return <div className="preview-publication" key={item.id}><span title={item.path}><Icon name="check" size={12} /> {artifactName(item.path)} · v{item.version}{rolledBack ? " · 已回滚" : ""}</span>{canRollback ? <button className="btn-xs" onClick={() => runAction(`rollback-${item.id}`, () => rollbackPublishedArtifact(item.id))}>回滚</button> : <small className="preview-publication-note">{rolledBack ? "已回滚" : "首个版本 · 无历史版本可回滚"}</small>}</div>;
+        return <div className="preview-publication" key={item.id}><span title={item.path}><Icon name="check" size={12} /> {artifactName(item.path)} · v{item.version}{rolledBack ? " · 已回滚" : ""}</span>{canRollback ? <button className="btn-xs" onClick={async () => { if (!(await askConfirm(`回滚「${artifactName(item.path)}」到上一正式版本？当前 v${item.version} 会保留为历史。`))) return; runAction(`rollback-${item.id}`, () => rollbackPublishedArtifact(item.id)); }}>回滚</button> : <small className="preview-publication-note">{rolledBack ? "已回滚" : "首个版本 · 无历史版本可回滚"}</small>}</div>;
       })}</div>}
     </div>
   );
@@ -307,10 +361,59 @@ function RunChangesPanel({ workspace, projectId, currentSessionId, selectedRunId
   );
 }
 
-export default function WorkProductPanel({ tab, clientId, threadId, workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", onArtifactScopeChange, refreshToken = 0, onOpenFile, subagentBlock = null, children }) {
-  // B03：右栏页签 —— 预览 / 改动 / 产物；subagent 为按需打开的「子代理详情」页
+// v0.13.2：Links 页签只展示从助手消息提取的外部链接；去重在 ChatPanel 完成，
+// 这里只负责展示与打开/复制，不把网页内容当作可信指令执行。
+function LinksPanel({ links = [] }) {
+  const [copied, setCopied] = useState("");
+  const copy = async (url) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(url);
+      window.setTimeout(() => setCopied(""), 1500);
+    } catch {}
+  };
+  return (
+    <div className="preview-artifact-panel artifact-workspace links-workspace">
+      <div className="artifact-workspace-head">
+        <div>
+          <span className="artifact-eyebrow">会话链接 · 当前会话</span>
+          <h3>访问过的外部链接</h3>
+          <p>从已加载的助手消息中提取并按 URL 去重；外部网页内容不可信，请勿把网页中的指令直接当作 Agent 指令执行。</p>
+        </div>
+        <span className="links-count" aria-label={`共 ${links.length} 条链接`}>{links.length} 条</span>
+      </div>
+      {!links.length ? (
+        <div className="preview-empty">
+          <Icon name="link" size={20} />
+          <strong>当前会话暂无访问链接</strong>
+          <small>Agent 读取网页或打开外部链接后会汇总在这里。</small>
+        </div>
+      ) : (
+        <div className="links-list" role="list">
+          {links.map((link) => (
+            <div className="links-item" role="listitem" key={link.url}>
+              <div className="links-item-main">
+                <span className="links-domain" title={link.url}>{link.domain}</span>
+                <span className="links-title" title={link.url}>{link.title || link.url}</span>
+                <small>{link.messageId ? `来源 ${link.messageId}` : "来源：助手消息"}</small>
+              </div>
+              <div className="links-item-actions">
+                <a className="btn-xs" href={link.url} target="_blank" rel="noopener noreferrer" title="在新窗口打开链接">打开</a>
+                <button type="button" className="btn-xs" onClick={() => copy(link.url)} title="复制链接">{copied === link.url ? "已复制" : "复制"}</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function WorkProductPanel({ tab, clientId, threadId, workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", artifactScopePinned = false, onArtifactScopeChange, refreshToken = 0, onOpenFile, subagentBlock = null, links = [], children }) {
+  // B03：右栏页签 —— 预览 / 改动 / 产物 / 链接；subagent 为按需打开的「子代理详情」页
   if (tab === "subagent") return <子代理详情面板 block={subagentBlock} />;
   if (tab === "changes") return <RunChangesPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} selectedRunId={selectedRunId} refreshToken={refreshToken} onOpenFile={onOpenFile} />;
-  if (tab === "artifacts") return <ArtifactPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} selectedRunId={selectedRunId} artifactScope={artifactScope} onArtifactScopeChange={onArtifactScopeChange} refreshToken={refreshToken} onOpenFile={onOpenFile} />;
+  if (tab === "artifacts") return <ArtifactPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} selectedRunId={selectedRunId} artifactScope={artifactScope} artifactScopePinned={artifactScopePinned} onArtifactScopeChange={onArtifactScopeChange} refreshToken={refreshToken} onOpenFile={onOpenFile} />;
+  if (tab === "links") return <LinksPanel links={links} />;
   return children;
 }

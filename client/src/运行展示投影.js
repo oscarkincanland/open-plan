@@ -463,6 +463,18 @@ export function upsertRunSummaryMessage(messages = [], data = {}, {
 }
 
 /**
+ * 内部 harness 提示：写进会话文件时仍是 user 消息，但不属于用户输入，
+ * 既不能在恢复后显示为“You”，也不能截断同一 Run 的过程归约。
+ * 旧版本把“模型连接中断后自动续跑”的提示直接以普通 user 消息写入，
+ * 因此保留旧格式识别，已存在的历史会话无需迁移。
+ */
+const INTERNAL_HARNESS_PREFIX = /^\s*(?:\[系统提醒\]|系统提醒[：:]|上一个回合的模型连接中断了[。.])/;
+
+export function isInternalHarnessMessage(message) {
+  return message?.role === "user" && INTERNAL_HARNESS_PREFIX.test(String(message.text || ""));
+}
+
+/**
  * 把同一轮里的 assistant 过程消息及系统进度提醒关联到 runId，
  * 让界面能将它们和 SSE/结论合并到同一个过程面板；真实用户消息仍是分组边界。
  */
@@ -479,12 +491,11 @@ export function associateRunMessages(messages = []) {
     for (; start >= 0; start -= 1) {
       const item = list[start];
       if (item?.role === "system" && item.summary) break;
-      const internalReminder = item?.role === "user" && /^\s*(?:\[系统提醒\]|系统提醒[：:])/.test(String(item.text || ""));
-      if (item?.role === "user" && !internalReminder) break;
+      if (item?.role === "user" && !isInternalHarnessMessage(item)) break;
     }
     for (let index = start + 1; index < summaryIndex; index += 1) {
       const item = (changed ? next : list)[index];
-      const internalProcess = item?.role === "user" && /^\s*(?:\[系统提醒\]|系统提醒[：:])/.test(String(item.text || ""));
+      const internalProcess = isInternalHarnessMessage(item);
       if ((!internalProcess && item?.role !== "assistant") || (item.runId && item.runId !== runId)) continue;
       if (item.runId === runId && Boolean(item.internalProcess) === internalProcess) continue;
       if (!changed) { next = [...list]; changed = true; }
@@ -492,4 +503,33 @@ export function associateRunMessages(messages = []) {
     }
   }
   return changed ? next : list;
+}
+
+function assistantEntryText(entry = {}) {
+  const content = entry?.message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((block) => block?.type === "text" || block?.type === "input_text")
+    .map((block) => block.text || block.content || "")
+    .join("\n");
+}
+
+/**
+ * 从会话条目尾部找与权威终稿对应的 assistant 条目。
+ * 实时运行结束后用它回填 entryId/parentId，使“分叉/版本”在实时态与恢复态一致。
+ * 只比较归一化后的开头/结尾，避免把上一轮内容相似的气泡误认成本轮。
+ */
+export function findAssistantEntryByText(entries = [], finalText = "") {
+  const target = String(finalText || "").replace(/\s+/g, " ").trim();
+  if (!target || !Array.isArray(entries)) return null;
+  const sameHead = (a, b) => (a.length <= 160 || b.length <= 160 ? a === b : a.slice(0, 160) === b.slice(0, 160));
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry?.type !== "message" || entry?.message?.role !== "assistant" || !entry.id) continue;
+    const text = assistantEntryText(entry).replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    if (sameHead(text, target) || text.slice(-120) === target.slice(-120)) return entry;
+  }
+  return null;
 }

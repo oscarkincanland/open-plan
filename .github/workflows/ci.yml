@@ -46,6 +46,36 @@ jobs:
       - name: 对话流（过程折叠 / 产物卡片 / 结论内嵌）
         run: node scripts/CI运行测试.mjs 对话流性能回归测试
 
+      - name: AVA 对话状态可信（压缩禁发 / 停止队列回执 / 发送三态）
+        run: node scripts/CI运行测试.mjs AVA对话状态可信测试
+
+      - name: AVA 对话队列（折叠预览 / 编辑删除 / 提升插话）
+        run: node scripts/CI运行测试.mjs AVA对话队列测试
+
+      - name: AVA 草稿持久化（localStorage / 隐私降级 / 会话隔离）
+        run: node scripts/CI运行测试.mjs AVA草稿持久化测试
+
+      - name: AVA 历史分页（活跃 leaf / 游标续拉 / 滚动锚点）
+        run: node scripts/CI运行测试.mjs AVA历史分页测试
+
+      - name: AVA 消息版本（编辑分支 / fork / regenerate）
+        run: node scripts/CI运行测试.mjs AVA消息版本测试
+
+      - name: AVA 长期目标（六状态 / 预算统计 / /goal）
+        run: node scripts/CI运行测试.mjs AVA长期目标测试
+
+      - name: AVA 链接页签（提取去重 / 角标 / 空态）
+        run: node scripts/CI运行测试.mjs AVA链接页签测试
+
+      - name: AVA 输入增强（推理全档位 / # 提及）
+        run: node scripts/CI运行测试.mjs AVA输入增强测试
+
+      - name: AVA Schema 提问表单（字段 / values / 校验）
+        run: node scripts/CI运行测试.mjs AVA提问表单测试
+
+      - name: AVA 会话分组（分页 / 工作区 / 20 条）
+        run: node scripts/CI运行测试.mjs AVA会话分组测试
+
       - name: 长连接预算与流去重（切工作区/切会话卡死防护）
         run: node scripts/CI运行测试.mjs 长连接预算与流去重测试
 

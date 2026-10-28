@@ -46,7 +46,7 @@ function TimelineItem({ item }) {
   if (kind === "tool_result") {
     return (
       <li className={`sa-detail-item tool-result ${item.isError ? "error" : ""}`}>
-        <span className="sa-detail-label"><Icon name={item.isError ? "x" : "check"} size={12} /> 结果</span>
+        <span className="sa-detail-label"><Icon name={item.isError ? "close" : "check"} size={12} /> 结果</span>
         {item.result ? <pre className="sa-detail-code">{String(item.result)}</pre> : null}
       </li>
     );
@@ -96,7 +96,7 @@ export default function 子代理详情面板({ block }) {
             <ul className="sa-detail-checklist">
               {block.checklist.map((item, index) => (
                 <li key={index} className={item.ok === false ? "miss" : "hit"}>
-                  <Icon name={item.ok === false ? "x" : "check"} size={12} /> {item.item}
+                  <Icon name={item.ok === false ? "close" : "check"} size={12} /> {item.item}
                 </li>
               ))}
             </ul>

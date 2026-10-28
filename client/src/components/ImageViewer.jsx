@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
+import 提示气泡 from "./提示气泡.jsx";
 import { openInSystem, revealInSystem } from "../api.js";
 import { PREVIEW_STATE } from "../文件地址.js";
 import { notifyError } from "./Feedback.jsx";
@@ -77,7 +78,7 @@ export default function ImageViewer({ doc, onPreviewState, onPreviewError }) {
         <div className="image-viewer-error" role="alert">
           <Icon name="warning" size={16} />
           <span>图片加载失败：文件可能损坏、格式与扩展名不符，或已不可读。</span>
-          <button type="button" className="btn-xs" onClick={handleOpenOriginal}>用系统应用打开</button>
+          <提示气泡 label="用系统应用打开"><button type="button" className="btn-xs" onClick={handleOpenOriginal} aria-label="用系统应用打开"><Icon name="externalLink" size={12} /></button></提示气泡>
         </div>
       )}
       {state !== PREVIEW_STATE.FAILED && (

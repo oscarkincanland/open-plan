@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { Graph } from "@antv/g6";
+import Icon from "./Icon.jsx";
+import 提示气泡 from "./提示气泡.jsx";
 
 // 分组调色板（Obsidian 式：同组同色相，组间区分）
 const GROUP_COLORS = ["#7aa2f7", "#9ece6a", "#e0af68", "#bb9af7", "#f7768e", "#73daca", "#2ac3de", "#ff9e64", "#c0caf5", "#a9b1d6"];
@@ -519,10 +521,10 @@ export default function KnowledgeGraph({ data, onOpenNode, highlightId, focusId 
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && doFocus()}
         />
-        <button className="btn-sm" onClick={fitGraph} disabled={!graphReady}>适配视图</button>
-        <button className="btn-sm" onClick={() => { setQuery(""); fitGraph(); }} disabled={!graphReady}>重置视图</button>
-        <button className="btn-sm" onClick={goBack} disabled={!exploreHistory.length} title="回到上一个探索节点">← 返回</button>
-        <button className="btn-sm" onClick={clearSelection} disabled={!selectedId} title="清除探索状态并恢复全图">回到全图</button>
+        <提示气泡 label="适配视图"><button className="btn-sm" onClick={fitGraph} disabled={!graphReady} aria-label="适配视图"><Icon name="maximize" size={14} /></button></提示气泡>
+        <提示气泡 label="重置视图"><button className="btn-sm" onClick={() => { setQuery(""); fitGraph(); }} disabled={!graphReady} aria-label="重置视图"><Icon name="refresh" size={14} /></button></提示气泡>
+        <提示气泡 label="回到上一个探索节点"><button className="btn-sm" onClick={goBack} disabled={!exploreHistory.length} aria-label="回到上一个探索节点"><Icon name="back" size={14} /></button></提示气泡>
+        <提示气泡 label="清除探索状态并恢复全图"><button className="btn-sm" onClick={clearSelection} disabled={!selectedId} aria-label="回到全图"><Icon name="grid" size={14} /></button></提示气泡>
         <label className="kb-check">
           <input type="checkbox" checked={hideIsolated} onChange={(e) => setHideIsolated(e.target.checked)} />
           隐藏孤立节点

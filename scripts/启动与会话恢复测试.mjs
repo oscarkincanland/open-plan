@@ -9,9 +9,15 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), "utf8");
+const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const app = read("../client/src/App.jsx");
 const 样式 = read("../client/src/styles.css");
+const chatPanel = read("../client/src/components/ChatPanel.jsx");
+const 运行投影 = read("../client/src/运行展示投影.js");
+const 服务端Agent = read("../server/agent.mjs");
+const 工作产物 = read("../client/src/components/工作产物面板.jsx");
+const docxViewer = read("../client/src/components/DocxViewer.jsx");
+const excelGrid = read("../client/src/components/ExcelGrid.jsx");
 
 // 1. 失败不伪装空结果，逐分区记录错误
 assert.doesNotMatch(app, /catch\(\(\) => \[\]\)/, "启动加载失败不应伪装成空列表");
@@ -52,5 +58,32 @@ assert.match(app, /browserAutoOpenBlockedRef/, "刷新后不应因浏览器状�
 assert.doesNotMatch(app, /browserStateSeenRef/, "旧的「首个状态」自动展开机制应已移除");
 assert.match(app, /避免上一个会话的“本轮产物”污染到当前会话/, "会话切换应重置本轮产物范围（防跨会话污染）");
 assert.match(app, /setChangesRunId\(""\);\n    setArtifactScope\("session"\);/, "会话切换应重置 runId 与范围");
+
+// 5. 对话恢复渲染一致性：内部续跑提示不得截断同一 Run 的归约
+assert.match(服务端Agent, /\[系统提醒\] 上一个回合的模型连接中断了/, "自动续跑提示必须以内部提示前缀写入");
+assert.match(运行投影, /isInternalHarnessMessage/, "内部提示判定应由运行展示投影统一提供");
+assert.match(chatPanel, /isInternalHarnessMessage\(message\)/, "历史归一化必须使用统一内部提示判定");
+assert.match(chatPanel, /isInternalHarnessMessage\(m\)/, "渲染兜底必须使用统一内部提示判定");
+assert.match(chatPanel, /backfillAssistantEntryId/, "实时结束后应回填 assistant entryId，保证分叉/版本一致");
+assert.match(运行投影, /findAssistantEntryByText/, "entryId 回填应有可测试的终稿匹配函数");
+assert.match(app, /currentDocValue/, "历史用户消息应过滤“当前文件：（无）”占位");
+assert.match(app, /entryModel/, "历史 assistant 消息应带当轮 model");
+
+// 6. 运行终态围栏 / 产物归属 / 本轮范围 / Office 预览能力
+assert.match(chatPanel, /finishedRunIdsRef/, "客户端必须有终态 Run 围栏");
+assert.match(chatPanel, /终态围栏/, "SSE 事件处理必须显式说明终态围栏");
+assert.match(chatPanel, /const finalizeId = aid \|\| lastAssistantIdRef\.current/, "run_finished 必须兜底收尾最后一个流式气泡");
+assert.match(chatPanel, /isTaskFinishing/, "模型结束后过程区必须显示“收尾中”而不是“实时”");
+assert.match(app, /artifactNotice/, "自动打开被守卫时必须有新产物入口");
+assert.match(app, /viewingOther/, "用户正在看其他文件时不得抢焦点");
+assert.match(app, /flushFileChanges/, "file_changed 必须合并刷新");
+assert.match(app, /handleArtifactScopeChange/, "切回“本轮”必须清除钉住的历史 Run");
+assert.match(工作产物, /isSuspectedArtifact/, "疑似产物必须单列");
+assert.match(工作产物, /artifactScopePinned/, "产物面板需要区分历史轮次与本轮");
+assert.match(工作产物, /疑似变更/, "疑似变更需要有独立分组提示");
+assert.match(docxViewer, /renderMode/, "Word 必须提供浏览器/高保真双渲染");
+assert.match(docxViewer, /简化编辑保存会重建 docx/, "Word 简化编辑保存必须显式警告");
+assert.match(excelGrid, /officeHtmlUrl/, "Excel 必须支持高保真只读回退");
+assert.match(excelGrid, /仅显示单元格值/, "Excel 网格必须声明只显示值");
 
 console.log("启动与会话恢复回归：通过");

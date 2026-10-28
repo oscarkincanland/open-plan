@@ -21,6 +21,10 @@ import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor,
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
 import { workspaceTrustSummary, setWorkspaceTrust } from "./项目信任.mjs";
 import { runtimeFlagsSnapshot, RUNTIME_FLAGS } from "./运行开关.mjs";
+import { summarizeRunUsage, exportObservabilityJson } from "./观测导出.mjs";
+import { listPlans, writePlan } from "./计划文件.mjs";
+import { loadHookConfig, HOOK_EVENTS } from "./Hook事件层.mjs";
+import { listToolMetadata, metadataCoverageReport, TOOL_NAMES } from "./工具元数据.mjs";
 import { validateArtifacts } from "./产物验证.mjs";
 import { listPublishedArtifacts, publishArtifact, inspectRunAcceptance, confirmArtifactAcceptance, rollbackPublishedArtifact } from "./成果管理.mjs";
 import { atomicWriteFile, atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
@@ -40,6 +44,7 @@ import { PI_PACKAGE_VERSION, piRuntimeManager } from "./Pi运行时管理.mjs";
 import { createPiNetworkAdapter } from "./Pi网络代理.mjs";
 import { listMcpServers, saveMcpServer, updateMcpServer, deleteMcpServer, testMcpServer, closeMcpConnections } from "./mcp管理.mjs";
 import { listPiExtensions, addPiExtension, updatePiExtension, checkPiExtension, deletePiExtension } from "./pi扩展管理.mjs";
+import { readGoal, setGoal as setSessionGoalRecord, actOnGoal, clearGoal, goalPromptContext } from "./goal.mjs";
 import { searchPiPackageCatalog, resolveInstalledPiPackage } from "./pi包目录.mjs";
 import { registerServerStream, releaseServerStream, noteStreamWrite, listServerStreams, serverStreamStats, closeServerStreams, sweepServerStreams, streamQuotaOf, rejectStreamQuota } from "./流连接.mjs";
 // P1-1 统一执行句柄：执行 / 中断 / 响应交互 / 释放 / 订阅 / 可用性 / 能力
@@ -348,6 +353,55 @@ app.get("/api/status", (req, res) => {
       identity: SERVICE_IDENTITY,
       sandboxIdentity: IS_SANDBOX_IDENTITY,
     },
+  });
+});
+
+// ---------- Harness 诊断（ZCode 对标，只读） ----------
+app.get("/api/harness/tools", (_req, res) => {
+  res.json({
+    ok: true,
+    coverage: metadataCoverageReport(TOOL_NAMES),
+    tools: listToolMetadata(),
+  });
+});
+
+app.get("/api/harness/usage", (req, res) => {
+  res.json({ ok: true, ...summarizeRunUsage({ runId: String(req.query.runId || "") }) });
+});
+
+app.get("/api/harness/observability", (req, res) => {
+  try {
+    res.json({ ok: true, report: JSON.parse(exportObservabilityJson({ runId: String(req.query.runId || "") })) });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error?.message || error) });
+  }
+});
+
+app.get("/api/harness/plans", (_req, res) => {
+  res.json({ ok: true, plans: listPlans(getWorkspace()) });
+});
+
+app.post("/api/harness/plans", express.json({ limit: "2mb" }), (req, res) => {
+  const { title = "任务计划", content = "", runId = null, name = null } = req.body || {};
+  const result = writePlan({ workspace: getWorkspace(), title, content, runId, name });
+  res.status(result.ok ? 200 : 400).json(result);
+});
+
+app.get("/api/harness/hooks", (_req, res) => {
+  const config = loadHookConfig({ workspace: getWorkspace() });
+  res.json({
+    ok: true,
+    events: HOOK_EVENTS,
+    requireTrust: config.requireTrust,
+    errors: config.errors,
+    hooks: config.hooks.map((hook) => ({
+      id: hook.id,
+      event: hook.event,
+      source: hook.source,
+      enabled: hook.enabled !== false,
+      script: hook.script || hook.args?.[0] || null,
+      timeoutMs: hook.timeoutMs || null,
+    })),
   });
 });
 
@@ -3154,6 +3208,23 @@ app.get("/api/runs/:id", (req, res) => {
   res.json({ run });
 });
 
+app.get("/api/runs/:id/workflow-journal", (req, res) => {
+  if (!RUNTIME_FLAGS.workflowJournal) return res.status(404).json({ ok: false, error: "工作流 journal 未启用" });
+  const run = getRun(req.params.id);
+  if (!run) return res.status(404).json({ ok: false, error: "run not found" });
+  const journal = readJournal(req.params.id);
+  res.json({ ok: true, runId: req.params.id, workflowId: run.task?.workflowId || run.workflow?.id || null, journalCount: journal.length, journal });
+});
+
+app.get("/api/runs/:id/workflow-replay", (req, res) => {
+  if (!RUNTIME_FLAGS.workflowJournal) return res.status(404).json({ ok: false, error: "工作流 journal 未启用" });
+  const run = getRun(req.params.id);
+  if (!run) return res.status(404).json({ ok: false, error: "run not found" });
+  const stages = (run.steps || []).map((step) => step.id || step.name);
+  const journal = readJournal(req.params.id);
+  res.json({ ok: true, runId: req.params.id, workflowId: run.task?.workflowId || run.workflow?.id || null, plan: planReplay(stages, journal), journalCount: journal.length });
+});
+
 app.post("/api/runs/:id/cancel", async (req, res) => {
   const run = getRun(req.params.id);
   if (!run) return res.status(404).json({ error: "run not found" });
@@ -3387,6 +3458,32 @@ app.post("/api/sessions/:id/fork", (req, res) => {
     const lines = source.split(/\r?\n/).filter(Boolean);
     if (!lines.length) return res.status(400).json({ error: "empty session" });
     const header = JSON.parse(lines[0]);
+    const sourceMessageId = String(req.body?.sourceMessageId || "").trim();
+    // v0.12.7：从指定消息 fork 时只复制到该消息（含其工具结果），旧会话不受影响。
+    // 不指定 sourceMessageId 时保持原有“整份会话复制”行为。
+    let kept = lines.slice(1);
+    if (sourceMessageId) {
+      const entries = kept.map((line) => {
+        try { return JSON.parse(line); } catch { return null; }
+      });
+      const targetIndex = entries.findIndex((entry) => entry?.id === sourceMessageId);
+      if (targetIndex < 0) return res.status(404).json({ error: "source message not found", code: "SOURCE_MESSAGE_NOT_FOUND" });
+      const target = entries[targetIndex];
+      const toolCallIds = new Set((Array.isArray(target?.message?.content) ? target.message.content : [])
+        .filter((block) => block?.type === "toolCall" || block?.type === "tool_call")
+        .map((block) => block.id || block.toolCallId)
+        .filter(Boolean));
+      let lastIndex = targetIndex;
+      // 助手消息的 toolResult 可能紧跟其后：一起保留，保证工具调用/结果配对。
+      for (let index = targetIndex + 1; index < entries.length; index += 1) {
+        const entry = entries[index];
+        const role = entry?.message?.role;
+        if (!entry || entry.type !== "message" || (role !== "toolResult" && role !== "tool_result")) break;
+        if (toolCallIds.size && !toolCallIds.has(entry.message?.toolCallId)) break;
+        lastIndex = index;
+      }
+      kept = kept.slice(0, lastIndex + 1);
+    }
     const id = crypto.randomUUID();
     const label = String(req.body?.label || `${header.label || "会话"}（分支）`).trim();
     const nextHeader = {
@@ -3395,18 +3492,17 @@ app.post("/api/sessions/:id/fork", (req, res) => {
       sessionId: id,
       threadId: id,
       parentSessionId: header.sessionId || header.id || req.params.id,
-      branchSourceMessageId: String(req.body?.sourceMessageId || "") || null,
-      branchPurpose: String(req.body?.purpose || "") || "从历史会话创建的独立分支",
+      branchSourceMessageId: sourceMessageId || null,
+      branchPurpose: String(req.body?.purpose || "") || (sourceMessageId ? "从指定消息创建的独立分支" : "从历史会话创建的独立分支"),
       created: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       label,
       pinned: false,
       frozen: false,
     };
-    lines[0] = JSON.stringify(nextHeader);
     const fileName = `${id}.jsonl`;
-    atomicWriteFile(path.join(SESSIONS_DIR, fileName), lines.join("\n") + "\n", "utf8");
-    res.json({ ok: true, id, fileName, parentSessionId: nextHeader.parentSessionId, cwd: nextHeader.cwd, threadId: id, label, projectId: nextHeader.projectId || null });
+    atomicWriteFile(path.join(SESSIONS_DIR, fileName), [JSON.stringify(nextHeader), ...kept].join("\n") + "\n", "utf8");
+    res.json({ ok: true, id, fileName, parentSessionId: nextHeader.parentSessionId, cwd: nextHeader.cwd, threadId: id, label, projectId: nextHeader.projectId || null, sourceMessageId: sourceMessageId || null, entryCount: kept.length });
   } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
 
@@ -3692,7 +3788,43 @@ app.get("/api/sessions", (req, res) => {
         });
       } catch {}
     }
-    res.json({ sessions });
+    // v0.13.6：稳定排序 + 可选分页/按工作区分组。
+    // 保持既有调用（无 limit/groupBy）返回全部 sessions，避免破坏前端。
+    sessions.sort((a, b) => {
+      const pin = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
+      if (pin) return pin;
+      return Number(b.modified || 0) - Number(a.modified || 0);
+    });
+    const total = sessions.length;
+    const pageLimit = Math.max(0, Number.parseInt(req.query.limit, 10) || 0);
+    const cursor = Math.max(0, Number.parseInt(req.query.cursor, 10) || 0);
+    const paged = pageLimit > 0 ? sessions.slice(cursor, cursor + pageLimit) : sessions;
+    const nextCursor = pageLimit > 0 && cursor + pageLimit < total ? cursor + pageLimit : null;
+    const groupBy = String(req.query.groupBy || "").trim();
+    let groups;
+    if (groupBy === "workspace") {
+      const byKey = new Map();
+      for (const session of paged) {
+        const key = session.projectId || session.cwd || "ungrouped";
+        if (!byKey.has(key)) {
+          byKey.set(key, {
+            key,
+            label: session.projectName || session.cwd || "未分组",
+            projectId: session.projectId || null,
+            cwd: session.cwd || "",
+            sessions: [],
+          });
+        }
+        byKey.get(key).sessions.push(session);
+      }
+      groups = [...byKey.values()].map((group) => ({ ...group, count: group.sessions.length }));
+    }
+    res.json({
+      sessions: paged,
+      total,
+      ...(pageLimit > 0 ? { cursor, nextCursor } : {}),
+      ...(groups ? { groups } : {}),
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -3760,6 +3892,107 @@ function compactSessionEntryForChat(entry) {
   return { ...entry, message };
 }
 
+// v0.12.5：按 Pi 会话树的活跃 leaf 还原当前分支。SessionManager 的 leafId 就是
+// 文件里最后追加的 entry；navigateTree 后由 agent 追加 oaw_branch_point 标记固化。
+// 老会话没有 parentId 链时不做过滤，避免把整段历史清空。
+function activeLeafSessionEntries(entries) {
+  const byId = new Map();
+  let allIdentified = true;
+  for (const entry of entries) {
+    if (!entry?.id) { allIdentified = false; continue; }
+    byId.set(entry.id, entry);
+  }
+  const leaf = entries[entries.length - 1];
+  if (!allIdentified || !leaf?.id) return { entries: entries.slice(), leafId: leaf?.id || null, filtered: false };
+  const hasParentLinks = entries.some((entry) => entry?.parentId);
+  if (!hasParentLinks) return { entries: entries.slice(), leafId: leaf.id, filtered: false };
+  const path = [];
+  const seen = new Set();
+  let cursor = leaf;
+  while (cursor && !seen.has(cursor.id)) {
+    seen.add(cursor.id);
+    path.push(cursor);
+    cursor = cursor.parentId ? byId.get(cursor.parentId) : null;
+  }
+  path.reverse();
+  if (!path.length) return { entries: entries.slice(), leafId: leaf.id, filtered: false };
+  return { entries: path, leafId: leaf.id, filtered: true };
+}
+
+function sessionMessageText(entry) {
+  const message = entry?.message || {};
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.filter((block) => block?.type === "text" || block?.type === "input_text").map((block) => block.text || block.content || "").join("\n");
+  }
+  return "";
+}
+
+// 从同一 parent 下的兄弟 user 消息还原“第 N 版”回答：版本 = 该 user 消息所在分支的叶子。
+function messageVersionsForSession(entries, messageId) {
+  const byId = new Map();
+  const childrenByParent = new Map();
+  for (const entry of entries) {
+    if (!entry?.id) continue;
+    byId.set(entry.id, entry);
+    const parent = entry.parentId || null;
+    if (!childrenByParent.has(parent)) childrenByParent.set(parent, []);
+    childrenByParent.get(parent).push(entry);
+  }
+  const target = byId.get(messageId);
+  if (!target) return null;
+  // 找到这条消息所属的“回合用户消息”：assistant 向上回溯到最近的 user 消息。
+  let roundUser = target;
+  let guard = 0;
+  while (roundUser && roundUser.message?.role !== "user" && roundUser.parentId && guard < 200) {
+    roundUser = byId.get(roundUser.parentId);
+    guard += 1;
+  }
+  if (!roundUser || roundUser.message?.role !== "user") return null;
+  const parentId = roundUser.parentId || null;
+  const activeLeafId = entries[entries.length - 1]?.id || null;
+  const branchContains = (branchRootId) => {
+    let cursor = activeLeafId ? byId.get(activeLeafId) : null;
+    let hops = 0;
+    while (cursor && hops < 500) {
+      if (cursor.id === branchRootId) return true;
+      cursor = cursor.parentId ? byId.get(cursor.parentId) : null;
+      hops += 1;
+    }
+    return false;
+  };
+  const deepestLeaf = (rootId) => {
+    let cursor = byId.get(rootId);
+    let hops = 0;
+    while (cursor && hops < 500) {
+      const children = (childrenByParent.get(cursor.id) || []).filter((entry) => entry.type === "message" || entry.type === "custom");
+      if (!children.length) return cursor.id;
+      cursor = children[children.length - 1];
+      hops += 1;
+    }
+    return rootId;
+  };
+  const siblings = (childrenByParent.get(parentId) || [])
+    .filter((entry) => entry.type === "message" && entry.message?.role === "user");
+  const versions = siblings.map((entry, index) => ({
+    entryId: entry.id,
+    leafId: branchContains(entry.id) ? activeLeafId : deepestLeaf(entry.id),
+    preview: sessionMessageText(entry).replace(/\s+/g, " ").trim().slice(0, 160),
+    createdAt: entry.timestamp || entry.createdAt || null,
+    active: branchContains(entry.id),
+    version: index + 1,
+  }));
+  const activeIndex = versions.findIndex((item) => item.active);
+  return {
+    parentId,
+    activeLeafId,
+    currentVersion: activeIndex >= 0 ? activeIndex + 1 : versions.length,
+    total: versions.length,
+    versions,
+  };
+}
+
 // GET /api/sessions/:id - 获取会话详情（含 entries、fork 树、leafId）
 app.get("/api/sessions/:id", (req, res) => {
   const found = findSessionFile(req.params.id);
@@ -3768,13 +4001,17 @@ app.get("/api/sessions/:id", (req, res) => {
     const text = readSessionTextCached(found);
     const all = parseJsonl(text);
     const header = all.find((e) => e && e.type === "header") || all[0] || {};
-    const entries = all.filter((e) => e !== header);
+    const allEntries = all.filter((e) => e !== header);
     const chatView = String(req.query.view || "") === "chat";
+    // v0.12.5：Chat 视图只沿活跃 leaf 的父链展示，避免把 navigateTree 后
+    // 被放弃的分支混进当前会话；老会话（无 parentId）保留原有整段返回。
+    const activeLeaf = activeLeafSessionEntries(allEntries);
+    const entries = chatView ? activeLeaf.entries : allEntries;
     // Chat 视图只服务前端展示，不承担 Pi 会话恢复。恢复仍使用磁盘上的完整
     // JSONL；这里按尾部窗口返回，避免切换一个长会话时把整份工具输出一次性
     // 传到浏览器并触发大批量 JSON/Markdown 解析。
     const chatLimit = chatView
-      ? Math.max(80, Math.min(600, Number.parseInt(req.query.limit, 10) || 360))
+      ? Math.max(20, Math.min(600, Number.parseInt(req.query.limit, 10) || 50))
       : entries.length;
     const requestedBefore = chatView ? Number.parseInt(req.query.before, 10) : NaN;
     const historyEnd = Number.isFinite(requestedBefore)
@@ -3784,29 +4021,21 @@ app.get("/api/sessions/:id", (req, res) => {
     const chatEntries = chatView ? entries.slice(historyStart, historyEnd) : entries;
     const responseEntries = chatView ? chatEntries.map(compactSessionEntryForChat) : entries;
 
-    // 按 parentId 组织 fork 层级（key 为 parentId，value 为子节点 id 数组）
+    // 非 Chat 视图继续返回完整 fork 树（供会话树/管理使用）。
     const tree = {};
-    for (const e of entries) {
-      const pid = (e && e.parentId) || null;
-      if (!tree[pid]) tree[pid] = [];
-      tree[pid].push(e.id);
-    }
-
-    // 找 leafId：没有任何子节点的 entry（最深的分支末端）
-    let leafId = null;
-    for (const e of entries) {
-      const kids = tree[e.id];
-      if (!kids || kids.length === 0) {
-        leafId = e.id;
-        break;
+    if (!chatView) {
+      for (const e of allEntries) {
+        const pid = (e && e.parentId) || null;
+        if (!tree[pid]) tree[pid] = [];
+        tree[pid].push(e.id);
       }
     }
 
     res.json({
       entries: responseEntries,
       // Chat 页面不使用 fork tree；不要把几千个节点再复制一份进响应。
-      tree: chatView ? {} : tree,
-      leafId,
+      tree,
+      leafId: activeLeaf.leafId,
       info: {
         id: header.sessionId || header.id || sessionBaseName(found.fileName),
         cwd: header.cwd || "",
@@ -3827,11 +4056,83 @@ app.get("/api/sessions/:id", (req, res) => {
         historyStart: chatView ? historyStart : undefined,
         historyEnd: chatView ? historyEnd : undefined,
         historyHasMore: chatView ? historyStart > 0 : false,
+        historyPageSize: chatView ? chatLimit : undefined,
+        activeLeafId: chatView ? activeLeaf.leafId : undefined,
+        activeLeafFiltered: chatView ? activeLeaf.filtered : undefined,
       },
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// v0.12.8：读取某条消息所属回合的版本列表（同一 parent 下的兄弟 user 消息）。
+app.get("/api/sessions/:id/message-versions", (req, res) => {
+  const found = findSessionFile(req.params.id);
+  if (!found) return res.status(404).json({ ok: false, error: "not found", code: "SESSION_NOT_FOUND" });
+  const messageId = String(req.query.messageId || "").trim();
+  if (!messageId) return res.status(400).json({ ok: false, error: "messageId required", code: "MESSAGE_ID_REQUIRED" });
+  try {
+    const all = parseJsonl(readSessionTextCached(found));
+    const header = all.find((e) => e && e.type === "header") || all[0] || {};
+    const versions = messageVersionsForSession(all.filter((e) => e !== header), messageId);
+    if (!versions) return res.status(404).json({ ok: false, error: "message not found", code: "MESSAGE_NOT_FOUND" });
+    res.json({ ok: true, messageId, ...versions });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message, code: "VERSIONS_READ_FAILED" });
+  }
+});
+
+// v0.13.0：长期目标（Goal）读写——会话级事实源在 .oaw/goals/<sessionId>.json。
+function goalSessionForRequest(req) {
+  const found = findSessionFile(req.params.id);
+  if (!found) return null;
+  const header = readSessionHeader(found);
+  const key = String(header.sessionId || header.id || sessionBaseName(found.fileName) || req.params.id);
+  return { found, header, key };
+}
+
+app.get("/api/sessions/:id/goal", (req, res) => {
+  const session = goalSessionForRequest(req);
+  if (!session) return res.status(404).json({ ok: false, code: "SESSION_NOT_FOUND", error: "not found" });
+  try {
+    res.json({ ok: true, goal: readGoal(session.key) });
+  } catch (e) {
+    res.status(500).json({ ok: false, code: "GOAL_WRITE_FAILED", error: e.message });
+  }
+});
+
+app.post("/api/sessions/:id/goal", (req, res) => {
+  const session = goalSessionForRequest(req);
+  if (!session) return res.status(404).json({ ok: false, code: "SESSION_NOT_FOUND", error: "not found" });
+  const result = setSessionGoalRecord(session.key, req.body || {}, {
+    clientId: String(req.body?.client || "") || null,
+    threadId: String(req.body?.thread || session.key),
+  });
+  if (!result.ok) return res.status(result.status || 400).json(result);
+  res.json(result);
+});
+
+app.post("/api/sessions/:id/goal/action", (req, res) => {
+  const session = goalSessionForRequest(req);
+  if (!session) return res.status(404).json({ ok: false, code: "SESSION_NOT_FOUND", error: "not found" });
+  const result = actOnGoal(session.key, req.body?.action, req.body || {}, {
+    clientId: String(req.body?.client || "") || null,
+    threadId: String(req.body?.thread || session.key),
+  });
+  if (!result.ok) return res.status(result.status || 400).json(result);
+  res.json(result);
+});
+
+app.delete("/api/sessions/:id/goal", (req, res) => {
+  const session = goalSessionForRequest(req);
+  if (!session) return res.status(404).json({ ok: false, code: "SESSION_NOT_FOUND", error: "not found" });
+  const result = clearGoal(session.key, {
+    clientId: String(req.query?.client || "") || null,
+    threadId: String(req.query?.thread || session.key),
+  });
+  if (!result.ok) return res.status(result.status || 400).json(result);
+  res.json(result);
 });
 
 // POST /api/sessions/batch-delete - 批量删除会话历史（运行中的会话跳过）
@@ -4004,10 +4305,16 @@ app.get("/api/agent/pending", (req, res) => {
 
 // 回答 agent 的提问（ask_user 工具：用户回答后 agent 继续）
 app.post("/api/agent/answer", (req, res) => {
-  const { client, thread, answer } = req.body || {};
-  if (!client || !answer) return res.status(400).json({ error: "client and answer required" });
+  const { client, thread, answer, values } = req.body || {};
+  // v0.13.5：Schema 表单可直接回传 values；统一序列化为一段可读文本交给执行句柄。
+  const answerText = String(
+    answer ?? (values && typeof values === "object"
+      ? Object.entries(values).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join("、") : value ?? ""}`).join("\n")
+      : ""),
+  ).trim();
+  if (!client || !answerText) return res.status(400).json({ error: "client and answer required" });
   // P1-1：响应交互下沉到执行句柄（路由只做参数校验与响应封装）。
-  const result = 执行句柄.响应交互(client, answer, { thread });
+  const result = 执行句柄.响应交互(client, answerText, { thread });
   if (!result.ok) return res.status(404).json({ error: "no pending question" });
   res.json(result);
 });
@@ -4175,6 +4482,11 @@ app.post("/api/agent/prompt", async (req, res) => {
       error.code = "SKILL_PREFLIGHT_FAILED";
       throw error;
     }
+    // v0.13.0：把会话长期目标注入本轮任务摘要；无目标/已完成时不注入。
+    const goalSession = thread ? findSessionFile(thread) : null;
+    const goalHeader = goalSession ? readSessionHeader(goalSession) : null;
+    const goalKey = goalSession ? String(goalHeader?.sessionId || goalHeader?.id || thread) : "";
+    const longTermGoal = goalKey ? goalPromptContext(goalKey) : null;
     task = createTaskEnvelope({
       ...effectiveTaskInput,
       text: normalizedText,
@@ -4183,6 +4495,7 @@ app.post("/api/agent/prompt", async (req, res) => {
       references: resolved,
       workflowId,
       capabilityPlan,
+      longTermGoal,
       constraints: [
         ...(taskInput?.constraints || []),
         ...(workflow && !workflow.valid ? [`工作流缺少技能：${workflow.missing.join(", ")}`] : []),

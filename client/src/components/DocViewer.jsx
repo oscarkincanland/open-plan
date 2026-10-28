@@ -10,6 +10,7 @@ import PptxViewer from "./PptxViewer.jsx";
 import ImageViewer from "./ImageViewer.jsx";
 import CommentMarker from "./CommentMarker.jsx";
 import Icon from "./Icon.jsx";
+import { previewCapability } from "../预览能力.js";
 
 const ICONS = { docx: "doc", xlsx: "xls", xls: "xls", pptx: "ppt", md: "md", html: "html", htm: "html", txt: "txt", pdf: "pdf", png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", bmp: "image", svg: "image", avif: "image" };
 const ANNO_SAVE_DEBOUNCE = 800;
@@ -106,6 +107,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
   const iframeReadyRef = useRef(false);
   const saveTimerRef = useRef(null);
   const lastSavedJsonRef = useRef("[]");
+  const capability = previewCapability(doc?.ext);
 
   // 文件身份：所有预览请求都显式带同一份 { cwd, relativePath, revision }。
   const identity = useMemo(
@@ -532,6 +534,9 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
           {previewState === PREVIEW_STATE.FAILED && <Icon name="warning" size={12} />}
           {PREVIEW_STATE_LABEL[previewState] || previewState}
         </span>
+        <span className={`badge preview-capability preview-capability-${capability.level}`} title={capability.detail}>
+          {capability.label}
+        </span>
         {doc.kind === "html" && !isOfficePreview && (
           <>
             <span className="badge">{watchUrl ? "实时预览" : "静态预览"}</span>
@@ -703,7 +708,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
             />
           </div>
         )}
-        {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} />}
+        {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} officeHtmlUrl={urls.html} />}
         {doc.kind === "htmlfile" && (
           <div className="docframe-container">
             <iframe

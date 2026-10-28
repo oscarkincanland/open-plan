@@ -42,6 +42,8 @@ const 语义图标 = read("client/src/components/工具语义图标.jsx");
 const runs源 = read("server/runs.mjs");
 const agent源 = read("server/agent.mjs");
 const index源 = read("server/index.mjs");
+// 成功/异常/截断收口已迁到执行句柄；恢复路径仍在 index.mjs。
+const 执行句柄源 = read("server/执行句柄.mjs");
 
 // ---------- 1. 运行终态（Run 生命周期层） ----------
 console.log("\n▶ 运行终态与语气");
@@ -276,13 +278,17 @@ test("run_finished 携带 finalText 与 finalMessageId", () => {
 test("结论详细度：提示词允许结构化成果摘要，Run 摘要优先用结论", () => {
   // 生成端：不再强制「1-3 句、禁止 Markdown」，有成果时允许结构化 Markdown
   assert.match(agent源, /当本轮产生了文件、报告、数据、代码改动等成果时，用简洁但完整的 Markdown 把成果讲清楚/);
-  assert.match(agent源, /建议 ≤800 字/);
-  assert.match(agent源, /不要逐条复述工具调用流水/);
+  // complete_task 取消软上限（D1：本次只改工具层，不改最终答复策略）
+  assert.doesNotMatch(agent源, /建议 ≤800 字/, "complete_task 不再限定 800 字");
+  assert.doesNotMatch(agent源, /纯问答一句话即可/, "complete_task 不再要求一句话");
+  assert.match(agent源, /不设字数上限（服务端上限 4000 字符）/);
+  assert.match(agent源, /同一事实只写一次/);
+  assert.match(agent源, /不复述工具流水/);
   // 落盘端：Run 摘要优先采用结论，历史列表/结果卡标题才能显示真实结论
   assert.match(runs源, /if \(run\.completion\?\.summary\) run\.summary = String\(run\.completion\.summary\)\.slice\(0, 4000\)/);
 });
-test("index 读取权威终稿优先走 Run 根级投影", () => {
-  assert.match(index源, /if \(run && String\(run\.finalText \|\| ""\)\.trim\(\)\) return String\(run\.finalText\);/);
+test("执行句柄读取权威终稿优先走 Run 根级投影", () => {
+  assert.match(执行句柄源, /if \(run && String\(run\.finalText \|\| ""\)\.trim\(\)\) return String\(run\.finalText\);/);
 });
 test("思考块默认收起且尊重设置，并有 ARIA 展开状态", () => {
   assert.match(对话面板, /useState\(\(\) => loadSettings\(\)\.thinkingDefaultOpen === true\)/);
@@ -293,10 +299,10 @@ test("思考块默认收起且尊重设置，并有 ARIA 展开状态", () => {
 test("终态总结无条件发出：没有产物也要有总结卡与过程行", () => {
   // 成功/取消路径：file_changed 仍按需，agent_summary 不再被 productPaths 判空包裹
   assert.doesNotMatch(index源, /if \(productPaths\.length\) \{/, "终态总结不得再被 productPaths 判空包裹");
-  assert.match(index源, /if \(productPaths\.length\) emitChannel\(entry, "file_changed"/, "file_changed 仍按需发出");
-  assert.match(index源, /emitChannel\(entry, "agent_summary", \{[\s\S]{0,260}?summary: completed\?\.summary/, "成功/取消路径总结与 run 记录同文案");
+  assert.match(index源, /if \(productPaths\.length\) emitChannel\(entry, "file_changed"|if \(productPaths\.length\) deps\.emit\(entry, "file_changed"/, "file_changed 仍按需发出");
+  assert.match(执行句柄源, /deps\.emit\(entry, "agent_summary", \{[\s\S]{0,260}?summary: completed\?\.summary/, "成功/取消路径总结与 run 记录同文案");
   assert.match(index源, /emitChannel\(entry, "agent_summary", \{[\s\S]{0,260}?summary: finished\?\.summary/, "恢复路径总结与 run 记录同文案");
-  assert.match(index源, /未检测到文件变更/, "无产物轮次也要有明确文案");
+  assert.match(执行句柄源, /未检测到文件变更/, "无产物轮次也要有明确文案");
 });
 
 // ---------- 6. 用户中断 ≠ 模型故障 ----------
@@ -322,11 +328,14 @@ test("发送路由：中断不写 runtime_error，也不发 agent_error", () => 
   assert.match(index源, /if \(entry && userAborted\) \{[\s\S]{0,220}?emitChannel\(entry, "aborted"/, "中断只发 aborted");
   // 两条执行路径（排队执行器 + 直接发送路由）都要守住：runtime_error 一旦写入，
   // Run 会被标成"需要恢复"、Runtime 被标成 failed，用户中断后还要"恢复任务"。
-  const guards = index源.match(/if \(runtimeHealth && !userAborted(?: && !truncatedRecoverable)?\) recordRunEvent\(run\.id, "runtime_error"/g) || [];
-  assert.equal(guards.length, 2, "排队执行器与发送路由都必须跳过 runtime_error");
-  assert.match(index源, /const userAborted = cancelRequestedHere && isAbortLikeError\(diagnostic\.message\)/,
+  // 发送路由在 index.mjs，排队执行器已迁到执行句柄。
+  const guardPattern = /if \(runtimeHealth && !userAborted(?: && !truncatedRecoverable)?\) (?:deps\.runs\.)?recordRunEvent\(run\.id, "runtime_error"/g;
+  const guards = (index源.match(guardPattern) || []).length + (执行句柄源.match(guardPattern) || []).length;
+  assert.equal(guards, 2, "排队执行器与发送路由都必须跳过 runtime_error");
+  assert.match(执行句柄源, /const userAborted = cancelRequestedHere && isAbortLikeError\(diagnostic\.message\)/,
     "排队执行器也要做同一套中断判定");
-  assert.match(index源, /const cancelled = userAborted \|\| getRun\(run\.id\)\?\.status === "cancel_requested"/, "中断必须落 cancelled");
+  assert.match(执行句柄源, /const cancelled = userAborted \|\| deps\.runs\.getRun\(run\.id\)\?\.status === "cancel_requested"/, "中断必须落 cancelled");
+  assert.match(index源, /const cancelled = userAborted \|\| getRun\(run\.id\)\?\.status === "cancel_requested"/, "发送路由中断必须落 cancelled");
 });
 
 test("中断不把 Runtime 标成失败（否则下一条消息被当作失效运行时重建）", () => {
@@ -340,7 +349,8 @@ test("abort 接口返回真实结果，并按 client 兜底查找在跑会话", 
   assert.match(agent源, /resolveLiveEntry\(clientId\)/, "找不到精确 key 时要按 client 前缀兜底");
   assert.match(agent源, /return \{ ok: true, cancelled: false, reason: "no-live-session" \}/, "没有在跑的任务要如实返回");
   // P2-3 起该响应还会附带 stillQueued（取消后仍排队的轮次），因此只锁定前缀形状，不写死整行。
-  assert.match(index源, /res\.json\(\{ \.\.\.result, runId: result\.runId \|\| runId \|\| null/, "中断结果要回传 runId");
+  assert.match(index源, /res\.json\(await 执行句柄\.中断\(runId,/, "中断应委托执行句柄收口");
+  assert.match(执行句柄源, /const payload = \{ \.\.\.result, runId: result\?\.runId \|\| targetRunId \|\| null/, "中断结果要回传 runId");
   assert.match(index源, /const running = listRuns\(\{ limit: 20 \}\)\.find/, "内存 key 不匹配时按 Run 记录兜底取消");
 });
 
@@ -374,11 +384,11 @@ test("截断识别只认流截断，不误伤用户中断与普通失败", () =>
 });
 
 test("流截断但有产物 → 按「部分完成」收尾，而不是「本轮失败」", () => {
-  assert.match(index源, /const truncatedRecoverable = !userAborted[\s\S]{0,200}?isProviderTruncation\(diagnostic\.message\)[\s\S]{0,120}?changed\.length > 0 \|\| stagedValidations\.length > 0\)/,
+  assert.match(执行句柄源, /const truncatedRecoverable = !userAborted[\s\S]{0,200}?isProviderTruncation\(diagnostic\.message\)[\s\S]{0,120}?changed\.length > 0 \|\| stagedValidations\.length > 0\)/,
     "截断可恢复判定必须同时看「非用户中断 + 形如截断 + 有客观产出」");
-  assert.match(index源, /status: "partial",[\s\S]{0,400}?模型流被供应商截断/, "结论卡要说明是流被截断");
-  assert.match(index源, /status: cancelled \? "cancelled" : \(truncatedRecoverable \? "completed" : "failed"\)/, "有产出的截断必须落 completed（这样才会发布产物）");
-  assert.match(index源, /if \(runtimeHealth && !userAborted && !truncatedRecoverable\) recordRunEvent\(run\.id, "runtime_error"/, "截断可恢复时不写 runtime_error");
+  assert.match(执行句柄源, /status: "partial",[\s\S]{0,400}?模型流被供应商截断/, "结论卡要说明是流被截断");
+  assert.match(执行句柄源, /status: cancelled \? "cancelled" : \(truncatedRecoverable \? "completed" : "failed"\)/, "有产出的截断必须落 completed（这样才会发布产物）");
+  assert.match(执行句柄源, /if \(runtimeHealth && !userAborted && !truncatedRecoverable\) deps\.runs\.recordRunEvent\(run\.id, "runtime_error"/, "截断可恢复时不写 runtime_error");
 });
 
 // ---------- 8. 写入通道（暂存 ↔ officecli）----------

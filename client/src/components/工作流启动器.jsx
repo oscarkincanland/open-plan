@@ -155,7 +155,7 @@ export default function 工作流启动器({ onClose }) {
           <ul className="wf-artifacts">
             {当前.artifacts.map((产物) => (
               <li key={产物.id} className={产物.required ? "wf-artifact required" : "wf-artifact"}>
-                <Icon name={产物.required ? "check" : "doc"} size={12} />
+                <Icon name={产物.required ? "check" : "file"} size={12} />
                 <span className="wf-artifact-title">{产物.title}</span>
                 <span className="wf-artifact-kind">{产物.kind}</span>
                 {产物.required && <span className="wf-artifact-flag">必需</span>}

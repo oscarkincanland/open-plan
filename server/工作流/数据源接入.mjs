@@ -2,7 +2,7 @@
  * 领域工作流声明：数据源接入（Qoder 对标 §4.3）。
  *
  * 坐标校验为硬约束：经度 73–135°E、纬度 18–54°N，超范围立即阻断
- * （AGENT.MD §坐标与数据校验）；记录数 expected vs actual 不完整不继续。
+ * （AGENTS.md §6 领域硬约束）；记录数 expected vs actual 不完整不继续。
  */
 export default {
   id: "data-source-onboarding",

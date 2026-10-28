@@ -161,6 +161,36 @@ const REGISTRY = [
   { type: "memory_file_edited", lifecycle: true, persist: true, note: "记忆文件编辑" },
   { type: "memory_initialized", lifecycle: true, persist: true, note: "记忆初始化" },
 
+  // ---- 长期目标（v0.13.x Goal）----
+  // Goal 是项目 Harness 的跨轮目标层，不是 Pi 原生能力；状态变化与用户操作都落盘可回放。
+  { type: "goal_created", lifecycle: true, persist: true, note: "长期目标创建/替换", schema: { required: ["goalId", "sessionId", "status"], types: { goalId: "string", sessionId: "string", text: "string", status: "string" } } },
+  { type: "goal_updated", lifecycle: true, persist: true, note: "长期目标状态/编辑/预算/统计更新", schema: { required: ["goalId", "sessionId", "status"], types: { goalId: "string", sessionId: "string", status: "string", turns: "number", usedTokens: "number", budgetTokens: "number" } } },
+  { type: "goal_cleared", lifecycle: true, persist: true, note: "长期目标清除", schema: { required: ["goalId", "sessionId"], types: { goalId: "string", sessionId: "string" } } },
+
+  // ---- ZCode Harness 对标（计划 2026-10-27-004，默认关）----
+  { type: "tool_metadata_missing", lifecycle: true, persist: true, note: "工具元数据缺失（启动/注册期告警）", schema: { required: ["tool"], types: { tool: "string" } } },
+  { type: "permission_decision", lifecycle: true, persist: false, note: "权限决策（高频；ask/deny 另见审批事件）", schema: { required: ["tool", "action", "ruleId"], types: { tool: "string", action: "string", ruleId: "string" } } },
+  { type: "tool_result_externalized", lifecycle: true, persist: true, note: "工具结果超阈值外置", schema: { required: ["tool", "path", "bytes"], types: { tool: "string", path: "string", bytes: "number" } } },
+  { type: "usage_recorded", lifecycle: true, persist: false, note: "用量记录（JSONL 为计量事实）" },
+  { type: "memory_recall_started", lifecycle: true, persist: true, note: "记忆召回开始" },
+  { type: "memory_recall_selected", lifecycle: true, persist: true, note: "记忆召回选择结果（可审计）", schema: { required: ["selected"], types: { selected: "array" } } },
+  { type: "memory_recall_skipped", lifecycle: true, persist: true, note: "记忆召回跳过/回退" },
+  { type: "memory_extraction_started", lifecycle: true, persist: true, note: "记忆自动抽取开始" },
+  { type: "memory_extraction_finished", lifecycle: true, persist: true, note: "记忆自动抽取结束" },
+  { type: "memory_extraction_skipped", lifecycle: true, persist: true, note: "记忆自动抽取跳过（条件不满足/失败）" },
+  { type: "hook_started", lifecycle: true, persist: false, note: "Hook 开始（高频）" },
+  { type: "hook_finished", lifecycle: true, persist: false, note: "Hook 结束（高频）" },
+  { type: "hook_denied", lifecycle: true, persist: true, note: "Hook 拒绝（可审计）", schema: { required: ["event", "reason"], types: { event: "string", reason: "string" } } },
+  { type: "subagent_profile_frozen", lifecycle: true, persist: true, note: "子代理 profile 快照冻结" },
+  { type: "subagent_background_started", lifecycle: true, persist: true, note: "子代理后台派发开始" },
+  { type: "subagent_background_finished", lifecycle: true, persist: true, note: "子代理后台派发结束" },
+  { type: "context_sections_assembled", lifecycle: true, persist: false, note: "上下文章节组装诊断" },
+  { type: "skill_injected", lifecycle: true, persist: true, note: "Skill 注入（含预算/哈希）" },
+  { type: "config_source_resolved", lifecycle: true, persist: false, note: "配置来源解析诊断" },
+  { type: "workflow_journal_updated", lifecycle: true, persist: true, note: "工作流阶段 journal 更新" },
+  { type: "plugin_manifest_invalid", lifecycle: true, persist: true, note: "插件清单缺失/哈希不匹配" },
+  { type: "plan_persisted", lifecycle: true, persist: true, note: "计划文件落盘" },
+
   // ---- 高频增量（只走实时 SSE，可优先淘汰）----
   { type: "token", lifecycle: false, persist: false, note: "回答流式文本" },
   { type: "thinking", lifecycle: false, persist: false, note: "思考流" },

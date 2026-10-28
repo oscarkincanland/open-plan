@@ -7,7 +7,10 @@ import {
   contextTokensFromUsage,
   createBashToolDefinition,
   createEditToolDefinition,
+  createFindToolDefinition,
+  createGrepToolDefinition,
   createLocalBashOperations,
+  createLsToolDefinition,
   createReadToolDefinition,
   createWriteToolDefinition,
   DefaultResourceLoader,
@@ -42,7 +45,7 @@ import {
 } from "./运行预算.mjs";
 import { importLocalPiSessionFile, readCredentials, readModelsConfig, readModelsStore, readRuntimeSettings, writeCredentials } from "./Pi配置管理.mjs";
 import { resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { recordRunEvent, updateRunTodo, getRun } from "./runs.mjs";
+import { recordRunEvent, updateRunTodo, getRun, isRunTerminal } from "./runs.mjs";
 import { markRunTiming, attachRunTimingSpans } from "./首字延迟.mjs";
 import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode, routeTaskIntent } from "./task.mjs";
 import { classifyToolCall, isReadonlyBash } from "./office规范/执行闸门.mjs";
@@ -117,9 +120,139 @@ import { evaluateMemoryCandidate } from "./记忆准入.mjs";
 import { getProjectForWorkspace } from "./项目管理.mjs";
 import { cachedMcpTools, callMcpTool } from "./mcp管理.mjs";
 import { enabledPiExtensionEntries, enabledPiExtensionPaths } from "./pi扩展管理.mjs";
+// ZCode Harness 对标（计划 2026-10-27-004）：工具元数据、结果外置、用量、召回、段落、Hook、错误 envelope。
+import { resultBudgetFor, validateToolMetadata } from "./工具元数据.mjs";
+import { externalizeToolResultPayload } from "./工具结果外置.mjs";
+import { recordUsage } from "./用量归集.mjs";
+import { buildRecallContextSync } from "./记忆召回.mjs";
+import { buildExtractionPrompt } from "./记忆抽取调度.mjs";
+import { buildContextSections, renderContextSections, sectionSummary } from "./上下文段落.mjs";
+import { dispatchHooks } from "./Hook事件层.mjs";
+import { normalizeToolError, toolError } from "./工具错误.mjs";
+import { buildSkillInjection } from "./Skill注入.mjs";
+import { buildSubagentProfile } from "./子代理配置.mjs";
+import { skillRootCandidates } from "./资源发现.mjs";
 
-function schemaToTypeBox(schema = {}, depth = 0) {
-  if (!schema || typeof schema !== "object" || depth > 8) return Type.Any();
+const HARNESS_WRAPPED = Symbol.for("oaw.harness.wrapped");
+
+function safeToolJson(value) {
+  try {
+    const text = JSON.stringify(value ?? null);
+    return text.length > 4000 ? text.slice(0, 4000) : text;
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+function toolResultText(result) {
+  if (!result || !Array.isArray(result.content)) return "";
+  return result.content
+    .filter((part) => part && part.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("\n")
+    .slice(0, 4000);
+}
+
+/**
+ * 自定义工具统一包装（H1-3 / H3-1 / H3-3）：
+ *   - PreToolUse Hook：可 deny / 改写输入；
+ *   - 结果超阈值外置：模型只拿预览；
+ *   - PostToolUse Hook：记录/提示；
+ *   - 异常统一 envelope：code/message/suggestion/retryable。
+ * 全部受运行开关控制；关闭时直接调用原 execute，行为与基线一致。
+ */
+function wrapCustomTool(tool, { getEntry, emit } = {}) {
+  if (!tool || typeof tool.execute !== "function" || tool[HARNESS_WRAPPED]) return tool;
+  const original = tool.execute;
+  const wrapped = {
+    ...tool,
+    execute: async (toolCallId, params, signal) => {
+      const entry = typeof getEntry === "function" ? getEntry() : null;
+      const workspace = entry?.workspace || getWorkspace();
+      const runId = entry?.activeRunId || null;
+      let effectiveParams = params;
+      if (RUNTIME_FLAGS.hookEvents) {
+        try {
+          const pre = await dispatchHooks({
+            event: "PreToolUse",
+            payload: { tool: tool.name, input: params, inputText: safeToolJson(params), runId },
+            workspace,
+            timeoutMs: RUNTIME_FLAGS.hookTimeoutMs,
+          });
+          if (pre.behavior === "deny") {
+            try { emit?.("hook_denied", { event: "PreToolUse", tool: tool.name, reason: pre.reason, hookId: pre.hookId || null, runId }); } catch {}
+            return {
+              content: [{ type: "text", text: `Hook 拒绝执行 ${tool.name}：${pre.reason}` }],
+              isError: true,
+              details: { error: toolError("permission_denied", pre.reason, "调整方案或先与用户确认。") },
+            };
+          }
+          if (pre.updatedInput && typeof pre.updatedInput === "object") {
+            effectiveParams = { ...(params && typeof params === "object" ? params : {}), ...pre.updatedInput };
+          }
+        } catch {}
+      }
+      let result;
+      try {
+        result = await original(toolCallId, effectiveParams, signal);
+      } catch (error) {
+        if (!RUNTIME_FLAGS.toolErrorEnvelope) throw error;
+        const normalized = normalizeToolError(error);
+        return {
+          content: [{ type: "text", text: `${tool.name} 失败：${normalized.message}${normalized.suggestion ? `\n建议：${normalized.suggestion}` : ""}` }],
+          isError: true,
+          details: { error: normalized },
+        };
+      }
+      if (RUNTIME_FLAGS.toolResultArtifact && result && typeof result === "object") {
+        try {
+          const budget = resultBudgetFor(tool.name);
+          const externalized = externalizeToolResultPayload(result, {
+            runId,
+            toolName: tool.name,
+            toolCallId,
+            maxInlineBytes: Math.min(Number(budget.maxInlineBytes) || RUNTIME_FLAGS.toolResultMaxBytes, RUNTIME_FLAGS.toolResultMaxBytes),
+            direction: budget.preview?.direction || (tool.name === "bash" ? "tail" : "head"),
+          });
+          if (externalized?.details?.externalizedResults?.length) {
+            result = externalized;
+            for (const artifact of externalized.details.externalizedResults) {
+              try { emit?.("tool_result_externalized", { tool: tool.name, path: artifact.relativePath || artifact.path, bytes: artifact.bytes, runId }); } catch {}
+            }
+          }
+        } catch {}
+      }
+      if (RUNTIME_FLAGS.hookEvents) {
+        try {
+          const post = await dispatchHooks({
+            event: "PostToolUse",
+            payload: {
+              tool: tool.name,
+              input: effectiveParams,
+              inputText: safeToolJson(effectiveParams),
+              output: toolResultText(result),
+              isError: result?.isError === true,
+              runId,
+            },
+            workspace,
+            timeoutMs: RUNTIME_FLAGS.hookTimeoutMs,
+          });
+          if (post.behavior === "deny" && post.reason) {
+            result = {
+              ...(result && typeof result === "object" ? result : {}),
+              content: [...(Array.isArray(result?.content) ? result.content : []), { type: "text", text: `\n[Hook 提示] ${post.reason}` }],
+            };
+          }
+        } catch {}
+      }
+      return result;
+    },
+  };
+  try { Object.defineProperty(wrapped, HARNESS_WRAPPED, { value: true }); } catch {}
+  return wrapped;
+}
+
+function schemaToTypeBox(schema = {}, depth = 0) {  if (!schema || typeof schema !== "object" || depth > 8) return Type.Any();
   if (Array.isArray(schema.enum) && schema.enum.length && schema.enum.length <= 50) {
     const literals = schema.enum.map((value) => {
       if (["string", "number", "boolean"].includes(typeof value) || value === null) return Type.Literal(value);
@@ -311,23 +444,23 @@ function limitToolText(value, max = TOOL_OUTPUT_MAX_CHARS) {
 
 // Chat 的 Skills 检索只读本地 SKILL.md，不把目录扫描交给模型自行猜路径。
 // 这样既能复用 Pi/Agents 的技能目录，也避免外部路径被 read 工具误用。
+function localSkillRootCandidates() {
+  return skillRootCandidates({
+    agentDir: AGENT_DIR,
+    userProfile: process.env.USERPROFILE || os.homedir(),
+    projectDir: PROJECT_DIR,
+  });
+}
+
 function localSkillRoots() {
-  return [
-    path.join(AGENT_DIR, "skills"),
-    path.join(process.env.USERPROFILE || os.homedir(), ".agents", "skills"),
-    path.join(process.env.USERPROFILE || os.homedir(), ".claude", "skills"),
-    path.join(PROJECT_DIR, ".agents", "skills"),
-    path.join(PROJECT_DIR, ".pi", "skills"),
-    path.join(PROJECT_DIR, ".claude", "skills"),
-    // 工作根目录（项目目录的上一级）下的 .claude/skills：用相对推导而不是写死某台机器的路径
-    path.resolve(PROJECT_DIR, "..", ".claude", "skills"),
-  ];
+  return localSkillRootCandidates().map((item) => item.path);
 }
 
 function localSkillCatalog() {
   const result = [];
   const seen = new Set();
-  for (const root of localSkillRoots()) {
+  for (const rootInfo of localSkillRootCandidates()) {
+    const root = rootInfo.path;
     if (!fs.existsSync(root)) continue;
     let entries = [];
     try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
@@ -340,7 +473,15 @@ function localSkillCatalog() {
       const frontmatter = content.match(/^---\s*\n([\s\S]*?)\n---/);
       const description = frontmatter?.[1]?.match(/description:\s*["']?([^"'\n]+)/)?.[1]?.trim() || "";
       seen.add(entry.name);
-      result.push({ name: entry.name, description, path: file, source: root.includes(".agents") ? "agents" : root.includes(".pi") ? "pi" : "pi-agent" });
+      result.push({
+        name: entry.name,
+        description,
+        path: file,
+        source: rootInfo.kind,
+        sourceScope: rootInfo.source,
+        sourcePath: root,
+        sourceRank: rootInfo.rank,
+      });
     }
   }
   return result.sort((a, b) => a.name.localeCompare(b.name));
@@ -701,6 +842,13 @@ async function promptWithFirstEventTimeout(entry, text, options = {}) {
 }
 
 const THINKING_LEVEL_ORDER = Object.freeze(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/** 返回模型真实支持的档位；没有 thinkingLevelMap 时按 Pi 标准七档返回。 */
+export function thinkingLevelsFor(model) {
+  const map = model?.thinkingLevelMap;
+  if (!map || typeof map !== "object") return model?.reasoning === false ? ["off"] : [...THINKING_LEVEL_ORDER];
+  return THINKING_LEVEL_ORDER.filter((level) => map[level] !== null && map[level] !== undefined);
+}
 
 /**
  * Pi 模型目录里的 thinkingLevelMap 才是本模型真正支持的档位。
@@ -1158,6 +1306,12 @@ class AgentManager extends EventEmitter {
       const name = safePiToolName(`mcp_${server.id.slice(0, 18)}_${tool.name.slice(0, 30)}_${hash}`, 62);
       return { server, tool, name };
     });
+    const declaredToolNames = [...new Set([
+      ...toolPolicyForMode("agent").tools,
+      ...mcpToolRegistrations.map((item) => item.name),
+      ...piExtensionToolNames,
+    ])];
+    const metadataReport = RUNTIME_FLAGS.toolMetadata ? validateToolMetadata(declaredToolNames) : null;
     const mcpToolDefinitions = mcpToolRegistrations.map(({ server, tool, name }) => defineTool({
         name,
         label: `${server.name}: ${tool.name}`.slice(0, 100),
@@ -1255,6 +1409,9 @@ class AgentManager extends EventEmitter {
         },
       },
     });
+    const managedGrepTool = createGrepToolDefinition(workspace);
+    const managedFindTool = createFindToolDefinition(workspace);
+    const managedLsTool = createLsToolDefinition(workspace);
     const managedWriteTool = createWriteToolDefinition(workspace, {
       operations: {
         mkdir: async (directory) => ensureStagedDirectory({ ...activeWriteContext("write"), targetPath: directory, kind: "write" }),
@@ -1966,8 +2123,26 @@ execute: async (_toolCallId, params) => {
         const name = String(params.name || "").trim();
         const skill = localSkillCatalog().find((item) => item.name === name);
         if (!skill) return { content: [{ type: "text", text: `未找到 Skill：${name}` }], details: {} };
-        const content = limitToolText(fs.readFileSync(skill.path, "utf8"));
-        return { content: [{ type: "text", text: `# ${name}\n\n${content}` }], details: { name, source: skill.source } };
+        const raw = fs.readFileSync(skill.path, "utf8");
+        if (RUNTIME_FLAGS.skillInjection) {
+          const injection = buildSkillInjection({ name, raw, maxBytes: RUNTIME_FLAGS.skillInjectionMaxBytes, source: skill.source });
+          try {
+            writeEvent("skill_injected", {
+              name,
+              source: skill.source,
+              bytes: injection.bytes,
+              fullBytes: injection.fullBytes,
+              hash: injection.hash,
+              truncated: injection.truncated,
+              runId: entry?.activeRunId || null,
+            });
+          } catch {}
+          return {
+            content: [{ type: "text", text: injection.text }],
+            details: { name, source: skill.source, hash: injection.hash, truncated: injection.truncated, bytes: injection.bytes },
+          };
+        }
+        return { content: [{ type: "text", text: `# ${name}\n\n${limitToolText(raw)}` }], details: { name, source: skill.source } };
       },
     });
 
@@ -2628,6 +2803,7 @@ execute: async (_toolCallId, params) => {
           source: { type: "agent", label: "当前 Agent 回合" },
         });
         emitChannelSafe(entry, "memory_proposal", { proposal });
+        entry.memoryWrittenThisRun = true;
         return {
           content: [{ type: "text", text: `已生成记忆建议（${proposal.id}），等待用户审核后写入。` }],
           details: { proposal },
@@ -2640,7 +2816,7 @@ execute: async (_toolCallId, params) => {
       name: "complete_task",
       label: "完成任务",
       description:
-        "任务收尾时调用，显式声明本轮的完成状态。status 取值：success（目标已达成并验证）/ partial（部分完成，说明未完成项）/ blocked（受阻，说明阻塞原因）/ failed（失败）。summary 是给用户看的结论：纯问答一句话即可，产生了成果时用简洁的 Markdown 说明做了什么、关键结果、产物与验证。用户可见此状态，未调用时系统只能依据回合结束推断，请勿跳过。",
+        "任务收尾时调用，显式声明本轮的完成状态。status 取值：success（目标已达成并验证）/ partial（部分完成，说明未完成项）/ blocked（受阻，说明阻塞原因）/ failed（失败）。summary 是给用户看的完整结论：说明做了什么、关键结果（含关键数字）、产物路径、如何验证、未完成项或风险；纯问答也要把结论与依据说清，不要只写“已完成”。与最终答复保持一致，不要另写更短的版本；不要复述工具调用流水，也不要重复进度播报。用户可见此状态，未调用时系统只能依据回合结束推断，请勿跳过。",
       parameters: Type.Object({
         status: Type.Union([
           Type.Literal("success"),
@@ -2648,7 +2824,7 @@ execute: async (_toolCallId, params) => {
           Type.Literal("blocked"),
           Type.Literal("failed"),
         ]),
-        summary: Type.String({ description: "面向用户的结论，建议 ≤800 字。纯问答用一两句；有成果时可用 Markdown（小标题、要点列表）说明做了什么、关键结果、产物路径与如何验证；不要逐条复述工具调用流水。" }),
+        summary: Type.String({ description: "面向用户的完整结论，可用 Markdown。按内容需要写，不设字数上限（服务端上限 4000 字符）。建议覆盖：结果 / 关键数据 / 产物路径 / 验证方式 / 未完成项或风险；同一事实只写一次，不复述工具流水，不与进度句重复。" }),
         incomplete: Type.Optional(Type.Array(Type.String({ description: "未完成事项" }))),
         blockers: Type.Optional(Type.Array(Type.String({ description: "阻塞原因" }))),
         verification: Type.Optional(Type.String({ description: "如何验证结果（读取回文件/校验命令等）" })),
@@ -2663,7 +2839,7 @@ execute: async (_toolCallId, params) => {
         emitChannelSafe(entry, "task_completed", { ...completion, runId: entry.activeRunId || null });
         const label = completionStatusLabel(completion.status);
         return {
-          content: [{ type: "text", text: `已记录任务完成状态：${label}。${completion.summary}` }],
+          content: [{ type: "text", text: `已记录完成状态：${label}。请直接给用户最终答复。` }],
           details: { completion },
         };
       },
@@ -2683,6 +2859,22 @@ execute: async (_toolCallId, params) => {
           Type.Object({ label: Type.String(), description: Type.Optional(Type.String()) }),
         ]))),
         previewFile: Type.Optional(Type.String({ description: "可选：工作区相对路径，指向已生成的 Markdown/草稿；提问时前端自动打开供用户确认" })),
+        // v0.13.5：结构化表单字段。与 options 兼容：有 fields 时前端渲染表单。
+        fields: Type.Optional(Type.Array(Type.Object({
+          id: Type.String({ description: "字段 id（回答里用于回传）" }),
+          label: Type.String({ description: "字段标签" }),
+          type: Type.Union([
+            Type.Literal("text"),
+            Type.Literal("select"),
+            Type.Literal("radio"),
+            Type.Literal("checkbox"),
+            Type.Literal("file"),
+          ]),
+          required: Type.Optional(Type.Boolean({ description: "是否必填" })),
+          options: Type.Optional(Type.Array(Type.String({ description: "选项文本" }))),
+          placeholder: Type.Optional(Type.String({ description: "输入提示" })),
+          accept: Type.Optional(Type.String({ description: "file 字段的 accept 过滤" })),
+        }), { description: "最多 12 个字段" })),
       }),
       execute: async (_toolCallId, params) => {
         // 单槽位保护（O-26）：同一会话同时只允许一个待回答问题。
@@ -2709,6 +2901,18 @@ execute: async (_toolCallId, params) => {
         }
         // 计划 008：提问一旦发出，解除写操作前的澄清闸门（超时也按专业判断继续）。
         entry.clarificationPending = null;
+        const fields = (Array.isArray(params.fields) ? params.fields : [])
+          .filter((field) => field && field.id && field.label)
+          .slice(0, 12)
+          .map((field) => ({
+            id: String(field.id),
+            label: String(field.label),
+            type: ["text", "select", "radio", "checkbox", "file"].includes(field.type) ? field.type : "text",
+            required: Boolean(field.required),
+            options: Array.isArray(field.options) ? field.options.map(String).slice(0, 30) : [],
+            placeholder: String(field.placeholder || ""),
+            ...(field.accept ? { accept: String(field.accept) } : {}),
+          }));
         // 阻塞等待用户回答（最长 5 分钟），期间 SSE 推送 ask_user 事件
         return await new Promise((resolve) => {
           const pendingAskId = `ask_${crypto.randomUUID()}`;
@@ -2720,6 +2924,7 @@ execute: async (_toolCallId, params) => {
             question: String(params.question || ""),
             options: opts,
             previewFile: previewFile || null,
+            ...(fields.length ? { fields } : {}),
             status: "pending",
             createdAt: new Date().toISOString(),
             expiresAt,
@@ -2753,6 +2958,7 @@ execute: async (_toolCallId, params) => {
             askId: pendingAskId,
             question: params.question,
             options: opts,
+            ...(fields.length ? { fields } : {}),
             // 前端据此显示/收起"待回答"卡片：到期后服务端不再接受回答，卡片必须同步失效。
             expiresAt,
             ...(previewFile ? { previewFile } : {}),
@@ -2789,6 +2995,7 @@ execute: async (_toolCallId, params) => {
         const effTextLimit = Number(textLimit) > 0 ? Number(textLimit) : 12000;
         const childId = ctxChildId || `subagent_${String(toolKey || crypto.randomUUID()).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 48)}${multiple ? `_${index + 1}` : ""}`;
         let childSession = null;
+        let childUsage = null;
         let liveText = "";
         let liveThinking = "";
         let lastProgressAt = 0;
@@ -2930,6 +3137,10 @@ execute: async (_toolCallId, params) => {
             return String(text).slice(0, 4000);
           };
           childSession.subscribe((event) => {
+            if (event.type === "message_end" || event.type === "usage" || event.type === "agent_end") {
+              const usage = normalizeUsage(event.message?.usage || event.usage || event.tokens);
+              if (usage) childUsage = usage;
+            }
             if (event.type === "tool_execution_start") {
               activity = `正在读取资料：${event.toolName || "文件"}`;
               const args = trimToolText(event.args);
@@ -2998,6 +3209,20 @@ execute: async (_toolCallId, params) => {
         } finally {
           if (timeoutTimer) clearTimeout(timeoutTimer);
           parentSignal?.removeEventListener("abort", parentAbort);
+          if (RUNTIME_FLAGS.usageLedger) {
+            try {
+              recordUsage({
+                runId: entry?.activeRunId || null,
+                actorKind: "subagent",
+                actorId: childId,
+                provider: entry?.session?.model?.provider || null,
+                model: entry?.session?.model?.id || null,
+                querySource: "agent_step",
+                usage: childUsage,
+                finishReason: childUsage ? "stop" : "usage_unavailable",
+              });
+            } catch {}
+          }
           try { childSession?.dispose?.(); } catch {}
         }
         };
@@ -3011,6 +3236,7 @@ execute: async (_toolCallId, params) => {
         task: Type.Optional(Type.String({ minLength: 1, maxLength: 2400, description: "单个子任务目标、必要背景和期望输出；与 tasks 二选一" })),
         tasks: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 2400 }), { maxItems: 4, description: "并发派发多个子任务（最多 4 个，并发 2），用于并行准备结论；与 task 二选一" })),
         role: Type.Optional(Type.Union([Type.Literal("scout"), Type.Literal("reviewer"), Type.Literal("planner"), Type.Literal("verifier"), Type.Literal("worker")], { description: "scout=资料探索，reviewer=审阅，planner=方案拆解，verifier=独立核验，worker=可写执行（仅 Work 模式，写操作需审批）" })),
+        background: Type.Optional(Type.Boolean({ description: "后台派发：立即返回，子任务结果通过事件/任务中心查看（受 OAW_SUBAGENT_PROFILE 控制）" })),
       }),
       execute: async (toolCallId, params, signal) => {
         const parentToolCallId = toolCallId ? String(toolCallId) : null;
@@ -3031,17 +3257,67 @@ execute: async (_toolCallId, params) => {
         // worker 结果做对抗式核验（verifier 子代理，revise 回环最多 1 轮）→ 关账（closed）。
         // 编排逻辑全部在子代理编排器.mjs（代码驱动，不靠模型自治）；OAW_SUBAGENT_VERIFY=0 可关闭核验。
         const verifyEnabled = role === "worker" && String(process.env.OAW_SUBAGENT_VERIFY || "1") !== "0";
-        const orchestration = await orchestrateSubagents({
+        const emitOrchestration = (type, data) => {
+          let payload = data;
+          if (type === "subagent_planned" && RUNTIME_FLAGS.subagentProfile) {
+            const profile = buildSubagentProfile({
+              childId: data?.childId || null,
+              role,
+              roleSpec,
+              model: entry?.session?.model
+                ? `${entry.session.model.provider || ""}/${entry.session.model.id || ""}` || null
+                : null,
+              budget: data?.budget || { timeoutMs: roleSpec.timeoutMs },
+            });
+            payload = { ...data, profile, frozen: true };
+            try { writeEvent("subagent_profile_frozen", { childId: data?.childId || null, parentToolCallId, role, profile, runId: entry?.activeRunId || null }); } catch {}
+          }
+          writeEvent(type, payload);
+        };
+        const runOrchestration = (orchestrationSignal = signal) => orchestrateSubagents({
           tasks: taskList,
           role,
           roleSpec,
           toolKey,
           parentToolCallId,
           verify: verifyEnabled,
-          emit: (type, data) => writeEvent(type, data),
+          emit: emitOrchestration,
           runTask: runOneTask,
-          signal,
+          signal: orchestrationSignal,
         });
+        if (params.background === true && RUNTIME_FLAGS.subagentProfile) {
+          try { writeEvent("subagent_background_started", { parentToolCallId, role, count: taskList.length, runId: entry?.activeRunId || null }); } catch {}
+          void runOrchestration(null)
+            .then((value) => {
+              try {
+                writeEvent("subagent_background_finished", {
+                  parentToolCallId,
+                  role,
+                  count: taskList.length,
+                  isError: value?.isError === true,
+                  summary: String(value?.text || "").slice(0, 2000),
+                  runId: entry?.activeRunId || null,
+                });
+              } catch {}
+            })
+            .catch((error) => {
+              try {
+                writeEvent("subagent_background_finished", {
+                  parentToolCallId,
+                  role,
+                  count: taskList.length,
+                  isError: true,
+                  error: String(error?.message || error).slice(0, 600),
+                  runId: entry?.activeRunId || null,
+                });
+              } catch {}
+            });
+          return {
+            content: [{ type: "text", text: `已后台派发 ${taskList.length} 个子任务（角色：${roleSpec.label}）。结果会通过子代理事件/任务中心展示，不阻塞本轮。` }],
+            details: { role, count: taskList.length, background: true, isolated: true, readOnly: roleSpec.readOnly },
+          };
+        }
+        const orchestration = await runOrchestration();
         return {
           content: [{ type: "text", text: orchestration.text }],
           isError: orchestration.isError,
@@ -3199,7 +3475,7 @@ execute: async (_toolCallId, params) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions],
+        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
         tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_datasets", "map_edit", "map_import", "map_analyze", "map_template", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames],
       }));
     } catch (error) {
@@ -3228,6 +3504,12 @@ execute: async (_toolCallId, params) => {
       const id = ++channel.seq;
       const at = new Date().toISOString();
       const scopedRunId = piEventDepth > 0 ? (entry?.turnRunId || entry?.activeRunId) : entry?.activeRunId;
+      // 终态围栏：恢复/看门狗可能先收尾 Run，而 Pi 仍会继续发出 assistant_final/agent_end。
+      // 这些迟到事件只能进审计，不能再推给前端，否则会复活已结束的运行。
+      if (scopedRunId && isRunTerminal(scopedRunId)) {
+        try { recordRunEvent(scopedRunId, type, data || {}); } catch {}
+        return;
+      }
       const eventData = data && typeof data === "object" && !Array.isArray(data)
         ? { ...data, runId: data.runId ?? scopedRunId ?? null }
         : { value: data, runId: scopedRunId ?? null };
@@ -3264,6 +3546,25 @@ execute: async (_toolCallId, params) => {
         contextUsage: contextUsage || null,
         contextTokens: contextTokens ?? null,
       });
+      if (RUNTIME_FLAGS.usageLedger) {
+        try {
+          recordUsage({
+            runId: entry?.activeRunId || null,
+            turnId: entry?.turnCount ?? null,
+            actorKind: "main",
+            actorId: "main",
+            provider: entry?.session?.model?.provider || null,
+            model: entry?.session?.model?.id || null,
+            querySource: "agent_step",
+            usage: normalized,
+            cost: cost ?? null,
+            durationMs: entry?.runStartedAt ? Math.max(0, Date.now() - entry.runStartedAt) : null,
+            ttftMs: null,
+            toolCallCount: entry?.runToolCount ?? null,
+            finishReason: null,
+          });
+        } catch {}
+      }
       return true;
     };
     session.subscribe(runPiEvent((ev) => {
@@ -3532,6 +3833,9 @@ execute: async (_toolCallId, params) => {
             runId: entry?.compactionRunId || entry?.activeRunId || null,
             tokensBefore: ev.tokensBefore || 0,
             estimatedTokensAfter: ev.estimatedTokensAfter || 0,
+            // v0.12.3：不同 Pi 版本的 compaction_end 可能用 messagesBefore 或
+            // messageCount 表示被折叠的消息条数；都没有时保持 0，前端回退旧文案。
+            messageCount: Number(ev.messagesBefore ?? ev.messageCount ?? 0) || 0,
           });
           break;
         case "bash_execution_update":
@@ -3630,6 +3934,16 @@ execute: async (_toolCallId, params) => {
     }));
 
     entry = { session, sessionManager: sessionManager || null, channel, busy: false, compacting: false, compactionKind: null, compactionPromise: null, compactionRunId: null, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, turnRunId: null, activeTools: new Map(), task: null, mode: "agent", modePolicy: null, modePolicyKey: "", mcpToolNames: mcpToolRegistrations.map((item) => item.name), mcpReadOnlyToolNames: mcpToolRegistrations.filter((item) => item.tool.annotations?.readOnlyHint === true && item.tool.annotations?.destructiveHint !== true).map((item) => item.name), piExtensionToolNames, hasSubagent: true, reviewConfirmed: false, reviewAwaitingConfirmation: false, reviewProtectedPaths: new Set(), reviewSources: [], lastAgentError: null, lastSettledError: null, lastAssistantText: "", lastFinalText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, activeToolCount: 0, lastPiEventAt: Date.now(), pendingAbortPromise: null, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, promptChars: estimateRestoredContextChars(session), lastUsage: null, lastCompactionAt: 0, autoCompacting: false };
+    if (metadataReport && !metadataReport.ok) {
+      try {
+        emitChannelSafe(entry, "tool_metadata_missing", {
+          missing: metadataReport.missing,
+          errors: metadataReport.errors,
+          total: metadataReport.total,
+          covered: metadataReport.covered,
+        });
+      } catch {}
+    }
     piRuntimeManager.bindSession(runtimeRecord.runtimeId, { session, profile: options.profile, toolPolicy: null });
     this.sessions.set(clientId, entry);
     return entry;
@@ -3667,6 +3981,18 @@ execute: async (_toolCallId, params) => {
       summarize,
       label: options.label || "工作台分支",
     });
+    // v0.12.8：navigateTree 只改内存 leaf，不落盘；追加一个不进入模型上下文的
+    // custom 标记，把活跃分支固化到 JSONL，重开/刷新后 Chat 视图仍沿该 leaf 还原。
+    try {
+      entry.sessionManager?.appendCustomEntry?.("oaw_branch_point", {
+        targetId: String(entryId),
+        at: new Date().toISOString(),
+        source: "session-branch",
+        summarize,
+      });
+    } catch (error) {
+      console.warn("[agent] 分支标记写入失败：", error?.message || error);
+    }
     return {
       sessionId: entry.session?.sessionId || null,
       navigatedTo: String(entryId),
@@ -3873,6 +4199,11 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       entry.compactionPromise = compactPromise;
       await compactPromise;
       compacted = true;
+      if (RUNTIME_FLAGS.usageLedger) {
+        try {
+          recordUsage({ runId, actorKind: "compaction", actorId: "compaction", querySource: "compact", usage: null, finishReason: "compacted" });
+        } catch {}
+      }
       // 不依赖某个 Pi 版本是否发出 compaction_end；成功的 Promise 本身就是
       // 本地计数器的权威边界，防止下一轮再次按旧预算触发压缩。
       entry.promptChars = 0;
@@ -3901,6 +4232,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.activeRunId = runContext?.runId || null;
     // 每轮独立计数：上一轮的完成声明、轮次预算与提醒标记都不能串到本轮
     entry.pendingCompletion = null;
+    entry.memoryWrittenThisRun = false;
     // 终稿缓存按 Run 隔离：新 Run 开始即清空，旧 Run 迟到文本不会串入本轮。
     entry.lastFinalText = "";
     entry.suppressFinalText = false;
@@ -4038,9 +4370,13 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       const contextFileMs = Date.now() - contextFileStartedAt;
       // 按 Pi 模型目录归一化推理档位；不支持的 medium 优先降到 low，避免
       // UI 显示标准但 SDK 实际沿用高延迟默认档位。
-      const requestedThinkingLevel = effort || "low";
-      const effectiveThinkingLevel = resolveThinkingLevel(entry.session?.model, requestedThinkingLevel);
-      const thinkingChanged = entry.requestedThinkingLevel !== requestedThinkingLevel || entry.effectiveThinkingLevel !== effectiveThinkingLevel;
+      // “default”表示跟随模型/运行时默认：不主动改档，只记录用户选择。
+      const requestedThinkingLevel = effort || "default";
+      const effectiveThinkingLevel = requestedThinkingLevel === "default"
+        ? (entry.effectiveThinkingLevel || null)
+        : resolveThinkingLevel(entry.session?.model, requestedThinkingLevel);
+      const thinkingChanged = requestedThinkingLevel !== "default"
+        && (entry.requestedThinkingLevel !== requestedThinkingLevel || entry.effectiveThinkingLevel !== effectiveThinkingLevel);
       if (thinkingChanged) {
         try {
           piRuntimeManager.setThinkingLevel(entry.runtimeId, entry.session, effectiveThinkingLevel);
@@ -4049,7 +4385,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         } catch {}
       }
       entry.requestedThinkingLevel = requestedThinkingLevel;
-      entry.effectiveThinkingLevel = effectiveThinkingLevel;
+      if (effectiveThinkingLevel) entry.effectiveThinkingLevel = effectiveThinkingLevel;
       // 强制注入当前工作文件声明（兜底，防止 agent 不知道在改哪个文档）
       if (entry.currentFile) {
         const marker = `[当前工作文件: ${entry.currentFile}]\n`;
@@ -4057,23 +4393,62 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
           text = marker + text;
         }
       }
+      if (RUNTIME_FLAGS.hookEvents) {
+        try {
+          const hook = await dispatchHooks({
+            event: "UserPromptSubmit",
+            payload: { prompt: text, runId: entry.activeRunId || null },
+            workspace: entry.workspace,
+            timeoutMs: RUNTIME_FLAGS.hookTimeoutMs,
+          });
+          if (hook.behavior === "deny") {
+            emitChannelSafe(entry, "hook_denied", { event: "UserPromptSubmit", reason: hook.reason, hookId: hook.hookId || null, runId: entry.activeRunId || null });
+            throw Object.assign(new Error(`Hook 拒绝本轮输入：${hook.reason}`), { code: "HOOK_DENIED" });
+          }
+          if (hook.messages?.length) text = `${hook.messages.join("\n")}\n\n${text}`;
+          if (hook.updatedInput?.prompt !== undefined) text = String(hook.updatedInput.prompt);
+        } catch (error) {
+          if (error?.code === "HOOK_DENIED") throw error;
+        }
+      }
+      entry.lastPromptText = text;
       // 每次对话前注入动态上下文（当前工作区绝对路径 + 记忆摘要）——直接进 prompt 文本，
       // 不依赖 agent 主动 read .agent-context.md（agentsFiles 注入的是会话创建时的静态快照，会过时）
       const dynamicContextStartedAt = Date.now();
       let dynamicContextMs = 0;
+      let dynamicText = "";
       try {
-        const dyn = this.buildDynamicContext(entry, entry.currentFile, sharedMemCtx);
+        dynamicText = this.buildDynamicContext(entry, entry.currentFile, sharedMemCtx);
         dynamicContextMs = Date.now() - dynamicContextStartedAt;
-        if (dyn) text = dyn + "\n\n" + text;
       } catch { dynamicContextMs = Date.now() - dynamicContextStartedAt; }
       const recoveredAnswers = consumeRecoveredAnswers(entry.clientId || "");
-      if (recoveredAnswers.length) {
-        text = `## 恢复的用户回答\n${recoveredAnswers.map((a) => `- ${a.question}: ${a.answer}`).join("\n")}\n请把这些回答视为对上次中断提问的确认，并继续原任务。\n\n${text}`;
+      const referencesSummary = entry.references.length
+        ? `## 本轮结构化引用\n${contextSummary(entry.references)}\n请使用 context_read(refId) 按需读取引用内容；若状态为 missing/deferred，应明确告诉用户。`
+        : "";
+      const taskBlock = entry.task
+        ? `${taskSummary(entry.task)}\n- 当前对话边界：${modeDescription(entry.mode)}`
+        : "";
+      if (RUNTIME_FLAGS.contextSections) {
+        const sections = buildContextSections({
+          dynamicContext: dynamicText,
+          taskSummary: taskBlock,
+          referencesSummary,
+          recoveredAnswers,
+          userText: text,
+        });
+        text = renderContextSections(sections);
+        emitChannelSafe(entry, "context_sections_assembled", {
+          runId: entry.activeRunId || null,
+          sections: sectionSummary(sections),
+        });
+      } else {
+        if (dynamicText) text = dynamicText + "\n\n" + text;
+        if (recoveredAnswers.length) {
+          text = `## 恢复的用户回答\n${recoveredAnswers.map((a) => `- ${a.question}: ${a.answer}`).join("\n")}\n请把这些回答视为对上次中断提问的确认，并继续原任务。\n\n${text}`;
+        }
+        if (referencesSummary) text = referencesSummary + "\n\n" + text;
+        if (taskBlock) text = taskBlock + "\n\n" + text;
       }
-      if (entry.references.length) {
-        text = `## 本轮结构化引用\n${contextSummary(entry.references)}\n请使用 context_read(refId) 按需读取引用内容；若状态为 missing/deferred，应明确告诉用户。\n\n${text}`;
-      }
-      if (entry.task) text = `${taskSummary(entry.task)}\n- 当前对话边界：${modeDescription(entry.mode)}\n\n${text}`;
       entry.promptChars += text.length;
       // 首字延迟分项（方案 §3.5）：真正把请求交给 SDK 的时刻。
       // 它在 runPrompt 之前，因此到首个 provider 事件之间的等待包含 SDK 准备、
@@ -4193,7 +4568,10 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
               await waitForAgentRetry(300);
               try {
                 await promptWithFirstEventTimeout(entry,
-                  "上一个回合的模型连接中断了。请基于当前会话中已经完成的步骤和工具结果，从中断位置继续原任务；不要重复已经成功的副作用操作，完成后给出完整结果。",
+                  // 内部续跑指令必须以 [系统提醒] 开头：它是写进会话文件的一条 user 消息，
+                  // 前端只按该前缀识别内部提示；否则恢复历史时会把它当成真实用户提问，
+                  // 截断同一 Run 的归约，导致一条回复被拆成多条气泡。
+                  "[系统提醒] 上一个回合的模型连接中断了。请基于当前会话中已经完成的步骤和工具结果，从中断位置继续原任务；不要重复已经成功的副作用操作，完成后给出完整结果。",
                   {},
                 );
                 const continuationError = entry.lastSettledError;
@@ -4332,6 +4710,16 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
           entry.turnStarted = false;
         }
       } catch {}
+      if (RUNTIME_FLAGS.hookEvents) {
+        try {
+          await dispatchHooks({
+            event: "Stop",
+            payload: { runId: activeRunId, status: entry.lastAgentError ? "failed" : "completed" },
+            workspace: entry.workspace,
+            timeoutMs: RUNTIME_FLAGS.hookTimeoutMs,
+          });
+        } catch {}
+      }
       entry.busy = false;
       entry.activeRunId = null;
       // 排队中的模型切换在本轮结束后生效：运行中的任务始终用旧模型跑完，
@@ -4427,6 +4815,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         ok: true,
         tokensBefore: result?.tokensBefore || 0,
         estimatedTokensAfter: result?.estimatedTokensAfter || 0,
+        messageCount: Number(result?.messagesBefore ?? result?.messageCount ?? 0) || 0,
       };
     } finally {
       entry.compactionPromise = null;
@@ -4480,7 +4869,30 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
   buildDynamicContext(entry, file, sharedMemCtx = null) {
     try {
       const ws = entry?.workspace || getWorkspace();
-      const memCtx = sharedMemCtx ?? readMemoryContext(ws);
+      let memCtx = sharedMemCtx ?? readMemoryContext(ws);
+      let recall = null;
+      if (RUNTIME_FLAGS.memoryRecall) {
+        try {
+          recall = buildRecallContextSync({
+            workspace: ws,
+            query: entry?.lastPromptText || "",
+            maxBytes: RUNTIME_FLAGS.memoryRecallMaxBytes,
+          });
+          if (recall.text) memCtx = recall.text;
+          entry.lastMemoryRecall = recall;
+          if (recall.selected?.length) {
+            emitChannelSafe(entry, "memory_recall_selected", {
+              runId: entry?.activeRunId || null,
+              selected: recall.selected,
+              injectedBytes: recall.injectedBytes,
+              truncated: recall.truncated,
+              fallback: recall.fallback,
+            });
+          } else {
+            emitChannelSafe(entry, "memory_recall_skipped", { runId: entry?.activeRunId || null, reason: "no_match", manifestCount: recall.manifest?.length || 0 });
+          }
+        } catch {}
+      }
       const mode = normalizeTaskMode(entry?.mode || "agent");
       const ctxFile = entry?.threadId ? `.agent-context.${entry.threadId}.md` : ".agent-context.md";
       const lines = [
@@ -4584,6 +4996,30 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
 
   runtimeHealth(clientId) {
     return this.runtimeSnapshot(clientId) || { status: "missing", health: { status: "unknown", message: "Runtime 尚未创建" } };
+  }
+
+  /**
+   * H2-2 记忆自动抽取：创建一次隔离的只读子会话，返回模型输出文本。
+   * 调用方负责 shouldExtract / 解析 / 入库；本方法只做执行，避免污染主会话上下文。
+   */
+  async extractMemory({ workspace, threadId = null, userText = "", assistantText = "" } = {}) {
+    const root = normalizeWorkspace(workspace) || normalizeWorkspace(getWorkspace());
+    if (!root) throw new Error("记忆抽取需要有效工作区");
+    const clientId = `memory_extract_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    const child = await this._create(clientId, { cwd: root, threadId, profile: "记忆抽取" });
+    try {
+      try { piRuntimeManager.setActiveTools(child.runtimeId, child.session, ["read", "grep", "find", "ls"]); } catch {}
+      const { scanMemoryManifest } = await import("./记忆召回.mjs");
+      const manifest = scanMemoryManifest(root);
+      const prompt = buildExtractionPrompt({ userText, assistantText, workspace: root, manifest });
+      await child.session.prompt(prompt);
+      const assistant = [...(child.session.messages || [])].reverse().find((message) => message?.role === "assistant");
+      return (assistant?.content || []).filter((part) => part?.type === "text").map((part) => part.text).join("\n").trim();
+    } finally {
+      try { await child.session.abort?.(); } catch {}
+      try { piRuntimeManager.dispose(child.runtimeId, child.session); } catch {}
+      this.sessions.delete(clientId);
+    }
   }
 
   /** 当前会话的上下文用量快照：优先真实 usage，服务重启后按恢复字符数估算。 */
@@ -4808,6 +5244,7 @@ async listModelCatalog() {
         vision: !!m.vision,
         available: availableKeys.has(`${m.provider}/${m.id}`) && !authError,
         ...(authError ? { authError: authError.message } : {}),
+        ...(thinkingLevelsFor(m).length ? { thinkingLevels: thinkingLevelsFor(m) } : {}),
         ...(Number(m.contextWindow || m.contextLength || m.limit?.context) > 0
           ? { contextWindow: Math.floor(Number(m.contextWindow || m.contextLength || m.limit.context)) }
           : {}),

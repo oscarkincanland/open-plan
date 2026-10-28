@@ -10,7 +10,7 @@ import TaskCenter from "./任务中心.jsx";
 import 可视面板 from "./可视面板.jsx";
 import shp from "shpjs";
 import { registerLayerReplay, unregisterLayerReplay } from "../图层注册表.js";
-import { askConfirm } from "./Feedback.jsx";
+import { askConfirm, askText, notifyError } from "./Feedback.jsx";
 import {
   mapProjects, mapCreateProject, mapProject, mapSaveStyle, mapSaveConfig,
   mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute, mapDemoAnalysis,
@@ -1384,7 +1384,7 @@ export default function MapPanel({
     }
     // 绘制 → 存为图层
     const defaultName = { "draw-point": "新点", "draw-line": "新路线", "draw-polygon": "新区域" }[kind];
-    const name = window.prompt(`命名新图层（${defaultName}）`, defaultName);
+    const name = await askText(`命名新图层（${defaultName}）`, defaultName);
     setDraw(null);
     mapRef.current?.setDrawingMode(false);
     if (!name || !name.trim()) { clearDrawLayers(); return; }
@@ -1493,11 +1493,12 @@ export default function MapPanel({
   }, [project, loadProject]);
 
   const handleCreateProject = useCallback(async () => {
-    const name = window.prompt("新地图项目名称", "新的交通分析项目");
+    const name = await askText("新地图项目名称", "新的交通分析项目");
     if (!name?.trim()) return;
     const suggested = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "map-project";
-    const id = window.prompt("项目标识（仅英文、数字、下划线或短横线）", suggested);
+    const id = await askText("项目标识（仅英文、数字、下划线或短横线）", suggested);
     if (!id?.trim()) return;
+    if (!/^[a-zA-Z0-9_-]+$/.test(id.trim())) { notifyError("项目标识只能包含英文、数字、下划线或短横线"); return; }
     try {
       const created = await mapCreateProject(id.trim(), name.trim(), "zhejiang-map");
       const listed = await mapProjects();
@@ -1521,16 +1522,18 @@ export default function MapPanel({
     if (!project) return;
     try {
       if (action === "duplicate") {
-        const name = window.prompt("副本项目标识（仅英文、数字、下划线或短横线）", `${project}-copy`);
+        const name = await askText("副本项目标识（仅英文、数字、下划线或短横线）", `${project}-copy`);
         if (!name?.trim()) return;
+        if (!/^[a-zA-Z0-9_-]+$/.test(name.trim())) { notifyError("项目标识只能包含英文、数字、下划线或短横线"); return; }
         const created = await mapDuplicateProject(project, name.trim());
         const listed = await mapProjects();
         setProjects(listed.projects || []);
         setProject(created.project || name.trim());
         flash(`已复制为「${created.project || name.trim()}」，可在其上继续分析而不影响原项目`);
       } else if (action === "rename") {
-        const name = window.prompt("新的项目标识（仅英文、数字、下划线或短横线）", project);
+        const name = await askText("新的项目标识（仅英文、数字、下划线或短横线）", project);
         if (!name?.trim() || name.trim() === project) return;
+        if (!/^[a-zA-Z0-9_-]+$/.test(name.trim())) { notifyError("项目标识只能包含英文、数字、下划线或短横线"); return; }
         const renamed = await mapRenameProject(project, name.trim());
         const listed = await mapProjects();
         setProjects(listed.projects || []);

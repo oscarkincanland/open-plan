@@ -19,18 +19,18 @@ const PROJECT_DIR = path.resolve(__dirname, ".."); // 项目根（templates/ 在
 
 // ── 模版分类定义 ──
 const CATEGORIES = [
-  { id: "gongwen",   name: "公文版面", icon: "📋", dirs: ["_报告模板/公文版面", ".claude/skills/gongwen-banmian"], exts: [".md", ".docx", ".doc", ".pdf"] },
-  { id: "huibao",    name: "工作汇报", icon: "📊", dirs: [".claude/skills/gongzuo-huibao", "_报告模板/工作汇报"], exts: [".md", ".docx", ".doc", ".pdf"] },
-  { id: "yanjiu",    name: "研究报告", icon: "📑", dirs: [".claude/skills/yanjiu-baogao", "_报告模板/研究报告"], exts: [".md", ".docx", ".doc", ".pdf"] },
-  { id: "guihua",    name: "规划报告", icon: "🗺️", dirs: [".claude/skills/guihua-baogao", "_报告模板/规划报告"], exts: [".md", ".docx", ".doc", ".pdf"] },
-  { id: "hangye",    name: "行业研究", icon: "📈", dirs: [".claude/skills/hangye-yanjiu-baogao"], exts: [".md", ".docx", ".doc", ".pdf"] },
-  { id: "lunwen",    name: "论文写作", icon: "📝", dirs: [".claude/skills/lunwen", ".claude/skills/academic-writing", "_报告模板/论文"], exts: [".md", ".docx", ".doc", ".pdf"] },
-  { id: "huiyi",     name: "会议通知/纪要", icon: "📅", dirs: ["零碳货运白皮书/1会前", "义乌物流专题资料"], exts: [".md", ".docx", ".doc", ".pdf"] },
-  { id: "diaoyan",   name: "调研问卷", icon: "❓", dirs: ["义乌物流项目/04_调研执行/docs/superpowers/specs", "义乌物流专题资料"], exts: [".md", ".docx", ".doc"] },
-  { id: "kuangjia",  name: "研究框架", icon: "🏗️", dirs: ["衢州多式联运项目", "柬埔寨公交项目"], exts: [".md"] },
-  { id: "tubiao",    name: "图表/地图", icon: "📊", dirs: ["交通规划工作台/模板/图表模板", "交通规划工作台/模板/HTML模板", ".claude/skills/traffic-charts-template", ".claude/skills/traffic-map-template"], exts: [".md", ".html", ".js"] },
-  { id: "htmlppt",   name: "HTML PPT（OpenDesign）", icon: "📽️", dirs: [path.join(PROJECT_DIR, "templates/opendesign")], exts: [".html"], depth: 5, folderTitle: true, skipDirs: ["assets", "themes", "animations", "fonts", "scripts", "docs", "references", "examples"] },
-  { id: "sucaiku",   name: "规划素材库", icon: "📚", dirs: [path.join(PROJECT_DIR, "templates/traffic-material")], exts: [".md"] },
+  { id: "gongwen",   name: "公文版面", icon: "doc", dirs: ["_报告模板/公文版面", ".claude/skills/gongwen-banmian"], exts: [".md", ".docx", ".doc", ".pdf"] },
+  { id: "huibao",    name: "工作汇报", icon: "list", dirs: [".claude/skills/gongzuo-huibao", "_报告模板/工作汇报"], exts: [".md", ".docx", ".doc", ".pdf"] },
+  { id: "yanjiu",    name: "研究报告", icon: "book", dirs: [".claude/skills/yanjiu-baogao", "_报告模板/研究报告"], exts: [".md", ".docx", ".doc", ".pdf"] },
+  { id: "guihua",    name: "规划报告", icon: "map", dirs: [".claude/skills/guihua-baogao", "_报告模板/规划报告"], exts: [".md", ".docx", ".doc", ".pdf"] },
+  { id: "hangye",    name: "行业研究", icon: "chart", dirs: [".claude/skills/hangye-yanjiu-baogao"], exts: [".md", ".docx", ".doc", ".pdf"] },
+  { id: "lunwen",    name: "论文写作", icon: "edit", dirs: [".claude/skills/lunwen", ".claude/skills/academic-writing", "_报告模板/论文"], exts: [".md", ".docx", ".doc", ".pdf"] },
+  { id: "huiyi",     name: "会议通知/纪要", icon: "comment", dirs: ["零碳货运白皮书/1会前", "义乌物流专题资料"], exts: [".md", ".docx", ".doc", ".pdf"] },
+  { id: "diaoyan",   name: "调研问卷", icon: "search", dirs: ["义乌物流项目/04_调研执行/docs/superpowers/specs", "义乌物流专题资料"], exts: [".md", ".docx", ".doc"] },
+  { id: "kuangjia",  name: "研究框架", icon: "layers", dirs: ["衢州多式联运项目", "柬埔寨公交项目"], exts: [".md"] },
+  { id: "tubiao",    name: "图表/地图", icon: "image", dirs: ["交通规划工作台/模板/图表模板", "交通规划工作台/模板/HTML模板", ".claude/skills/traffic-charts-template", ".claude/skills/traffic-map-template"], exts: [".md", ".html", ".js"] },
+  { id: "htmlppt",   name: "HTML PPT（OpenDesign）", icon: "ppt", dirs: [path.join(PROJECT_DIR, "templates/opendesign")], exts: [".html"], depth: 5, folderTitle: true, skipDirs: ["assets", "themes", "animations", "fonts", "scripts", "docs", "references", "examples"] },
+  { id: "sucaiku",   name: "规划素材库", icon: "folderOpen", dirs: [path.join(PROJECT_DIR, "templates/traffic-material")], exts: [".md"] },
 ];
 
 const SKIP_DIRS = new Set(["node_modules", ".git", ".venv", "__pycache__", ".obsidian", "dist", "build"]);

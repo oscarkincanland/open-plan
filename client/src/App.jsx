@@ -28,6 +28,7 @@ import { acquireStream } from "./长连接预算.js";
 import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun } from "./api.js";
 import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
 import FeedbackHost, { notifyError } from "./components/Feedback.jsx";
+import 提示气泡 from "./components/提示气泡.jsx";
 import { initRuntimeFlags, flag, flagsReady } from "./运行开关.js";
 
 function historyReferences(text = "") {
@@ -145,6 +146,81 @@ function entryCreatedAt(entry, message) {
   return entry?.timestamp || entry?.createdAt || entry?.time || message?.timestamp || message?.createdAt || null;
 }
 
+// v0.12.5：历史消息映射抽成纯函数，首屏与“加载更早”共用同一份规则。
+// entryId/parentId 保留 Pi 会话树坐标，供编辑/分叉/regenerate 精确定位。
+function buildHistoryMessages(entries = []) {
+  const msgs = [];
+  const toolBlocks = new Map();
+  for (const e of entries) {
+    if (e.type !== "message" || !e.message) continue;
+    const m = e.message;
+    const role = m.role === "assistant" ? "assistant" : m.role === "user" ? "user" : m.role;
+    if (role === "toolResult" || role === "tool_result") {
+      const output = typeof m.content === "string"
+        ? m.content
+        : Array.isArray(m.content)
+          ? m.content.filter((b) => b?.type === "text").map((b) => b.text || "").join("\n")
+          : JSON.stringify(m.content || m.output || "", null, 2);
+      const block = toolBlocks.get(m.toolCallId);
+      if (block) {
+        block.output = output;
+        block.result = output;
+        block.done = true;
+        block.isError = !!m.isError;
+      } else {
+        // 老会话可能没有可配对的 toolCallId：挂到最近一条 Agent 消息，仍不显示为用户消息。
+        const lastAssistant = [...msgs].reverse().find((item) => item.role === "assistant");
+        if (lastAssistant) lastAssistant.blocks.push({
+          type: "tool", id: histId(), name: m.toolName || "tool result", input: "",
+          output, result: output, done: true, isError: !!m.isError, expanded: false, duration: null,
+        });
+      }
+      continue;
+    }
+    if (role !== "assistant" && role !== "user") continue;
+    let text = "";
+    const blocks = [];
+    const images = [];
+    if (typeof m.content === "string") text = m.content;
+    else if (Array.isArray(m.content)) {
+      for (const b of m.content) {
+        if (b.type === "text" || b.type === "input_text") text += (text ? "\n" : "") + (b.text || b.content || "");
+        else if (b.type === "image" || b.type === "input_image") {
+          const src = historyImageData(b);
+          if (src) images.push(src);
+        } else if (b.type === "thinking") blocks.push({ type: "thinking", text: b.thinking || "" });
+        else if (b.type === "toolCall") {
+          const callId = b.id || b.toolCallId || histId();
+          const rawInput = b.input ?? b.arguments ?? b.params ?? "";
+          const input = typeof rawInput === "string" ? rawInput : JSON.stringify(rawInput, null, 2);
+          const block = {
+            type: "tool", id: callId, name: b.toolName || b.name || "tool", input,
+            output: "", result: "", done: false, isError: false, expanded: false, duration: null,
+          };
+          blocks.push(block);
+          toolBlocks.set(callId, block);
+        }
+      }
+    }
+    // 若 assistant 有纯文本且没有 text block，追加为文本块；用户消息仍保留原始文本。
+    if (role === "assistant" && text && !blocks.some((b) => b.type === "text")) blocks.push({ type: "text", text });
+    const displayText = role === "user" ? cleanPersistedMessage(text) : text;
+    // 任务封装里的“当前工作文件: （无）”只是占位，不是真实文件；否则恢复会话后
+    // 用户气泡会凭空多出一行“当前文件:（无）”，与实时态不一致。
+    const currentDocMatch = text.match(/当前(?:打开|工作)文件:\s*([^\]\n]+)/);
+    const currentDocValue = currentDocMatch?.[1]?.trim() || "";
+    const currentDoc = /^(?:[（(]无[）)]|none|null|[—-])$/i.test(currentDocValue) ? null : currentDocValue || null;
+    // 历史 assistant 条目自带当轮 provider/model；带上它，恢复后不会被当前选中的模型覆盖。
+    const entryModel = role === "assistant" && m.provider && m.model ? `${m.provider}/${m.model}` : (m.model || "");
+    msgs.push({
+      id: e.id, role, text: displayText, images, blocks, references: historyReferences(text),
+      currentDoc, status: "done", createdAt: entryCreatedAt(e, m), model: entryModel,
+      entryId: e.id || null, parentId: e.parentId || null,
+    });
+  }
+  return msgs;
+}
+
 function sameWorkspacePath(a, b) {
   if (!a || !b) return false;
   const normalize = (value) => String(value).replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase();
@@ -182,6 +258,8 @@ export default function App() {
   // B03：右栏三页签（预览 / 改动 / 产物）；改动与产物默认看“本轮”，可切回“会话”
   const [changesRunId, setChangesRunId] = useState("");
   const [artifactScope, setArtifactScope] = useState("session");
+  // 自动打开被“用户正在看别的文件/正在输入”挡住时，记录新产物入口，避免静默丢失。
+  const [artifactNotice, setArtifactNotice] = useState(null); // { path, name, runId, at }
   const [browserPanelOpen, setBrowserPanelOpen] = useState(false); // 内置浏览器独立侧栏
   const [browserFullscreen, setBrowserFullscreen] = useState(false);
   const [subagentDetail, setSubagentDetail] = useState(null); // 点开子代理卡片后，右栏展示的该子代理完整过程
@@ -315,6 +393,8 @@ export default function App() {
   const [restoredRunHint, setRestoredRunHint] = useState(null);
   const restoredRunProbedRef = useRef(false);
   const [historyWindow, setHistoryWindow] = useState(null); // 服务端为长会话返回的展示窗口信息
+  // v0.13.2：当前会话已加载助手消息里的外部链接（ChatPanel 提取，Links 页签展示）。
+  const [chatLinks, setChatLinks] = useState([]);
   const [sessionResumeError, setSessionResumeError] = useState(null); // { sessionId, message } Agent 恢复失败时历史只读
   // 新建会话的进行中/失败状态（交互 2）：失败必须可见，且不得清空旧会话。
   const [creatingSession, setCreatingSession] = useState(false);
@@ -334,6 +414,8 @@ export default function App() {
   const eventBatchRef = useRef({ updates: 0, artifacts: 0 });
   const sessionHistoryCacheRef = useRef(new Map());
   const sessionHistoryMetaRef = useRef(new Map());
+  // v0.12.5：每个会话的“加载更早”游标（before 指向服务端 active-leaf 条目下标）。
+  const sessionHistoryCursorRef = useRef(new Map());
   const chatInputRef = useRef(null); // 引用 ChatPanel 输入框（@ 按钮插入）
   const mapBridgeRef = useRef(null); // 地图模式复用同一个 ChatPanel，保持消息与 SSE 事件流连续
   const sessionLoadSeqRef = useRef(0);
@@ -350,6 +432,10 @@ export default function App() {
   const eventNoticeKeysRef = useRef(new Set());
   const autoOpenedRunRef = useRef(new Set());
   const changedFilesTimerRef = useRef(null);
+  // file_changed 会成串到达：合并 500ms 后统一刷新文件树/当前预览，
+  // 避免同一文件在一次任务里被反复 open() 重渲染。
+  const pendingFileChangesRef = useRef(new Set());
+  const fileChangeTimerRef = useRef(null);
   const previewToggleRef = useRef(null);
   const taskCenterRef = useRef(null);
   const topbarToolsRef = useRef(null);
@@ -954,6 +1040,7 @@ export default function App() {
     // 避免上一个会话的“本轮产物”污染到当前会话（用户反馈的跨会话污染）。
     setChangesRunId("");
     setArtifactScope("session");
+    setArtifactNotice(null);
     const loadSeq = ++sessionLoadSeqRef.current;
     // 选择历史同样推进统一导航代际：在途的新建/工作区切换不得覆盖本次结果。
     navGenerationRef.current += 1;
@@ -991,7 +1078,7 @@ export default function App() {
     // 恢复 Agent 与读取历史互不依赖；并行执行可明显缩短点击历史后的空白等待。
     // 但在 resume 完成前不切换 thread，避免 SSE 先创建一个新的空会话并与恢复竞态。
     const historyPromise = Promise.all([
-      getSession(session.id, { view: "chat", limit: 360 }),
+      getSession(session.id, { view: "chat", limit: 50 }),
       listRuns("", 50, { sessionId: session.id }).catch(() => ({ runs: [] })),
     ]);
     const resumePromise = resumeAgentThread(clientId, conversationId, session.id, resumedWorkspace)
@@ -1011,71 +1098,11 @@ export default function App() {
       setSessionResumeError(resumeResult?.ok ? null : { sessionId: session.id, message: resumeResult?.error || "Agent 会话恢复失败" });
       setCurrentSessionId(session.id);
       setThreadId(conversationId);
+      setChatLinks([]);
       localStorage.setItem("oaw_thread_id", conversationId);
       // 按原始 JSONL 顺序重建消息。toolResult 是工具输出，不能渲染成 You 的用户气泡；
       // 它要按 toolCallId 回填到对应 Agent 工具卡，否则 Word/PPT 读取结果会被误认为用户输入。
-      const msgs = [];
-      const toolBlocks = new Map();
-      for (const e of (d.entries || [])) {
-        if (e.type !== "message" || !e.message) continue;
-        const m = e.message;
-        const role = m.role === "assistant" ? "assistant" : m.role === "user" ? "user" : m.role;
-        if (role === "toolResult" || role === "tool_result") {
-          const output = typeof m.content === "string"
-            ? m.content
-            : Array.isArray(m.content)
-              ? m.content.filter((b) => b?.type === "text").map((b) => b.text || "").join("\n")
-              : JSON.stringify(m.content || m.output || "", null, 2);
-          const block = toolBlocks.get(m.toolCallId);
-          if (block) {
-            block.output = output;
-            block.result = output;
-            block.done = true;
-            block.isError = !!m.isError;
-          } else {
-            // 老会话可能没有可配对的 toolCallId：挂到最近一条 Agent 消息，仍不显示为用户消息。
-            const lastAssistant = [...msgs].reverse().find((item) => item.role === "assistant");
-            if (lastAssistant) lastAssistant.blocks.push({
-              type: "tool", id: histId(), name: m.toolName || "tool result", input: "",
-              output, result: output, done: true, isError: !!m.isError, expanded: false, duration: null,
-            });
-          }
-          continue;
-        }
-        if (role !== "assistant" && role !== "user") continue;
-        let text = "";
-        const blocks = [];
-        const images = [];
-        if (typeof m.content === "string") text = m.content;
-        else if (Array.isArray(m.content)) {
-          for (const b of m.content) {
-            if (b.type === "text" || b.type === "input_text") text += (text ? "\n" : "") + (b.text || b.content || "");
-            else if (b.type === "image" || b.type === "input_image") {
-              const src = historyImageData(b);
-              if (src) images.push(src);
-            } else if (b.type === "thinking") blocks.push({ type: "thinking", text: b.thinking || "" });
-            else if (b.type === "toolCall") {
-              const callId = b.id || b.toolCallId || histId();
-              const rawInput = b.input ?? b.arguments ?? b.params ?? "";
-              const input = typeof rawInput === "string" ? rawInput : JSON.stringify(rawInput, null, 2);
-              const block = {
-                type: "tool", id: callId, name: b.toolName || b.name || "tool", input,
-                output: "", result: "", done: false, isError: false, expanded: false, duration: null,
-              };
-              blocks.push(block);
-              toolBlocks.set(callId, block);
-            }
-          }
-        }
-        // 若 assistant 有纯文本且没有 text block，追加为文本块；用户消息仍保留原始文本。
-        if (role === "assistant" && text && !blocks.some((b) => b.type === "text")) blocks.push({ type: "text", text });
-        const displayText = role === "user" ? cleanPersistedMessage(text) : text;
-        const currentDocMatch = text.match(/当前(?:打开|工作)文件:\s*([^\]\n]+)/);
-        msgs.push({
-          id: e.id, role, text: displayText, images, blocks, references: historyReferences(text),
-          currentDoc: currentDocMatch?.[1]?.trim() || null, status: "done", createdAt: entryCreatedAt(e, m),
-        });
-      }
+      const msgs = buildHistoryMessages(d.entries || []);
       const runMessages = [...(runData?.runs || [])]
         .filter((run) => run?.status)
         .filter((run, index, list) => list.findIndex((item) => item.id === run.id) === index)
@@ -1113,17 +1140,27 @@ export default function App() {
         return left - right;
       }));
       sessionHistoryCacheRef.current.set(session.id, loadedHistory);
-      sessionHistoryMetaRef.current.set(session.id, d.info?.historyHasMore ? {
-        total: Number(d.info.historyTotal || 0),
-        start: Number(d.info.historyStart || 0),
-        end: Number(d.info.historyEnd || 0),
+      const historyStart = Number(d.info?.historyStart || 0);
+      const historyHasMore = Boolean(d.info?.historyHasMore);
+      sessionHistoryMetaRef.current.set(session.id, historyHasMore ? {
+        total: Number(d.info?.historyTotal || 0),
+        start: historyStart,
+        end: Number(d.info?.historyEnd || 0),
+        pageSize: Number(d.info?.historyPageSize || 50),
         hasMore: true,
       } : null);
+      // v0.12.5：游标保存服务端返回的 historyStart，下一页用 before=该值续拉。
+      sessionHistoryCursorRef.current.set(session.id, {
+        before: historyStart,
+        hasMore: historyHasMore,
+        total: Number(d.info?.historyTotal || 0),
+      });
       // 只保留最近几条缓存，避免长会话历史常驻内存；再次点击时仍可先显示缓存。
       while (sessionHistoryCacheRef.current.size > 8) {
         const first = sessionHistoryCacheRef.current.keys().next().value;
         if (first === undefined) break;
         sessionHistoryCacheRef.current.delete(first);
+        sessionHistoryCursorRef.current.delete(first);
       }
       setHistoryMessages(loadedHistory);
       setHistoryWindow(sessionHistoryMetaRef.current.get(session.id) || null);
@@ -1143,6 +1180,45 @@ export default function App() {
       if (loadSeq === sessionLoadSeqRef.current) notifyError("加载会话失败: " + e.message);
     }
   }, [clientId, currentWorkspace, open, refreshProjects]);
+
+  // v0.12.5：按游标续拉更早的历史（50 条/页），返回可直接前插的规范化消息。
+  const loadOlderSessionHistory = useCallback(async () => {
+    const sessionId = currentSessionId;
+    const cursor = sessionId ? sessionHistoryCursorRef.current.get(sessionId) : null;
+    if (!sessionId || !cursor?.hasMore) return { messages: [], hasMore: false };
+    const pageSize = 50;
+    const d = await getSession(sessionId, { view: "chat", limit: pageSize, before: cursor.before });
+    const messages = normalizeHistoryMessages(buildHistoryMessages(d.entries || []));
+    const info = d.info || {};
+    const nextCursor = {
+      before: Number(info.historyStart ?? Math.max(0, cursor.before - pageSize)),
+      hasMore: Boolean(info.historyHasMore),
+      total: Number(info.historyTotal || cursor.total || 0),
+    };
+    sessionHistoryCursorRef.current.set(sessionId, nextCursor);
+    const meta = sessionHistoryMetaRef.current.get(sessionId);
+    if (meta) {
+      sessionHistoryMetaRef.current.set(sessionId, {
+        ...meta,
+        start: nextCursor.before,
+        hasMore: nextCursor.hasMore,
+        total: nextCursor.total,
+        pageSize,
+      });
+      setHistoryWindow(sessionHistoryMetaRef.current.get(sessionId));
+    }
+    return { messages, hasMore: nextCursor.hasMore, total: nextCursor.total, before: nextCursor.before };
+  }, [currentSessionId]);
+
+  // v0.12.8：切换回答版本后重读会话（服务端已把活跃分支固化到 JSONL）。
+  const reloadCurrentSessionHistory = useCallback(async () => {
+    const session = sessions.find((item) => (item.threadId || item.id) === threadId)
+      || (currentSessionId ? sessions.find((item) => item.id === currentSessionId) : null);
+    if (!session) return;
+    sessionHistoryCacheRef.current.delete(session.id);
+    sessionHistoryCursorRef.current.delete(session.id);
+    await handleSelectSession(session);
+  }, [sessions, threadId, currentSessionId, handleSelectSession]);
 
   // 重试恢复当前历史会话的 Agent：成功后才允许继续对话。
   const retrySessionResume = useCallback(async (silentFlag) => {
@@ -1186,11 +1262,11 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [sessionResumeError?.code, sessionResumeError?.sessionId, retrySessionResume]);
 
-  const handleForkSession = useCallback(async (id, label) => {
+  const handleForkSession = useCallback(async (id, label, options = {}) => {
     const source = sessions.find((item) => item.id === id);
     const result = await forkSession(id, label, {
-      purpose: "从历史会话创建独立分析分支",
-      sourceMessageId: null,
+      purpose: options.sourceMessageId ? "从指定消息创建独立分析分支" : "从历史会话创建独立分析分支",
+      sourceMessageId: options.sourceMessageId || null,
     });
     await refreshSessions();
     await handleSelectSession({
@@ -1266,17 +1342,30 @@ export default function App() {
     });
   }, [currentProject?.id, currentWorkspace, handleSelectSession]);
 
-  const handleFileChanged = useCallback((changed) => {
-    const changedPaths = new Set((Array.isArray(changed) ? changed : []).map((item) => String(item || "").replace(/\\/g, "/")));
+  const flushFileChanges = useCallback(() => {
+    if (fileChangeTimerRef.current) {
+      window.clearTimeout(fileChangeTimerRef.current);
+      fileChangeTimerRef.current = null;
+    }
+    const pending = pendingFileChangesRef.current;
+    if (!pending.size) return;
+    const changedPaths = new Set(pending);
+    pending.clear();
     refreshFiles();
     const active = tabs.find((t) => (t.id || t.name) === activeTab);
     if (active && changedPaths.has(String(active.name).replace(/\\/g, "/"))) {
-      // 添加延迟避免与 agent_end 竞态
-      setTimeout(() => {
-        open(active.name, undefined, active.identity?.cwd || active.identity?.workspaceId || currentWorkspace);
-      }, 100);
+      void open(active.name, undefined, active.identity?.cwd || active.identity?.workspaceId || currentWorkspace);
     }
   }, [activeTab, tabs, currentWorkspace, refreshFiles, open]);
+
+  const handleFileChanged = useCallback((changed) => {
+    const paths = (Array.isArray(changed) ? changed : []).map((item) => String(item || "").replace(/\\/g, "/")).filter(Boolean);
+    if (!paths.length) return;
+    for (const path of paths) pendingFileChangesRef.current.add(path);
+    if (!fileChangeTimerRef.current) {
+      fileChangeTimerRef.current = window.setTimeout(flushFileChanges, 500);
+    }
+  }, [flushFileChanges]);
 
   // 暴露 refreshSessions 给 ChatPanel（agent_end 时刷新）
   const handleAgentEnd = useCallback(() => {
@@ -1306,6 +1395,12 @@ export default function App() {
     setWorkspaceTabPref("preview");
     setPreviewTab("artifacts");
   }, []);
+  // 面板里的“本轮/会话”切换是范围语义，不是选中某个历史 Run：
+  // 点“本轮”回到最新一轮（清掉钉住的 runId），点“会话”保留当前 Run 选择但不展示。
+  const handleArtifactScopeChange = useCallback((scope) => {
+    setArtifactScope(scope === "session" ? "session" : "run");
+    if (scope !== "session") setChangesRunId("");
+  }, []);
 
   const handleRunFinished = useCallback((result = {}) => {
     const runId = String(result.runId || "");
@@ -1321,6 +1416,8 @@ export default function App() {
     const artifacts = (Array.isArray(result.artifacts) ? result.artifacts : [])
       .map((item) => typeof item === "string" ? { path: item } : item)
       .filter((item) => item?.path && item.status !== "deleted");
+    // 收尾时统一刷新一次当前预览，避免运行中漏掉最后一次 file_changed。
+    flushFileChanges();
     // 文件树的短时高亮：本轮确实改了文件就打标（部分失败也算），
     // 由上面的 runId 去重保证重连回放不重播；2.6s 后自动清除，不常驻。
     if (artifacts.length) {
@@ -1345,11 +1442,24 @@ export default function App() {
       const acceptanceStatus = String(firstArtifact.acceptanceStatus || firstArtifact.acceptance?.status || "");
       if (!["passed", "warning", "manual_review"].includes(acceptanceStatus)) return;
     }
+    // 不抢用户焦点：正在输入、或正在看另一个文件时，只登记“本轮新产物”，
+    // 由用户自己从工具菜单打开；同一文件已打开时允许刷新修订。
+    const activeElement = typeof document !== "undefined" ? document.activeElement : null;
+    const typing = Boolean(activeElement && (activeElement.tagName === "TEXTAREA" || activeElement.tagName === "INPUT" || activeElement.isContentEditable));
+    const active = tabs.find((t) => (t.id || t.name) === activeTab);
+    const activePath = String(active?.name || "").replace(/\\/g, "/");
+    const artifactPath = String(firstArtifact.path || "").replace(/\\/g, "/");
+    const viewingOther = Boolean(previewOpen && active && activePath !== artifactPath);
+    if (typing || viewingOther) {
+      setArtifactNotice({ path: firstArtifact.path, name: fileBasename(firstArtifact.path), runId, at: Date.now() });
+      return;
+    }
+    setArtifactNotice(null);
     setPreviewOpen(true);
     setWorkspaceTabPref("preview");
     setPreviewTab("document");
     void open(firstArtifact.path, result.threadId || threadId, result.cwd || currentWorkspace);
-  }, [currentWorkspace, open, previewAutoOpen, threadId]);
+  }, [activeTab, currentWorkspace, flushFileChanges, open, previewAutoOpen, previewOpen, tabs, threadId]);
 
   // 关闭右预览后把焦点还给顶栏的预览开关，键盘用户不丢位置（对应计划 4.2 面板/命令入口）
   const closePreview = useCallback(() => {
@@ -1381,7 +1491,18 @@ export default function App() {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [topbarMenuOpen]);
-  useEffect(() => () => { if (changedFilesTimerRef.current) window.clearTimeout(changedFilesTimerRef.current); }, []);
+  useEffect(() => () => {
+    if (changedFilesTimerRef.current) window.clearTimeout(changedFilesTimerRef.current);
+    if (fileChangeTimerRef.current) window.clearTimeout(fileChangeTimerRef.current);
+    pendingFileChangesRef.current.clear();
+  }, []);
+
+  // 用户自己打开了“本轮新产物”后，工具菜单里的提示自动消失。
+  useEffect(() => {
+    if (!artifactNotice) return;
+    const noticeId = fileIdentityKey(makeFileIdentity({ workspaceId: currentWorkspace, relativePath: artifactNotice.path }));
+    if (activeTab && activeTab === noticeId) setArtifactNotice(null);
+  }, [activeTab, artifactNotice, currentWorkspace]);
 
   // ChatPanel 上报 pi 会话 id → 持久化（刷新后恢复当前对话）
   const handleSessionChange = useCallback((id) => {
@@ -1515,6 +1636,10 @@ export default function App() {
       historyMessages={historyMessages}
       historyThreadId={historyThreadId}
       historyWindow={historyWindow}
+      sessionId={currentSessionId || ""}
+      onLoadOlderHistory={loadOlderSessionHistory}
+      onReloadHistory={reloadCurrentSessionHistory}
+      onLinksChange={setChatLinks}
       onNewSession={() => handleNewSession()}
       onOpenFile={handleChatOpenFile}
       referenceFiles={files.map((file) => currentDir ? currentDir + "/" + file.name : file.name)}
@@ -1686,21 +1811,19 @@ export default function App() {
               onBeforeOpenModal={closeExternalModules}
               onOpenCommandPalette={() => setPaletteOpen(true)}
               onToggleTheme={toggleTheme}
+              onCollapseSidebar={() => setSidebarOpen(false)}
               theme={theme}
             />
             <Resizer side="left" min={180} max={400} cssVar="--sidebar-w" />
           </>
         )}
         <div className="center-area">
-          {!sidebarOpen && (
-            <button className="sidebar-toggle" onClick={() => setSidebarOpen(true)} title="展开侧栏" aria-label="展开侧栏">
-              <Icon name="chevronRight" size={14} />
-            </button>
-          )}
           <div className="center-content">
             <div className="topbar">
-              {sidebarOpen && (
-                <button className="btn-sm sidebar-collapse" onClick={() => setSidebarOpen(false)} title="收起侧栏" aria-label="收起侧栏"><Icon name="chevronLeft" size={14} /></button>
+              {!sidebarOpen && (
+                <button className="btn-sm topbar-sidebar-toggle" onClick={() => setSidebarOpen(true)} title="展开侧栏" aria-label="展开侧栏">
+                  <Icon name="chevronRight" size={14} />
+                </button>
               )}
             <span className="topbar-title">
               <Icon name="comment" size={16} />
@@ -1750,20 +1873,35 @@ export default function App() {
             </div>
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
             <div className="topbar-tools" ref={topbarToolsRef}>
-              <button
-                ref={previewToggleRef}
-                className={`btn-sm topbar-tools-toggle ${topbarMenuOpen ? "active" : ""}`}
-                onClick={() => setTopbarMenuOpen((v) => !v)}
-                title="工作区工具：新建对话 / 工作产物 / 内置浏览器 / 任务中心"
-                aria-label="工作区工具"
-                aria-expanded={topbarMenuOpen}
-                aria-haspopup="menu"
-              >
-                <Icon name="more" size={14} />
-                {Object.values(unreadByThread).reduce((sum, count) => sum + Number(count || 0), 0) > 0 && <i className="topbar-tools-dot" aria-hidden="true" />}
-              </button>
+              <提示气泡 label="工作区工具">
+                <button
+                  ref={previewToggleRef}
+                  className={`btn-sm topbar-tools-toggle ${topbarMenuOpen ? "active" : ""}`}
+                  onClick={() => setTopbarMenuOpen((v) => !v)}
+                  aria-label="工作区工具"
+                  aria-expanded={topbarMenuOpen}
+                  aria-haspopup="menu"
+                >
+                  <Icon name="more" size={14} />
+                  {(Object.values(unreadByThread).reduce((sum, count) => sum + Number(count || 0), 0) > 0 || artifactNotice) && <i className="topbar-tools-dot" aria-hidden="true" />}
+                </button>
+              </提示气泡>
               {topbarMenuOpen && (
                 <div className="topbar-tools-menu" role="menu" aria-label="工作区工具菜单">
+                  {artifactNotice && (
+                    <button
+                      role="menuitem"
+                      onClick={() => {
+                        const target = artifactNotice;
+                        setTopbarMenuOpen(false);
+                        setArtifactNotice(null);
+                        void open(target.path, threadId, currentWorkspace);
+                      }}
+                      title={`打开本轮新产物：${artifactNotice.path}`}
+                    >
+                      <Icon name="file" size={14} /><span>本轮新产物：{artifactNotice.name}</span>
+                    </button>
+                  )}
                   <button role="menuitem" onClick={() => { setTopbarMenuOpen(false); handleNewSession(); }} disabled={creatingSession} title="新建对话">
                     <Icon name="chatPlus" size={14} /><span>新建对话</span>
                   </button>
@@ -1942,8 +2080,11 @@ export default function App() {
             {previewOpen && (
               <div className={`app-canvas-body canvas-body-preview ${workspaceTab === "preview" ? "" : "canvas-hidden"}`}>
                 <div className="preview-panel-tabs">
-                  {[['document', '预览'], ['changes', '改动'], ['artifacts', '产物'], ...(subagentDetail ? [['subagent', '子代理']] : [])].map(([id, label]) => (
-                    <button key={id} className={previewTab === id ? "active" : ""} onClick={() => { previewTabManualAtRef.current = Date.now(); setPreviewTab(id); }}>{label}</button>
+                  {[['document', '预览'], ['changes', '改动'], ['artifacts', '产物'], ['links', '链接'], ...(subagentDetail ? [['subagent', '子代理']] : [])].map(([id, label]) => (
+                    <button key={id} className={previewTab === id ? "active" : ""} onClick={() => { previewTabManualAtRef.current = Date.now(); setPreviewTab(id); }}>
+                      {label}
+                      {id === "links" && chatLinks.length > 0 && <span className="result-tab-count">{chatLinks.length}</span>}
+                    </button>
                   ))}
                 </div>
                 <WorkProductPanel
@@ -1955,10 +2096,12 @@ export default function App() {
                   currentSessionId={currentSessionId}
                   selectedRunId={changesRunId}
                   artifactScope={artifactScope}
-                  onArtifactScopeChange={setArtifactScope}
+                  artifactScopePinned={Boolean(changesRunId)}
+                  onArtifactScopeChange={handleArtifactScopeChange}
                   refreshToken={artifactVersion}
                   onOpenFile={open}
                   subagentBlock={subagentDetail}
+                  links={chatLinks}
                 >
                   <Suspense fallback={<div className="module-loading">正在加载文档预览…</div>}>
                     <DocViewer

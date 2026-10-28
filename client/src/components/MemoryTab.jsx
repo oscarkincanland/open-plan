@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from "react";
 import Icon from "./Icon.jsx";
 import { approveMemoryProposal, editMemoryProposal, listMemoryProposals, memoryProposalHistory, mergeMemoryProposals, rejectMemoryProposal } from "../api.js";
 import { acquireStream } from "../长连接预算.js";
+import { askText } from "./Feedback.jsx";
 
 const MEMORY_CATEGORY_LABELS = {
   project_fact: "项目事实",
@@ -138,7 +139,7 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
   };
 
   const handleRejectProposal = async (id) => {
-    const reason = window.prompt("拒绝原因（可选）", "用户拒绝该记忆建议");
+    const reason = await askText("拒绝原因（可选）", "用户拒绝该记忆建议");
     if (reason === null || proposalLoading) return;
     setProposalLoading(true);
     setProposalMsg("");
@@ -196,11 +197,23 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
         <div className="memory-dock">
           <div className="memory-dock-head"><Icon name="info" size={12} /> 记忆已更新</div>
           {changes.map((c) => (
-            <div key={c.file} className="memory-change-item" onClick={() => loadFile(c.file)}>
+            <div
+              key={c.file}
+              className="memory-change-item"
+              role="button"
+              tabIndex={0}
+              onClick={() => loadFile(c.file)}
+              onKeyDown={(e) => {
+                if (e.target !== e.currentTarget) return;
+                if (e.key !== "Enter" && e.key !== " ") return;
+                e.preventDefault();
+                loadFile(c.file);
+              }}
+            >
               <Icon name="file" size={12} />
               <span className="memory-change-file">{c.file}</span>
-              <button className="memory-change-dismiss" onClick={(e) => { e.stopPropagation(); dismissChange(c.file); }}>
-                <Icon name="x" size={9} />
+              <button className="memory-change-dismiss" aria-label={`关闭 ${c.file} 的变更提示`} onClick={(e) => { e.stopPropagation(); dismissChange(c.file); }}>
+                <Icon name="close" size={12} />
               </button>
             </div>
           ))}
@@ -259,7 +272,7 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
               className={`memory-file-item ${active === f.rel ? "active" : ""}`}
               onClick={() => loadFile(f.rel)}
             >
-              <Icon name={f.type === "agents" ? "doc" : "file"} size={12} />
+              <Icon name="file" size={12} />
               <span className="memory-file-name">{f.rel}</span>
               <span className="memory-file-size">{(f.size / 1024).toFixed(1)}k</span>
             </div>

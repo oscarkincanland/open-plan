@@ -12,7 +12,11 @@
  * 用法：node scripts/执行句柄契约测试.mjs
  */
 import assert from "node:assert/strict";
-import { 创建执行句柄 } from "../server/执行句柄.mjs";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { 创建执行句柄, waitForFlush } from "../server/执行句柄.mjs";
+import { snapshotWorkspace } from "../server/runs.mjs";
 
 let failed = 0;
 const test = async (name, fn) => {
@@ -194,6 +198,21 @@ await test("能力() 自述与实际动作一致", async () => {
   assert.equal(能力.availability, true);
   assert.equal(能力.actions.length, 7);
   assert.equal(能力.availabilityState, "ready");
+});
+
+await test("waitForFlush 接受工作区快照对象并返回新增文件", async () => {
+  const 目录 = fs.mkdtempSync(path.join(os.tmpdir(), "oaw-flush-"));
+  try {
+    fs.writeFileSync(path.join(目录, "a.txt"), "a");
+    const 运行前快照 = snapshotWorkspace(目录);
+    fs.writeFileSync(path.join(目录, "b.txt"), "b");
+    // 回归：执行句柄传入的是 snapshotWorkspace 的对象，早先 new Set(object) 会抛
+    // “object is not iterable”，导致后台 Run 无法收尾、重启后被误判为失败。
+    const 变更 = await waitForFlush(运行前快照, 目录);
+    assert.ok(变更.includes("b.txt"), `应检测到新增文件，实际：${变更.join(",")}`);
+  } finally {
+    fs.rmSync(目录, { recursive: true, force: true });
+  }
 });
 
 console.log(failed ? "\n执行句柄契约测试：存在失败" : "\n执行句柄契约测试：全部通过");

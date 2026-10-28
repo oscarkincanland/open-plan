@@ -11,13 +11,13 @@ const DEFAULT_AGENTS = [
   {
     id: "agent-gongwen",
     name: "公文报告编制助手",
-    icon: "doc",
+    icon: "file",
     desc: "按公文/报告版面规范撰写政府公文、汇报材料、规划报告，输出规范 .docx",
     skills: ["gongwen-banmian", "traffic-report-briefing", "traffic-report-comprehensive", "md-to-docx"],
     inputs: ["主题/事由", "已有素材或参考文件", "篇幅与格式要求"],
     outputs: ["规范 .docx 公文或报告"],
     prompt: "你现在是公文报告编制助手：请按公文版面规范撰写/修订公文或报告，输出规范 .docx，注意标题层级、字体字号、段落格式与附件清单。",
-    color: "#b7791f",
+    tone: "warning",
   },
   {
     id: "agent-map",
@@ -28,7 +28,7 @@ const DEFAULT_AGENTS = [
     inputs: ["OD/站点/客流数据（表格或 GeoJSON）", "分析口径与范围"],
     outputs: ["单文件 HTML 交通专题地图"],
     prompt: "你现在是地图可视化助手：基于数据生成交通专题地图（OD期望线/站点/热力/等时圈等），输出单文件 HTML，使用 MapTiler 卫星底图，注意坐标系为中国范围。",
-    color: "#2a8c82",
+    tone: "accent",
   },
   {
     id: "agent-review",
@@ -39,7 +39,7 @@ const DEFAULT_AGENTS = [
     inputs: ["待审文本或文档", "审查重点（可选）"],
     outputs: ["审查意见清单（位置 + 建议）"],
     prompt: "你现在是文本审查助手：逐段审查文本的错别字/语病/格式/术语一致性/逻辑结构，输出审查意见清单（问题位置+修改建议），不直接改稿。",
-    color: "#5c7a1f",
+    tone: "success",
   },
   {
     id: "agent-data",
@@ -50,7 +50,7 @@ const DEFAULT_AGENTS = [
     inputs: ["数据表格（xlsx/csv）", "分析目标"],
     outputs: ["统计结论 + ECharts 图表 HTML"],
     prompt: "你现在是数据分析及可视化助手：对表格/OD/客流数据做统计分析，验证数据完整性，生成 ECharts 图表与结论性分析，输出图表 HTML 与说明。",
-    color: "#2a8c82",
+    tone: "accent",
   },
 ];
 
@@ -135,7 +135,7 @@ export default function AgentMarket({ open, onClose, onAtMention, onPromoteToAge
         <div className="skills-list">
           {agents.map((a) => (
             <div className="agent-item" key={a.id}>
-              <div className="agent-icon" style={{ background: a.color }}>
+              <div className={`agent-icon tone-${a.tone || "neutral"}`}>
                 <Icon name={a.icon} size={18} />
               </div>
               <div className="agent-info">

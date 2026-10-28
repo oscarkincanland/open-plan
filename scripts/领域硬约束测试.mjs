@@ -31,7 +31,7 @@ const test = (name, fn) => {
   try { fn(); console.log(`  ✓ ${name}`); } catch (error) { failed = 1; console.error(`  ✗ ${name}: ${error.message}`); }
 };
 
-test("坐标范围常量与 AGENT.MD 一致", () => {
+test("坐标范围常量与 AGENTS.md 一致", () => {
   assert.deepEqual([...经度范围], [73, 135]);
   assert.deepEqual([...纬度范围], [18, 54]);
 });

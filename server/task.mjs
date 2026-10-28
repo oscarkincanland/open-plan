@@ -145,7 +145,10 @@ function collectContext({ text = "", task = {}, references = [], attachments = [
   const refList = Array.isArray(references) ? references : [];
   const attachmentNames = (Array.isArray(attachments) ? attachments : []).map((item) => String(item?.name || item || ""));
   const refTargets = refList.map((item) => String(item?.target || "")).join(" ");
-  const files = [String(task.currentFile || ""), refTargets, ...attachmentNames].join(" ").trim();
+  const files = [String(task.currentFile || ""), refTargets, ...attachmentNames]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .join(" ");
   const officeRefExists = OFFICE_EXTENSIONS.test(files);
   const document = DOCUMENT_EXTENSIONS.test(files) || refList.some((item) => item.kind === "file" || item.kind === "template");
   const office = officeRefExists || containsAny(source, OFFICE_INTENT_WORDS);
@@ -348,6 +351,8 @@ export function createTaskEnvelope(input = {}) {
     version: 1,
     id: input.id || `task_${crypto.randomUUID()}`,
     goal: String(input.goal || input.text || "").trim(),
+    // v0.13.0：跨轮长期目标（Harness 层），与 task.goal（本轮任务描述）严格分层。
+    longTermGoal: input.longTermGoal || null,
     mode,
     modeLabel: modeLabel(input.mode),
     modeDescription: modeDescription(input.mode),
@@ -376,9 +381,12 @@ export function createTaskEnvelope(input = {}) {
 
 export function taskSummary(task) {
   if (!task) return "";
+  const longTerm = task.longTermGoal;
   return [
     "当前任务",
     `目标：${task.goal || "（未提供）"}`,
+    longTerm?.text ? `长期目标：${longTerm.text}` : "",
+    longTerm?.text ? `目标状态：${longTerm.statusLabel || longTerm.status}；轮次 ${Number(longTerm.turns) || 0}；Token ${Number(longTerm.usedTokens) || 0}${Number(longTerm.budgetTokens) > 0 ? `/${longTerm.budgetTokens}` : ""}` : "",
     `模式：${task.modeLabel || modeLabel(task.mode)}`,
     task.workflowId ? `工作流：${task.workflowId}` : "",
     task.currentFile ? `当前文件：${task.currentFile}` : "",
