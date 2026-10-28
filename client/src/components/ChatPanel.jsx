@@ -4504,15 +4504,21 @@ case "runtime_connecting":
             <input ref={attInputRef} type="file" accept=".docx,.xlsx,.pptx,.md,.markdown,.txt,.pdf,.html,.htm,.csv,.json" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
             <div className="chat-toolbar-group toolbar-context-group" title="上下文工具">
               <span className="chat-toolbar-label">上下文</span>
-              <button className="ct-btn" title="上传图片" onClick={() => fileInputRef.current?.click()}>
-                <Icon name="image" size={14} />
-              </button>
-              <button className="ct-btn" title="上传附件（docx/xlsx/pdf/md/txt 等）" onClick={() => attInputRef.current?.click()}>
-                <Icon name="link" size={14} />
-              </button>
-              {mapContext?.center && <button className="ct-btn" title="将当前地图视图加入下一轮上下文" onClick={injectMapContext}>
-                <Icon name="locate" size={14} />
-              </button>}
+              <提示气泡 label="上传图片">
+                <button className="ct-btn" aria-label="上传图片" onClick={() => fileInputRef.current?.click()}>
+                  <Icon name="image" size={14} />
+                </button>
+              </提示气泡>
+              <提示气泡 label="上传附件">
+                <button className="ct-btn" aria-label="上传附件（docx/xlsx/pdf/md/txt 等）" onClick={() => attInputRef.current?.click()}>
+                  <Icon name="link" size={14} />
+                </button>
+              </提示气泡>
+              {mapContext?.center && <提示气泡 label="加入地图上下文">
+                <button className="ct-btn" aria-label="将当前地图视图加入下一轮上下文" onClick={injectMapContext}>
+                  <Icon name="locate" size={14} />
+                </button>
+              </提示气泡>}
               <button className={`ct-btn ct-context-btn ${compacting ? "active" : ""}`} title={busy ? "当前任务完成后才能压缩上下文" : "压缩当前 Pi 会话上下文，保留任务摘要"} onClick={compactContext} disabled={busy || compacting}>
                 <Icon name={compacting ? "loading" : "layers"} size={14} />
                 <span>压缩</span>
@@ -4644,9 +4650,11 @@ case "runtime_connecting":
             </div>
             <span className="chat-toolbar-spacer" />
             <div className="chat-toolbar-group toolbar-session-group">
-              <button className="ct-btn" onClick={handleNewSession} title="新建会话">
-                <Icon name="chatPlus" size={14} />
-              </button>
+              <提示气泡 label="新建会话">
+                <button className="ct-btn" aria-label="新建会话" onClick={handleNewSession}>
+                  <Icon name="chatPlus" size={14} />
+                </button>
+              </提示气泡>
             </div>
             {modelMsg && <span className={`model-msg${pendingModel ? " pending" : ""}`} title={pendingModel ? `已排队：本轮结束后切换为 ${pendingModel}` : undefined}>{modelMsg}</span>}
           </div>
@@ -5418,7 +5426,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
       <div className={`avatar ${isUser ? "user-avatar" : "agent-avatar"} ${!isUser && streaming ? "is-streaming" : ""}`}>
         {isUser
           ? <Icon name="user" size={14} />
-          : <Logo size={22} withBackground={false} markColor="#fff" className="agent-avatar-mark" />}
+          : <Logo size={22} withBackground={false} className="agent-avatar-mark" />}
       </div>
       <div className="msg-main">
         {/* 消息头：作者 + 时间（相邻同角色消息省略，减少重复气泡头部） */}
@@ -6571,8 +6579,18 @@ function ToolCard({ tool, onToggle }) {
     && Date.now() - getBrowserStreamState().since > 3000;
 
   return (
-    <div className={`tool-card ${done ? (isError ? "error" : "success") : "pending"} ${isMapTool ? "tool-card-map" : ""}`} onClick={onToggle}>
-      <div className="tool-header">
+    <div className={`tool-card ${done ? (isError ? "error" : "success") : "pending"} ${isMapTool ? "tool-card-map" : ""}`}>
+      <div
+        className="tool-header"
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        aria-label={expanded ? "收起工具详情" : "展开工具详情"}
+        onClick={onToggle}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); }
+        }}
+      >
         <span className={`tool-icon ${done ? (isError ? "err" : "ok") : "run"}`}>
           {done ? (isError ? <Icon name="close" size={12} /> : <Icon name="check" size={12} />) : <Icon name="loading" size={12} className="icon-loading" />}
         </span>

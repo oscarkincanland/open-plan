@@ -21,8 +21,8 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const 样式 = fs.readFileSync(path.join(ROOT, "client", "src", "styles.css"), "utf8");
 
-/** 硬编码色值棘轮基线（2026-10-28 设计一致性整改后实测；只允许下降，不许上升）。 */
-const 硬编码基线 = { 总数: 378, 不同值: 129 };
+/** 硬编码色值棘轮基线（2026-10-29 设计一致性整改收尾实测；只允许下降，不许上升）。 */
+const 硬编码基线 = { 总数: 139, 不同值: 98 };
 
 let failed = 0;
 const test = (name, fn) => {
@@ -244,10 +244,13 @@ test("迁移清单（记录型）：可 1:1 映射到 :root 令牌的色值仍�
     if (命中?.length === 1) 清单.push({ 值, 次, 令牌: 命中[0] });
   }
   清单.sort((a, b) => b.次 - a.次);
+  if (!清单.length) {
+    console.log("    · 散落色值已全部收敛，无待人工迁移的 1:1 映射项。");
+    return;
+  }
   console.log(`    · 可 1:1 映射 ${清单.length} 种 / ${清单.reduce((和, 项) => 和 + 项.次, 0)} 处：`);
   for (const 项 of 清单.slice(0, 12)) console.log(`        ${项.值} ×${项.次} → var(${项.令牌})`);
   console.log("    · 注意：这些替换在**亮色主题**下会改变渲染（同名令牌亮色取值不同），需人工评估后再做。");
-  assert.ok(清单.length >= 10, `可映射清单异常缩小：${清单.length}`);
 });
 
 console.log(failed ? "\n设计令牌一致性测试：存在失败" : "\n设计令牌一致性测试：全部通过");

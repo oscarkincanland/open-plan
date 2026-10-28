@@ -149,7 +149,7 @@ export default function MarkdownBody({ children, className = "", withToc = false
               if (i % 2 === 1) {
                 const t = p.slice(1);
                 if (/^\d/.test(t) || /^[0-9a-fA-F]{3,8}$/.test(t)) return p; // 排除颜色/数字
-                return <span key={i} className="md-tag" onClick={(e) => { e.stopPropagation(); onTagClick(t); }}>{p}</span>;
+                return <span key={i} className="md-tag" role="button" tabIndex={0} aria-label={`按标签 ${t} 搜索`} onClick={(e) => { e.stopPropagation(); onTagClick(t); }} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); onTagClick(t); } }}>{p}</span>;
               }
               return p;
             });

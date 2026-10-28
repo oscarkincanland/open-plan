@@ -48,19 +48,16 @@ assert.match(
 assert.match(样式, /\.marquee-text \{[\s\S]*?text-overflow: ellipsis/, "短名字应静态省略号显示");
 assert.match(样式, /\.marquee \{[\s\S]*?overflow: hidden/, "跑马灯容器负责裁剪");
 
-// 组合测试矩阵：6 种样式 × 动效档，逐一确认灯效宿主与档位处理都在
-const 样式档 = ["shine", "neon", "rainbow", "terminal", "stripe", "static"];
+// 组合测试矩阵：3 种样式 × 动效档（与界面外观选项一致），逐一确认灯效宿主与档位处理都在
+const 样式档 = ["shine", "neon", "static"];
 for (const 样式名 of 样式档) {
   const 有灯效层 = 样式.includes(`[data-marquee-style="${样式名}"] .marquee.is-active .marquee-text`);
   const 有遮罩层 = 样式.includes(`[data-marquee-style="${样式名}"] .marquee.is-active::after`);
   assert.ok(有灯效层 || 有遮罩层, `样式 ${样式名} 应有明确的灯效宿主`);
 }
 // "克制"档：只关灯效，不能连滚动一起关掉
-const 克制段 = 样式.slice(样式.indexOf('[data-motion-level="calm"] [data-marquee-style="terminal"]'), 样式.indexOf(".session-label-text"));
+const 克制段 = 样式.slice(样式.indexOf('[data-motion-level="calm"] [data-marquee-style="neon"]'), 样式.indexOf(".session-label-text"));
 assert.ok(克制段.length > 0, "应有跑马灯克制档规则");
-for (const 样式名 of ["terminal", "stripe"]) {
-  assert.match(克制段, new RegExp(`\\[data-marquee-style="${样式名}"\\] \\.marquee\\.is-active::after`), `克制档应关掉 ${样式名} 的扫描/条纹`);
-}
 assert.match(克制段, /\[data-marquee-style="neon"\] \.marquee\.is-active \.marquee-text \{[\s\S]*?animation: none/, "克制档应把霓虹呼吸落定为静态描边");
 assert.doesNotMatch(克制段, /\.marquee-inner \{[^}]*animation: none/, "克制档不得关掉滚动");
 
@@ -105,7 +102,7 @@ for (const 名称 of 全部关键帧) {
 }
 const 期望持续动画 = [
   "activity-marquee-sweep", "agent-avatar-breathe", "blink", "brain-pulse", "dot-breathe-soft",
-  "marquee-neon", "marquee-scroll", "marquee-scan", "marquee-shine", "marquee-stripe",
+  "marquee-neon", "marquee-scroll", "marquee-shine",
   "mp-spin", "pulse", "pulse-status", "pulse-status-soft", "session-pulse", "spin", "streaming-label-breathe", "thinking-caret-blink",
 ];
 assert.deepEqual(
@@ -129,8 +126,6 @@ const 持续动画宿主 = {
   "marquee-scroll": [".marquee-inner"],
   "marquee-shine": [".marquee-text"],
   "marquee-neon": [".marquee-text"],
-  "marquee-scan": [".marquee.is-active::after"],
-  "marquee-stripe": [".marquee.is-active::after"],
   "activity-marquee-sweep": [".message-process-fold.run-activity-fold.is-live > summary::after"],
   "thinking-caret-blink": [".thinking-process-inline.is-streaming .thinking-text::after"],
   "mp-spin": [".mp-spin"],

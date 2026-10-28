@@ -157,6 +157,8 @@ App.jsx（总编排：会话、工作区、模式、三栏布局、懒加载）
 - 动效令牌：`--dur-fast 120ms / --dur-base 200ms / --dur-slow 320ms / --ease-out`，只作用于 `transform` / `opacity`。
 - 回滚：见 `docs/plans/2026-10-18-004-Qoder优化开关与回滚说明.md`（开关级/单文件级/整站级三层）。
 
+> 皮肤约束（ADR 0006）：现有 7 套皮肤（默认 + 6）保留，但皮肤只允许覆盖中性色与 `--accent`；`--success / --error / --warning` 的色相在全部主题/皮肤下锁定为绿/红/琥珀，禁止用状态色充当模式品牌色。玻璃皮肤正文面板使用不透明 `--glass-content-bg`，`backdrop-filter` 只保留在顶栏、输入框、弹层等关键浮层。
+
 ### 5.6 字体与排版
 
 - 正文：系统 sans 栈：`-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif`。

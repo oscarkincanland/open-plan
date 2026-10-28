@@ -2055,23 +2055,32 @@ export default function App() {
                       <Icon name={previewLayout === 2 ? "minimize" : "maximize"} size={14} />
                       <span className="preview-layout-label">{previewLayout === 0 ? "默认" : `${previewLayout * 50}%`}</span>
                     </button>
-                    <button className="btn-icon" onClick={closePreview} title="隐藏工作产物" aria-label="隐藏工作产物"><Icon name="close" size={14} /></button>
+                    <提示气泡 label="隐藏工作产物">
+                      <button className="btn-icon" onClick={closePreview} aria-label="隐藏工作产物"><Icon name="close" size={14} /></button>
+                    </提示气泡>
                   </>
                 ) : workspaceTab === "objects" ? (
-                  <button className="btn-icon" onClick={closeObjects} title="隐藏对象栏" aria-label="隐藏对象栏"><Icon name="close" size={14} /></button>
+                  <提示气泡 label="隐藏对象栏">
+                    <button className="btn-icon" onClick={closeObjects} aria-label="隐藏对象栏"><Icon name="close" size={14} /></button>
+                  </提示气泡>
                 ) : workspaceTab === "workflows" ? (
-                  <button className="btn-icon" onClick={closeWorkflows} title="隐藏领域工作流" aria-label="隐藏领域工作流"><Icon name="close" size={14} /></button>
+                  <提示气泡 label="隐藏领域工作流">
+                    <button className="btn-icon" onClick={closeWorkflows} aria-label="隐藏领域工作流"><Icon name="close" size={14} /></button>
+                  </提示气泡>
                 ) : (
                   <>
-                    <button
-                      className="btn-icon"
-                      onClick={() => setBrowserFullscreen((value) => !value)}
-                      title={browserFullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
-                      aria-label={browserFullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
-                    >
-                      <Icon name={browserFullscreen ? "minimize" : "maximize"} size={14} />
-                    </button>
-                    <button className="btn-icon" onClick={closeBrowserPanel} title="隐藏内置浏览器" aria-label="隐藏内置浏览器"><Icon name="close" size={14} /></button>
+                    <提示气泡 label={browserFullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}>
+                      <button
+                        className="btn-icon"
+                        onClick={() => setBrowserFullscreen((value) => !value)}
+                        aria-label={browserFullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
+                      >
+                        <Icon name={browserFullscreen ? "minimize" : "maximize"} size={14} />
+                      </button>
+                    </提示气泡>
+                    <提示气泡 label="隐藏内置浏览器">
+                      <button className="btn-icon" onClick={closeBrowserPanel} aria-label="隐藏内置浏览器"><Icon name="close" size={14} /></button>
+                    </提示气泡>
                   </>
                 )}
               </span>

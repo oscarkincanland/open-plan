@@ -4,6 +4,7 @@ import ChatPanel from "./ChatPanel.jsx";
 import LayerPanel from "./LayerPanel.jsx";
 import AttributeTable from "./AttributeTable.jsx";
 import Icon from "./Icon.jsx";
+import 提示气泡 from "./提示气泡.jsx";
 import TaskCenter from "./任务中心.jsx";
 // 阶段 2：M2宏观分析 / M3公交分析 / 柬埔寨OD面板 三个旧面板已下线，
 // 统一由可视面板（可视面板.jsx + /api/map/visual 描述符）承担。
@@ -2152,9 +2153,11 @@ export default function MapPanel({
             <div className="mp-measure">
               {measureResult.dist !== undefined && <span>距离：{fmtLen(measureResult.dist)}</span>}
               {measureResult.area !== undefined && <span>面积：{fmtArea(measureResult.area)}</span>}
-              <button className="mp-op" title="清除" aria-label="清除" onClick={() => { setMeasureResult(null); clearDrawLayers(); }}>
-                <Icon name="close" size={12} />
-              </button>
+              <提示气泡 label="清除测量结果">
+                <button className="mp-op" aria-label="清除测量结果" onClick={() => { setMeasureResult(null); clearDrawLayers(); }}>
+                  <Icon name="close" size={12} />
+                </button>
+              </提示气泡>
             </div>
           )}
         </div>
@@ -2208,7 +2211,9 @@ export default function MapPanel({
           <div className="mp-iso-panel mp-od-panel" onClick={(e) => e.stopPropagation()}>
             <div className="mp-iso-head">
               <span><Icon name="locate" size={14} /> OD 流量分析</span>
-              <button className="mp-op" onClick={() => setOdOpen(false)} title="关闭" aria-label="关闭"><Icon name="close" size={14} /></button>
+              <提示气泡 label="关闭 OD 流量分析">
+                <button className="mp-op" onClick={() => setOdOpen(false)} aria-label="关闭 OD 流量分析"><Icon name="close" size={14} /></button>
+              </提示气泡>
             </div>
             <div className="mp-iso-body">
               <div className="mp-iso-hint" style={{ border: "none", padding: 0, marginBottom: 8 }}>
@@ -2259,7 +2264,9 @@ export default function MapPanel({
           <div className="mp-iso-panel" onClick={(e) => e.stopPropagation()}>
             <div className="mp-iso-head">
               <span><Icon name="upload" size={14} /> 导入路网数据</span>
-              <button className="mp-op" onClick={() => setImportOpen(false)} title="关闭" aria-label="关闭"><Icon name="close" size={14} /></button>
+              <提示气泡 label="关闭导入路网数据">
+                <button className="mp-op" onClick={() => setImportOpen(false)} aria-label="关闭导入路网数据"><Icon name="close" size={14} /></button>
+              </提示气泡>
             </div>
             <div className="mp-iso-body">
               <div className="mp-iso-modes" style={{ marginBottom: 10 }}>
@@ -2302,7 +2309,9 @@ export default function MapPanel({
           <div className="mp-iso-panel" onClick={(e) => e.stopPropagation()}>
             <div className="mp-iso-head">
               <span><Icon name="download" size={14} /> 导出报告图</span>
-              <button className="mp-op" onClick={() => setExportOpen(false)} title="关闭" aria-label="关闭"><Icon name="close" size={14} /></button>
+              <提示气泡 label="关闭导出报告图">
+                <button className="mp-op" onClick={() => setExportOpen(false)} aria-label="关闭导出报告图"><Icon name="close" size={14} /></button>
+              </提示气泡>
             </div>
             <div className="mp-iso-body">
               <div className="mp-iso-row">
@@ -2428,7 +2437,9 @@ export default function MapPanel({
                 <button className={`mp-iso-tab ${iso.tab === "iso" ? "active" : ""}`} onClick={() => setIso((s) => ({ ...s, tab: "iso" }))}>等时圈</button>
                 <button className={`mp-iso-tab ${iso.tab === "route" ? "active" : ""}`} onClick={() => setIso((s) => ({ ...s, tab: "route" }))}>路径规划</button>
               </div>
-              <button className="mp-op" onClick={() => setIsoOpen(false)} title="关闭" aria-label="关闭"><Icon name="close" size={14} /></button>
+              <提示气泡 label="关闭地图分析">
+                <button className="mp-op" onClick={() => setIsoOpen(false)} aria-label="关闭地图分析"><Icon name="close" size={14} /></button>
+              </提示气泡>
             </div>
             <div className="mp-iso-body">
             {iso.tab === "iso" ? (
