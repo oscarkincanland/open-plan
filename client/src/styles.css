@@ -10159,8 +10159,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   gap: 4px;
 }
 .agent-brief > summary::-webkit-details-marker { display: none; }
-.agent-brief > summary::before { content: "▸"; color: var(--accent); font-family: monospace; }
-.agent-brief[open] > summary::before { content: "▾"; }
+.agent-brief > summary::before { content: ""; width: 0; height: 0; flex: 0 0 auto; border-left: 4px solid var(--accent); border-top: 3px solid transparent; border-bottom: 3px solid transparent; transition: transform 0.15s; }
+.agent-brief[open] > summary::before { transform: rotate(90deg); }
 .agent-brief > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .agent-brief-grid {
   display: grid;
@@ -10401,8 +10401,8 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .product-leads { margin-top: 7px; }
 .product-leads > summary { cursor: pointer; list-style: none; color: var(--warning); font-size: 10px; }
 .product-leads > summary::-webkit-details-marker { display: none; }
-.product-leads > summary::before { content: "▸ "; }
-.product-leads[open] > summary::before { content: "▾ "; }
+.product-leads > summary::before { content: ""; width: 0; height: 0; flex: 0 0 auto; border-left: 4px solid currentColor; border-top: 3px solid transparent; border-bottom: 3px solid transparent; transition: transform 0.15s; }
+.product-leads[open] > summary::before { transform: rotate(90deg); }
 .product-leads-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; max-height: 200px; overflow: auto; }
 .product-lead { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 2px 7px; border: 1px dashed color-mix(in srgb, var(--warning) 40%, var(--border)); border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: 10px; cursor: pointer; }
 .product-lead:hover { border-color: var(--warning); color: var(--warning); }
