@@ -220,13 +220,22 @@ export async function runEditorialPipeline({
       scene: sceneInfo,
     });
     if (clarification.shouldAsk) {
+      // 已有 Markdown 时先落一份草稿，ask_user 时前端自动打开供用户确认。
+      let previewPath = null;
+      if (sourceMarkdown) {
+        try {
+          const draftPath = path.join(path.dirname(deliverablePath), `${fileBase}.draft.md`);
+          fs.writeFileSync(draftPath, sourceMarkdown, "utf8");
+          previewPath = path.relative(workspace, draftPath).replace(/\\/g, "/");
+        } catch {}
+      }
       return {
         status: "needs_clarification",
         deliverable: null,
         stages: [],
         checks: [],
         issues: [`缺少关键信息：${clarification.missing.join("、")}`],
-        clarification,
+        clarification: { ...clarification, previewPath },
         scene: { id: sceneId, label: sceneInfo?.label || sceneId },
         template: templateInfo ? { relPath: templateInfo.relPath, title: templateInfo.title } : null,
       };

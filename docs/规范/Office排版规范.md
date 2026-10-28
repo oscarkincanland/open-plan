@@ -151,6 +151,8 @@
 - **澄清前置**：`clarification.shouldAsk=true` 时，回答前拒绝一切写操作（含 `editorial_pipeline`），只允许信息收集工具与 `ask_user`。
 - **逃逸阀**：命令带 `--allow-manual`，或用户需求里明确写"脚本/代码/手工生成/自己生成"时放行。
 - **回退**：关闭 `OAW_OFFICE_FORMAT` 即完全放行，行为与 v0.11.55 基线一致。
+- **写锁粒度**：`officecli` 按目标文件加锁，`editorial_pipeline` 按交付文件加锁，只读 `bash` 不占锁；写 `bash` 仍取工作区级锁。同一工作区不同文件可并行，写同一文件仍 `WRITE_CONFLICT`。
+- **草稿预览**：`ask_user` 支持 `previewFile`；`editorial_pipeline` 在 `needs_clarification` 且有 `sourceMarkdown` 时生成 `<fileBase>.draft.md` 并通过 `clarification.previewPath` 返回；前端收到带 `previewFile` 的 `ask_user` 事件时自动打开该草稿。
 - **Markdown 直通**：`editorial_pipeline` 的 `sourceMarkdown` 跳过 Planner/Writer，`markdownToBlocks` 解析标题/段落/表格后统一排版与验收。
 
 ## 11. 验证入口

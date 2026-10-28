@@ -2281,6 +2281,10 @@ case "runtime_connecting":
           if (streamBufRef.current) flushNow(aid);
           setBusy(true);
           setAgentPhase("等待你的回答");
+          // 计划 008：提问时若带草稿，自动打开预览，让用户先确认内容再回答。
+          if (data.previewFile) {
+            try { onOpenFile?.(data.previewFile); } catch {}
+          }
           setRunState((s) => ({ ...s, status: "waiting_user", runId: data.runId || s.runId || null }));
           const askId = data.askId || `${data.runId || "ask"}:${data.question || ""}`;
           patch(aid, (m) => m.blocks?.some((block) => block.type === "ask" && block.id === askId)

@@ -17,6 +17,7 @@ import { runEditorialPipeline } from "../server/编辑流水线.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const AGENT_SOURCE = fs.readFileSync(path.join(ROOT, "server", "agent.mjs"), "utf8");
+const CHAT_SOURCE = fs.readFileSync(path.join(ROOT, "client", "src", "components", "ChatPanel.jsx"), "utf8");
 let failed = 0;
 const test = (name, fn) => Promise.resolve().then(fn).then(
   () => console.log(`  ✓ ${name}`),
@@ -140,5 +141,28 @@ await test("拒绝文案明确", () => assert.ok(AGENT_SOURCE.includes("同一�
 await test("保留 5 分钟超时", () => assert.ok(AGENT_SOURCE.includes("ASK_TIMEOUT_MS = 300_000")));
 await test("超时后按专业判断继续并注明假设", () => assert.ok(AGENT_SOURCE.includes("按专业判断继续")));
 await test("取消时回填已取消提醒", () => assert.ok(AGENT_SOURCE.includes("本轮任务已被用户取消")));
+
+await test("sourceMarkdown + 澄清 → 生成 draft.md 预览", async () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "oaw-preview-"));
+  try {
+    const r = await runEditorialPipeline({
+      format: "docx", goal: "写个文档", workspace, autoClarify: true,
+      sourceMarkdown: "# 草稿标题\n\n正文内容", runModelTask: async () => { throw new Error("不应调用模型"); },
+    });
+    assert.equal(r.status, "needs_clarification");
+    assert.ok(r.clarification.previewPath, "应返回 previewPath");
+    const file = path.resolve(workspace, r.clarification.previewPath);
+    assert.ok(fs.existsSync(file), "草稿文件应存在");
+    assert.ok(fs.readFileSync(file, "utf8").includes("草稿标题"));
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+console.log("\n▶ 草稿预览（1 例）");
+await test("ask_user 带 previewFile 时前端自动打开", () => {
+  assert.ok(CHAT_SOURCE.includes("data.previewFile"));
+  assert.ok(CHAT_SOURCE.includes("onOpenFile?.(data.previewFile)"));
+});
 
 process.exitCode = failed ? 1 : 0;

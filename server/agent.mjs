@@ -45,7 +45,7 @@ import { resolveReferences, readReference, contextSummary } from "./context.mjs"
 import { recordRunEvent, updateRunTodo, getRun } from "./runs.mjs";
 import { markRunTiming, attachRunTimingSpans } from "./首字延迟.mjs";
 import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode, routeTaskIntent } from "./task.mjs";
-import { classifyToolCall } from "./office规范/执行闸门.mjs";
+import { classifyToolCall, isReadonlyBash } from "./office规范/执行闸门.mjs";
 
 /** OfficeCLI 工具约束（O-28）：Work/Review 两处 prompt 共用同一常量，避免措辞分叉。 */
 const OFFICE_TOOL_RULE = "- ALWAYS operate on office documents through the `officecli` tool — it resolves file names relative to the current workspace and runs on Windows natively. NEVER try to run `officecli` via the bash tool.";
@@ -422,7 +422,7 @@ import {
   orchestrateSubagents,
 } from "./子代理编排器.mjs";
 // Editorial Pipeline（P2-A）：Planner→Writer→Formatter（原生）→Evaluator 的确定性编排
-import { runEditorialPipeline } from "./编辑流水线.mjs";
+import { runEditorialPipeline, safePipelineName } from "./编辑流水线.mjs";
 
 export function noteRepeatedToolCall(entry, session, ev, emit) {
   try {
@@ -1092,6 +1092,7 @@ class AgentManager extends EventEmitter {
               "- **主动询问（重要）**: 当用户要求撰写/生成/修改文字内容，但关键信息不明确（文档类型、篇幅、受众、数据来源、风格、范围；修改类还包括改哪一段、改成什么、是否保留原格式）时，**必须调用 ask_user 主动提问**，等待回答后再继续，不要猜测。**只在缺失 ≥2 项时提问，每次只问一个最阻塞的问题**；只缺 1 项时按默认值继续，并在结果中注明假设。",
               "- **模板优先（重要）**: 用户要求写工可/可研/规划/汇报/交评/预可/选址/物流园区/年度报告等交通规划文体时，先用 read 读取 `templates/traffic-material/` 下对应模板（14 个），按其章节骨架、必备图表与格式规则写作；不要凭记忆自造结构。",
               "- **改文档先读后改**: 修改既有 Office 文档时，先 `officecli view <file> text|outline` 确认内容，再 `get` 取真实路径，最后 `set/add`；禁止直接 set 未知路径。",
+              "- **草稿确认**: 如果已经生成 Markdown 草稿，调用 ask_user 时用 `previewFile` 指向该草稿（工作区相对路径），让用户先看内容再继续写入。",
               "- **复杂任务待办**: 预计超过两步的任务，先调用 `todo` 工具创建 2-6 项结构化待办；每完成一项或状态发生变化后，立即用 `todo` 提交完整清单。不要把每个工具调用都拆成待办项。Markdown 清单只能作为可选的人类可读摘要，任务区以 `todo` 工具状态为准。",
               "- **回合结束沉淀记忆**: 每轮任务真正完成后，检查本轮是否出现对后续任务仍有价值的新项目事实、稳定工作规则、用户偏好或可复用经验（纯问答或一次性咨询不必检查，也不必为此额外追问）。若有，主动调用一次 memory_update 生成一条待审核建议；若没有，不要强行生成。只记录短句，不记录临时状态、完整对话、敏感凭据或大段原文。",
               "- **显式收尾（complete_task）**: 回答最后一步调用 `complete_task`：status 用 success/partial/blocked/failed 如实声明本轮结果；partial 必须列出未完成项；blocked 必须列出阻塞原因；generated 产物用 read 回读验证后再声明 success。不要跳过此工具，跳过时系统只能按回合结束推断，用户无法区分“回答完了”和“任务真完成了”。",
@@ -1371,16 +1372,16 @@ exec: async (command, cwd, options) => {
             writeEvent("tool_gate_denied", { runId: ctx.runId, kind: "bash", code: error.code, name: "bash", reason: error.message });
             throw error;
           }
+          const runBash = async () => RUNTIME_FLAGS.piBashSidecar
+            ? await getBashSidecar().execute(effectiveCommand, { cwd: cwd || ctx.workspace })
+            : await localBash.exec(effectiveCommand, cwd, normalizeBashOptions(options));
+          // 只读命令（ls/grep/unzip -p 等）不占工作区写锁，避免 Word/PPT 两个任务互相挡。
+          if (isReadonlyBash(effectiveCommand)) return runBash();
           return withWorkspaceWriteLock(ctx, "bash", async () => {
             writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", command: effectiveCommand.slice(0, 500) });
             writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash" });
             try {
-              // U5：flag on 时经侧车管理器执行（独立进程 + 并发上限 + 执行统计）；
-              // off（默认）走 createLocalBashOperations 原路径，行为与基线一致。
-              const result = RUNTIME_FLAGS.piBashSidecar
-                ? await getBashSidecar().execute(effectiveCommand, { cwd: cwd || ctx.workspace })
-                : await localBash.exec(effectiveCommand, cwd, normalizeBashOptions(options));
-              return result;
+              return await runBash();
             } catch (error) {
               writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error?.code || "BASH_FAILED", message: String(error?.message || error) });
               throw error;
@@ -1428,9 +1429,10 @@ execute: async (_toolCallId, params) => {
         });
         let officeLock = null;
         if (mutating) {
+          // 按目标文件加锁（而不是整个工作区）：Word 与 PPT 两个任务写不同文件时可以并行。
           officeLock = await acquireWriteLockWithRetry({
             workspace: ctx.workspace,
-            targetPath: ctx.workspace,
+            targetPath: parsed.path || ctx.workspace,
             runId: ctx.runId,
             threadId: ctx.threadId,
             kind: "officecli",
@@ -2670,6 +2672,7 @@ execute: async (_toolCallId, params) => {
           Type.String({ description: "快捷选项文本" }),
           Type.Object({ label: Type.String(), description: Type.Optional(Type.String()) }),
         ]))),
+        previewFile: Type.Optional(Type.String({ description: "可选：工作区相对路径，指向已生成的 Markdown/草稿；提问时前端自动打开供用户确认" })),
       }),
       execute: async (_toolCallId, params) => {
         // 单槽位保护（O-26）：同一会话同时只允许一个待回答问题。
@@ -2682,6 +2685,9 @@ execute: async (_toolCallId, params) => {
         }
         // 归一化 options（对象 → 字符串）
         const opts = (params.options || []).map((o) => (typeof o === "string" ? o : o.label || JSON.stringify(o)));
+        // 计划 008：提问时自动打开已生成的草稿，让用户先确认内容。
+        const previewFile = String(params.previewFile || entry.clarificationPreview || "").trim() || null;
+        if (previewFile) entry.clarificationPreview = null;
         // 计划 008：提问一旦发出，解除写操作前的澄清闸门（超时也按专业判断继续）。
         entry.clarificationPending = null;
         // 阻塞等待用户回答（最长 5 分钟），期间 SSE 推送 ask_user 事件
@@ -2694,6 +2700,7 @@ execute: async (_toolCallId, params) => {
             runId: entry.activeRunId || null,
             question: String(params.question || ""),
             options: opts,
+            previewFile: previewFile || null,
             status: "pending",
             createdAt: new Date().toISOString(),
             expiresAt,
@@ -2729,6 +2736,7 @@ execute: async (_toolCallId, params) => {
             options: opts,
             // 前端据此显示/收起"待回答"卡片：到期后服务端不再接受回答，卡片必须同步失效。
             expiresAt,
+            ...(previewFile ? { previewFile } : {}),
           };
           // Qoder P1-4（开关 qoderInteractionOwner，默认关）：标记提问归属。
           // ask_user 目前只对父会话开放（子代理角色工具集不含它），因此归属是「本轮」；
@@ -3054,12 +3062,17 @@ execute: async (_toolCallId, params) => {
           entry, tool: "editorial_pipeline", input: `${format} ${String(params.goal || "").slice(0, 160)}`,
           runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
         });
-        // 与 officecli 写入同一治理：工作区级写锁 + write_started/locked 事件
+        // 按交付文件加锁（而不是整个工作区）：不同产物的 Word/PPT 任务可以并行。
+        const lockTarget = path.resolve(
+          ctx.workspace,
+          params.outputPath ? String(params.outputPath) : `${safePipelineName(String(params.goal || ""))}.${format}`,
+        );
         const lock = await acquireWriteLockWithRetry({
-          workspace: ctx.workspace, targetPath: ctx.workspace,
+          workspace: ctx.workspace, targetPath: lockTarget,
           runId: ctx.runId, threadId: ctx.threadId, kind: "editorial_pipeline",
         });
-        writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "editorial_pipeline", command: `${format} ${String(params.goal || "").slice(0, 200)}` });
+        const lockRel = path.relative(ctx.workspace, lockTarget).replace(/\\/g, "/") || ".";
+        writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: lockRel, kind: "editorial_pipeline", command: `${format} ${String(params.goal || "").slice(0, 200)}` });
         writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "editorial_pipeline" });
         try {
           // Planner/Writer/Evaluator 是只读模型会话：复用 SubagentProvider seam（planner 只读角色）
@@ -3110,6 +3123,7 @@ execute: async (_toolCallId, params) => {
           });
           if (result.status === "needs_clarification") {
             entry.clarificationPending = result.clarification || entry.clarificationPending;
+            entry.clarificationPreview = result.clarification?.previewPath || entry.clarificationPreview;
             const question = result.clarification?.question;
             const text = question
               ? `需要先向用户确认：${question.text}\n可选：${(question.options || []).join(" / ")}\n请调用 ask_user 提问；用户回答后再次调用本工具，并在 clarificationAnswers 里带上回答。`
@@ -3897,6 +3911,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         && entry.mode !== "review"
         ? { missing: plan.clarification.missing || [], question: plan.clarification.question || null }
         : null;
+      entry.clarificationPreview = null;
     }
     if (!isStreaming) {
       entry.reviewConfirmed = false;

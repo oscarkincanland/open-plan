@@ -125,4 +125,13 @@ test("ask_user 解除澄清闸门", () => {
   assert.ok(AGENT_SOURCE.includes("entry.clarificationPending = null"));
 });
 
+console.log("\n▶ 并发锁与草稿预览接线（4 例）");
+test("bash 只读命令不占写锁", () => assert.ok(AGENT_SOURCE.includes("if (isReadonlyBash(effectiveCommand)) return runBash();")));
+test("officecli 按目标文件加锁", () => assert.ok(AGENT_SOURCE.includes("targetPath: parsed.path || ctx.workspace")));
+test("pipeline 按交付文件加锁", () => assert.ok(AGENT_SOURCE.includes("targetPath: lockTarget")));
+test("ask_user 支持 previewFile", () => {
+  assert.ok(AGENT_SOURCE.includes("previewFile: Type.Optional"));
+  assert.ok(AGENT_SOURCE.includes("...(previewFile ? { previewFile } : {})"));
+});
+
 process.exitCode = failed ? 1 : 0;
