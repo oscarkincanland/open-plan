@@ -136,4 +136,10 @@ test("ask_user 支持 previewFile", () => {
 test("bash 执行前物化暂存文件", () => assert.ok(AGENT_SOURCE.includes('reason: "bash_visibility"')));
 test("ask_user 预览前物化暂存文件", () => assert.ok(AGENT_SOURCE.includes('reason: "ask_preview"')));
 
+test("工具描述覆盖高级命令", () => {
+  for (const command of ["batch", "dump", "raw-set", "add-part", "validate", "refresh", "merge", "import", "get-marks"]) {
+    assert.ok(AGENT_SOURCE.includes(command), `工具描述缺少 ${command}`);
+  }
+});
+
 process.exitCode = failed ? 1 : 0;

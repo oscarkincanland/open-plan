@@ -26,6 +26,7 @@ import { selectScene, getScene } from "./office规范/场景选择.mjs";
 import { matchTemplate } from "./office规范/模板匹配.mjs";
 import { parseTemplateStructure, assertCoverage } from "./office规范/模板结构.mjs";
 import { runDocxQa } from "./office规范/验收规则.mjs";
+import { collectOfficeCliIssues } from "./office规范/officecli检查.mjs";
 
 export const PIPELINE_STAGES = Object.freeze(["planner", "writer", "formatter", "evaluator"]);
 
@@ -415,15 +416,22 @@ export async function runEditorialPipeline({
         const deterministic = await evaluateGeneratedFile(deliverablePath, { format: normalizedFormat, outline: outline.outline });
         checks.push(...deterministic.checks);
         issues.push(...deterministic.issues);
-        // 规则闸门（O-20）+ 模板覆盖率（O-15）：只在显式开启时执行，保持旧行为可回退。
+        // 规则闸门（O-20）+ 模板覆盖率（O-15）+ OfficeCLI 自带检查（P0）。
         let qaPassed = true;
-        if (qa && normalizedFormat === "docx") {
-          const qaResult = await runDocxQa(deliverablePath, { structure: templateStructure, coverageMode });
-          checks.push(...qaResult.checks);
-          if (!qaResult.passed) {
-            qaPassed = false;
-            issues.push(...qaResult.issues.map((item) => `[${item.rule}] ${item.message}`));
+        if (qa) {
+          if (normalizedFormat === "docx") {
+            const qaResult = await runDocxQa(deliverablePath, { structure: templateStructure, coverageMode });
+            checks.push(...qaResult.checks);
+            if (!qaResult.passed) {
+              qaPassed = false;
+              issues.push(...qaResult.issues.map((item) => `[${item.rule}] ${item.message}`));
+            }
           }
+          // OfficeCLI 自带：view issues（17 类）+ validate（OpenXML schema）；不可用时跳过。
+          const cliResult = await collectOfficeCliIssues(deliverablePath, { cwd: workspace });
+          checks.push(...cliResult.checks);
+          if (cliResult.issues.some((item) => item.severity === "error")) qaPassed = false;
+          issues.push(...cliResult.issues.map((item) => `[${item.rule}] ${item.message}`));
         }
         // pass=全过；structural（产物本身坏了）→ fail；内容/版式缺漏 → revise（可回环补写）
         let verdict = deterministic.ok && qaPassed ? "pass" : deterministic.structural ? "fail" : "revise";

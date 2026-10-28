@@ -177,4 +177,15 @@ test("二（一）发展基础 能匹配简写", () => {
   assert.equal(coverage.missingSections.some((item) => item.includes("发展基础")), false);
 });
 
+console.log("\n▶ 14 个模板解析基线（14 例）");
+for (const item of catalog) {
+  test(`解析 ${item.file}`, () => {
+    const parsed = parseTemplateStructure(fs.readFileSync(item.absPath, "utf8"));
+    assert.ok(parsed.title.length > 0, "标题为空");
+    const total = parsed.chapters.length + parsed.requiredSections.length
+      + parsed.optionalSections.length + parsed.figures.length + parsed.tables.length;
+    assert.ok(total > 0 || parsed.inferred, "解析为空且未标记 inferred");
+  });
+}
+
 process.exitCode = failed ? 1 : 0;

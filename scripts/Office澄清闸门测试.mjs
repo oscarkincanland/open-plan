@@ -18,6 +18,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const AGENT_SOURCE = fs.readFileSync(path.join(ROOT, "server", "agent.mjs"), "utf8");
 const CHAT_SOURCE = fs.readFileSync(path.join(ROOT, "client", "src", "components", "ChatPanel.jsx"), "utf8");
+const cleanup = (dir) => { try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {} };
 let failed = 0;
 const test = (name, fn) => Promise.resolve().then(fn).then(
   () => console.log(`  ✓ ${name}`),
@@ -89,7 +90,7 @@ await test("流水线缺信息 → needs_clarification，不产成品", async ()
     assert.equal(r.deliverable, null);
     assert.ok(r.clarification.question.text.length > 4);
   } finally {
-    fs.rmSync(workspace, { recursive: true, force: true });
+    cleanup(workspace);
   }
 });
 await test("澄清问题带快捷选项", async () => {
@@ -99,7 +100,7 @@ await test("澄清问题带快捷选项", async () => {
     assert.ok(Array.isArray(r.clarification.question.options));
     assert.ok(r.clarification.question.options.length >= 3);
   } finally {
-    fs.rmSync(workspace, { recursive: true, force: true });
+    cleanup(workspace);
   }
 });
 await test("带上澄清答案 → 继续执行并完成", async () => {
@@ -116,7 +117,7 @@ await test("带上澄清答案 → 继续执行并完成", async () => {
     assert.ok(r.deliverable);
     assert.equal(r.scene.id, "report");
   } finally {
-    fs.rmSync(workspace, { recursive: true, force: true });
+    cleanup(workspace);
   }
 });
 await test("autoClarify 关闭 → 行为与旧版一致（不问）", async () => {
@@ -130,7 +131,7 @@ await test("autoClarify 关闭 → 行为与旧版一致（不问）", async () 
     });
     assert.notEqual(r.status, "needs_clarification");
   } finally {
-    fs.rmSync(workspace, { recursive: true, force: true });
+    cleanup(workspace);
   }
 });
 
@@ -155,7 +156,7 @@ await test("sourceMarkdown + 澄清 → 生成 draft.md 预览", async () => {
     assert.ok(fs.existsSync(file), "草稿文件应存在");
     assert.ok(fs.readFileSync(file, "utf8").includes("草稿标题"));
   } finally {
-    fs.rmSync(workspace, { recursive: true, force: true });
+    cleanup(workspace);
   }
 });
 

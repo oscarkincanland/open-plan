@@ -182,5 +182,5 @@ await test("sourceMarkdown 仅支持 docx", async () => {
   );
 });
 
-fs.rmSync(tmp, { recursive: true, force: true });
+try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {}
 process.exitCode = failed ? 1 : 0;

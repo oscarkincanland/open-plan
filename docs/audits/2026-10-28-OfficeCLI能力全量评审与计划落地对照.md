@@ -35,6 +35,8 @@
 
 ### 1.3 能力矩阵
 
+> 说明：本矩阵保留评审时点（`c9630ac1`）的判读；2026-10-28 收口后，`view issues`/`validate` 已接入 QA、高级命令已写入工具描述并由 `test:office-cli-full:live` 验证，最新状态见 §5。
+
 | 子命令/能力 | 可调用 | 已引导 | 已测试 | 判读 |
 |---|---|---|---|---|
 | `create` | ✅ 原生 | ✅ | ✅ `test:doc-engine` | 完整 |
@@ -160,18 +162,30 @@
 
 ---
 
-## 5. 未落地 / 弱验证清单
+## 5. 未落地 / 弱验证清单（2026-10-28 收口后）
 
 | # | 项 | 类型 | 说明 |
 |---|---|---|---|
-| U1 | CI 第 18 步 | 未落地 | `.github/workflows/ci.yml` 仍无 Office 测试步骤 |
-| U2 | Word/WPS 人工 L4 | 未验证 | 封面/目录/页码/批注双端目检未做 |
-| U3 | 并发双任务 E2E | 弱验证 | 只有 `test:write-lock` 单测；未跑两个真实 Run 同时写 Word/PPT |
-| U4 | 12 个模板结构基线 | 弱验证 | 只验证 04/08；其余 12 个未跑解析快照 |
-| U5 | `view issues` / `validate` 未接入 QA | 未落地 | 自研 9 项替代，OfficeCLI 自带规则未用 |
-| U6 | `raw-set`/`add-part`/`merge`/`dump`/`batch`/`import`/`refresh`/`watch mark`/`load_skill` | 可透传未引导 | 见 §1.3 |
-| U7 | `revision` 修订留痕 | 未专门验证 | 仅提示词提及 |
+| U1 | CI 第 18 步 | ✅ 已落地 | `.github/workflows/ci.yml` 新增 `Office写作契约回归测试` |
+| U2 | Word/WPS 人工 L4 | 未验证 | 封面/目录/页码/批注双端目检未做（需人工） |
+| U3 | 并发双任务 E2E | 弱验证 | `test:write-lock` 单测覆盖不同文件并行；真实双 Run 未跑 |
+| U4 | 12 个模板结构基线 | ✅ 已落地 | `test:office-template` 新增 14 个模板逐一解析 |
+| U5 | `view issues` / `validate` | ✅ 已落地 | `officecli检查.mjs` 接入流水线 QA |
+| U6 | 高级命令引导 | ✅ 已落地 | 工具描述新增 ADVANCED COMMANDS；`test:office-cli-full:live` 全覆盖 |
+| U7 | `revision` 修订留痕 | ✅ 已落地 | live 套件 find/replace + revision.author 回读 |
 | U8 | `visual-judge` 视觉验收 | 明确不做 | 计划 006 §6 已列为不做 |
+| U9 | `load_skill` / 内置 skills | 仍未接 | 项目使用自有规范层；不加载 OfficeCLI 428KB skills |
+| U10 | `watch mark` UI 入口 | 部分 | CLI 已验证；前端未提供 mark/goto 操作入口 |
+
+### 5.1 收口证据
+
+| 项 | 命令/证据 |
+|---|---|
+| CI 第 18 步 | `.github/workflows/ci.yml` 末尾 `Office 写作契约（四路由 / 澄清 / 模板 / 版式 / 闸门）` |
+| 14 模板基线 | `npm run test:office-template` 63/63 |
+| view issues/validate | `server/office规范/officecli检查.mjs`；`test:office-qa` 29/29 |
+| 高级命令引导 | `server/agent.mjs` `ADVANCED COMMANDS`；`test:office-exec-gate` 47/47 |
+| 全量 live | `npm run test:office-cli-full:live` 全部通过（28 子命令覆盖） |
 
 ---
 

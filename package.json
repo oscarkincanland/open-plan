@@ -62,6 +62,8 @@
     "test:office-qa": "node scripts/Office验收规则测试.mjs",
     "test:office-generate": "node scripts/Office生成回归测试.mjs",
     "test:office-exec-gate": "node scripts/Office执行闸门测试.mjs",
+    "test:office-contract": "node scripts/Office写作契约回归测试.mjs",
+    "test:office-cli-full:live": "node scripts/OfficeCLI全量能力验证.mjs",
     "test:subagent-orchestrator": "node scripts/子代理编排器测试.mjs",
     "test:editorial-pipeline": "node scripts/编辑流水线测试.mjs",
     "test:capability-contract": "node scripts/能力契约测试.mjs",

@@ -15,6 +15,7 @@ import {
   runDocxQa, checkBlankPages, checkCoverOverflow, checkLineSpacing, checkTableMargins,
   checkImageRatio, checkCjkIndent, checkHeadingHierarchy, checkPlaceholders, checkFontFloor,
 } from "../server/office规范/验收规则.mjs";
+import { normalizeOfficeIssues } from "../server/office规范/officecli检查.mjs";
 import { buildDocxFromBlocks } from "../server/文档引擎.mjs";
 import { validateArtifactFile } from "../server/产物验证.mjs";
 
@@ -180,5 +181,19 @@ await test("不存在的文件 → 明确失败", async () => {
   assert.equal(result.issues[0].rule, "file");
 });
 
-fs.rmSync(tmp, { recursive: true, force: true });
+await test("OfficeCLI issues 归一化：severity 1=告警，>=2=错误", () => {
+  const issues = normalizeOfficeIssues({
+    issues: [
+      { id: "F1", severity: 1, message: "missing indent", path: "/body/p[1]" },
+      { id: "F2", severity: 2, message: "broken ref" },
+    ],
+  });
+  assert.equal(issues.length, 2);
+  assert.equal(issues[0].rule, "officecli_F1");
+  assert.equal(issues[0].severity, "warn");
+  assert.equal(issues[1].severity, "error");
+  assert.equal(issues[0].source, "officecli");
+});
+
+try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {}
 process.exitCode = failed ? 1 : 0;

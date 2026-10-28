@@ -72,3 +72,6 @@ jobs:
 
       - name: Review 报错修复（officecli 参数 / 临时文件 / 输入区布局）
         run: node scripts/CI运行测试.mjs Review报错修复回归测试
+
+      - name: Office 写作契约（四路由 / 澄清 / 模板 / 版式 / 闸门）
+        run: node scripts/CI运行测试.mjs Office写作契约回归测试
