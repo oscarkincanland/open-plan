@@ -110,7 +110,7 @@ export default function QueueDock({
             return (
               <div className={`chat-queue-item ${item.status === "failed" ? "failed" : ""}`} role="listitem" key={item.id}>
                 <span className={`chat-queue-channel ${item.channel === "steer" ? "steer" : "queue"}`} title={item.channel === "steer" ? "插话：等待注入" : "排队：会话结束后自动发送"}>
-                  <Icon name={item.channel === "steer" ? "send" : "list"} size={11} />
+                  <Icon name={item.channel === "steer" ? "send" : "list"} size={12} />
                   {queueLabel(item)}
                 </span>
 
@@ -143,7 +143,7 @@ export default function QueueDock({
                   ))}
                   {attachments.length > 0 && (
                     <span className="chat-queue-file" title={attachments.map((file) => file.name).join("、")}>
-                      <Icon name="file" size={11} /> {attachments.length}
+                      <Icon name="file" size={12} /> {attachments.length}
                     </span>
                   )}
                 </span>
@@ -151,21 +151,21 @@ export default function QueueDock({
                 <span className="chat-queue-actions">
                   {editing ? (
                     <>
-                      <button type="button" onClick={saveEdit} disabled={!draft.trim()} title="保存（Enter）"><Icon name="check" size={11} /></button>
-                      <button type="button" onClick={cancelEdit} title="放弃（Esc）"><Icon name="close" size={11} /></button>
+                      <button type="button" onClick={saveEdit} disabled={!draft.trim()} title="保存（Enter）"><Icon name="check" size={12} /></button>
+                      <button type="button" onClick={cancelEdit} title="放弃（Esc）"><Icon name="close" size={12} /></button>
                     </>
                   ) : (
                     <>
-                      <button type="button" onClick={() => startEdit(item)} title="编辑排队消息"><Icon name="penTool" size={11} /></button>
+                      <button type="button" onClick={() => startEdit(item)} title="编辑排队消息"><Icon name="penTool" size={12} /></button>
                       <button
                         type="button"
                         onClick={() => onPromote?.(item.id)}
                         disabled={compacting}
                         title={item.status === "failed" ? "重试发送" : busy ? "中断当前回合并立即发送" : "立即发送"}
                       >
-                        <Icon name={item.status === "failed" ? "refresh" : "send"} size={11} />
+                        <Icon name={item.status === "failed" ? "refresh" : "send"} size={12} />
                       </button>
-                      <button type="button" className="danger" onClick={() => onDelete?.(item.id)} title="删除排队消息"><Icon name="trash" size={11} /></button>
+                      <button type="button" className="danger" onClick={() => onDelete?.(item.id)} title="删除排队消息"><Icon name="trash" size={12} /></button>
                     </>
                   )}
                 </span>

@@ -125,7 +125,7 @@ export default function 工作流启动器({ onClose }) {
             onClick={() => set选中(项.id)}
             title={`${项.title} · ${项.id}`}
           >
-            <Icon name="flow" size={13} />
+            <Icon name="flow" size={14} />
             <span>{项.title}</span>
           </button>
         ))}
@@ -205,7 +205,7 @@ export default function 工作流启动器({ onClose }) {
           {试算结果 && (
             <div className="wf-result" role="status">
               <p className={试算结果.ok ? "wf-result-head ok" : "wf-result-head bad"}>
-                <Icon name={试算结果.ok ? "check" : "warning"} size={13} /> {试算结果.摘要}
+                <Icon name={试算结果.ok ? "check" : "warning"} size={14} /> {试算结果.摘要}
               </p>
               <ul className="wf-checks">
                 {(试算结果.检查结果 || []).map((检查) => (

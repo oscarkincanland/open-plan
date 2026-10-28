@@ -658,11 +658,11 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           <span>规聚工作台</span>
         </div>
         <button className="sidebar-brand-action" onClick={onToggleTheme} title={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}>
-          <Icon name={theme === "dark" ? "sun" : "moon"} size={15} />
+          <Icon name={theme === "dark" ? "sun" : "moon"} size={16} />
         </button>
-        <button className="sidebar-brand-action" onClick={onOpenCommandPalette} title="命令面板（Ctrl/Cmd+K）"><Icon name="search" size={15} /></button>
+        <button className="sidebar-brand-action" onClick={onOpenCommandPalette} title="命令面板（Ctrl/Cmd+K）"><Icon name="search" size={16} /></button>
         {onCollapseSidebar && (
-          <button className="sidebar-brand-action sidebar-collapse" onClick={onCollapseSidebar} title="收起侧栏" aria-label="收起侧栏"><Icon name="chevronLeft" size={15} /></button>
+          <button className="sidebar-brand-action sidebar-collapse" onClick={onCollapseSidebar} title="收起侧栏" aria-label="收起侧栏"><Icon name="chevronLeft" size={16} /></button>
         )}
       </div>
       <div className="sidebar-primary-tabs" role="tablist" aria-label="工作台导航">
@@ -841,7 +841,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           </div>
           {projects.map((project) => (
             <div key={project.id} className={"sidebar-project-card " + (project.id === currentProjectId ? "active" : "")} role="button" tabIndex={0} onClick={() => onProjectChange?.(project.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onProjectChange?.(project.id); }}>
-              <Icon name="folder" size={15} />
+              <Icon name="folder" size={16} />
               <span className="sidebar-project-main">
                 <跑马灯文本
                   text={project.name}

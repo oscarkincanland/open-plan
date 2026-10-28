@@ -136,7 +136,7 @@ export default function AgentMarket({ open, onClose, onAtMention, onPromoteToAge
           {agents.map((a) => (
             <div className="agent-item" key={a.id}>
               <div className="agent-icon" style={{ background: a.color }}>
-                <Icon name={a.icon} size={18} />
+                <Icon name={a.icon} size={16} />
               </div>
               <div className="agent-info">
                 <div className="agent-name">{a.name}</div>

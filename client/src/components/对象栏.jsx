@@ -79,7 +79,7 @@ export default function 对象栏({ workspace = "", projectId = "", model = "", 
     <div className="object-bar">
       <div className="object-bar-toolbar">
         <span className="object-bar-summary" title="本轮对象总数（产出 + 来源 + 记忆）">
-          <Icon name="layers" size={13} /> 本轮对象 <b>{视图.objectCount}</b>
+          <Icon name="layers" size={14} /> 本轮对象 <b>{视图.objectCount}</b>
         </span>
         <span className="object-bar-actions">
           <button className="btn-icon" onClick={() => void 刷新()} disabled={loading} title="刷新对象栏" aria-label="刷新对象栏">
@@ -89,7 +89,7 @@ export default function 对象栏({ workspace = "", projectId = "", model = "", 
         </span>
       </div>
 
-      {error && <div className="object-bar-error" role="alert"><Icon name="warning" size={13} /> {error}</div>}
+      {error && <div className="object-bar-error" role="alert"><Icon name="warning" size={14} /> {error}</div>}
       {loading && !data && <div className="object-bar-loading"><Icon name="loading" size={14} /> 正在汇总本轮对象…</div>}
       {空 && <div className="object-bar-empty">本轮还没有可汇总的对象。产出、引用、技能与记忆出现后会自动汇总到这里。</div>}
 
@@ -98,7 +98,7 @@ export default function 对象栏({ workspace = "", projectId = "", model = "", 
           {视图.groups.map((group) => (
             <section key={group.key} className="object-group" data-empty={group.count === 0 ? "1" : "0"}>
               <header className="object-group-head">
-                <Icon name={group.icon} size={13} />
+                <Icon name={group.icon} size={14} />
                 <span>{group.label}</span>
                 <b>{group.count}</b>
               </header>
@@ -120,7 +120,7 @@ export default function 对象栏({ workspace = "", projectId = "", model = "", 
 
           <section className="object-group" data-empty="0">
             <header className="object-group-head">
-              <Icon name="terminal" size={13} />
+              <Icon name="terminal" size={14} />
               <span>后台进程</span>
               <b>{视图.background.count}</b>
             </header>
@@ -139,7 +139,7 @@ export default function 对象栏({ workspace = "", projectId = "", model = "", 
           </section>
 
           <section className="object-group object-group-env" data-empty="0">
-            <header className="object-group-head"><Icon name="gear" size={13} /><span>环境</span></header>
+            <header className="object-group-head"><Icon name="gear" size={14} /><span>环境</span></header>
             <ul className="object-list">
               <li className="object-item"><span className="object-item-name">工作区</span><span className="object-item-meta">{视图.environment.workspace}</span></li>
               <li className="object-item"><span className="object-item-name">模型</span><span className="object-item-meta">{视图.environment.model}</span></li>

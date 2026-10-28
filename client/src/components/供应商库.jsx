@@ -173,7 +173,7 @@ export function 供应商库({ catalog, onImported, onEditExisting, onCatalogRef
           return (
             <div className={`prov-library-item${provider.configured ? " configured" : ""}`} key={provider.id}>
               <span className="prov-mark" title={identity.label}>
-                <ProviderIcon provider={identity.icon} size={18} />
+                <ProviderIcon provider={identity.icon} size={16} />
               </span>
               <div className="prov-library-main">
                 <div className="prov-library-title">

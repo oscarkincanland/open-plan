@@ -316,7 +316,7 @@ function TaskCenterInternal({ sessions = [], projects = [], currentProjectId = "
   const panel = (fullPage || open) && (
         <div className={`task-center-panel ${fullPage ? "task-center-page-panel" : ""}`}>
           {fullPage && <div className="module-head task-center-page-head">
-            <button className="module-back" onClick={onClose} title="返回对话"><Icon name="back" size={15} /></button>
+            <button className="module-back" onClick={onClose} title="返回对话"><Icon name="back" size={16} /></button>
             <div><h2>任务中心</h2><p>并行任务、运行状态与历史会话</p></div>
           </div>}
           <div className="task-center-head">

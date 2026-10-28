@@ -1840,7 +1840,7 @@ export default function App() {
                   if (switched !== false) setConversationMode("chat");
                 }}
               >
-                <Icon name="comment" size={15} />
+                <Icon name="comment" size={16} />
                 <span>Chat</span>
               </button>
               <button
@@ -1853,7 +1853,7 @@ export default function App() {
                   if (switched !== false) setConversationMode("agent");
                 }}
               >
-                <Icon name="tool" size={15} />
+                <Icon name="tool" size={16} />
                 <span>Work</span>
               </button>
               <button
@@ -1866,7 +1866,7 @@ export default function App() {
                   if (switched !== false) setConversationMode("review");
                 }}
               >
-                <Icon name="shield" size={15} />
+                <Icon name="shield" size={16} />
                 <span>Review</span>
               </button>
             </div>
@@ -2006,7 +2006,7 @@ export default function App() {
                   onClick={() => { previewTabManualAtRef.current = Date.now(); setPreviewOpen(true); setWorkspaceTabPref("preview"); }}
                   title="工作产物：文件预览 / 改动 / 产物"
                 >
-                  <Icon name="package" size={13} /> 工作产物
+                  <Icon name="package" size={14} /> 工作产物
                 </button>
                 <button
                   role="tab"
@@ -2015,7 +2015,7 @@ export default function App() {
                   onClick={() => { setBrowserActivityPing(0); setBrowserPanelOpen(true); setWorkspaceTabPref("browser"); }}
                   title="内置浏览器"
                 >
-                  <Icon name="globe" size={13} /> 浏览器
+                  <Icon name="globe" size={14} /> 浏览器
                   {browserActivityPing > 0 && workspaceTab !== "browser" && <i className="browser-activity-dot" aria-hidden="true" />}
                 </button>
                 {flag("qoderObjectBar") && (
@@ -2026,7 +2026,7 @@ export default function App() {
                     onClick={() => { setWorkspaceTabPref("objects"); setObjectsOpenState(true); }}
                     title="对象栏：本轮产出 / 来源 / 技能 / 记忆汇总"
                   >
-                    <Icon name="layers" size={13} /> 对象
+                    <Icon name="layers" size={14} /> 对象
                   </button>
                 )}
                 {flag("domainWorkflows") && (
@@ -2037,7 +2037,7 @@ export default function App() {
                     onClick={() => { setWorkspaceTabPref("workflows"); setWorkflowsOpenState(true); }}
                     title="领域工作流：阶段 / 工具白名单 / 预算 / 产物契约与预检试算"
                   >
-                    <Icon name="flow" size={13} /> 工作流
+                    <Icon name="flow" size={14} /> 工作流
                   </button>
                 )}
               </div>
@@ -2188,8 +2188,8 @@ export default function App() {
          {activeModule === "settings" && (
            <div className="module-view">
              <div className="module-head">
-               <button className="module-back" onClick={closeExternalModules} title="返回对话"><Icon name="back" size={15} /></button>
-               <div className="module-brand-heading"><Logo size={22} /><span><h2>设置</h2><p>外观、模型、项目运行和工作区记忆</p></span></div>
+               <button className="module-back" onClick={closeExternalModules} title="返回对话"><Icon name="back" size={16} /></button>
+               <div className="module-brand-heading"><Logo size={20} /><span><h2>设置</h2><p>外观、模型、项目运行和工作区记忆</p></span></div>
                <div className="module-head-tabs">
                  <button className={settingsModuleTab === "settings" ? "active" : ""} onClick={() => setSettingsModuleTab("settings")}>设置</button>
                  <button className={settingsModuleTab === "memory" ? "active" : ""} onClick={() => setSettingsModuleTab("memory")}>记忆与沉淀</button>
@@ -2205,8 +2205,8 @@ export default function App() {
          {activeModule === "artifacts" && (
            <div className="module-view">
              <div className="module-head">
-               <button className="module-back" onClick={closeExternalModules} title="返回对话"><Icon name="back" size={15} /></button>
-               <div className="module-brand-heading"><Logo size={22} /><span><h2>成果</h2><p>查看、验收、固定和回滚工作产物</p></span></div>
+               <button className="module-back" onClick={closeExternalModules} title="返回对话"><Icon name="back" size={16} /></button>
+               <div className="module-brand-heading"><Logo size={20} /><span><h2>成果</h2><p>查看、验收、固定和回滚工作产物</p></span></div>
              </div>
              <div className="module-body module-artifacts-body">
                <WorkProductPanel tab="artifacts" clientId={clientId} threadId={threadId} workspace={currentWorkspace} projectId={currentProject?.id || ""} currentSessionId={currentSessionId} refreshToken={artifactVersion} onOpenFile={(name, thread, cwd) => { closeExternalModules(); open(name, thread, cwd); }} />

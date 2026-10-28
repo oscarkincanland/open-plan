@@ -111,9 +111,9 @@ function WorkbenchView({ session, events, runState, onRun, input, setInput, sele
           </div>
         </div>
         <div className="dp-task-meta">
-          <span><Icon name="folderOpen" size={13} /> {session.title}</span>
-          <span><Icon name="map" size={13} /> 浙江省 · 综合交通</span>
-          <span><Icon name="info" size={13} /> 本地工作区</span>
+          <span><Icon name="folderOpen" size={14} /> {session.title}</span>
+          <span><Icon name="map" size={14} /> 浙江省 · 综合交通</span>
+          <span><Icon name="info" size={14} /> 本地工作区</span>
         </div>
       </section>
 
@@ -161,8 +161,8 @@ function WorkbenchView({ session, events, runState, onRun, input, setInput, sele
 
           <div className="dp-composer-wrap">
             <div className="dp-composer-context">
-              <span><Icon name="at" size={13} /> 现状诊断章节.md</span>
-              <span><Icon name="book" size={13} /> 交通报告规范</span>
+              <span><Icon name="at" size={14} /> 现状诊断章节.md</span>
+              <span><Icon name="book" size={14} /> 交通报告规范</span>
               <span className="dp-context-add">+ 添加上下文</span>
             </div>
             <div className="dp-composer">
@@ -170,9 +170,9 @@ function WorkbenchView({ session, events, runState, onRun, input, setInput, sele
               <div className="dp-composer-footer">
                 <div className="dp-composer-tools">
                   <button className="dp-composer-tool"><Icon name="upload" size={14} /> 附件</button>
-                  <label className="dp-model-select"><Icon name="cloud" size={13} /><select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}><option>DeepSeek V3</option><option>GPT-5</option><option>MiniMax M2.5</option></select></label>
+                  <label className="dp-model-select"><Icon name="cloud" size={14} /><select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}><option>DeepSeek V3</option><option>GPT-5</option><option>MiniMax M2.5</option></select></label>
                 </div>
-                <button className="dp-send-button" onClick={onRun} disabled={!input.trim() || runState === "running"}><Icon name="send" size={15} /> {runState === "running" ? "执行中" : "开始执行"}</button>
+                <button className="dp-send-button" onClick={onRun} disabled={!input.trim() || runState === "running"}><Icon name="send" size={16} /> {runState === "running" ? "执行中" : "开始执行"}</button>
               </div>
             </div>
             <div className="dp-composer-hint">Agent 可以读取工作区文件并生成成果，敏感操作会在执行前请求确认。</div>
@@ -185,7 +185,7 @@ function WorkbenchView({ session, events, runState, onRun, input, setInput, sele
           </div>
           {rightTab === "执行计划" && <div className="dp-inspector-body"><div className="dp-inspector-heading"><div><span className="dp-eyebrow">TASK PLAN</span><h2>现状诊断章节</h2></div><span className="dp-progress-count">2 / 5</span></div><div className="dp-progress-bar"><span style={{ width: "40%" }} /></div><div className="dp-plan-list">{PLANS.map((item) => <div className={`dp-plan-item ${item.done ? "is-done" : ""} ${item.active ? "is-active" : ""}`} key={item.label}><span className="dp-plan-check">{item.done ? <Icon name="check" size={12} /> : item.active ? <span className="dp-plan-pulse" /> : null}</span><span>{item.label}</span></div>)}</div><div className="dp-note-card"><span className="dp-note-index">NOTE</span><p>发现 2 个数据口径需要确认，暂不阻塞章节骨架生成。</p><button>查看问题 <Icon name="chevronRight" size={12} /></button></div></div>}
           {rightTab === "工作区" && <div className="dp-inspector-body"><div className="dp-inspector-heading"><div><span className="dp-eyebrow">WORKSPACE</span><h2>规聚项目</h2></div><button className="dp-icon-button" title="刷新工作区" aria-label="刷新工作区"><Icon name="refresh" size={14} /></button></div><div className="dp-file-list">{FILES.map((file) => <div className="dp-file-item" key={file.name}><Icon name={file.type} size={16} /><div><strong>{file.name}</strong><small>{file.count}</small></div><Icon name="chevronRight" size={12} /></div>)}</div><div className="dp-workspace-foot"><StatusDot tone="cyan" /> 已同步 · 28 个文件</div></div>}
-          {rightTab === "产物" && <div className="dp-inspector-body"><div className="dp-inspector-heading"><div><span className="dp-eyebrow">ARTIFACTS</span><h2>本次运行产物</h2></div><span className="dp-progress-count">2 files</span></div><div className="dp-artifact-list">{ARTIFACTS.map((artifact) => <div className={`dp-artifact-card dp-artifact-${artifact.tone}`} key={artifact.title}><div className="dp-artifact-icon"><Icon name={artifact.icon} size={18} /></div><div><strong>{artifact.title}</strong><small>{artifact.meta}</small></div><button className="dp-icon-button" title="导出产物" aria-label="导出产物"><Icon name="download" size={14} /></button></div>)}</div><div className="dp-paper-preview"><div className="dp-paper-topline" /><div className="dp-paper-title">现状诊断</div><div className="dp-paper-line long" /><div className="dp-paper-line" /><div className="dp-paper-line short" /><div className="dp-paper-chart"><span /><span /><span /><span /><span /></div><div className="dp-paper-line" /></div></div>}
+          {rightTab === "产物" && <div className="dp-inspector-body"><div className="dp-inspector-heading"><div><span className="dp-eyebrow">ARTIFACTS</span><h2>本次运行产物</h2></div><span className="dp-progress-count">2 files</span></div><div className="dp-artifact-list">{ARTIFACTS.map((artifact) => <div className={`dp-artifact-card dp-artifact-${artifact.tone}`} key={artifact.title}><div className="dp-artifact-icon"><Icon name={artifact.icon} size={16} /></div><div><strong>{artifact.title}</strong><small>{artifact.meta}</small></div><button className="dp-icon-button" title="导出产物" aria-label="导出产物"><Icon name="download" size={14} /></button></div>)}</div><div className="dp-paper-preview"><div className="dp-paper-topline" /><div className="dp-paper-title">现状诊断</div><div className="dp-paper-line long" /><div className="dp-paper-line" /><div className="dp-paper-line short" /><div className="dp-paper-chart"><span /><span /><span /><span /><span /></div><div className="dp-paper-line" /></div></div>}
         </aside>
       </div>
     </div>
@@ -199,17 +199,17 @@ function WebWorkspaceView({ session, events, runState, onRun, input, setInput, s
   return (
     <div className="dp-web-workspace">
       <aside className="dp-web-sidebar">
-        <div className="dp-web-sidebar-head"><div><span className="dp-eyebrow">WEB WORKSPACE</span><h2>规聚项目</h2></div><button className="dp-icon-button" onClick={() => notify("工作区设置将在桌面版接入")}><Icon name="gear" size={15} /></button></div>
-        <div className="dp-web-search"><Icon name="search" size={13} /><input placeholder="搜索文件和会话" /></div>
+        <div className="dp-web-sidebar-head"><div><span className="dp-eyebrow">WEB WORKSPACE</span><h2>规聚项目</h2></div><button className="dp-icon-button" onClick={() => notify("工作区设置将在桌面版接入")}><Icon name="gear" size={16} /></button></div>
+        <div className="dp-web-search"><Icon name="search" size={14} /><input placeholder="搜索文件和会话" /></div>
         <div className="dp-web-session-card"><div className="dp-web-section-label">当前会话 <StatusDot tone="lime" /></div><strong>{session.title}</strong><small>规划研究 Agent · {selectedModel}</small><div className="dp-web-session-progress"><span style={{ width: "58%" }} /></div><small>已完成 3 / 5 个步骤</small></div>
         <div className="dp-web-section-label dp-web-files-label"><span>工作区文件</span><button onClick={() => notify("新建文件入口已预留")}>+</button></div>
-        <div className="dp-web-file-tree">{FILES.map((file) => <button key={file.name} className={activeFile === file.name ? "is-active" : ""} onClick={() => setActiveFile(file.name)}><Icon name={file.type} size={15} /><span><strong>{file.name}</strong><small>{file.count}</small></span></button>)}</div>
+        <div className="dp-web-file-tree">{FILES.map((file) => <button key={file.name} className={activeFile === file.name ? "is-active" : ""} onClick={() => setActiveFile(file.name)}><Icon name={file.type} size={16} /><span><strong>{file.name}</strong><small>{file.count}</small></span></button>)}</div>
         <div className="dp-web-side-tools"><button onClick={() => notify("知识库模块已关联")}><Icon name="book" size={14} /> 知识库 <span>12</span></button><button onClick={() => notify("模板库模块已关联")}><Icon name="doc" size={14} /> 模板库 <span>8</span></button><button onClick={() => notify("地图模块已关联")}><Icon name="map" size={14} /> 地图分析 <span>3</span></button></div>
       </aside>
 
       <section className="dp-web-document">
         <div className="dp-web-doc-tabs"><button className="is-active"><Icon name="md" size={14} /> {activeFile}</button><button onClick={() => notify("可继续打开其他文档")}>+ 打开文档</button></div>
-        <div className="dp-web-doc-toolbar"><div><span className="dp-web-doc-mode"><Icon name="doc" size={13} /> 文档预览</span><span className="dp-web-doc-divider" /><span className="dp-web-doc-muted">已同步到工作区</span></div><div><button className="dp-icon-button" onClick={() => notify("文档已定位到当前章节")}><Icon name="locate" size={14} /></button><button className="dp-icon-button" onClick={() => notify("导出入口已预留")}><Icon name="download" size={14} /></button></div></div>
+        <div className="dp-web-doc-toolbar"><div><span className="dp-web-doc-mode"><Icon name="doc" size={14} /> 文档预览</span><span className="dp-web-doc-divider" /><span className="dp-web-doc-muted">已同步到工作区</span></div><div><button className="dp-icon-button" onClick={() => notify("文档已定位到当前章节")}><Icon name="locate" size={14} /></button><button className="dp-icon-button" onClick={() => notify("导出入口已预留")}><Icon name="download" size={14} /></button></div></div>
         <article className="dp-web-paper">
           <div className="dp-paper-kicker">县域综合交通运输规划 · 现状诊断</div>
           <h1>现状诊断章节</h1>
@@ -227,10 +227,10 @@ function WebWorkspaceView({ session, events, runState, onRun, input, setInput, s
       </section>
 
       <aside className="dp-web-chat">
-        <header className="dp-web-chat-head"><div className="dp-agent-identity"><div className="dp-agent-mark"><Icon name="robot" size={17} /></div><div><div className="dp-panel-title">规划研究 Agent</div><div className="dp-panel-subtitle"><StatusDot tone="lime" /> 对话与执行</div></div></div><button className="dp-icon-button" onClick={() => notify("会话操作已打开")}><Icon name="menu" size={15} /></button></header>
+        <header className="dp-web-chat-head"><div className="dp-agent-identity"><div className="dp-agent-mark"><Icon name="robot" size={16} /></div><div><div className="dp-panel-title">规划研究 Agent</div><div className="dp-panel-subtitle"><StatusDot tone="lime" /> 对话与执行</div></div></div><button className="dp-icon-button" onClick={() => notify("会话操作已打开")}><Icon name="menu" size={16} /></button></header>
         <div className="dp-web-chat-context"><span><Icon name="md" size={12} /> {activeFile}</span><span><Icon name="book" size={12} /> 规范库</span></div>
         <div className="dp-web-chat-body">{recentEvents.map((event) => <EventItem event={event} key={event.id} />)}{runState === "running" && <div className="dp-thinking"><span className="dp-thinking-pulse" /><span>正在整理…</span></div>}</div>
-        <div className="dp-web-composer"><textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) onRun(); }} placeholder="继续和 Agent 工作…" rows={2} /><div className="dp-web-composer-foot"><label className="dp-model-select"><Icon name="cloud" size={13} /><select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}><option>DeepSeek V3</option><option>GPT-5</option><option>MiniMax M2.5</option></select></label><button className="dp-send-button" onClick={onRun} disabled={!input.trim() || runState === "running"} title="发送" aria-label="发送"><Icon name="send" size={14} /></button></div></div>
+        <div className="dp-web-composer"><textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) onRun(); }} placeholder="继续和 Agent 工作…" rows={2} /><div className="dp-web-composer-foot"><label className="dp-model-select"><Icon name="cloud" size={14} /><select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}><option>DeepSeek V3</option><option>GPT-5</option><option>MiniMax M2.5</option></select></label><button className="dp-send-button" onClick={onRun} disabled={!input.trim() || runState === "running"} title="发送" aria-label="发送"><Icon name="send" size={14} /></button></div></div>
       </aside>
     </div>
   );
@@ -243,7 +243,7 @@ function SecondaryView({ activeNav }) {
     plugins: { eyebrow: "CAPABILITY LAYER", title: "能力按 Profile 组合，权限按风险控制。", body: "把 Office、知识库、地图、报告和数据分析做成可观察的 Tool Pack。", cards: ["规划研究 Agent · 6 个工具", "报告写作 Agent · 4 个工具", "地图分析 Pack · 需要审批"] },
   }[activeNav] || { eyebrow: "OPEN PLAN", title: "工作台", body: "选择左侧模块查看桌面端信息架构。", cards: [] };
 
-  return <section className="dp-secondary-view"><div className="dp-secondary-copy"><span className="dp-eyebrow">{viewData.eyebrow}</span><h1>{viewData.title}</h1><p>{viewData.body}</p><button className="dp-primary-button"><Icon name="plus" size={15} /> 新建配置</button></div><div className="dp-secondary-grid">{viewData.cards.map((card, index) => <div className="dp-secondary-card" key={card}><span className="dp-card-number">0{index + 1}</span><div><strong>{card.split(" · ")[0]}</strong><p>{card.split(" · ").slice(1).join(" · ")}</p></div><Icon name="chevronRight" size={16} /></div>)}</div></section>;
+  return <section className="dp-secondary-view"><div className="dp-secondary-copy"><span className="dp-eyebrow">{viewData.eyebrow}</span><h1>{viewData.title}</h1><p>{viewData.body}</p><button className="dp-primary-button"><Icon name="plus" size={16} /> 新建配置</button></div><div className="dp-secondary-grid">{viewData.cards.map((card, index) => <div className="dp-secondary-card" key={card}><span className="dp-card-number">0{index + 1}</span><div><strong>{card.split(" · ")[0]}</strong><p>{card.split(" · ").slice(1).join(" · ")}</p></div><Icon name="chevronRight" size={16} /></div>)}</div></section>;
 }
 
 export default function DesktopAgentPrototype() {
@@ -293,14 +293,14 @@ export default function DesktopAgentPrototype() {
       </header>
       <div className="dp-app-shell">
         <aside className={`dp-rail ${railOpen ? "is-open" : "is-collapsed"}`}>
-          <div className="dp-rail-top"><div className="dp-rail-logo">O<span>PLAN</span></div><button className="dp-rail-toggle" onClick={() => setRailOpen((v) => !v)}><Icon name={railOpen ? "back" : "menu"} size={15} /></button></div>
-          <div className="dp-rail-nav">{NAV_ITEMS.map((item) => <button key={item.id} className={`dp-nav-item ${activeNav === item.id ? "is-active" : ""}`} onClick={() => setActiveNav(item.id)} title={item.label}><Icon name={item.icon} size={18} /><span><strong>{item.label}</strong><small>{item.hint}</small></span>{item.id === "runs" && <b>3</b>}</button>)}</div>
+          <div className="dp-rail-top"><div className="dp-rail-logo">O<span>PLAN</span></div><button className="dp-rail-toggle" onClick={() => setRailOpen((v) => !v)}><Icon name={railOpen ? "back" : "menu"} size={16} /></button></div>
+          <div className="dp-rail-nav">{NAV_ITEMS.map((item) => <button key={item.id} className={`dp-nav-item ${activeNav === item.id ? "is-active" : ""}`} onClick={() => setActiveNav(item.id)} title={item.label}><Icon name={item.icon} size={16} /><span><strong>{item.label}</strong><small>{item.hint}</small></span>{item.id === "runs" && <b>3</b>}</button>)}</div>
           <div className="dp-rail-divider" />
           {railOpen && <div className="dp-recent"><div className="dp-rail-label">最近会话 <button onClick={() => notify("已准备新会话")}>+</button></div>{SESSIONS.map((item) => <button key={item.id} className={`dp-session-item ${activeSession === item.id ? "is-active" : ""}`} onClick={() => { setActiveSession(item.id); setActiveNav("workbench"); }}><span className={`dp-session-bar dp-session-${item.accent}`} /><div><strong>{item.title}</strong><small>{item.meta}</small></div><StatusDot tone={item.status === "running" ? "lime" : "muted"} /></button>)}</div>}
-          <div className="dp-rail-bottom"><button className="dp-user-card" onClick={() => notify("个人设置将在桌面版接入") }><span className="dp-avatar">林</span><span><strong>林工</strong><small>本地账户</small></span><Icon name="gear" size={15} /></button></div>
+          <div className="dp-rail-bottom"><button className="dp-user-card" onClick={() => notify("个人设置将在桌面版接入") }><span className="dp-avatar">林</span><span><strong>林工</strong><small>本地账户</small></span><Icon name="gear" size={16} /></button></div>
         </aside>
         <main className="dp-main">
-          <header className="dp-main-header"><div className="dp-breadcrumb"><span>Open Plan</span><Icon name="chevronRight" size={13} /><strong>{activeNav === "workbench" ? session.title : NAV_ITEMS.find((item) => item.id === activeNav)?.label}</strong></div><div className="dp-main-actions"><div className="dp-view-switch" role="tablist"><button className={workspaceMode === "console" ? "is-active" : ""} onClick={() => setWorkspaceMode("console")}><Icon name="robot" size={13} /> Agent 控制台</button><button className={workspaceMode === "web" ? "is-active" : ""} onClick={() => setWorkspaceMode("web")}><Icon name="doc" size={13} /> 网页工作区</button></div><div className="dp-skin-picker"><button className="dp-skin-trigger" onClick={() => setSkinOpen((v) => !v)}><span className="dp-skin-swatch" style={{ background: SKINS.find((item) => item.id === skin)?.colors[0] }} /><span>{SKINS.find((item) => item.id === skin)?.label}</span><Icon name="chevronDown" size={12} /></button>{skinOpen && <div className="dp-skin-menu">{SKINS.map((item) => <button key={item.id} className={item.id === skin ? "is-selected" : ""} onClick={() => changeSkin(item.id)}><span className="dp-skin-pair"><i style={{ background: item.colors[0] }} /><i style={{ background: item.colors[1] }} /></span><span><strong>{item.label}</strong><small>{item.desc}</small></span>{item.id === skin && <Icon name="check" size={13} />}</button>)}</div>}</div><span className="dp-save-state"><StatusDot tone="lime" /> 已保存</span><button className="dp-icon-button" onClick={() => notify("命令面板快捷键：Ctrl + K")}><Icon name="search" size={16} /></button><button className="dp-icon-button" onClick={() => notify("设置中心将在下一阶段接入")}><Icon name="gear" size={16} /></button></div></header>
+          <header className="dp-main-header"><div className="dp-breadcrumb"><span>Open Plan</span><Icon name="chevronRight" size={14} /><strong>{activeNav === "workbench" ? session.title : NAV_ITEMS.find((item) => item.id === activeNav)?.label}</strong></div><div className="dp-main-actions"><div className="dp-view-switch" role="tablist"><button className={workspaceMode === "console" ? "is-active" : ""} onClick={() => setWorkspaceMode("console")}><Icon name="robot" size={14} /> Agent 控制台</button><button className={workspaceMode === "web" ? "is-active" : ""} onClick={() => setWorkspaceMode("web")}><Icon name="doc" size={14} /> 网页工作区</button></div><div className="dp-skin-picker"><button className="dp-skin-trigger" onClick={() => setSkinOpen((v) => !v)}><span className="dp-skin-swatch" style={{ background: SKINS.find((item) => item.id === skin)?.colors[0] }} /><span>{SKINS.find((item) => item.id === skin)?.label}</span><Icon name="chevronDown" size={12} /></button>{skinOpen && <div className="dp-skin-menu">{SKINS.map((item) => <button key={item.id} className={item.id === skin ? "is-selected" : ""} onClick={() => changeSkin(item.id)}><span className="dp-skin-pair"><i style={{ background: item.colors[0] }} /><i style={{ background: item.colors[1] }} /></span><span><strong>{item.label}</strong><small>{item.desc}</small></span>{item.id === skin && <Icon name="check" size={14} />}</button>)}</div>}</div><span className="dp-save-state"><StatusDot tone="lime" /> 已保存</span><button className="dp-icon-button" onClick={() => notify("命令面板快捷键：Ctrl + K")}><Icon name="search" size={16} /></button><button className="dp-icon-button" onClick={() => notify("设置中心将在下一阶段接入")}><Icon name="gear" size={16} /></button></div></header>
           {activeNav === "workbench" ? (workspaceMode === "console" ? <WorkbenchView session={session} events={events} runState={runState} onRun={handleRun} input={input} setInput={setInput} selectedModel={selectedModel} setSelectedModel={setSelectedModel} rightTab={rightTab} setRightTab={setRightTab} /> : <WebWorkspaceView session={session} events={events} runState={runState} onRun={handleRun} input={input} setInput={setInput} selectedModel={selectedModel} setSelectedModel={setSelectedModel} notify={notify} />) : <SecondaryView activeNav={activeNav} />}
         </main>
       </div>

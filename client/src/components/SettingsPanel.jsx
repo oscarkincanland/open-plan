@@ -943,15 +943,15 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
         </div>
         <div className="settings-status-grid">
           <button type="button" className={`settings-status-card ${settingsSection === "providers" ? "active" : ""}`} onClick={() => setSettingsSection("providers")}>
-            <span className="settings-status-icon"><Icon name="robot" size={15} /></span>
+            <span className="settings-status-icon"><Icon name="robot" size={16} /></span>
             <span><small>Agent 模型</small><strong>{selectedModelInfo?.name || selectedModelInfo?.id || activeModel || defaultModel || "未选择"}</strong><em>{selectedModelInfo?.provider || "等待配置"}</em></span>
           </button>
           <button type="button" className={`settings-status-card ${settingsSection === "appearance" ? "active" : ""}`} onClick={() => setSettingsSection("appearance")}>
-            <span className="settings-status-icon"><Icon name="sun" size={15} /></span>
+            <span className="settings-status-icon"><Icon name="sun" size={16} /></span>
             <span><small>界面外观</small><strong>{theme === "dark" ? "暗色" : "亮色"} · {SKINS.find((item) => item.id === skin)?.label || "默认"}</strong><em>字体与对话显示</em></span>
           </button>
           <button type="button" className={`settings-status-card ${settingsSection === "project" ? "active" : ""}`} onClick={() => setSettingsSection("project")}>
-            <span className="settings-status-icon"><Icon name="folder" size={15} /></span>
+            <span className="settings-status-icon"><Icon name="folder" size={16} /></span>
             <span><small>当前项目</small><strong>{project?.name || "未建立项目"}</strong><em>{configuredProviderCount ? `${configuredProviderCount} 个凭据已配置` : "项目与记忆策略"}</em></span>
           </button>
         </div>
@@ -1264,7 +1264,7 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
               const visionCount = config.models.filter((model) => model.vision).length;
               const maxContext = config.models.reduce((max, model) => Math.max(max, Number(model.contextWindow) || 0), 0);
               return <div className={`model-provider-item${isDefaultProvider ? " is-default" : ""}`} key={config.provider}>
-                <span className="prov-mark" title={identity.label}><ProviderIcon provider={identity.icon} size={17} /></span>
+                <span className="prov-mark" title={identity.label}><ProviderIcon provider={identity.icon} size={16} /></span>
                 <div className="model-provider-item-main">
                   <strong>{config.name}</strong><code>{config.provider}</code>
                   <span>{MODEL_API_OPTIONS.find(([id]) => id === config.api)?.[1] || config.api}</span>

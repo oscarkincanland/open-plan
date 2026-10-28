@@ -529,13 +529,13 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
     return (
       <div className="browser-panel browser-panel-idle">
         <div className="browser-idle-card">
-          <div className="browser-idle-icon"><Icon name="globe" size={22} /></div>
+          <div className="browser-idle-icon"><Icon name="globe" size={20} /></div>
           <div className="browser-idle-heading"><strong>Open Plan 浏览器</strong><span>Agent 与你共用的可视化网页空间</span></div>
           <p>Agent 打开网页后，画面会实时出现在这里。你可以直接点击、拖动、滚动、输入，接管登录、验证码或网页操作；地址栏输入关键词可直接搜索。</p>
           <form className="browser-idle-open" onSubmit={(event) => { event.preventDefault(); openUrl(openDraft); }}>
             <Icon name="link" size={14} />
             <input value={openDraft} onChange={(event) => setOpenDraft(event.target.value)} placeholder="输入网址或搜索内容，例如：浙江省综合交通规划" spellCheck={false} />
-            <button type="submit" className="browser-primary-btn" disabled={busy || !openDraft.trim()}><Icon name="arrowRight" size={13} />打开</button>
+            <button type="submit" className="browser-primary-btn" disabled={busy || !openDraft.trim()}><Icon name="arrowRight" size={14} />打开</button>
           </form>
           <div className="browser-quick-links">
             <span>快速打开</span>

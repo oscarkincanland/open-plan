@@ -208,7 +208,7 @@ function ModelOptionRow({ model, current, favorite, onPick, onToggleFavorite }) 
         title={unavailable ? `${model.id}（当前不可用）` : model.id}
         disabled={unavailable}
       >
-        <ModelProviderMark model={model} size={17} />
+        <ModelProviderMark model={model} size={16} />
         <span><strong>{modelDisplayName(model)}</strong><small>{modelCapabilityLabel(model)} · {model.id}</small></span>
         {unavailable && <span className="model-unavailable-badge" title="当前不可用：供应商缺少密钥、无模型权限或网络不可达（可在设置里配置后重新扫描）">不可用</span>}
         {current && <Icon name="check" size={12} />}
@@ -4462,7 +4462,7 @@ case "runtime_connecting":
                   aria-expanded={modelOpen}
                   title={model ? `模型：${modelDisplayName(selectedModelInfo)}，思考：${selectedEffort.shortLabel}` : "选择模型与思考程度"}
                 >
-                  <ModelProviderMark model={selectedModelInfo} size={18} />
+                  <ModelProviderMark model={selectedModelInfo} size={16} />
                   <span className="model-control-current">
                     <strong>{modelDisplayName(selectedModelInfo)}</strong>
                     <small>{selectedEffort.shortLabel}</small>
@@ -4478,7 +4478,7 @@ case "runtime_connecting":
                     style={modelPopRect ? { position: "fixed", left: modelPopRect.left, ...(modelPopRect.top != null ? { top: modelPopRect.top } : { bottom: modelPopRect.bottom }), width: modelPopRect.width, maxWidth: "calc(100vw - 16px)", maxHeight: modelPopRect.maxHeight, right: "auto", zIndex: 400 } : { visibility: "hidden" }}
                   >
                     <div className="model-control-head">
-                      <div><ModelProviderMark model={selectedModelInfo} size={22} /><span><strong>{selectedProviderMeta.label}</strong><small>{model || "按 Pi 配置"}</small></span></div>
+                      <div><ModelProviderMark model={selectedModelInfo} size={20} /><span><strong>{selectedProviderMeta.label}</strong><small>{model || "按 Pi 配置"}</small></span></div>
                       <span className="model-control-status">{selectedModelInfo?.available === false ? "不可用" : "可用"}</span>
                     </div>
                     <input
@@ -4523,7 +4523,7 @@ case "runtime_connecting":
                             <>
                               {modelGroups.map(([provider, providerModels]) => (
                                 <div className="model-provider-group" key={provider}>
-                                  <div className="model-provider-heading"><span><ModelProviderMark model={providerModels[0]} size={15} /> {modelProviderMeta(providerModels[0]).label}</span><small>{providerModels.length}</small></div>
+                                  <div className="model-provider-heading"><span><ModelProviderMark model={providerModels[0]} size={16} /> {modelProviderMeta(providerModels[0]).label}</span><small>{providerModels.length}</small></div>
                                   {providerModels.map((m) => (
                                     <ModelOptionRow
                                       key={`all:${m.id}`}
@@ -4937,7 +4937,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
                     {productCards.map((item) => (
                       <div className={`product-card${item.deliverable ? " deliverable" : ""}${item.confirmed ? "" : " provisional"}`} key={item.path}>
                         <button type="button" className="product-card-main" onClick={() => onOpenFile?.(item.path)} title={item.path}>
-                          <span className={`product-card-icon artifact-kind-${item.icon}`}><Icon name={item.icon} size={15} /></span>
+                          <span className={`product-card-icon artifact-kind-${item.icon}`}><Icon name={item.icon} size={16} /></span>
                           <span className="product-card-meta">
                             <strong>{item.name}</strong>
                             <small>{item.typeLabel}{item.sizeText ? ` · ${item.sizeText}` : ""}</small>
@@ -5339,7 +5339,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
       <div className={`avatar ${isUser ? "user-avatar" : "agent-avatar"} ${!isUser && streaming ? "is-streaming" : ""}`}>
         {isUser
           ? <Icon name="user" size={14} />
-          : <Logo size={22} withBackground={false} markColor="#fff" className="agent-avatar-mark" />}
+          : <Logo size={20} withBackground={false} markColor="#fff" className="agent-avatar-mark" />}
       </div>
       <div className="msg-main">
         {/* 消息头：作者 + 时间（相邻同角色消息省略，减少重复气泡头部） */}
@@ -6210,7 +6210,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
           )}
           {running && nextStep && (
             <span className="execution-flow-next" role="status" aria-live="polite" title={`下一步：${nextStep}`}>
-              <Icon name="arrowRight" size={11} />
+              <Icon name="arrowRight" size={12} />
               <span className="efn-next">{nextStep}</span>
             </span>
           )}

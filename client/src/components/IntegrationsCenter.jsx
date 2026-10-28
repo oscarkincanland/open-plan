@@ -218,8 +218,8 @@ export default function IntegrationsCenter({ kind = "mcp", open = false, onClose
   return (
     <div className="module-view integration-center">
       <div className="module-head">
-        <button className="module-back" onClick={onClose} title="返回对话" aria-label="返回对话"><Icon name="back" size={15} /></button>
-        <div className="module-brand-heading"><span className="integration-mark"><Icon name={kind === "mcp" ? "plug" : "package"} size={19} /></span><span><h2>{kind === "mcp" ? "MCP" : "Pi 插件"}</h2><p>{kind === "mcp" ? "连接外部工具与服务，按权限策略接入对话" : "发现、选择并管理 Pi 扩展能力"}</p></span></div>
+        <button className="module-back" onClick={onClose} title="返回对话" aria-label="返回对话"><Icon name="back" size={16} /></button>
+        <div className="module-brand-heading"><span className="integration-mark"><Icon name={kind === "mcp" ? "plug" : "package"} size={20} /></span><span><h2>{kind === "mcp" ? "MCP" : "Pi 插件"}</h2><p>{kind === "mcp" ? "连接外部工具与服务，按权限策略接入对话" : "发现、选择并管理 Pi 扩展能力"}</p></span></div>
       </div>
       <div className="module-body integration-body">
         {error && <div className="integration-alert error" role="alert">{error}</div>}
@@ -296,7 +296,7 @@ export default function IntegrationsCenter({ kind = "mcp", open = false, onClose
         ) : (
           <>
           <section className="pi-ecosystem-intro">
-            <div className="pi-ecosystem-heading"><span className="integration-mark"><Icon name="package" size={18} /></span><span><strong>Pi 官方生态</strong><small>核心仓库与官方包目录分开浏览</small></span></div>
+            <div className="pi-ecosystem-heading"><span className="integration-mark"><Icon name="package" size={16} /></span><span><strong>Pi 官方生态</strong><small>核心仓库与官方包目录分开浏览</small></span></div>
             <div className="pi-ecosystem-links">
               <a className="btn-xs" href="https://github.com/badlogic/pi-mono" target="_blank" rel="noreferrer"><Icon name="code" size={12} /> 官方源码仓库</a>
               <a className="btn-xs" href="https://pi.dev/packages" target="_blank" rel="noreferrer"><Icon name="globe" size={12} /> Pi 包目录</a>

@@ -200,7 +200,7 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
               <Icon name="file" size={12} />
               <span className="memory-change-file">{c.file}</span>
               <button className="memory-change-dismiss" onClick={(e) => { e.stopPropagation(); dismissChange(c.file); }}>
-                <Icon name="x" size={9} />
+                <Icon name="x" size={12} />
               </button>
             </div>
           ))}
