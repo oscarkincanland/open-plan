@@ -133,5 +133,7 @@ test("ask_user 支持 previewFile", () => {
   assert.ok(AGENT_SOURCE.includes("previewFile: Type.Optional"));
   assert.ok(AGENT_SOURCE.includes("...(previewFile ? { previewFile } : {})"));
 });
+test("bash 执行前物化暂存文件", () => assert.ok(AGENT_SOURCE.includes('reason: "bash_visibility"')));
+test("ask_user 预览前物化暂存文件", () => assert.ok(AGENT_SOURCE.includes('reason: "ask_preview"')));
 
 process.exitCode = failed ? 1 : 0;

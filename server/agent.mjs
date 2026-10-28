@@ -74,6 +74,7 @@ import {
   acquireWriteLockWithRetry,
   ensureStagedDirectory,
   isProtectedMemoryTarget,
+  listStagedFiles,
   materializeStagedReferences,
   releaseWriteLock,
   resolveReadablePath,
@@ -1372,6 +1373,14 @@ exec: async (command, cwd, options) => {
             writeEvent("tool_gate_denied", { runId: ctx.runId, kind: "bash", code: error.code, name: "bash", reason: error.message });
             throw error;
           }
+          // bash 只认真实磁盘：先把本轮暂存文件物化，避免 write 后 bash 看不到而反复重写。
+          try {
+            const stagedPaths = listStagedFiles(ctx.runId).map((item) => item.path).filter(Boolean);
+            const materialized = materializeStagedReferences({ runId: ctx.runId, workspace: ctx.workspace, paths: stagedPaths });
+            if (materialized.length) {
+              writeEvent("artifact_materialized", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, paths: materialized, reason: "bash_visibility" });
+            }
+          } catch {}
           const runBash = async () => RUNTIME_FLAGS.piBashSidecar
             ? await getBashSidecar().execute(effectiveCommand, { cwd: cwd || ctx.workspace })
             : await localBash.exec(effectiveCommand, cwd, normalizeBashOptions(options));
@@ -2687,7 +2696,16 @@ execute: async (_toolCallId, params) => {
         const opts = (params.options || []).map((o) => (typeof o === "string" ? o : o.label || JSON.stringify(o)));
         // 计划 008：提问时自动打开已生成的草稿，让用户先确认内容。
         const previewFile = String(params.previewFile || entry.clarificationPreview || "").trim() || null;
-        if (previewFile) entry.clarificationPreview = null;
+        if (previewFile) {
+          entry.clarificationPreview = null;
+          // 预览前把暂存文件物化到磁盘，确保前端打开的是最新内容。
+          try {
+            const materialized = materializeStagedReferences({ runId: entry.activeRunId, workspace: entry.workspace, paths: [previewFile] });
+            if (materialized.length) {
+              emitChannelSafe(entry, "artifact_materialized", { runId: entry.activeRunId, workspace: entry.workspace, paths: materialized, reason: "ask_preview" });
+            }
+          } catch {}
+        }
         // 计划 008：提问一旦发出，解除写操作前的澄清闸门（超时也按专业判断继续）。
         entry.clarificationPending = null;
         // 阻塞等待用户回答（最长 5 分钟），期间 SSE 推送 ask_user 事件
