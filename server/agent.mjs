@@ -838,6 +838,13 @@ async function promptWithFirstEventTimeout(entry, text, options = {}) {
 
 const THINKING_LEVEL_ORDER = Object.freeze(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
+/** 返回模型真实支持的档位；没有 thinkingLevelMap 时按 Pi 标准七档返回。 */
+export function thinkingLevelsFor(model) {
+  const map = model?.thinkingLevelMap;
+  if (!map || typeof map !== "object") return model?.reasoning === false ? ["off"] : [...THINKING_LEVEL_ORDER];
+  return THINKING_LEVEL_ORDER.filter((level) => map[level] !== null && map[level] !== undefined);
+}
+
 /**
  * Pi 模型目录里的 thinkingLevelMap 才是本模型真正支持的档位。
  * 例如 Hy3 的 medium/xhigh/max 是 null；直接把 medium 传给 Pi 会让界面
@@ -2755,7 +2762,7 @@ execute: async (_toolCallId, params) => {
       name: "complete_task",
       label: "完成任务",
       description:
-        "任务收尾时调用，显式声明本轮的完成状态。status 取值：success（目标已达成并验证）/ partial（部分完成，说明未完成项）/ blocked（受阻，说明阻塞原因）/ failed（失败）。summary 是给用户看的结论：纯问答一句话即可，产生了成果时用简洁的 Markdown 说明做了什么、关键结果、产物与验证。用户可见此状态，未调用时系统只能依据回合结束推断，请勿跳过。",
+        "任务收尾时调用，显式声明本轮的完成状态。status 取值：success（目标已达成并验证）/ partial（部分完成，说明未完成项）/ blocked（受阻，说明阻塞原因）/ failed（失败）。summary 是给用户看的完整结论：说明做了什么、关键结果（含关键数字）、产物路径、如何验证、未完成项或风险；纯问答也要把结论与依据说清，不要只写“已完成”。与最终答复保持一致，不要另写更短的版本；不要复述工具调用流水，也不要重复进度播报。用户可见此状态，未调用时系统只能依据回合结束推断，请勿跳过。",
       parameters: Type.Object({
         status: Type.Union([
           Type.Literal("success"),
@@ -2763,7 +2770,7 @@ execute: async (_toolCallId, params) => {
           Type.Literal("blocked"),
           Type.Literal("failed"),
         ]),
-        summary: Type.String({ description: "面向用户的结论，建议 ≤800 字。纯问答用一两句；有成果时可用 Markdown（小标题、要点列表）说明做了什么、关键结果、产物路径与如何验证；不要逐条复述工具调用流水。" }),
+        summary: Type.String({ description: "面向用户的完整结论，可用 Markdown。按内容需要写，不设字数上限（服务端上限 4000 字符）。建议覆盖：结果 / 关键数据 / 产物路径 / 验证方式 / 未完成项或风险；同一事实只写一次，不复述工具流水，不与进度句重复。" }),
         incomplete: Type.Optional(Type.Array(Type.String({ description: "未完成事项" }))),
         blockers: Type.Optional(Type.Array(Type.String({ description: "阻塞原因" }))),
         verification: Type.Optional(Type.String({ description: "如何验证结果（读取回文件/校验命令等）" })),
@@ -2778,7 +2785,7 @@ execute: async (_toolCallId, params) => {
         emitChannelSafe(entry, "task_completed", { ...completion, runId: entry.activeRunId || null });
         const label = completionStatusLabel(completion.status);
         return {
-          content: [{ type: "text", text: `已记录任务完成状态：${label}。${completion.summary}` }],
+          content: [{ type: "text", text: `已记录完成状态：${label}。请直接给用户最终答复。` }],
           details: { completion },
         };
       },
@@ -2797,10 +2804,38 @@ execute: async (_toolCallId, params) => {
           Type.String({ description: "快捷选项文本" }),
           Type.Object({ label: Type.String(), description: Type.Optional(Type.String()) }),
         ]))),
+        // v0.13.5：结构化表单字段。与 options 兼容：有 fields 时前端渲染表单。
+        fields: Type.Optional(Type.Array(Type.Object({
+          id: Type.String({ description: "字段 id（回答里用于回传）" }),
+          label: Type.String({ description: "字段标签" }),
+          type: Type.Union([
+            Type.Literal("text"),
+            Type.Literal("select"),
+            Type.Literal("radio"),
+            Type.Literal("checkbox"),
+            Type.Literal("file"),
+          ]),
+          required: Type.Optional(Type.Boolean({ description: "是否必填" })),
+          options: Type.Optional(Type.Array(Type.String({ description: "选项文本" }))),
+          placeholder: Type.Optional(Type.String({ description: "输入提示" })),
+          accept: Type.Optional(Type.String({ description: "file 字段的 accept 过滤" })),
+        }), { description: "最多 12 个字段" })),
       }),
       execute: async (_toolCallId, params) => {
         // 归一化 options（对象 → 字符串）
         const opts = (params.options || []).map((o) => (typeof o === "string" ? o : o.label || JSON.stringify(o)));
+        const fields = (Array.isArray(params.fields) ? params.fields : [])
+          .filter((field) => field && field.id && field.label)
+          .slice(0, 12)
+          .map((field) => ({
+            id: String(field.id),
+            label: String(field.label),
+            type: ["text", "select", "radio", "checkbox", "file"].includes(field.type) ? field.type : "text",
+            required: Boolean(field.required),
+            options: Array.isArray(field.options) ? field.options.map(String).slice(0, 30) : [],
+            placeholder: String(field.placeholder || ""),
+            ...(field.accept ? { accept: String(field.accept) } : {}),
+          }));
         // 阻塞等待用户回答（最长 5 分钟），期间 SSE 推送 ask_user 事件
         return await new Promise((resolve) => {
           const pendingAskId = `ask_${crypto.randomUUID()}`;
@@ -2811,6 +2846,7 @@ execute: async (_toolCallId, params) => {
             runId: entry.activeRunId || null,
             question: String(params.question || ""),
             options: opts,
+            ...(fields.length ? { fields } : {}),
             status: "pending",
             createdAt: new Date().toISOString(),
             expiresAt,
@@ -2844,6 +2880,7 @@ execute: async (_toolCallId, params) => {
             askId: pendingAskId,
             question: params.question,
             options: opts,
+            ...(fields.length ? { fields } : {}),
             // 前端据此显示/收起"待回答"卡片：到期后服务端不再接受回答，卡片必须同步失效。
             expiresAt,
           };
@@ -4176,9 +4213,13 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       const contextFileMs = Date.now() - contextFileStartedAt;
       // 按 Pi 模型目录归一化推理档位；不支持的 medium 优先降到 low，避免
       // UI 显示标准但 SDK 实际沿用高延迟默认档位。
-      const requestedThinkingLevel = effort || "low";
-      const effectiveThinkingLevel = resolveThinkingLevel(entry.session?.model, requestedThinkingLevel);
-      const thinkingChanged = entry.requestedThinkingLevel !== requestedThinkingLevel || entry.effectiveThinkingLevel !== effectiveThinkingLevel;
+      // “default”表示跟随模型/运行时默认：不主动改档，只记录用户选择。
+      const requestedThinkingLevel = effort || "default";
+      const effectiveThinkingLevel = requestedThinkingLevel === "default"
+        ? (entry.effectiveThinkingLevel || null)
+        : resolveThinkingLevel(entry.session?.model, requestedThinkingLevel);
+      const thinkingChanged = requestedThinkingLevel !== "default"
+        && (entry.requestedThinkingLevel !== requestedThinkingLevel || entry.effectiveThinkingLevel !== effectiveThinkingLevel);
       if (thinkingChanged) {
         try {
           piRuntimeManager.setThinkingLevel(entry.runtimeId, entry.session, effectiveThinkingLevel);
@@ -4187,7 +4228,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         } catch {}
       }
       entry.requestedThinkingLevel = requestedThinkingLevel;
-      entry.effectiveThinkingLevel = effectiveThinkingLevel;
+      if (effectiveThinkingLevel) entry.effectiveThinkingLevel = effectiveThinkingLevel;
       // 强制注入当前工作文件声明（兜底，防止 agent 不知道在改哪个文档）
       if (entry.currentFile) {
         const marker = `[当前工作文件: ${entry.currentFile}]\n`;
@@ -5046,6 +5087,7 @@ async listModelCatalog() {
         vision: !!m.vision,
         available: availableKeys.has(`${m.provider}/${m.id}`) && !authError,
         ...(authError ? { authError: authError.message } : {}),
+        ...(thinkingLevelsFor(m).length ? { thinkingLevels: thinkingLevelsFor(m) } : {}),
         ...(Number(m.contextWindow || m.contextLength || m.limit?.context) > 0
           ? { contextWindow: Math.floor(Number(m.contextWindow || m.contextLength || m.limit.context)) }
           : {}),

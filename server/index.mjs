@@ -3788,7 +3788,43 @@ app.get("/api/sessions", (req, res) => {
         });
       } catch {}
     }
-    res.json({ sessions });
+    // v0.13.6：稳定排序 + 可选分页/按工作区分组。
+    // 保持既有调用（无 limit/groupBy）返回全部 sessions，避免破坏前端。
+    sessions.sort((a, b) => {
+      const pin = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
+      if (pin) return pin;
+      return Number(b.modified || 0) - Number(a.modified || 0);
+    });
+    const total = sessions.length;
+    const pageLimit = Math.max(0, Number.parseInt(req.query.limit, 10) || 0);
+    const cursor = Math.max(0, Number.parseInt(req.query.cursor, 10) || 0);
+    const paged = pageLimit > 0 ? sessions.slice(cursor, cursor + pageLimit) : sessions;
+    const nextCursor = pageLimit > 0 && cursor + pageLimit < total ? cursor + pageLimit : null;
+    const groupBy = String(req.query.groupBy || "").trim();
+    let groups;
+    if (groupBy === "workspace") {
+      const byKey = new Map();
+      for (const session of paged) {
+        const key = session.projectId || session.cwd || "ungrouped";
+        if (!byKey.has(key)) {
+          byKey.set(key, {
+            key,
+            label: session.projectName || session.cwd || "未分组",
+            projectId: session.projectId || null,
+            cwd: session.cwd || "",
+            sessions: [],
+          });
+        }
+        byKey.get(key).sessions.push(session);
+      }
+      groups = [...byKey.values()].map((group) => ({ ...group, count: group.sessions.length }));
+    }
+    res.json({
+      sessions: paged,
+      total,
+      ...(pageLimit > 0 ? { cursor, nextCursor } : {}),
+      ...(groups ? { groups } : {}),
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -4269,10 +4305,16 @@ app.get("/api/agent/pending", (req, res) => {
 
 // 回答 agent 的提问（ask_user 工具：用户回答后 agent 继续）
 app.post("/api/agent/answer", (req, res) => {
-  const { client, thread, answer } = req.body || {};
-  if (!client || !answer) return res.status(400).json({ error: "client and answer required" });
+  const { client, thread, answer, values } = req.body || {};
+  // v0.13.5：Schema 表单可直接回传 values；统一序列化为一段可读文本交给执行句柄。
+  const answerText = String(
+    answer ?? (values && typeof values === "object"
+      ? Object.entries(values).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join("、") : value ?? ""}`).join("\n")
+      : ""),
+  ).trim();
+  if (!client || !answerText) return res.status(400).json({ error: "client and answer required" });
   // P1-1：响应交互下沉到执行句柄（路由只做参数校验与响应封装）。
-  const result = 执行句柄.响应交互(client, answer, { thread });
+  const result = 执行句柄.响应交互(client, answerText, { thread });
   if (!result.ok) return res.status(404).json({ error: "no pending question" });
   res.json(result);
 });

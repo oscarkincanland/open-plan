@@ -278,8 +278,12 @@ test("run_finished 携带 finalText 与 finalMessageId", () => {
 test("结论详细度：提示词允许结构化成果摘要，Run 摘要优先用结论", () => {
   // 生成端：不再强制「1-3 句、禁止 Markdown」，有成果时允许结构化 Markdown
   assert.match(agent源, /当本轮产生了文件、报告、数据、代码改动等成果时，用简洁但完整的 Markdown 把成果讲清楚/);
-  assert.match(agent源, /建议 ≤800 字/);
-  assert.match(agent源, /不要逐条复述工具调用流水/);
+  // complete_task 取消软上限（D1：本次只改工具层，不改最终答复策略）
+  assert.doesNotMatch(agent源, /建议 ≤800 字/, "complete_task 不再限定 800 字");
+  assert.doesNotMatch(agent源, /纯问答一句话即可/, "complete_task 不再要求一句话");
+  assert.match(agent源, /不设字数上限（服务端上限 4000 字符）/);
+  assert.match(agent源, /同一事实只写一次/);
+  assert.match(agent源, /不复述工具流水/);
   // 落盘端：Run 摘要优先采用结论，历史列表/结果卡标题才能显示真实结论
   assert.match(runs源, /if \(run\.completion\?\.summary\) run\.summary = String\(run\.completion\.summary\)\.slice\(0, 4000\)/);
 });

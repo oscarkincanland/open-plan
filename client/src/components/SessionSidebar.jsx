@@ -127,6 +127,11 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   const [actionsId, setActionsId] = useState(null);
   const [selecting, setSelecting] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
+  // v0.13.6：会话分组模式（日期 / 工作区），每个工作区默认展示 20 条。
+  const [groupMode, setGroupMode] = useState(() => {
+    try { return localStorage.getItem("oaw_session_group") === "workspace" ? "workspace" : "date"; } catch { return "date"; }
+  });
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set());
   const initialEditAppliedRef = useRef(null);
 
   useEffect(() => {
@@ -181,6 +186,30 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   const pinnedList = filtered.filter(isSessionPinned);
   const unpinned = filtered.filter((s) => !isSessionPinned(s));
   const groups = groupByDate(unpinned);
+  const workspaceGroups = (() => {
+    const map = new Map();
+    for (const session of unpinned) {
+      const key = session.projectId || session.cwd || "ungrouped";
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          label: session.projectName || session.cwd || "未分组",
+          sessions: [],
+        });
+      }
+      map.get(key).sessions.push(session);
+    }
+    return [...map.values()];
+  })();
+  const switchGroupMode = (mode) => {
+    setGroupMode(mode);
+    try { localStorage.setItem("oaw_session_group", mode); } catch {}
+  };
+  const toggleGroup = (key) => setExpandedGroups((current) => {
+    const next = new Set(current);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
 
   const renderItem = (s) => {
     const isPinned = s.pinned ?? pinned.has(s.id);
@@ -264,6 +293,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
       </div>
       <div className="session-batch-toolbar">
         <button type="button" className={`session-batch-toggle ${selecting ? "active" : ""}`} onClick={() => { setSelecting((value) => !value); setSelectedIds(new Set()); }}>{selecting ? "取消选择" : "选择会话"}</button>
+        <button type="button" className="session-batch-toggle" onClick={() => switchGroupMode(groupMode === "date" ? "workspace" : "date")} title="切换会话分组方式">{groupMode === "workspace" ? "分组：工作区" : "分组：日期"}</button>
         {selecting && <>
           <button type="button" onClick={() => setSelectedIds(new Set(filtered.map((session) => session.id)))}>全选</button>
           <button type="button" onClick={() => setSelectedIds(new Set())}>清空</button>
@@ -289,8 +319,22 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
           {pinnedList.map((s) => renderItem(s))}
         </div>
       )}
-      {/* 日期分组区 */}
-      {groups.map(([label, items]) => (
+      {/* 日期分组区 / 工作区分组区（v0.13.6） */}
+      {groupMode === "workspace" ? workspaceGroups.map((group) => {
+        const expanded = expandedGroups.has(group.key);
+        const visible = expanded ? group.sessions : group.sessions.slice(0, 20);
+        return (
+          <div className="session-group" key={group.key}>
+            <div className="session-group-title">{group.label} · {group.sessions.length}</div>
+            {visible.map((s) => renderItem(s))}
+            {group.sessions.length > 20 && (
+              <button type="button" className="session-group-more" onClick={() => toggleGroup(group.key)}>
+                {expanded ? "收起" : `还有 ${group.sessions.length - 20} 条`}
+              </button>
+            )}
+          </div>
+        );
+      }) : groups.map(([label, items]) => (
         <div className="session-group" key={label}>
           <div className="session-group-title">{label}</div>
           {items.map((s) => renderItem(s))}

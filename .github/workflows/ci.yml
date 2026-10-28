@@ -67,6 +67,15 @@ jobs:
       - name: AVA 链接页签（提取去重 / 角标 / 空态）
         run: node scripts/CI运行测试.mjs AVA链接页签测试
 
+      - name: AVA 输入增强（推理全档位 / # 提及）
+        run: node scripts/CI运行测试.mjs AVA输入增强测试
+
+      - name: AVA Schema 提问表单（字段 / values / 校验）
+        run: node scripts/CI运行测试.mjs AVA提问表单测试
+
+      - name: AVA 会话分组（分页 / 工作区 / 20 条）
+        run: node scripts/CI运行测试.mjs AVA会话分组测试
+
       - name: 长连接预算与流去重（切工作区/切会话卡死防护）
         run: node scripts/CI运行测试.mjs 长连接预算与流去重测试
 

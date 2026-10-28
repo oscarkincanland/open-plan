@@ -87,12 +87,16 @@ const COMPOSER_COMMANDS = [
   { insert: "/chat", label: "切换到 Chat", hint: "只读检索知识库、Skills 和工作区资料" },
   { insert: "/agent", label: "切换到 Agent", hint: "执行任务、调用工具并生成产物" },
   { insert: "/review", label: "切换到 Review", hint: "按规范审查材料，先生成报告和副本" },
-  { insert: "/help", label: "查看输入帮助", hint: "显示 /、@、& 的使用方式" },
+  { insert: "/help", label: "查看输入帮助", hint: "显示 /、@、#、& 的使用方式" },
 ];
 const THINKING_OPTIONS = [
+  { id: "default", label: "跟随默认", shortLabel: "默认", desc: "沿用当前模型/项目默认的思考档位" },
+  { id: "off", label: "关闭", shortLabel: "关闭", desc: "关闭推理，响应最快" },
+  { id: "minimal", label: "极简", shortLabel: "极简", desc: "最少推理，适合简单操作" },
   { id: "low", label: "低", shortLabel: "快速", desc: "响应更快，适合简单任务" },
   { id: "medium", label: "标准", shortLabel: "标准", desc: "速度与质量平衡" },
   { id: "high", label: "高", shortLabel: "深度", desc: "适合复杂分析" },
+  { id: "xhigh", label: "极高", shortLabel: "极高", desc: "更深的推理，响应更慢" },
   { id: "max", label: "最大", shortLabel: "最大", desc: "使用模型允许的最高档位" },
 ];
 const MODEL_PROVIDER_META = {
@@ -723,8 +727,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [lastPrompt, setLastPrompt] = useState(null);
   const [effort, setEffort] = useState(() => {
     const saved = localStorage.getItem(THINKING_KEY);
-    return THINKING_OPTIONS.some((item) => item.id === saved) ? saved : "low";
-  }); // Pi 标准推理档位：low/medium/high/max
+    return THINKING_OPTIONS.some((item) => item.id === saved) ? saved : "default";
+  }); // Pi 标准推理档位：default/off/minimal/low/medium/high/xhigh/max
   const [modelOpen, setModelOpen] = useState(false); // 模型选择浮层
   // 模型弹层曾用 right:0 贴着窄触发器向左伸，在 1440px 三栏布局下被
   // .center-chat-slot 的 overflow:hidden 裁掉左侧（交接文档问题 2）。改为
@@ -866,6 +870,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [busyInputMode, setBusyInputMode] = useState("queue"); // "queue" | "context"
   const [composerMenu, setComposerMenu] = useState(null);
   const [composerIndex, setComposerIndex] = useState(0);
+  const [mcpServers, setMcpServers] = useState([]); // `#` 提及：插件候选（按需拉取）
 
   useEffect(() => { onModeChange?.(normalizeUiMode(editMode)); }, [editMode, onModeChange]);
   useEffect(() => { onPhaseChange?.(busy ? (agentPhase || "正在处理") : ""); }, [agentPhase, busy, onPhaseChange]);
@@ -970,8 +975,29 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const currentMode = MODE_META[normalizeUiMode(editMode)] || MODE_META.chat;
   const selectedModelInfo = models.find((item) => item.id === model) || null;
   const selectedProviderMeta = modelProviderMeta(selectedModelInfo);
-  const selectedEffort = THINKING_OPTIONS.find((item) => item.id === effort) || THINKING_OPTIONS[0];
-  const selectedEffortIndex = Math.max(0, THINKING_OPTIONS.findIndex((item) => item.id === selectedEffort.id));
+  // v0.13.4：只展示模型真实支持的档位；“跟随默认”始终可用。
+  const modelThinkingLevels = useMemo(() => {
+    const levels = selectedModelInfo?.thinkingLevels;
+    return Array.isArray(levels) && levels.length
+      ? levels
+      : THINKING_OPTIONS.filter((item) => item.id !== "default").map((item) => item.id);
+  }, [selectedModelInfo]);
+  const thinkingAvailable = useCallback(
+    (id) => id === "default" || modelThinkingLevels.includes(id),
+    [modelThinkingLevels],
+  );
+  const availableThinkingOptions = useMemo(
+    () => THINKING_OPTIONS.filter((item) => thinkingAvailable(item.id)),
+    [thinkingAvailable],
+  );
+  useEffect(() => {
+    if (!thinkingAvailable(effort)) {
+      setEffort("default");
+      try { localStorage.setItem(THINKING_KEY, "default"); } catch {}
+    }
+  }, [effort, thinkingAvailable]);
+  const selectedEffort = availableThinkingOptions.find((item) => item.id === effort) || availableThinkingOptions[0] || THINKING_OPTIONS[0];
+  const selectedEffortIndex = Math.max(0, availableThinkingOptions.findIndex((item) => item.id === selectedEffort.id));
   const selectedContextWindow = Number(selectedModelInfo?.contextWindow) || DEFAULT_CONTEXT_WINDOW;
   const selectedUsage = usageDetails(runState.usage);
   const selectedContextRatio = Math.min(1, selectedUsage.context / selectedContextWindow);
@@ -1066,11 +1092,40 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         .slice(0, 12)
         .map((file) => ({ insert: "@" + file, label: file, hint: "引用当前工作区文件" }));
     }
+    if (composerMenu.symbol === "#") {
+      // v0.13.4：# 提及分三组：技能 / 插件 / 文件；发送时由 context.mjs 解析为引用。
+      const items = [];
+      for (const name of (project?.settings?.skills || [])) {
+        const value = String(name || "").trim();
+        if (value) items.push({ insert: `#技能[${value}]`, label: `技能 · ${value}`, hint: "注入 Skill" });
+      }
+      for (const server of mcpServers) {
+        const value = String(server?.name || server?.id || "").trim();
+        if (value) items.push({ insert: `#插件[${value}]`, label: `插件 · ${value}`, hint: "引用 MCP 插件" });
+      }
+      for (const file of referenceFiles) {
+        const value = String(file || "").trim();
+        if (value) items.push({ insert: `#文件[${value}]`, label: `文件 · ${value}`, hint: "引用当前工作区文件" });
+      }
+      return items
+        .filter((item) => !query || (item.insert + " " + item.label).toLowerCase().includes(query))
+        .slice(0, 18);
+    }
     return sessions
       .filter((session) => !query || String(session.title || "").concat(" ", session.label || "", " ", session.id).toLowerCase().includes(query))
       .slice(0, 12)
       .map((session) => ({ insert: "&会话[" + session.id + "]", label: session.title || session.label || "未命名会话", hint: "引用这段历史会话", session }));
-  }, [composerMenu, referenceFiles, sessions]);
+  }, [composerMenu, referenceFiles, sessions, project, mcpServers]);
+
+  useEffect(() => {
+    if (composerMenu?.symbol !== "#" || mcpServers.length) return undefined;
+    let cancelled = false;
+    fetch("/api/integrations/mcp/servers")
+      .then((res) => (res.ok ? res.json() : { servers: [] }))
+      .then((data) => { if (!cancelled) setMcpServers(Array.isArray(data?.servers) ? data.servers : []); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [composerMenu, mcpServers.length]);
 
   useEffect(() => {
     if (composerItems.length === 0) setComposerIndex(0);
@@ -1078,7 +1133,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   }, [composerItems]);
 
   const composerTrigger = (value) => {
-    const match = String(value || "").match(/(?:^|\s)([\/@&])([^\s]*)$/);
+    const match = String(value || "").match(/(?:^|\s)([\/@&#])([^\s]*)$/);
     if (!match) return null;
     return { symbol: match[1], query: match[2] || "", start: value.length - match[0].length + (match[0].startsWith(" ") ? 1 : 0) };
   };
@@ -2502,6 +2557,7 @@ case "runtime_connecting":
                 id: askId,
                 question: data.question || "",
                 options: data.options || [],
+                ...(Array.isArray(data.fields) && data.fields.length ? { fields: data.fields } : {}),
                 // Qoder P1-4：交互归属（服务端开关打开时才带；关闭时不显示归属标签）。
                 owner: data.owner || null,
                 // 时间窗口：服务端到点即不再接受回答，前端据此把卡片置为"已超时"。
@@ -4547,16 +4603,26 @@ case "runtime_connecting":
                       <input
                         type="range"
                         min="0"
-                        max={THINKING_OPTIONS.length - 1}
+                        max={Math.max(1, availableThinkingOptions.length - 1)}
                         step="1"
-                        value={selectedEffortIndex}
+                        value={Math.min(selectedEffortIndex, Math.max(0, availableThinkingOptions.length - 1))}
                         aria-label="思考深度"
                         aria-valuetext={`${selectedEffort.label}（${selectedEffort.desc}）`}
-                        onChange={(e) => { const next = THINKING_OPTIONS[Number(e.target.value)] || THINKING_OPTIONS[0]; setEffort(next.id); localStorage.setItem(THINKING_KEY, next.id); }}
+                        onChange={(e) => { const next = availableThinkingOptions[Number(e.target.value)] || selectedEffort; setEffort(next.id); localStorage.setItem(THINKING_KEY, next.id); }}
                       />
-<div className="model-thinking-scale">{THINKING_OPTIONS.map((item) => <span key={item.id} className={item.id === effort ? "active" : ""}>{item.label}</span>)}</div>
+<div className="model-thinking-scale">{THINKING_OPTIONS.map((item) => {
+  const disabled = !thinkingAvailable(item.id);
+  return (
+    <span
+      key={item.id}
+      className={`${item.id === effort ? "active" : ""}${disabled ? " disabled" : ""}`.trim()}
+      aria-disabled={disabled}
+      title={disabled ? "当前模型不支持此档位" : item.desc}
+    >{item.label}</span>
+  );
+})}</div>
                       <small className="model-thinking-desc">{selectedEffort.desc}</small>
-                      <small className="model-thinking-hint">高/最大档位会让模型首响应明显变慢，适合复杂任务；简单问答建议用低/标准</small>
+                      <small className="model-thinking-hint">“跟随默认”沿用模型默认档位；灰置档位表示当前模型不支持。高/极高/最大档位响应更慢，适合复杂任务</small>
                     </div>
                   </div>,
                   document.body,
@@ -5753,20 +5819,28 @@ function PendingActionBar({ approval, ask, onLocateApproval, onLocateAsk, client
       {ask && (
         <>
           <span className="pending-action-label"><Icon name="comment" size={12} /> 待回答：{String(ask.question || "").slice(0, 120)}</span>
-          {ask.options?.length > 0 && (
-            <span className="pending-action-buttons">
-              {ask.options.map((opt, i) => <button key={i} className="btn-xs" onClick={() => submitAnswer(opt)} disabled={Boolean(sending)}>{opt}</button>)}
-            </span>
+          {ask.fields?.length > 0 ? (
+            <span className="pending-action-form-hint">请在上方问题卡片填写表单后提交</span>
+          ) : (
+            <>
+              {ask.options?.length > 0 && (
+                <span className="pending-action-buttons">
+                  {ask.options.map((opt, i) => <button key={i} className="btn-xs" onClick={() => submitAnswer(opt)} disabled={Boolean(sending)}>{opt}</button>)}
+                </span>
+              )}
+              <input
+                className="pending-action-input"
+                placeholder="输入你的回答…"
+                value={answer}
+                onChange={(e) => setAnswer(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submitAnswer(); } }}
+              />
+              <span className="pending-action-buttons">
+                <button className="btn primary" onClick={() => submitAnswer()} disabled={Boolean(sending) || !answer.trim()}>{sending === "ask" ? "…" : "发送"}</button>
+              </span>
+            </>
           )}
-          <input
-            className="pending-action-input"
-            placeholder="输入你的回答…"
-            value={answer}
-            onChange={(e) => setAnswer(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submitAnswer(); } }}
-          />
           <span className="pending-action-buttons">
-            <button className="btn primary" onClick={() => submitAnswer()} disabled={Boolean(sending) || !answer.trim()}>{sending === "ask" ? "…" : "发送"}</button>
             <button className="btn-xs" onClick={onLocateAsk} title="滚动到提问卡片">定位</button>
           </span>
         </>
@@ -5782,6 +5856,10 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
   const [error, setError] = useState("");
   // 提问有 5 分钟时间窗口：服务端超时后按假设继续，卡片必须同步失效而不是继续接受输入。
   const expired = Boolean(block.expired);
+  // v0.13.5：结构化表单（fields）与旧的快捷选项/单行输入兼容。
+  const fields = Array.isArray(block.fields) ? block.fields : [];
+  const [formValues, setFormValues] = useState({});
+  const setFormField = (id, value) => setFormValues((previous) => ({ ...previous, [id]: value }));
 
   const submit = async (text) => {
     const answer = (text || "").trim();
@@ -5808,6 +5886,20 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
     setSending(false);
   };
 
+  const submitForm = () => {
+    const missing = fields.find((field) => {
+      const value = formValues[field.id];
+      return field.required && (Array.isArray(value) ? value.length === 0 : !String(value ?? "").trim());
+    });
+    if (missing) { setError(`请填写：${missing.label}`); return; }
+    const answer = fields.map((field) => {
+      const value = formValues[field.id];
+      return `${field.label}：${Array.isArray(value) ? value.join("、") : String(value ?? "")}`;
+    }).join("\n");
+    setError("");
+    submit(answer);
+  };
+
   return (
     <div className={`ask-block ${block.answer ? "answered" : ""} ${expired ? "expired" : ""}`}>
       <div className="ask-head">
@@ -5823,6 +5915,72 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
       ) : expired ? (
         <div className="ask-expired" role="status">
           超过 5 分钟未回答，Agent 已按自己的假设继续（本轮不再接受该问题的回答）。如需修正，请直接在下方输入消息说明。
+        </div>
+      ) : fields.length ? (
+        <div className="ask-form">
+          {fields.map((field) => (
+            <label className="ask-field" key={field.id}>
+              <span className="ask-field-label">{field.label}{field.required ? " *" : ""}</span>
+              {field.type === "select" ? (
+                <select
+                  className="ask-field-input"
+                  value={String(formValues[field.id] ?? "")}
+                  onChange={(e) => setFormField(field.id, e.target.value)}
+                >
+                  <option value="">请选择…</option>
+                  {(field.options || []).map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+                </select>
+              ) : field.type === "radio" ? (
+                <span className="ask-field-options">
+                  {(field.options || []).map((opt) => (
+                    <label key={opt}>
+                      <input
+                        type="radio"
+                        name={`${block.id}:${field.id}`}
+                        checked={String(formValues[field.id] ?? "") === opt}
+                        onChange={() => setFormField(field.id, opt)}
+                      />
+                      {opt}
+                    </label>
+                  ))}
+                </span>
+              ) : field.type === "checkbox" ? (
+                <span className="ask-field-options">
+                  {(field.options || []).map((opt) => {
+                    const selected = Array.isArray(formValues[field.id]) ? formValues[field.id] : [];
+                    return (
+                      <label key={opt}>
+                        <input
+                          type="checkbox"
+                          checked={selected.includes(opt)}
+                          onChange={() => setFormField(field.id, selected.includes(opt) ? selected.filter((value) => value !== opt) : [...selected, opt])}
+                        />
+                        {opt}
+                      </label>
+                    );
+                  })}
+                </span>
+              ) : field.type === "file" ? (
+                <input
+                  className="ask-field-input"
+                  type="file"
+                  accept={field.accept || undefined}
+                  onChange={(e) => setFormField(field.id, e.target.files?.[0]?.name || "")}
+                />
+              ) : (
+                <input
+                  className="ask-field-input"
+                  placeholder={field.placeholder || "请输入…"}
+                  value={String(formValues[field.id] ?? "")}
+                  onChange={(e) => setFormField(field.id, e.target.value)}
+                />
+              )}
+            </label>
+          ))}
+          <button className="btn primary ask-submit" onClick={submitForm} disabled={sending}>
+            {sending ? "…" : "提交"}
+          </button>
+          {error && <div className="ask-error" role="alert">{error}</div>}
         </div>
       ) : (
         <>

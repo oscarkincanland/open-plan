@@ -211,7 +211,9 @@ export const listSessions = (fileOrOptions) => {
     if (fileOrOptions) params.set("file", fileOrOptions);
   } else {
     const options = fileOrOptions || {};
-    for (const key of ["file", "projectId", "mode", "runStatus"]) if (options[key]) params.set(key, options[key]);
+    for (const key of ["file", "projectId", "mode", "runStatus", "limit", "cursor", "groupBy"]) {
+      if (options[key] !== undefined && options[key] !== null && options[key] !== "") params.set(key, options[key]);
+    }
     for (const key of ["pinned", "frozen"]) if (options[key] !== undefined && options[key] !== null) params.set(key, String(options[key]));
   }
   const query = params.toString();

@@ -306,6 +306,8 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   letter-spacing: 0.5px;
 }
 .pin-icon { color: var(--accent); }
+.session-group-more { display: block; width: calc(100% - 20px); margin: 4px 10px 8px; padding: 4px 8px; border: 1px dashed var(--border); border-radius: 6px; background: transparent; color: var(--dim); font-size: 9px; cursor: pointer; }
+.session-group-more:hover { border-color: var(--accent); color: var(--accent); }
 .session-item { display: flex; align-items: flex-start; gap: 6px; padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--border); position: relative; }
 .session-item:hover { background: var(--selected); }
 /* 会话状态指示器（Proma 风格：左侧彩色竖条） */
@@ -6281,6 +6283,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .model-thinking-control input[type="range"] { width: 100%; height: 4px; accent-color: var(--accent); cursor: pointer; }
 .model-thinking-scale { display: flex; justify-content: space-between; margin-top: 5px; color: var(--dim); font-size: 9px; }
 .model-thinking-scale .active { color: var(--accent); font-weight: 700; }
+.model-thinking-scale .disabled { opacity: .35; text-decoration: line-through; cursor: not-allowed; }
 .model-thinking-desc { display: block; margin-top: 7px; color: var(--dim); font-size: 9px; }
 .model-thinking-hint { display: block; margin-top: 4px; color: var(--dim); font-size: 9px; opacity: 0.85; }
 .ct-pop-search {
@@ -7249,6 +7252,24 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .ask-input:focus { border-color: var(--accent); }
 .ask-submit { flex-shrink: 0; }
+/* v0.13.5：Schema 提问表单 */
+.ask-form { display: grid; gap: 8px; }
+.ask-field { display: grid; gap: 4px; font-size: 11px; }
+.ask-field-label { color: var(--muted); }
+.ask-field-input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+.ask-field-input:focus { border-color: var(--accent); }
+.ask-field-options { display: flex; flex-wrap: wrap; gap: 10px; color: var(--text); }
+.ask-field-options label { display: inline-flex; align-items: center; gap: 4px; }
+.pending-action-form-hint { color: var(--muted); font-size: 10px; }
 .ask-answer { color: var(--success); font-size: 11px; }
 /* 时间窗口（服务端 ASK_TIMEOUT_MS = 5 分钟）已过：卡片保留说明但不再接受回答 */
 .ask-block.expired { border-color: var(--border); background: color-mix(in srgb, var(--border) 12%, transparent); }
