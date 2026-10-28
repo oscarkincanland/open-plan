@@ -22,7 +22,10 @@ const statusText = {
 
 function modeText(run) {
   const mode = run?.task?.mode;
-  return mode === "chat" ? "Chat" : mode === "office" ? "Office" : mode === "agent" ? "Agent" : "未标记";
+  if (mode === "chat") return "Chat";
+  if (mode === "review") return "Review";
+  if (mode === "office" || mode === "agent") return "Work";
+  return "未标记";
 }
 
 /** 事件摘要：把 run 级原始事件压成一行可读文本（保留技术细节在 title 里）。 */
@@ -331,7 +334,7 @@ function TaskCenterInternal({ sessions = [], projects = [], currentProjectId = "
               {Object.entries(statusText).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
             </select>
             <select value={modeFilter} onChange={(e) => setModeFilter(e.target.value)} title="任务模式">
-              <option value="all">全部模式</option><option value="chat">Chat</option><option value="office">Office</option><option value="agent">Agent</option>
+              <option value="all">全部模式</option><option value="chat">Chat</option><option value="agent">Work</option><option value="review">Review</option>
             </select>
             <input value={queryFilter} onChange={(e) => setQueryFilter(e.target.value)} placeholder="搜索任务或失败原因" title="搜索任务目标、摘要或失败原因" />
           </div>

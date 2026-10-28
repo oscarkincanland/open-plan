@@ -3648,6 +3648,9 @@ execute: async (_toolCallId, params) => {
             runId: entry?.compactionRunId || entry?.activeRunId || null,
             tokensBefore: ev.tokensBefore || 0,
             estimatedTokensAfter: ev.estimatedTokensAfter || 0,
+            // v0.12.3：不同 Pi 版本的 compaction_end 可能用 messagesBefore 或
+            // messageCount 表示被折叠的消息条数；都没有时保持 0，前端回退旧文案。
+            messageCount: Number(ev.messagesBefore ?? ev.messageCount ?? 0) || 0,
           });
           break;
         case "bash_execution_update":
@@ -3793,6 +3796,18 @@ execute: async (_toolCallId, params) => {
       summarize,
       label: options.label || "工作台分支",
     });
+    // v0.12.8：navigateTree 只改内存 leaf，不落盘；追加一个不进入模型上下文的
+    // custom 标记，把活跃分支固化到 JSONL，重开/刷新后 Chat 视图仍沿该 leaf 还原。
+    try {
+      entry.sessionManager?.appendCustomEntry?.("oaw_branch_point", {
+        targetId: String(entryId),
+        at: new Date().toISOString(),
+        source: "session-branch",
+        summarize,
+      });
+    } catch (error) {
+      console.warn("[agent] 分支标记写入失败：", error?.message || error);
+    }
     return {
       sessionId: entry.session?.sessionId || null,
       navigatedTo: String(entryId),
@@ -4593,6 +4608,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         ok: true,
         tokensBefore: result?.tokensBefore || 0,
         estimatedTokensAfter: result?.estimatedTokensAfter || 0,
+        messageCount: Number(result?.messagesBefore ?? result?.messageCount ?? 0) || 0,
       };
     } finally {
       entry.compactionPromise = null;

@@ -1,11 +1,13 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
 import { createPortal } from "react-dom";
-import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns } from "../api.js";
+import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, branchAgentSession, getSessionMessageVersions, getSessionGoal, setSessionGoal, sessionGoalAction, clearSessionGoal, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon, { ProviderIcon } from "./Icon.jsx";
 import ToolIdentityIcon from "./工具语义图标.jsx";
 import Logo from "./Logo.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
+import QueueDock from "./QueueDock.jsx";
+import GoalBar from "./GoalBar.jsx";
 import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
 import { completionLabel, formatDuration, formatTokenCount, reduceRunTrace, reduceTurnMetrics, runToolDetailText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, summarizeTurnMetrics, turnMetricsText, verificationLabel } from "../运行轨迹.js";
@@ -79,6 +81,7 @@ const ASK_TIMEOUT_FALLBACK_MS = 5 * 60 * 1000;
 const MAX_VISIBLE_MESSAGES = 120;
 const MESSAGE_PAGE_SIZE = 80;
 const COMPOSER_COMMANDS = [
+  { insert: "/goal ", label: "设置长期目标", hint: "为当前会话设定跨轮目标、预算与统计" },
   { insert: "/compact", label: "压缩上下文", hint: "保留摘要并缩短当前 Pi 会话" },
   { insert: "/new", label: "新建会话", hint: "在当前项目下创建独立会话" },
   { insert: "/chat", label: "切换到 Chat", hint: "只读检索知识库、Skills 和工作区资料" },
@@ -294,25 +297,86 @@ const MODEL_RECENT_KEY = "oaw_recent_models";
 const MODEL_FAVORITE_KEY = "oaw_favorite_models";
 const MAX_RECENT_MODELS = 5;
 
-// 未发送草稿按 thread 保存在模块级缓存（交互 3）：进入设置/知识库/成果等模块会
-// 卸载 ChatPanel，输入框是组件内 state，重挂载就丢了。缓存放在模块作用域可跨挂载
-// 存活；按 thread 隔离，切换会话不会把 A 的草稿带到 B，明确发送/新建时才清除。
+// 未发送草稿按 thread 保存在 localStorage（v0.12.4）：进入设置/知识库/成果等模块会
+// 卸载 ChatPanel，输入框是组件内 state，重挂载就丢了；刷新/重启时 localStorage 让草稿
+// 继续可用。按 thread 隔离，切换会话不会把 A 的草稿带到 B，明确发送/新建时才清除。
+// 隐私模式/配额受限时读写全部静默降级到内存缓存，不阻断输入。
 const DRAFT_CACHE_LIMIT = 20;
+const DRAFT_STORAGE_PREFIX = "oaw_draft_v1:";
+const DRAFT_INDEX_KEY = "oaw_draft_index_v1";
 const draftCache = new Map();
+function draftStorage() {
+  try {
+    const store = typeof window !== "undefined" ? window.localStorage : null;
+    return store && typeof store.getItem === "function" && typeof store.setItem === "function" ? store : null;
+  } catch {
+    return null;
+  }
+}
+function readDraftIndex() {
+  try {
+    const list = JSON.parse(draftStorage()?.getItem(DRAFT_INDEX_KEY) || "[]");
+    return Array.isArray(list) ? list.filter((id) => typeof id === "string" && id).slice(0, DRAFT_CACHE_LIMIT) : [];
+  } catch {
+    return [];
+  }
+}
 function readDraft(threadId) {
-  return threadId ? draftCache.get(threadId) || "" : "";
+  if (!threadId) return "";
+  if (draftCache.has(threadId)) return draftCache.get(threadId);
+  let text = "";
+  try { text = draftStorage()?.getItem(DRAFT_STORAGE_PREFIX + threadId) || ""; } catch { text = ""; }
+  if (text) draftCache.set(threadId, text);
+  return text;
 }
 function writeDraft(threadId, value) {
   if (!threadId) return;
   const text = String(value ?? "");
-  if (!text) draftCache.delete(threadId);
-  else {
-    // 重新插入以维持 LRU 顺序，避免长会话把活跃草稿挤出缓存。
+  const store = draftStorage();
+  if (!text) {
     draftCache.delete(threadId);
-    draftCache.set(threadId, text);
+    try { store?.removeItem(DRAFT_STORAGE_PREFIX + threadId); } catch {}
+    const index = readDraftIndex();
+    if (index.includes(threadId)) {
+      try { store?.setItem(DRAFT_INDEX_KEY, JSON.stringify(index.filter((id) => id !== threadId))); } catch {}
+    }
+    return;
   }
+  // 内存缓存维持 LRU，localStorage 承担刷新恢复；索引用于清理旧草稿，避免无限增长。
+  draftCache.delete(threadId);
+  draftCache.set(threadId, text);
   while (draftCache.size > DRAFT_CACHE_LIMIT) {
-    draftCache.delete(draftCache.keys().next().value);
+    const stale = draftCache.keys().next().value;
+    draftCache.delete(stale);
+    try { store?.removeItem(DRAFT_STORAGE_PREFIX + stale); } catch {}
+  }
+  if (!store) return;
+  try {
+    store.setItem(DRAFT_STORAGE_PREFIX + threadId, text);
+    const index = readDraftIndex();
+    const next = [threadId, ...index.filter((id) => id !== threadId)].slice(0, DRAFT_CACHE_LIMIT);
+    store.setItem(DRAFT_INDEX_KEY, JSON.stringify(next));
+    for (const stale of index.filter((id) => !next.includes(id))) store.removeItem(DRAFT_STORAGE_PREFIX + stale);
+  } catch {}
+}
+
+// v0.12.1：队列按 thread 隔离保存在模块作用域，切会话/模块导航后仍能恢复；
+// 刷新页面丢失属于 v0.12.x 已知边界（草稿才做 localStorage，队列不做）。
+const QUEUE_CACHE_LIMIT = 20;
+const queueCache = new Map();
+function readQueueCache(threadId) {
+  return threadId ? queueCache.get(threadId) || [] : [];
+}
+function writeQueueCache(threadId, items) {
+  if (!threadId) return;
+  if (!items?.length) {
+    queueCache.delete(threadId);
+    return;
+  }
+  queueCache.delete(threadId);
+  queueCache.set(threadId, items);
+  while (queueCache.size > QUEUE_CACHE_LIMIT) {
+    queueCache.delete(queueCache.keys().next().value);
   }
 }
 
@@ -532,11 +596,52 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate }, ref) {
+// v0.13.2：从已加载的助手消息里提取外部链接（URL 去重，保留首次出现的消息 id）。
+// 只做展示与打开/复制，不抓取网页内容，也不执行网页中的指令。
+const LINK_URL_PATTERN = /https?:\/\/[^\s<>"'`）)】\]，。；;]+/gi;
+function normalizeLinkUrl(raw) {
+  return String(raw || "").replace(/[.,;:!?，。；：！？]+$/g, "");
+}
+export function extractSessionLinks(messages = []) {
+  const seen = new Map();
+  for (const message of messages) {
+    if (message?.role !== "assistant") continue;
+    const texts = [message.text, ...(Array.isArray(message.blocks) ? message.blocks : []).map((block) => block?.type === "text" ? block.text : "")];
+    for (const text of texts) {
+      if (!text) continue;
+      for (const match of String(text).matchAll(LINK_URL_PATTERN)) {
+        const url = normalizeLinkUrl(match[0]);
+        if (!url || seen.has(url)) continue;
+        let domain = url;
+        try { domain = new URL(url).host || url; } catch {}
+        seen.set(url, {
+          url,
+          domain,
+          title: url,
+          messageId: message.entryId || message.id || "",
+        });
+        if (seen.size >= 200) return [...seen.values()];
+      }
+    }
+  }
+  return [...seen.values()];
+}
+
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   // 草稿按 thread 恢复（交互 3）：模块导航会卸载本组件，重挂载时从缓存取回未发送内容。
   const [input, setInput] = useState(() => readDraft(threadId));
+  // v0.12.5：服务端游标续拉更早历史的状态（loading / 已到顶）与滚动锚点。
+  const [olderHistory, setOlderHistory] = useState({ loading: false, exhausted: false });
+  const scrollAnchorRef = useRef(null);
+  // v0.12.6：从某条用户消息编辑重发时，先记录分支点，发送前调用服务端 navigateTree。
+  const [pendingBranch, setPendingBranch] = useState(null);
+  const pendingBranchRef = useRef(null);
+  pendingBranchRef.current = pendingBranch;
+  // v0.13.0：长期目标（会话级），由服务端 .oaw/goals 持久化。
+  const [goal, setGoal] = useState(null);
+  const [goalDetailsSignal, setGoalDetailsSignal] = useState(0);
   // 输入变化即写回草稿缓存：模块导航导致的卸载不会丢掉未发送内容。
   const updateInput = useCallback((value) => {
     setInput((previous) => {
@@ -545,6 +650,26 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       return next;
     });
   }, [threadId]);
+  // v0.13.0：切换会话时读取该会话的长期目标（不存在则隐藏 GoalBar）。
+  const refreshGoal = useCallback(async () => {
+    if (!sessionId) { setGoal(null); return null; }
+    try {
+      const result = await getSessionGoal(sessionId);
+      setGoal(result?.goal || null);
+      return result?.goal || null;
+    } catch {
+      setGoal(null);
+      return null;
+    }
+  }, [sessionId]);
+  useEffect(() => {
+    void refreshGoal();
+  }, [refreshGoal]);
+  // v0.13.2：把助手消息里的外部链接同步给右栏 Links 页签。
+  useEffect(() => {
+    if (typeof onLinksChange !== "function") return;
+    onLinksChange(extractSessionLinks(messages));
+  }, [messages, onLinksChange]);
   // 子代理详情实时更新：把最新的子代理 block 推给外层（App 右栏详情按 id 订阅）。
   useEffect(() => {
     if (!onSubagentUpdate) return;
@@ -565,6 +690,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [images, setImages] = useState([]);
   const [attachments, setAttachments] = useState([]); // 非图片附件
   const [busy, setBusy] = useState(false);
+  // v0.13.1：Run 收口后刷新 Goal 统计（轮次/Token/预算状态），无需用户重开会话。
+  const previousBusyRef = useRef(false);
+  useEffect(() => {
+    const wasBusy = previousBusyRef.current;
+    previousBusyRef.current = Boolean(busy);
+    if (wasBusy && !busy) void refreshGoal();
+  }, [busy, refreshGoal]);
   const [stopping, setStopping] = useState(false);
   const [connected, setConnected] = useState(false);
   const [models, setModels] = useState(modelsProp || []);
@@ -726,7 +858,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     });
   }, []);
   const clearSystemNotes = useCallback(() => setSystemNotes([]), []);
-  const [queuedMessages, setQueuedMessages] = useState([]); // 当前任务完成后顺序执行
+  const [queuedMessages, setQueuedMessages] = useState(() => readQueueCache(threadId)); // 当前任务完成后顺序执行
   const [injectedContext, setInjectedContext] = useState([]); // 等待下一轮发送的上下文片段
   // 模型连接状态：重试中/已恢复（输入框旁小状态点；过程区不再堆这类提示）
   const [connectionNotice, setConnectionNotice] = useState(null);
@@ -739,6 +871,18 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   useEffect(() => { onPhaseChange?.(busy ? (agentPhase || "正在处理") : ""); }, [agentPhase, busy, onPhaseChange]);
   const bodyRef = useRef(null);
   const followLatestRef = useRef(true);
+  // v0.12.5：历史分页状态随会话/服务端窗口重置；“加载更早”后恢复滚动锚点，
+  // 避免用户正在看第 300 条时被新插入的旧消息顶到列表底部。
+  useEffect(() => {
+    setOlderHistory({ loading: false, exhausted: !historyWindow?.hasMore });
+  }, [threadId, historyThreadId, historyWindow?.hasMore]);
+  useLayoutEffect(() => {
+    const anchor = scrollAnchorRef.current;
+    const el = bodyRef.current;
+    if (!anchor || !el) return;
+    scrollAnchorRef.current = null;
+    el.scrollTop = el.scrollHeight - anchor.height + anchor.top;
+  }, [messages, messageWindowSize]);
   const assistantIdRef = useRef(null);
   // agent_end 可能先于 run_finished 到达；保留本轮最后一个气泡，
   // 让服务端补发的权威全文继续写入原气泡，避免出现两条结论。
@@ -765,7 +909,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const roundStoppedRef = useRef(false);
   const stopConfirmTimerRef = useRef(null);
   const agentErrorRef = useRef(false);
-  const queueRef = useRef([]);
+  const queueRef = useRef(readQueueCache(threadId));
   // 组件挂载状态追踪，防止卸载后更新状态
   const mountedRef = useRef(true);
   // SSE 重连可能重放同一事件；按运行/文件/摘要去重，避免对话栏污染。
@@ -1071,8 +1215,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       textRevealRafRef.current = null;
       textRevealRef.current = null;
       systemEventKeysRef.current.clear();
-      queueRef.current = [];
-      setQueuedMessages([]);
+      // v0.12.1：队列是当前会话的内存状态，历史水合/重连不得清空；
+      // 切会话由下方 thread effect 负责保存/恢复。
       setInjectedContext([]);
       setAgentPhase("");
       agentEventAtRef.current = 0;
@@ -1126,12 +1270,18 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     textRevealRef.current = null;
     if (hydratingHistory) activeRunIdRef.current = hydratedIsLive ? hydratedRun?.runId || null : null;
     runInProgressRef.current = hydratingHistory ? hydratedIsLive : Boolean(cached?.busy);
-    queueRef.current = [];
-    setQueuedMessages([]);
+    // v0.12.1：切会话时保存旧 thread 的队列，恢复新 thread 自己的队列；
+    // 队列项与消息气泡都按 id 对应，不把 A 的排队消息带到 B。
+    if (previous) writeQueueCache(previous, queueRef.current);
+    const restoredQueue = readQueueCache(threadId);
+    queueRef.current = restoredQueue;
+    setQueuedMessages(restoredQueue);
     setInjectedContext([]);
     setReferences([]);
     setImages([]);
     setAttachments([]);
+    setPendingBranch(null);
+    pendingBranchRef.current = null;
     // 交互 3：切会话时先把 A 的未发送内容存进 A 的草稿位，再取回 B 自己的草稿；
     // 这样既不丢草稿，也不会把 A 的内容带到 B。
     if (input) writeDraft(previous, input);
@@ -1171,9 +1321,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setReferences([]);
     setImages([]);
     setAttachments([]);
+    writeQueueCache(threadId, []);
     queueRef.current = [];
     setQueuedMessages([]);
     setInjectedContext([]);
+    setGoal(null);
+    setPendingBranch(null);
+    pendingBranchRef.current = null;
     setRunState({ status: "idle", runId: null, artifacts: [], references: [], task: null, mode: normalizeUiMode(editMode) });
     setTodoItems([]);
     replaceExecutionEvents([]);
@@ -2524,6 +2678,7 @@ case "runtime_connecting":
               automatic: !!data.automatic,
               tokensBefore: Number(data.tokensBefore || 0),
               tokensAfter: estimated,
+              messageCount: Number(data.messageCount || 0),
               at: envelope.at || new Date().toISOString(),
             },
           };
@@ -2531,7 +2686,7 @@ case "runtime_connecting":
         pushSystemNote({
           key: "compact",
           kind: "compact",
-          text: `${data.automatic ? "已自动压缩上下文" : "已压缩上下文"}${data.tokensBefore ? `（压缩前约 ${Number(data.tokensBefore).toLocaleString()} tokens）` : ""}`,
+          text: `${data.automatic ? "已自动压缩上下文" : "已压缩上下文"}${Number(data.messageCount) > 0 ? ` · ${Number(data.messageCount)} 条` : ""}${data.tokensBefore ? ` · ${Number(data.tokensBefore).toLocaleString()} → ${Number(data.estimatedTokensAfter || 0).toLocaleString()} tokens` : ""}`,
         });
         break;
       case "context_compacting":
@@ -2822,6 +2977,65 @@ case "runtime_connecting":
     setMessages((ms) => [...ms, { id: newId(), role: "system", text, status: "done", createdAt: Date.now() }]);
   }, [acceptSystemEvent]);
 
+  // v0.13.0–v0.13.1：Goal 读写（会话级，经服务端 .oaw/goals 持久化）。
+  const runGoalAction = useCallback(async (action, payload = {}) => {
+    if (!sessionId) throw new Error("当前会话尚未保存，无法操作长期目标");
+    const result = action === "clear"
+      ? await clearSessionGoal(sessionId)
+      : await sessionGoalAction(sessionId, action, payload);
+    if (!result?.ok) throw new Error(result?.error || "目标操作失败");
+    setGoal(result.goal || null);
+    return result;
+  }, [sessionId]);
+  const saveGoal = useCallback(async (text, extra = {}) => {
+    if (!sessionId) throw new Error("当前会话尚未保存，无法设置长期目标");
+    const result = await setSessionGoal(sessionId, { text, ...extra });
+    if (!result?.ok) throw new Error(result?.error || "目标保存失败");
+    setGoal(result.goal || null);
+    return result;
+  }, [sessionId]);
+  // `/goal` 在发送前拦截：创建/替换、clear、pause、resume、continue、edit、budget、查看。
+  const handleGoalCommand = useCallback(async (rawText) => {
+    const body = String(rawText || "").replace(/^\/goal\s*/i, "").trim();
+    if (!body) {
+      setGoalDetailsSignal((value) => value + 1);
+      pushSystem(goal ? "已打开长期目标详情。" : "当前会话还没有长期目标；用 /goal <目标文本> 创建。", `goal-view:${Date.now()}`);
+      return;
+    }
+    const [head, ...rest] = body.split(/\s+/);
+    const arg = rest.join(" ").trim();
+    try {
+      let result = null;
+      if (/^clear$/i.test(head)) result = await runGoalAction("clear");
+      else if (/^(pause|resume|continue|complete)$/i.test(head)) result = await runGoalAction(head.toLowerCase());
+      else if (/^edit$/i.test(head)) {
+        if (!arg) throw new Error("用法：/goal edit <新目标文本>");
+        result = await runGoalAction("edit", { text: arg });
+      } else if (/^budget$/i.test(head)) {
+        const budgetTokens = Number.parseInt(arg, 10);
+        if (!Number.isFinite(budgetTokens) || budgetTokens < 0) throw new Error("用法：/goal budget <Token 数>");
+        result = await runGoalAction("budget", { budgetTokens });
+      } else {
+        result = await saveGoal(body);
+      }
+      pushSystem(result?.goal ? `长期目标：${result.goal.text}（${result.goal.status}）` : "长期目标已清除。", `goal-command:${Date.now()}`);
+    } catch (error) {
+      pushSystem("目标操作失败：" + (error?.message || "未知错误"), `goal-error:${Date.now()}`);
+    }
+  }, [goal, pushSystem, runGoalAction, saveGoal]);
+
+  // v0.12.3：工作区存在 AGENTS.md 时，每个会话首次进入提示一次“项目指令已生效”，
+  // 避免用户误以为项目约定只对别的会话生效；同会话重复渲染不重复提示。
+  const projectInstructionNotifiedRef = useRef(new Set());
+  useEffect(() => {
+    if (!workspace) return;
+    const hasProjectInstructions = (referenceFiles || []).some((name) => /(^|[\\/])AGENTS\.md$/i.test(String(name || "")));
+    if (!hasProjectInstructions) return;
+    if (projectInstructionNotifiedRef.current.has(threadId)) return;
+    projectInstructionNotifiedRef.current.add(threadId);
+    pushSystem("已加载工作区指令 AGENTS.md，本会话的对话与任务会遵循其中约定。", `project-instructions:${threadId}`);
+  }, [threadId, workspace, referenceFiles, pushSystem]);
+
   const upsertRunSummary = useCallback((data = {}) => {
     const runId = data.runId || null;
     if (!runId) return;
@@ -2885,6 +3099,13 @@ case "runtime_connecting":
       window.setTimeout(() => setModelMsg(""), 3200);
       return;
     }
+    // 压缩期间不允许发送：服务端会把新消息排到压缩之后，但界面必须与 AVA 的
+    // “压缩中不可发送”语义一致，避免用户以为消息已进入当前回合。
+    if (compacting) {
+      setModelMsg("正在压缩上下文，请稍候再发送。");
+      window.setTimeout(() => setModelMsg(""), 2600);
+      return;
+    }
     if (stoppingRef.current) return;
     const source = options.payload || {};
     const sourceImages = source.images || images;
@@ -2892,6 +3113,11 @@ case "runtime_connecting":
     const sourceReferences = source.references || references;
     const rawText = String(source.rawText ?? overrideText ?? input).trim();
     if (!rawText && sourceImages.length === 0 && sourceAttachments.length === 0) return;
+    if (!options.payload && /^\/goal(?:\s|$)/i.test(rawText)) {
+      clearInput();
+      setComposerMenu(null);
+      return handleGoalCommand(rawText);
+    }
     if (!options.payload && /^\/(?:compact|new|chat|agent|review|help)$/i.test(rawText)) {
       const command = rawText.toLowerCase();
       clearInput();
@@ -2904,7 +3130,7 @@ case "runtime_connecting":
         pushSystem("已切换到 " + (mode === "chat" ? "Chat（只读检索）" : mode === "review" ? "Review（审查与安全副本）" : "Work（执行与产出）") + "。");
         return;
       }
-      pushSystem("输入帮助：/compact 压缩上下文；/new 新建会话；/chat、/agent 或 /review 切换模式；@ 选择文件；& 选择历史会话。", "composer-help");
+      pushSystem("输入帮助：/goal 设置长期目标；/compact 压缩上下文；/new 新建会话；/chat、/agent 或 /review 切换模式；@ 选择文件；& 选择历史会话。", "composer-help");
       return;
     }
     const text = rawText || (sourceImages.length ? "（图片消息）" : "（附件消息）");
@@ -2931,7 +3157,11 @@ case "runtime_connecting":
       if (busyInputMode === "queue") {
         const messageId = newId();
         const item = {
-          messageId,
+          id: messageId,
+          messageId, // 兼容 send() 的既有 payload 字段
+          channel: "queue",
+          status: "waiting",
+          text,
           rawText,
           images: sourceImages,
           attachments: sourceAttachments,
@@ -2940,10 +3170,12 @@ case "runtime_connecting":
           currentDoc,
           editMode,
           effort,
+          createdAt: Date.now(),
         };
         const nextQueue = [...queueRef.current, item];
         queueRef.current = nextQueue;
         setQueuedMessages(nextQueue);
+        writeQueueCache(threadId, nextQueue);
         setMessages((ms) => [...ms, {
           id: messageId, role: "user", text,
           images: sourceImages.map((i) => i.dataUrl).filter(Boolean),
@@ -2973,6 +3205,31 @@ case "runtime_connecting":
       window.setTimeout(() => setModelMsg(""), 3200);
       return;
     }
+    // v0.12.6–v0.12.8：编辑/重新生成前先把会话树 leaf 移到目标分支点；
+    // 旧分支保留在同一 JSONL 的兄弟节点里，不影响旧内容回看。
+    const branch = pendingBranchRef.current;
+    if (branch?.entryId) {
+      try {
+        await branchAgentSession(clientId, threadId, branch.entryId, { summarize: false });
+      } catch (error) {
+        setModelMsg("无法创建消息分支：" + (error?.message || "未知错误"));
+        window.setTimeout(() => setModelMsg(""), 3600);
+        return;
+      }
+      pendingBranchRef.current = null;
+      setPendingBranch(null);
+      if (branch.messageId) {
+        setMessages((previous) => {
+          const index = previous.findIndex((message) => (message.entryId || message.id) === branch.messageId);
+          return index >= 0 ? previous.slice(0, index) : previous;
+        });
+      }
+      setRunState({ status: "idle", runId: null, artifacts: [], references: [], task: null, mode: selectedEditMode });
+      replaceExecutionEvents([]);
+      setTodoItems([]);
+      activeRunIdRef.current = null;
+      runInProgressRef.current = false;
+    }
     const contextPrefix = selectedCurrentDoc ? `[当前打开文件: ${selectedCurrentDoc}]\n` : "";
     const mapContextPrefix = mapProject
       ? `[当前地图项目: ${mapProject}${mapContext?.center ? `；视图中心 ${mapContext.center[0]},${mapContext.center[1]}；缩放 ${mapContext.zoom}；可视范围 ${mapContext.bounds?.join(",") || "未知"}` : ""}]\n`
@@ -2994,7 +3251,7 @@ case "runtime_connecting":
 
     if (!mountedRef.current) return;
 
-    const queuedMessageId = source.messageId;
+    const queuedMessageId = source.messageId || source.id;
     if (queuedMessageId) {
       patch(queuedMessageId, (m) => ({ ...m, status: "done", queued: false, references: sendReferences }));
     } else {
@@ -3177,6 +3434,17 @@ case "runtime_connecting":
         setStopping(false);
         pushSystem("没有找到正在运行的任务，可能这一轮已经结束了。", "stop-nothing");
       }
+      // 中断后服务端可能仍有排到 Pi 队列里的轮次；把条数如实回执给用户，
+      // 避免“界面说停了、后台还在排队”的错觉。队列项本身保留，可继续编辑/发送。
+      const retained = Number(result?.stillQueued || 0);
+      if (retained > 0) {
+        pushSystem(
+          `已中断；保留 ${retained} 条排队消息，可在输入区队列中继续编辑或发送。`,
+          `stop-retained:${Date.now()}`,
+        );
+        setModelMsg(`已中断，保留 ${retained} 条排队消息`);
+        window.setTimeout(() => setModelMsg(""), 3600);
+      }
     } catch (e) {
       if (stopConfirmTimerRef.current) {
         window.clearTimeout(stopConfirmTimerRef.current);
@@ -3189,14 +3457,54 @@ case "runtime_connecting":
     }
   };
 
+  const updateQueue = useCallback((next) => {
+    queueRef.current = next;
+    setQueuedMessages(next);
+    writeQueueCache(threadId, next);
+  }, [threadId]);
+
+  const updateQueueItem = useCallback((id, value) => {
+    const text = String(value || "").trim();
+    if (!id || !text) return;
+    updateQueue(queueRef.current.map((item) => (item.id === id ? { ...item, text, rawText: text } : item)));
+    setMessages((messages) => messages.map((message) => (
+      message.id === id && message.queued ? { ...message, text } : message
+    )));
+  }, [updateQueue]);
+
+  const deleteQueueItem = useCallback((id) => {
+    if (!id) return;
+    updateQueue(queueRef.current.filter((item) => item.id !== id));
+    setMessages((messages) => messages.filter((message) => !(message.id === id && message.queued)));
+  }, [updateQueue]);
+
+  const clearQueue = useCallback(async () => {
+    if (!queueRef.current.length) return;
+    if (!(await askConfirm(`确认清空 ${queueRef.current.length} 条排队消息？`))) return;
+    updateQueue([]);
+    setMessages((messages) => messages.filter((message) => !message.queued));
+  }, [updateQueue]);
+
+  // 把一条排队消息提升为插话/立即发送：先从队列移除，再走 send 的 force 分支。
+  // send 会用同一个 id 把气泡从 queued 改成 done；失败时气泡保留错误态。
+  const promoteQueueItem = useCallback((id) => {
+    if (!id || compacting || frozen) return;
+    const item = queueRef.current.find((entry) => entry.id === id);
+    if (!item) return;
+    updateQueue(queueRef.current.filter((entry) => entry.id !== id));
+    send(undefined, {
+      force: true,
+      payload: { ...item, channel: "steer", status: "sending" },
+    });
+  }, [compacting, frozen, send, updateQueue]);
+
   // 当前回合结束后只启动一条队列消息，避免多个请求同时争抢同一个 Pi 会话。
   const flushQueued = (force = false) => {
-    if (stoppingRef.current || (!force && busy) || !queueRef.current.length) return;
+    if (stoppingRef.current || (!force && busy) || compacting || frozen || !queueRef.current.length) return;
     const [next, ...rest] = queueRef.current;
-    queueRef.current = rest;
-    setQueuedMessages(rest);
+    updateQueue(rest);
     // agent_end 事件先于服务端 prompt finally 到达，留出收尾时间再发下一条，避免被误判为 steer。
-    window.setTimeout(() => send(undefined, { force: true, payload: next }), 450);
+    window.setTimeout(() => send(undefined, { force: true, payload: { ...next, status: "sending" } }), 450);
   };
 
   const handleMemoryApprove = async (id) => {
@@ -3260,8 +3568,9 @@ case "runtime_connecting":
     try {
       const result = await compactAgentContext(clientId, threadId);
       setRunState((state) => ({ ...state, usage: null }));
+      const count = Number(result.messageCount) > 0 ? `，${Number(result.messageCount)} 条` : "";
       const before = result.tokensBefore ? `，压缩前约 ${result.tokensBefore.toLocaleString()} tokens` : "";
-      setModelMsg(`压缩完成${before}`);
+      setModelMsg(`压缩完成${count}${before}`);
     } catch (e) {
       setModelMsg(`压缩失败：${e.message}`);
     } finally {
@@ -3321,6 +3630,80 @@ case "runtime_connecting":
   const resendRef = useRef(null);
   resendRef.current = send;
   const handleMessageResend = useCallback((text) => resendRef.current?.(text), []);
+
+  // v0.12.6：编辑用户消息——回填输入框、附件/引用与图片，记录分支点；下次发送前先切 leaf 再重发。
+  const handleEditMessage = useCallback((message) => {
+    if (busy || compacting || frozen || !message?.entryId || !message?.parentId) return;
+    updateInput(message.text || "");
+    // 历史图片是 dataURL；恢复成 composer 需要的 {mediaType, data, dataUrl, name} 形状。
+    const restoredImages = (message.images || []).map((src, index) => {
+      const match = /^data:([^;,]+);base64,(.+)$/.exec(String(src || ""));
+      return match ? { mediaType: match[1], data: match[2], dataUrl: src, name: `历史图片${index + 1}` } : null;
+    }).filter(Boolean);
+    setImages(restoredImages);
+    // 附件数据不进入 Pi 上下文，但文件名仍在原消息文本中；把名称恢复为文件引用，避免编辑时丢上下文。
+    const attachmentNames = [...String(message.text || "").matchAll(/\[已上传附件:\s*([^\]]+)\]/g)]
+      .flatMap((match) => match[1].replace(/[，,]\s*文件已保存到工作区[\s\S]*$/, "").split(/[,，]/).map((name) => name.trim()))
+      .filter(Boolean);
+    const restoredReferences = [...(message.references || []), ...attachmentNames.map((name) => ({
+      id: referenceId("file", name), kind: "file", target: name, source: `@${name}`,
+    }))].filter((ref, index, list) => list.findIndex((item) => item.id === ref.id) === index);
+    setReferences(restoredReferences);
+    setAttachments([]);
+    setPendingBranch({ entryId: message.parentId, messageId: message.entryId, mode: "edit" });
+    window.requestAnimationFrame(() => textareaRef.current?.focus?.());
+  }, [busy, compacting, frozen, updateInput]);
+  // v0.12.8：从末轮用户消息重新生成；旧回答作为兄弟分支保留，可切换回看。
+  const handleRegenerateMessage = useCallback((message) => {
+    if (busy || compacting || frozen || !message) return;
+    const index = messages.findIndex((item) => item.id === message.id);
+    const history = index >= 0 ? messages.slice(0, index) : messages;
+    const lastUser = [...history].reverse().find((item) => item.role === "user" && item.entryId && String(item.text || "").trim());
+    if (!lastUser) {
+      setModelMsg("重新生成需要先有一条已保存的用户消息。");
+      window.setTimeout(() => setModelMsg(""), 3200);
+      return;
+    }
+    // 第一条用户消息没有父节点：直接重发，不做分支（服务端会追加为新回答）。
+    const branch = lastUser.parentId ? { entryId: lastUser.parentId, messageId: lastUser.entryId, mode: "regenerate" } : null;
+    pendingBranchRef.current = branch;
+    setPendingBranch(branch);
+    if (!branch) {
+      const userIndex = messages.findIndex((item) => item.id === lastUser.id);
+      if (userIndex >= 0) setMessages((previous) => previous.slice(0, userIndex));
+    }
+    void resendRef.current?.(lastUser.text, { force: true });
+  }, [busy, compacting, frozen, messages]);
+  // v0.12.7：从助手消息 fork 独立会话；live 运行中不可分叉。
+  const handleForkMessage = useCallback(async (message) => {
+    if (busy || frozen || !message?.entryId) return;
+    if (!sessionId || typeof onForkSession !== "function") {
+      setModelMsg("分叉需要已保存的会话。");
+      window.setTimeout(() => setModelMsg(""), 3200);
+      return;
+    }
+    try {
+      await onForkSession(sessionId, `分支 · ${String(message.text || "消息").slice(0, 20)}`, { sourceMessageId: message.entryId });
+    } catch (error) {
+      setModelMsg("分叉失败：" + (error?.message || "未知错误"));
+      window.setTimeout(() => setModelMsg(""), 3600);
+    }
+  }, [busy, frozen, sessionId, onForkSession]);
+  // v0.12.8：切换回答版本——服务端把 leaf 指向目标分支并落盘，随后重读历史。
+  const [versionSwitching, setVersionSwitching] = useState(false);
+  const handleSwitchVersion = useCallback(async (leafId) => {
+    if (!leafId || busy || versionSwitching) return;
+    setVersionSwitching(true);
+    try {
+      await branchAgentSession(clientId, threadId, leafId, { summarize: false });
+      await onReloadHistory?.();
+    } catch (error) {
+      setModelMsg("切换版本失败：" + (error?.message || "未知错误"));
+      window.setTimeout(() => setModelMsg(""), 3600);
+    } finally {
+      setVersionSwitching(false);
+    }
+  }, [busy, clientId, threadId, onReloadHistory, versionSwitching]);
 
   // 滚动：用户向上滑动查看历史时暂停自动滚动；在底部才自动滚到最新
   const scrollTimerRef = useRef(null);
@@ -3437,6 +3820,35 @@ case "runtime_connecting":
     () => associateRunMessages(messages.slice(visibleStart)),
     [messages, visibleStart],
   );
+  // v0.12.5：先展开本地窗口，本地没有隐藏消息时再按游标向服务端续拉一页。
+  const handleLoadOlder = useCallback(async () => {
+    if (olderHistory.loading) return;
+    const captureAnchor = () => {
+      const el = bodyRef.current;
+      if (el) scrollAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
+    };
+    if (visibleStart > 0) {
+      captureAnchor();
+      setMessageWindowSize((size) => size + MESSAGE_PAGE_SIZE);
+      return;
+    }
+    if (!historyWindow?.hasMore || typeof onLoadOlderHistory !== "function") return;
+    setOlderHistory((state) => ({ ...state, loading: true }));
+    captureAnchor();
+    try {
+      const result = await onLoadOlderHistory();
+      const older = Array.isArray(result?.messages) ? result.messages : [];
+      if (older.length) {
+        setMessages((previous) => [...older, ...previous]);
+        setMessageWindowSize((size) => size + older.length);
+      }
+      setOlderHistory({ loading: false, exhausted: !result?.hasMore });
+    } catch (error) {
+      setOlderHistory({ loading: false, exhausted: false });
+      setModelMsg("加载更早历史失败：" + (error?.message || "未知错误"));
+      window.setTimeout(() => setModelMsg(""), 3200);
+    }
+  }, [olderHistory.loading, visibleStart, historyWindow?.hasMore, onLoadOlderHistory]);
   const hiddenMessageCount = visibleStart;
   const runSummaryById = new Map(visibleMessages
     .filter((message) => message?.role === "system" && message.summary && message.runId)
@@ -3649,9 +4061,13 @@ case "runtime_connecting":
               </div>
             </div>
           )}
-          {hiddenMessageCount > 0 && (
-            <button className="chat-load-older" type="button" onClick={() => setMessageWindowSize((size) => size + MESSAGE_PAGE_SIZE)}>
-              加载更早的 {Math.min(MESSAGE_PAGE_SIZE, hiddenMessageCount)} 条消息（前面还有 {hiddenMessageCount} 条）
+          {(hiddenMessageCount > 0 || (historyWindow?.hasMore && !olderHistory.exhausted)) && (
+            <button className="chat-load-older" type="button" onClick={handleLoadOlder} disabled={olderHistory.loading}>
+              {hiddenMessageCount > 0
+                ? `加载更早的 ${Math.min(MESSAGE_PAGE_SIZE, hiddenMessageCount)} 条消息（前面还有 ${hiddenMessageCount} 条）`
+                : olderHistory.loading
+                  ? "正在加载更早的历史…"
+                  : `加载更早的 ${historyWindow?.pageSize || 50} 条历史`}
             </button>
           )}
           {historyWindow?.hasMore && (
@@ -3659,7 +4075,7 @@ case "runtime_connecting":
               历史较长，当前先加载最近 {historyWindow.end - historyWindow.start} 条以保持切换流畅；模型仍使用完整 Pi 会话上下文。
             </div>
           )}
-           {(() => { let previousRoundModel = ""; return visibleMessages.map((originalMessage, i) => {
+          {(() => { let previousRoundModel = ""; const lastAssistantVisibleId = [...visibleMessages].reverse().find((message) => message?.role === "assistant")?.id || null; return visibleMessages.map((originalMessage, i) => {
             if (originalMessage?.role === "system" && originalMessage.summary && originalMessage.runId && assistantRunIds.has(originalMessage.runId)) return null;
             let m = originalMessage;
             let firstIndex = i;
@@ -3715,7 +4131,7 @@ case "runtime_connecting":
                     <span>模型切换为 <b>{modelDisplayName(roundModel)}</b></span>
                   </div>
                 )}
-                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onAskExpired={markAskExpired} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} runSummary={runSummary} executionFlow={executionFlow} />
+                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} clientId={clientId} threadId={threadId} sessionId={sessionId} isLastAssistant={m?.role === "assistant" && m.id === lastAssistantVisibleId} versionSwitching={versionSwitching} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onAskExpired={markAskExpired} onResend={handleMessageResend} onEditMessage={handleEditMessage} onForkMessage={handleForkMessage} onRegenerate={handleRegenerateMessage} onSwitchVersion={handleSwitchVersion} onToggleTool={handleMessageToggleTool} runSummary={runSummary} executionFlow={executionFlow} />
               </React.Fragment>
             );
            }); })()}
@@ -3767,12 +4183,34 @@ case "runtime_connecting":
             ))}
           </div>
         )}
-        {(queuedMessages.length > 0 || injectedContext.length > 0) && (
+        <QueueDock
+          items={queuedMessages}
+          busy={busy}
+          compacting={compacting}
+          onContinue={() => flushQueued()}
+          onEdit={updateQueueItem}
+          onDelete={deleteQueueItem}
+          onPromote={promoteQueueItem}
+          onClear={clearQueue}
+        />
+        {/* v0.13.1：GoalBar 在 QueueDock 之下、输入框之上；无目标/已完成时不占位。 */}
+        <GoalBar
+          goal={goal}
+          busy={busy}
+          openDetailsSignal={goalDetailsSignal}
+          onAction={runGoalAction}
+          onNotice={(text) => { setModelMsg(text); window.setTimeout(() => setModelMsg(""), 3200); }}
+        />
+        {pendingBranch && (
+          <div className="chat-pending-bar chat-branch-bar" aria-live="polite">
+            <span><Icon name="backlink" size={12} /> 将从这条消息之前分支重发；旧分支保留</span>
+            <button type="button" onClick={() => { pendingBranchRef.current = null; setPendingBranch(null); }}>取消分支</button>
+          </div>
+        )}
+        {injectedContext.length > 0 && (
           <div className="chat-pending-bar" aria-live="polite">
-            {queuedMessages.length > 0 && <span><Icon name="list" size={12} /> 待执行 {queuedMessages.length} 条</span>}
-            {injectedContext.length > 0 && <span><Icon name="layers" size={12} /> 待注入上下文 {injectedContext.length} 条</span>}
-            {queuedMessages.length > 0 && !busy && <button type="button" onClick={() => flushQueued()} title="继续执行队列">继续队列</button>}
-            {queuedMessages.length > 0 && <button type="button" onClick={() => { queueRef.current = []; setQueuedMessages([]); }} title="清空待执行消息">清空</button>}
+            <span><Icon name="layers" size={12} /> 待注入上下文 {injectedContext.length} 条</span>
+            <button type="button" onClick={() => setInjectedContext([])} title="清空待注入上下文">清空</button>
           </div>
         )}
         {/* 任务卡放在输入框之外：它表达的是"本轮进度"，不是输入内容。
@@ -3892,7 +4330,7 @@ case "runtime_connecting":
             <div className="input-send">
               {busy ? (
                 <>
-                  {hasDraft && <button className="btn primary pending-send-btn" onClick={() => send()} title={busyInputMode === "steer" ? "打断当前回合立即执行（Enter）" : busyInputMode === "queue" ? "排队执行（Enter）" : "注入上下文（Enter）"}>
+                  {hasDraft && <button className="btn primary pending-send-btn" onClick={() => send()} disabled={compacting} title={compacting ? "正在压缩上下文，请稍候" : busyInputMode === "steer" ? "打断当前回合立即执行（Enter）" : busyInputMode === "queue" ? "排队执行（Enter）" : "注入上下文（Enter）"}>
                     <Icon name={busyInputMode === "steer" ? "send" : busyInputMode === "queue" ? "list" : "layers"} size={14} />
                     <span>{busyInputMode === "steer" ? "立即" : busyInputMode === "queue" ? "排队" : "注入"}</span>
                   </button>}
@@ -3902,7 +4340,12 @@ case "runtime_connecting":
                   </button>
                 </>
               ) : (
-                <button className="btn primary send-btn" onClick={() => send()} disabled={frozen} title={frozen ? "会话已冻结" : "发送 (Enter)"}><Icon name="send" size={14} /></button>
+                <button
+                  className="btn primary send-btn"
+                  onClick={() => send()}
+                  disabled={frozen || compacting || !hasDraft}
+                  title={frozen ? "会话已冻结" : compacting ? "正在压缩上下文，请稍候" : !hasDraft ? "请输入内容后发送" : "发送 (Enter)"}
+                ><Icon name="send" size={14} /></button>
               )}
             </div>
           </div>
@@ -4512,7 +4955,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onAskExpired, onResend, index, prevRole, clientId, threadId, runSummary = null, executionFlow = null }) {
+function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onAskExpired, onResend, onEditMessage, onForkMessage, onRegenerate, onSwitchVersion, isLastAssistant = false, versionSwitching = false, index, prevRole, clientId, threadId, sessionId = "", runSummary = null, executionFlow = null }) {
   if (m.role === "system") {
     if (m.summary) {
       const runId = m.runId || null;
@@ -4581,6 +5024,16 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
   // B02 回答详细程度：唯一答案出口在消息气泡，因此收窄只作用于此处，且只在非流式时生效。
   const answerDetail = useAppearance().answerDetail;
   const [answerExpanded, setAnswerExpanded] = useState(false);
+  // v0.12.8：最后一条助手消息按需读取“第 N / M 版”；读取失败静默隐藏，不影响回答展示。
+  const [versions, setVersions] = useState(null);
+  useEffect(() => {
+    if (!isLastAssistant || !m.entryId || !sessionId || streaming) { setVersions(null); return undefined; }
+    let cancelled = false;
+    getSessionMessageVersions(sessionId, m.entryId)
+      .then((result) => { if (!cancelled) setVersions(result?.ok && result.total > 1 ? result : null); })
+      .catch(() => { if (!cancelled) setVersions(null); });
+    return () => { cancelled = true; };
+  }, [isLastAssistant, m.entryId, sessionId, streaming, m.id]);
   const clampAnswer = (value) => {
     const lines = String(value || "").split(/\r?\n/).filter((line) => line.trim());
     return answerDetail === "brief" && !answerExpanded && lines.length > 3 ? `${lines.slice(0, 3).join("\n")}\n\n…` : value;
@@ -4886,6 +5339,43 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
                 <span>重发</span>
               </button>
             )}
+            {isUser && onEditMessage && m.entryId && m.parentId && (
+              <button className="msg-action" onClick={() => onEditMessage(m)} title="编辑并从这条消息之前分支重发；旧分支保留">
+                <Icon name="edit" size={12} />
+                <span>编辑</span>
+              </button>
+            )}
+            {!isUser && onForkMessage && m.entryId && (
+              <button className="msg-action" onClick={() => onForkMessage(m)} title="从这条消息创建独立分支会话">
+                <Icon name="backlink" size={12} />
+                <span>分叉</span>
+              </button>
+            )}
+            {!isUser && isLastAssistant && onRegenerate && (
+              <button className="msg-action" onClick={() => onRegenerate(m)} title="从本轮用户消息重新生成，旧回答保留为上一版">
+                <Icon name="refresh" size={12} />
+                <span>重新生成</span>
+              </button>
+            )}
+            {versions?.total > 1 && (
+              <span className="msg-version-switch" aria-label={`回答版本 ${versions.currentVersion} / ${versions.total}`}>
+                <button
+                  type="button"
+                  className="msg-action"
+                  disabled={versionSwitching || versions.currentVersion <= 1}
+                  onClick={() => onSwitchVersion?.(versions.versions[versions.currentVersion - 2]?.leafId)}
+                  title="切换到上一版"
+                >‹</button>
+                <span className="msg-version-label">第 {versions.currentVersion} / {versions.total} 版</span>
+                <button
+                  type="button"
+                  className="msg-action"
+                  disabled={versionSwitching || versions.currentVersion >= versions.total}
+                  onClick={() => onSwitchVersion?.(versions.versions[versions.currentVersion]?.leafId)}
+                  title="切换到下一版"
+                >›</button>
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -4903,8 +5393,15 @@ const MemoMessage = React.memo(Message, (previous, next) => {
     && previous.prevRole === next.prevRole
     && previous.clientId === next.clientId
     && previous.threadId === next.threadId
+    && previous.sessionId === next.sessionId
+    && previous.isLastAssistant === next.isLastAssistant
+    && previous.versionSwitching === next.versionSwitching
     && previous.onOpenFile === next.onOpenFile
-    && previous.onOpenSubagent === next.onOpenSubagent;
+    && previous.onOpenSubagent === next.onOpenSubagent
+    && previous.onEditMessage === next.onEditMessage
+    && previous.onForkMessage === next.onForkMessage
+    && previous.onRegenerate === next.onRegenerate
+    && previous.onSwitchVersion === next.onSwitchVersion;
 });
 
 function ReferenceChips({ references = [], onOpenFile }) {
@@ -5424,7 +5921,7 @@ function ContextUsageRing({ usage, contextWindow, contextTokens, compactThreshol
               <span>上次压缩</span>
               <b>
                 {compactCount > 0
-                  ? `${compactCount} 次${compaction?.at ? ` · ${new Date(compaction.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}` : ""}${compaction?.tokensBefore ? ` · 压缩前 ${Number(compaction.tokensBefore).toLocaleString()}` : ""}`
+                  ? `${compactCount} 次${compaction?.at ? ` · ${new Date(compaction.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}` : ""}${Number(compaction?.messageCount) > 0 ? ` · ${Number(compaction.messageCount)} 条` : ""}${compaction?.tokensBefore ? ` · 压缩前 ${Number(compaction.tokensBefore).toLocaleString()}` : ""}`
                   : "本次会话尚未压缩"}
               </b>
             </div>

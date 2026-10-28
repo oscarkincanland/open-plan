@@ -159,6 +159,12 @@ const REGISTRY = [
   { type: "memory_file_edited", lifecycle: true, persist: true, note: "记忆文件编辑" },
   { type: "memory_initialized", lifecycle: true, persist: true, note: "记忆初始化" },
 
+  // ---- 长期目标（v0.13.x Goal）----
+  // Goal 是项目 Harness 的跨轮目标层，不是 Pi 原生能力；状态变化与用户操作都落盘可回放。
+  { type: "goal_created", lifecycle: true, persist: true, note: "长期目标创建/替换", schema: { required: ["goalId", "sessionId", "status"], types: { goalId: "string", sessionId: "string", text: "string", status: "string" } } },
+  { type: "goal_updated", lifecycle: true, persist: true, note: "长期目标状态/编辑/预算/统计更新", schema: { required: ["goalId", "sessionId", "status"], types: { goalId: "string", sessionId: "string", status: "string", turns: "number", usedTokens: "number", budgetTokens: "number" } } },
+  { type: "goal_cleared", lifecycle: true, persist: true, note: "长期目标清除", schema: { required: ["goalId", "sessionId"], types: { goalId: "string", sessionId: "string" } } },
+
   // ---- ZCode Harness 对标（计划 2026-10-27-004，默认关）----
   { type: "tool_metadata_missing", lifecycle: true, persist: true, note: "工具元数据缺失（启动/注册期告警）", schema: { required: ["tool"], types: { tool: "string" } } },
   { type: "permission_decision", lifecycle: true, persist: false, note: "权限决策（高频；ask/deny 另见审批事件）", schema: { required: ["tool", "action", "ruleId"], types: { tool: "string", action: "string", ruleId: "string" } } },

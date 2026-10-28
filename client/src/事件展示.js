@@ -159,7 +159,7 @@ function eventMessageText(message, fallback) {
   return text.length > 80 ? `${text.slice(0, 80)}…` : text;
 }
 
-const MODE_LABELS = Object.freeze({ chat: "Chat", agent: "Work", office: "Office", review: "Review" });
+const MODE_LABELS = Object.freeze({ chat: "Chat", agent: "Work", office: "Work", review: "Review" });
 
 /** 事件 → 展示文案 */
 export function flowEventLabel(event) {

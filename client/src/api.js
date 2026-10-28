@@ -307,6 +307,19 @@ export const freezeSession = (id, frozen = true, reason = "") =>
   api(`/api/sessions/${encodeURIComponent(id)}/freeze`, { method: "POST", body: JSON.stringify({ frozen, reason }) });
 export const forkSession = (id, label, options = {}) =>
   api(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: "POST", body: JSON.stringify({ label, ...options }) });
+// v0.12.6–v0.12.8：会话树分支与回答版本。
+export const branchAgentSession = (client, thread, entryId, options = {}) =>
+  api("/api/agent/session-branch", { method: "POST", body: JSON.stringify({ client, thread, entryId, summarize: options.summarize === true, label: options.label || "" }) });
+export const getSessionMessageVersions = (id, messageId) =>
+  api(`/api/sessions/${encodeURIComponent(id)}/message-versions?messageId=${encodeURIComponent(messageId)}`);
+// v0.13.0–v0.13.1：长期目标（Goal）读写与状态操作。
+export const getSessionGoal = (id) => api(`/api/sessions/${encodeURIComponent(id)}/goal`);
+export const setSessionGoal = (id, payload = {}) =>
+  api(`/api/sessions/${encodeURIComponent(id)}/goal`, { method: "POST", body: JSON.stringify(payload) });
+export const sessionGoalAction = (id, action, payload = {}) =>
+  api(`/api/sessions/${encodeURIComponent(id)}/goal/action`, { method: "POST", body: JSON.stringify({ action, ...payload }) });
+export const clearSessionGoal = (id) =>
+  api(`/api/sessions/${encodeURIComponent(id)}/goal`, { method: "DELETE" });
 export const listRuns = (thread = "", limit = 50, options = {}) => {
   const params = new URLSearchParams();
   if (thread) params.set("thread", thread);

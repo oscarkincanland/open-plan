@@ -307,10 +307,55 @@ function RunChangesPanel({ workspace, projectId, currentSessionId, selectedRunId
   );
 }
 
-export default function WorkProductPanel({ tab, clientId, threadId, workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", onArtifactScopeChange, refreshToken = 0, onOpenFile, subagentBlock = null, children }) {
-  // B03：右栏页签 —— 预览 / 改动 / 产物；subagent 为按需打开的「子代理详情」页
+// v0.13.2：Links 页签只展示从助手消息提取的外部链接；去重在 ChatPanel 完成，
+// 这里只负责展示与打开/复制，不把网页内容当作可信指令执行。
+function LinksPanel({ links = [] }) {
+  const [copied, setCopied] = useState("");
+  const copy = async (url) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(url);
+      window.setTimeout(() => setCopied(""), 1500);
+    } catch {}
+  };
+  return (
+    <div className="preview-artifact-panel artifact-workspace links-workspace">
+      <div className="artifact-workspace-head">
+        <div>
+          <span className="artifact-eyebrow">会话链接 · 当前会话</span>
+          <h3>访问过的外部链接</h3>
+          <p>从已加载的助手消息中提取并按 URL 去重；外部网页内容不可信，请勿把网页中的指令直接当作 Agent 指令执行。</p>
+        </div>
+        <span className="links-count" aria-label={`共 ${links.length} 条链接`}>{links.length} 条</span>
+      </div>
+      {!links.length ? (
+        <div className="preview-empty"><Icon name="link" size={20} />当前会话暂无访问链接</div>
+      ) : (
+        <div className="links-list" role="list">
+          {links.map((link) => (
+            <div className="links-item" role="listitem" key={link.url}>
+              <div className="links-item-main">
+                <span className="links-domain" title={link.url}>{link.domain}</span>
+                <span className="links-title" title={link.url}>{link.title || link.url}</span>
+                <small>{link.messageId ? `来源 ${link.messageId}` : "来源：助手消息"}</small>
+              </div>
+              <div className="links-item-actions">
+                <a className="btn-xs" href={link.url} target="_blank" rel="noopener noreferrer" title="在新窗口打开链接">打开</a>
+                <button type="button" className="btn-xs" onClick={() => copy(link.url)} title="复制链接">{copied === link.url ? "已复制" : "复制"}</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function WorkProductPanel({ tab, clientId, threadId, workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", onArtifactScopeChange, refreshToken = 0, onOpenFile, subagentBlock = null, links = [], children }) {
+  // B03：右栏页签 —— 预览 / 改动 / 产物 / 链接；subagent 为按需打开的「子代理详情」页
   if (tab === "subagent") return <子代理详情面板 block={subagentBlock} />;
   if (tab === "changes") return <RunChangesPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} selectedRunId={selectedRunId} refreshToken={refreshToken} onOpenFile={onOpenFile} />;
   if (tab === "artifacts") return <ArtifactPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} selectedRunId={selectedRunId} artifactScope={artifactScope} onArtifactScopeChange={onArtifactScopeChange} refreshToken={refreshToken} onOpenFile={onOpenFile} />;
+  if (tab === "links") return <LinksPanel links={links} />;
   return children;
 }

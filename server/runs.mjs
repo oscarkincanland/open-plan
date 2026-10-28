@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { getWorkspace } from "./workspace.mjs";
 import { appendEvent } from "./事件存储.mjs";
+import { recordRunFinished as recordGoalRunFinished } from "./goal.mjs";
 import { atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
 import { attachRunTimingSpans } from "./首字延迟.mjs";
 import { RUNTIME_FLAGS } from "./运行开关.mjs";
@@ -1163,6 +1164,21 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
     run.events.push({ seq, type: "run_finished", data: finishedData, at: run.finishedAt });
     const saved = saveRun(run);
     appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_finished", data: finishedData });
+    // v0.13.0：Goal 统计只消费 Run 终态；失败/取消也计入已消耗，不反向修改 Run。
+    try {
+      recordGoalRunFinished({
+        sessionId: sessionId || run.sessionId || run.threadId || "",
+        threadId: run.threadId || "",
+        runId: run.id,
+        status: finalStatus,
+        completionStatus: run.completion?.status || "",
+        startedAt: run.startedAt,
+        finishedAt: run.finishedAt,
+        events: run.events,
+      });
+    } catch (error) {
+      console.warn("[runs] Goal 统计失败：", error?.message || error);
+    }
     return saved;
   } finally {
     releaseRunLocks(run.id);

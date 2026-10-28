@@ -145,6 +145,75 @@ function entryCreatedAt(entry, message) {
   return entry?.timestamp || entry?.createdAt || entry?.time || message?.timestamp || message?.createdAt || null;
 }
 
+// v0.12.5：历史消息映射抽成纯函数，首屏与“加载更早”共用同一份规则。
+// entryId/parentId 保留 Pi 会话树坐标，供编辑/分叉/regenerate 精确定位。
+function buildHistoryMessages(entries = []) {
+  const msgs = [];
+  const toolBlocks = new Map();
+  for (const e of entries) {
+    if (e.type !== "message" || !e.message) continue;
+    const m = e.message;
+    const role = m.role === "assistant" ? "assistant" : m.role === "user" ? "user" : m.role;
+    if (role === "toolResult" || role === "tool_result") {
+      const output = typeof m.content === "string"
+        ? m.content
+        : Array.isArray(m.content)
+          ? m.content.filter((b) => b?.type === "text").map((b) => b.text || "").join("\n")
+          : JSON.stringify(m.content || m.output || "", null, 2);
+      const block = toolBlocks.get(m.toolCallId);
+      if (block) {
+        block.output = output;
+        block.result = output;
+        block.done = true;
+        block.isError = !!m.isError;
+      } else {
+        // 老会话可能没有可配对的 toolCallId：挂到最近一条 Agent 消息，仍不显示为用户消息。
+        const lastAssistant = [...msgs].reverse().find((item) => item.role === "assistant");
+        if (lastAssistant) lastAssistant.blocks.push({
+          type: "tool", id: histId(), name: m.toolName || "tool result", input: "",
+          output, result: output, done: true, isError: !!m.isError, expanded: false, duration: null,
+        });
+      }
+      continue;
+    }
+    if (role !== "assistant" && role !== "user") continue;
+    let text = "";
+    const blocks = [];
+    const images = [];
+    if (typeof m.content === "string") text = m.content;
+    else if (Array.isArray(m.content)) {
+      for (const b of m.content) {
+        if (b.type === "text" || b.type === "input_text") text += (text ? "\n" : "") + (b.text || b.content || "");
+        else if (b.type === "image" || b.type === "input_image") {
+          const src = historyImageData(b);
+          if (src) images.push(src);
+        } else if (b.type === "thinking") blocks.push({ type: "thinking", text: b.thinking || "" });
+        else if (b.type === "toolCall") {
+          const callId = b.id || b.toolCallId || histId();
+          const rawInput = b.input ?? b.arguments ?? b.params ?? "";
+          const input = typeof rawInput === "string" ? rawInput : JSON.stringify(rawInput, null, 2);
+          const block = {
+            type: "tool", id: callId, name: b.toolName || b.name || "tool", input,
+            output: "", result: "", done: false, isError: false, expanded: false, duration: null,
+          };
+          blocks.push(block);
+          toolBlocks.set(callId, block);
+        }
+      }
+    }
+    // 若 assistant 有纯文本且没有 text block，追加为文本块；用户消息仍保留原始文本。
+    if (role === "assistant" && text && !blocks.some((b) => b.type === "text")) blocks.push({ type: "text", text });
+    const displayText = role === "user" ? cleanPersistedMessage(text) : text;
+    const currentDocMatch = text.match(/当前(?:打开|工作)文件:\s*([^\]\n]+)/);
+    msgs.push({
+      id: e.id, role, text: displayText, images, blocks, references: historyReferences(text),
+      currentDoc: currentDocMatch?.[1]?.trim() || null, status: "done", createdAt: entryCreatedAt(e, m),
+      entryId: e.id || null, parentId: e.parentId || null,
+    });
+  }
+  return msgs;
+}
+
 function sameWorkspacePath(a, b) {
   if (!a || !b) return false;
   const normalize = (value) => String(value).replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase();
@@ -315,6 +384,8 @@ export default function App() {
   const [restoredRunHint, setRestoredRunHint] = useState(null);
   const restoredRunProbedRef = useRef(false);
   const [historyWindow, setHistoryWindow] = useState(null); // 服务端为长会话返回的展示窗口信息
+  // v0.13.2：当前会话已加载助手消息里的外部链接（ChatPanel 提取，Links 页签展示）。
+  const [chatLinks, setChatLinks] = useState([]);
   const [sessionResumeError, setSessionResumeError] = useState(null); // { sessionId, message } Agent 恢复失败时历史只读
   // 新建会话的进行中/失败状态（交互 2）：失败必须可见，且不得清空旧会话。
   const [creatingSession, setCreatingSession] = useState(false);
@@ -334,6 +405,8 @@ export default function App() {
   const eventBatchRef = useRef({ updates: 0, artifacts: 0 });
   const sessionHistoryCacheRef = useRef(new Map());
   const sessionHistoryMetaRef = useRef(new Map());
+  // v0.12.5：每个会话的“加载更早”游标（before 指向服务端 active-leaf 条目下标）。
+  const sessionHistoryCursorRef = useRef(new Map());
   const chatInputRef = useRef(null); // 引用 ChatPanel 输入框（@ 按钮插入）
   const mapBridgeRef = useRef(null); // 地图模式复用同一个 ChatPanel，保持消息与 SSE 事件流连续
   const sessionLoadSeqRef = useRef(0);
@@ -991,7 +1064,7 @@ export default function App() {
     // 恢复 Agent 与读取历史互不依赖；并行执行可明显缩短点击历史后的空白等待。
     // 但在 resume 完成前不切换 thread，避免 SSE 先创建一个新的空会话并与恢复竞态。
     const historyPromise = Promise.all([
-      getSession(session.id, { view: "chat", limit: 360 }),
+      getSession(session.id, { view: "chat", limit: 50 }),
       listRuns("", 50, { sessionId: session.id }).catch(() => ({ runs: [] })),
     ]);
     const resumePromise = resumeAgentThread(clientId, conversationId, session.id, resumedWorkspace)
@@ -1011,71 +1084,11 @@ export default function App() {
       setSessionResumeError(resumeResult?.ok ? null : { sessionId: session.id, message: resumeResult?.error || "Agent 会话恢复失败" });
       setCurrentSessionId(session.id);
       setThreadId(conversationId);
+      setChatLinks([]);
       localStorage.setItem("oaw_thread_id", conversationId);
       // 按原始 JSONL 顺序重建消息。toolResult 是工具输出，不能渲染成 You 的用户气泡；
       // 它要按 toolCallId 回填到对应 Agent 工具卡，否则 Word/PPT 读取结果会被误认为用户输入。
-      const msgs = [];
-      const toolBlocks = new Map();
-      for (const e of (d.entries || [])) {
-        if (e.type !== "message" || !e.message) continue;
-        const m = e.message;
-        const role = m.role === "assistant" ? "assistant" : m.role === "user" ? "user" : m.role;
-        if (role === "toolResult" || role === "tool_result") {
-          const output = typeof m.content === "string"
-            ? m.content
-            : Array.isArray(m.content)
-              ? m.content.filter((b) => b?.type === "text").map((b) => b.text || "").join("\n")
-              : JSON.stringify(m.content || m.output || "", null, 2);
-          const block = toolBlocks.get(m.toolCallId);
-          if (block) {
-            block.output = output;
-            block.result = output;
-            block.done = true;
-            block.isError = !!m.isError;
-          } else {
-            // 老会话可能没有可配对的 toolCallId：挂到最近一条 Agent 消息，仍不显示为用户消息。
-            const lastAssistant = [...msgs].reverse().find((item) => item.role === "assistant");
-            if (lastAssistant) lastAssistant.blocks.push({
-              type: "tool", id: histId(), name: m.toolName || "tool result", input: "",
-              output, result: output, done: true, isError: !!m.isError, expanded: false, duration: null,
-            });
-          }
-          continue;
-        }
-        if (role !== "assistant" && role !== "user") continue;
-        let text = "";
-        const blocks = [];
-        const images = [];
-        if (typeof m.content === "string") text = m.content;
-        else if (Array.isArray(m.content)) {
-          for (const b of m.content) {
-            if (b.type === "text" || b.type === "input_text") text += (text ? "\n" : "") + (b.text || b.content || "");
-            else if (b.type === "image" || b.type === "input_image") {
-              const src = historyImageData(b);
-              if (src) images.push(src);
-            } else if (b.type === "thinking") blocks.push({ type: "thinking", text: b.thinking || "" });
-            else if (b.type === "toolCall") {
-              const callId = b.id || b.toolCallId || histId();
-              const rawInput = b.input ?? b.arguments ?? b.params ?? "";
-              const input = typeof rawInput === "string" ? rawInput : JSON.stringify(rawInput, null, 2);
-              const block = {
-                type: "tool", id: callId, name: b.toolName || b.name || "tool", input,
-                output: "", result: "", done: false, isError: false, expanded: false, duration: null,
-              };
-              blocks.push(block);
-              toolBlocks.set(callId, block);
-            }
-          }
-        }
-        // 若 assistant 有纯文本且没有 text block，追加为文本块；用户消息仍保留原始文本。
-        if (role === "assistant" && text && !blocks.some((b) => b.type === "text")) blocks.push({ type: "text", text });
-        const displayText = role === "user" ? cleanPersistedMessage(text) : text;
-        const currentDocMatch = text.match(/当前(?:打开|工作)文件:\s*([^\]\n]+)/);
-        msgs.push({
-          id: e.id, role, text: displayText, images, blocks, references: historyReferences(text),
-          currentDoc: currentDocMatch?.[1]?.trim() || null, status: "done", createdAt: entryCreatedAt(e, m),
-        });
-      }
+      const msgs = buildHistoryMessages(d.entries || []);
       const runMessages = [...(runData?.runs || [])]
         .filter((run) => run?.status)
         .filter((run, index, list) => list.findIndex((item) => item.id === run.id) === index)
@@ -1113,17 +1126,27 @@ export default function App() {
         return left - right;
       }));
       sessionHistoryCacheRef.current.set(session.id, loadedHistory);
-      sessionHistoryMetaRef.current.set(session.id, d.info?.historyHasMore ? {
-        total: Number(d.info.historyTotal || 0),
-        start: Number(d.info.historyStart || 0),
-        end: Number(d.info.historyEnd || 0),
+      const historyStart = Number(d.info?.historyStart || 0);
+      const historyHasMore = Boolean(d.info?.historyHasMore);
+      sessionHistoryMetaRef.current.set(session.id, historyHasMore ? {
+        total: Number(d.info?.historyTotal || 0),
+        start: historyStart,
+        end: Number(d.info?.historyEnd || 0),
+        pageSize: Number(d.info?.historyPageSize || 50),
         hasMore: true,
       } : null);
+      // v0.12.5：游标保存服务端返回的 historyStart，下一页用 before=该值续拉。
+      sessionHistoryCursorRef.current.set(session.id, {
+        before: historyStart,
+        hasMore: historyHasMore,
+        total: Number(d.info?.historyTotal || 0),
+      });
       // 只保留最近几条缓存，避免长会话历史常驻内存；再次点击时仍可先显示缓存。
       while (sessionHistoryCacheRef.current.size > 8) {
         const first = sessionHistoryCacheRef.current.keys().next().value;
         if (first === undefined) break;
         sessionHistoryCacheRef.current.delete(first);
+        sessionHistoryCursorRef.current.delete(first);
       }
       setHistoryMessages(loadedHistory);
       setHistoryWindow(sessionHistoryMetaRef.current.get(session.id) || null);
@@ -1143,6 +1166,45 @@ export default function App() {
       if (loadSeq === sessionLoadSeqRef.current) notifyError("加载会话失败: " + e.message);
     }
   }, [clientId, currentWorkspace, open, refreshProjects]);
+
+  // v0.12.5：按游标续拉更早的历史（50 条/页），返回可直接前插的规范化消息。
+  const loadOlderSessionHistory = useCallback(async () => {
+    const sessionId = currentSessionId;
+    const cursor = sessionId ? sessionHistoryCursorRef.current.get(sessionId) : null;
+    if (!sessionId || !cursor?.hasMore) return { messages: [], hasMore: false };
+    const pageSize = 50;
+    const d = await getSession(sessionId, { view: "chat", limit: pageSize, before: cursor.before });
+    const messages = normalizeHistoryMessages(buildHistoryMessages(d.entries || []));
+    const info = d.info || {};
+    const nextCursor = {
+      before: Number(info.historyStart ?? Math.max(0, cursor.before - pageSize)),
+      hasMore: Boolean(info.historyHasMore),
+      total: Number(info.historyTotal || cursor.total || 0),
+    };
+    sessionHistoryCursorRef.current.set(sessionId, nextCursor);
+    const meta = sessionHistoryMetaRef.current.get(sessionId);
+    if (meta) {
+      sessionHistoryMetaRef.current.set(sessionId, {
+        ...meta,
+        start: nextCursor.before,
+        hasMore: nextCursor.hasMore,
+        total: nextCursor.total,
+        pageSize,
+      });
+      setHistoryWindow(sessionHistoryMetaRef.current.get(sessionId));
+    }
+    return { messages, hasMore: nextCursor.hasMore, total: nextCursor.total, before: nextCursor.before };
+  }, [currentSessionId]);
+
+  // v0.12.8：切换回答版本后重读会话（服务端已把活跃分支固化到 JSONL）。
+  const reloadCurrentSessionHistory = useCallback(async () => {
+    const session = sessions.find((item) => (item.threadId || item.id) === threadId)
+      || (currentSessionId ? sessions.find((item) => item.id === currentSessionId) : null);
+    if (!session) return;
+    sessionHistoryCacheRef.current.delete(session.id);
+    sessionHistoryCursorRef.current.delete(session.id);
+    await handleSelectSession(session);
+  }, [sessions, threadId, currentSessionId, handleSelectSession]);
 
   // 重试恢复当前历史会话的 Agent：成功后才允许继续对话。
   const retrySessionResume = useCallback(async (silentFlag) => {
@@ -1186,11 +1248,11 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [sessionResumeError?.code, sessionResumeError?.sessionId, retrySessionResume]);
 
-  const handleForkSession = useCallback(async (id, label) => {
+  const handleForkSession = useCallback(async (id, label, options = {}) => {
     const source = sessions.find((item) => item.id === id);
     const result = await forkSession(id, label, {
-      purpose: "从历史会话创建独立分析分支",
-      sourceMessageId: null,
+      purpose: options.sourceMessageId ? "从指定消息创建独立分析分支" : "从历史会话创建独立分析分支",
+      sourceMessageId: options.sourceMessageId || null,
     });
     await refreshSessions();
     await handleSelectSession({
@@ -1515,6 +1577,10 @@ export default function App() {
       historyMessages={historyMessages}
       historyThreadId={historyThreadId}
       historyWindow={historyWindow}
+      sessionId={currentSessionId || ""}
+      onLoadOlderHistory={loadOlderSessionHistory}
+      onReloadHistory={reloadCurrentSessionHistory}
+      onLinksChange={setChatLinks}
       onNewSession={() => handleNewSession()}
       onOpenFile={handleChatOpenFile}
       referenceFiles={files.map((file) => currentDir ? currentDir + "/" + file.name : file.name)}
@@ -1686,21 +1752,19 @@ export default function App() {
               onBeforeOpenModal={closeExternalModules}
               onOpenCommandPalette={() => setPaletteOpen(true)}
               onToggleTheme={toggleTheme}
+              onCollapseSidebar={() => setSidebarOpen(false)}
               theme={theme}
             />
             <Resizer side="left" min={180} max={400} cssVar="--sidebar-w" />
           </>
         )}
         <div className="center-area">
-          {!sidebarOpen && (
-            <button className="sidebar-toggle" onClick={() => setSidebarOpen(true)} title="展开侧栏" aria-label="展开侧栏">
-              <Icon name="chevronRight" size={14} />
-            </button>
-          )}
           <div className="center-content">
             <div className="topbar">
-              {sidebarOpen && (
-                <button className="btn-sm sidebar-collapse" onClick={() => setSidebarOpen(false)} title="收起侧栏" aria-label="收起侧栏"><Icon name="chevronLeft" size={14} /></button>
+              {!sidebarOpen && (
+                <button className="btn-sm topbar-sidebar-toggle" onClick={() => setSidebarOpen(true)} title="展开侧栏" aria-label="展开侧栏">
+                  <Icon name="chevronRight" size={14} />
+                </button>
               )}
             <span className="topbar-title">
               <Icon name="comment" size={16} />
@@ -1942,8 +2006,11 @@ export default function App() {
             {previewOpen && (
               <div className={`app-canvas-body canvas-body-preview ${workspaceTab === "preview" ? "" : "canvas-hidden"}`}>
                 <div className="preview-panel-tabs">
-                  {[['document', '预览'], ['changes', '改动'], ['artifacts', '产物'], ...(subagentDetail ? [['subagent', '子代理']] : [])].map(([id, label]) => (
-                    <button key={id} className={previewTab === id ? "active" : ""} onClick={() => { previewTabManualAtRef.current = Date.now(); setPreviewTab(id); }}>{label}</button>
+                  {[['document', '预览'], ['changes', '改动'], ['artifacts', '产物'], ['links', '链接'], ...(subagentDetail ? [['subagent', '子代理']] : [])].map(([id, label]) => (
+                    <button key={id} className={previewTab === id ? "active" : ""} onClick={() => { previewTabManualAtRef.current = Date.now(); setPreviewTab(id); }}>
+                      {label}
+                      {id === "links" && chatLinks.length > 0 && <span className="result-tab-count">{chatLinks.length}</span>}
+                    </button>
                   ))}
                 </div>
                 <WorkProductPanel
@@ -1959,6 +2026,7 @@ export default function App() {
                   refreshToken={artifactVersion}
                   onOpenFile={open}
                   subagentBlock={subagentDetail}
+                  links={chatLinks}
                 >
                   <Suspense fallback={<div className="module-loading">正在加载文档预览…</div>}>
                     <DocViewer

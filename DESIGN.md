@@ -1,242 +1,105 @@
-# Open Plan - 前端设计文档
+# Open Plan（规聚）设计与体验规范
 
-当前基线：**v0.8.34**（feature/phase1-safety-baseline）
+> 状态：生效　版本：2.0　基线：v0.11.56　更新：2026-10-27
+> 依据：[AGENTS.md](AGENTS.md)、[产品需求文档（PRD）](REQUIREMENTS.md)。
+> 本文件是信息架构、布局、组件交互、视觉与设计令牌的唯一事实来源。UI 改动必须先对齐本文件。
 
-## 架构概览
+## 1. 设计目标与原则
 
-```
-浏览器 (React SPA)
-── App.jsx: kbMode ? KnowledgeBase(全屏) : 三栏办公布局 ──
+1. **信息优先**：界面服务于规划文档、地图与对话，不喧宾夺主。
+2. **过程可见**：思考、工具、审批、失败、取消如实呈现；不把失败包装成完成。
+3. **密度可控**：三栏工作台保持高信息密度，同时可折叠、可拖拽、可窄屏降级。
+4. **状态真实**：运行结束 ≠ 任务达成；`partial/blocked` 用警示色，不用成功色。
+5. **可回滚**：视觉改动走设计令牌与开关；默认关闭时回到稳定基线。
+6. **双主题与无障碍**：暗/亮主题等价；键盘、焦点、对比度、动效降级都要可用。
+7. **单一事实来源**：颜色、间距、圆角、动效先落到令牌，组件只消费令牌。
 
-┌─ 三栏办公模式（kbMode=false）─────────────────────────────────────────────────┐
-│ 左栏 (SessionSidebar)    │ 中栏 (DocViewer)      │ 右栏 (ChatPanel)  │
-│ - 文件标签页             │ - DocxViewer (docx-preview)│ - 模型选择器+推理强度 │
-│ - 历史标签页(按文档过滤) │ - PptxViewer (pptxviewjs)  │ - 最近会话栏        │
-│ - 文件列表(右键菜单)     │ - ExcelGrid (可编辑表格)   │ - 消息流            │
-│ - 会话列表(重命名/删除)  │ - MarkdownBody(+目录浮窗)  │ - 思考过程(默认展开) │
-│ - 技能广场/智能体广场    │ - HTML/TXT 预览           │ - 工具调用卡片       │
-│                          │ - 批注面板(CommentMarker) │ - PlanBoard 任务板   │
-│                          │                           │ - 图片粘贴/上传      │
-└──────────────────────────┴───────────────────────────┴──────────────────────┘
+## 2. 产品形态与模式
 
-┌─ 知识库全屏模式（kbMode=true）────────────────────────────────────────────────┐
-│ 左: 目录树/搜索结果/IMA │ 中: Markdown 预览 + G6 知识图谱│ 右: 文档信息面板  │
-│ - 根目录选择/添加/移除   │ - KnowledgeGraph (G6 力导向图)│ - 双向链接 [[link]]│
-│ - 搜索框(全文子串)      │   节点=文档/标签/目录          │ - 反向链接         │
-│ - 树节点展开/收起       │   边=内容相似/链接/标签/目录   │ - 标签、标题结构   │
-│ - IMA 云端知识库标签    │   点击节点 → 打开预览         │ - @ 到对话按钮     │
-│ - 模式切换: 浏览/图谱   │   缩放/拖拽/图例/布局控制    │                   │
-└──────────────────────────┴───────────────────────────┴──────────────────────┘
-           │ 三栏可拖拽 (Resizer)      │ SSE + POST               │
-┌──────────┴──────────────────────────┴──────────────────────────┴─────────┐
-│  Express 后端 (localhost:3001)                                           │
-│  ├─ /api/files*        文件管理(上传/删除/列表)                          │
-│  ├─ /api/doc/:file*    raw/html/comments/watch/cells（正则路由）          │
-│  ├─ /api/office        officecli 操作                                   │
-│  ├─ /api/sessions*     会话历史(CRUD + ?file= 过滤)                      │
-│  ├─ /api/runs*         TaskEnvelope/run manifest/产物 diff/回滚           │
-│  ├─ /api/workflows*    声明式技能工作流与依赖校验                        │
-│  ├─ /api/models        模型列表 /api/agent/model 切换                    │
-│  ├─ /api/skills*       技能列表/导出/导入                                │
-│  ├─ /api/workspaces*   工作区管理(切换/校验)                             │
-│  ├─ /api/agent*        Pi SDK Agent 会话 (SSE 流式 + prompt/abort)      │
-│  │     └─ officecli 自定义工具 + kb_search/kb_read 自定义工具           │
-│  ├─ /api/kb/*          知识库索引(状态/树/搜索/图谱/文档) + IMA 代理     │
-│  └─ /api/open-in-explorer  文件管理器定位                                 │
-└──────────────────────────────────────────────────────────────────────────┘
-```
+### 2.1 主形态
 
-## 组件树
+- 桌面式 Web 工作台：左侧栏 + 中间画布 + 右侧对话栏，三栏可拖拽。
+- 全屏模块：知识库、模板库、地图、设置、任务中心、工作产物面板。
+- 顶部栏：工作区工具、模式切换、知识库/模板/地图入口、主题、设置。
 
-```
-App.jsx
-├── ThemeProvider (theme.jsx: dark/light, localStorage 记忆)
-├── KnowledgeBase.jsx      知识库全屏模式（kbMode=true 时渲染）
-│   ├── KnowledgeGraph.jsx  antv G6 力导向图（节点/边/缩放/拖拽/图例）
-│   ├── MarkdownBody.jsx    文档内容预览（GFM/KaTeX/高亮，复用）
-│   └── Icon.jsx            back/cloud/backlink 等图标
-├── TemplateLibrary.jsx    模版库全屏模式（tplMode=true 时渲染）
-│   ├── MarkdownBody.jsx    模版内容预览（.md 渲染）
-│   └── Icon.jsx            文件类型图标
-├── SessionSidebar.jsx     左栏：文件/历史标签、技能广场、智能体广场
-│   ├── FileSidebar.jsx    文件列表 + ContextMenu 右键菜单
-│   └── SkillsManager.jsx  技能管理（@调用/导入/导出）
-├── AgentMarket.jsx        智能体广场（4 个交通规划助手，@ 注入对话）
-├── DocViewer.jsx          中栏文件分派（按 kind 选择渲染器）
-│   ├── DocxViewer.jsx     docx-preview 高保真渲染（批注/修订开关、翻页）
-│   ├── PptxViewer.jsx     pptxviewjs Canvas 渲染（翻页/跳页/页码）
-│   ├── ExcelGrid.jsx      x-spreadsheet 可编辑表格（多 sheet）
-│   ├── MarkdownBody.jsx   GFM + KaTeX + 高亮 + 锚点
-│   │   └── MarkdownToc.jsx 目录浮窗（滚动高亮当前标题）
-│   └── CommentMarker.jsx  批注面板（定位段落/黄底高亮/编号徽标）
-└── ChatPanel.jsx          右栏：模型选择、推理强度、消息流、输入区
-    ├── PlanBoard.jsx      任务板（解析 - [ ] 列表，进度条）
-    └── Resizer.jsx        三栏拖拽
-```
+### 2.2 三种任务模式
 
-## 通信机制
+| 模式 | 界面语义 | 输入区提示 | 不得出现 |
+|---|---|---|---|
+| Chat | 只读检索与问答 | 可引用知识库/文件，不写文件 | 写入按钮、Office CLI 主入口 |
+| Work | 完整执行与产出 | 可写工作区、地图、文档、子代理 | 越过审批直接写 |
+| Review | 规范审查与安全副本 | 依据本地规范，确认后写回 | 联网/浏览器/地图写入口 |
 
-### 网页端 ↔ 后端
-- **POST /api/agent/prompt** — 发送用户指令（含图片 base64）
-- **GET /api/agent/stream?client=xxx** — SSE 长连接，实时推送事件流
-- **GET /api/agent/abort** — 中断当前 agent 处理
-- **POST /api/agent/model** — 切换当前会话模型
+`office` 仅是历史会话的后端兼容值，前端统一显示为 Work；**不再提供 Office 模式按钮、模式提示或独立模式说明**。Office CLI 作为 Work/Review 的受控能力展示。
 
-### 后端 API 路由表（server/index.mjs）
+## 3. 信息架构与组件树
 
-| 方法 | 路由 | 用途 |
-|------|------|------|
-| GET | /api/status | 健康检查 |
-| GET | /api/files | 文件列表 |
-| POST | /api/files/upload, /api/files/delete | 上传/删除 |
-| GET | /api/doc/:file/raw | 原始文件流（docx-preview/pptxviewjs 拉取） |
-| GET | /api/doc/:file | 渲染 HTML / Excel 数据 / 文本内容 |
-| GET | /api/doc/:file/html | officecli 渲染 HTML（Word/PPT 备用预览） |
-| GET | /api/doc/:file/comments | 批注列表（md/txt 返回会话衍生修订） |
-| GET | /api/doc/:file/watch | 文件 watch（实时预览） |
-| POST | /api/doc/:file/cells | Excel 单元格保存 |
-| POST | /api/office | officecli 操作（agent 工具） |
-| GET | /api/models | 模型列表（30+，含视觉标记） |
-| GET | /api/skills, /api/skills/export, /api/skills/import | 技能管理 |
-| GET | /api/workspaces, /api/workspace/switch, /api/workspace/validate | 工作区管理 |
-| GET/POST | /api/sessions, /api/sessions/:id, /rename, /fork | 会话历史 CRUD、分支（?file= 过滤） |
-| GET/POST | /api/runs, /api/runs/:id, /rollback | 执行记录、产物清单、显式回滚 |
-| GET | /api/workflows, /api/workflows/:id/validate | 工作流注册表与技能依赖校验 |
-| POST | /api/agent/prompt, /api/agent/abort, GET /api/agent/stream | agent 会话 |
-| **GET** | **/api/kb/status** | 知识库索引状态（roots/fileCount/ima配置） |
-| **POST/DELETE** | **/api/kb/roots** | 添加/移除知识库根目录 |
-| **GET** | **/api/kb/tree?root=N** | 某根目录的文件树（递归目录结构） |
-| **GET** | **/api/kb/search?q=...&root=N** | 全文搜索（加权打分：标题10/标签6/标题行4/正文1） |
-| **GET** | **/api/kb/graph?include=...** | 知识图谱数据（nodes+edges，可选 links/similar/tags/folders） |
-| **GET** | **/api/kb/doc?path=...&root=N** | 文档详情（内容+标签+headings+links+backlinks） |
-| **GET** | **/api/kb/ima/status** | IMA 凭证状态 |
-| **GET** | **/api/kb/ima/bases** | IMA 知识库列表 |
-| **GET** | **/api/kb/ima/search?q=...&kb=...** | IMA 云端搜索 |
-| **GET** | **/api/kb/ima/doc?media_id=...** | IMA 文档详情（笔记/文件原文） |
-| **GET** | **/api/templates** | 模版库列表（?category= 分类筛选） |
-| **GET** | **/api/templates/content?path=...** | 模版内容预览（md返回text，其他返回binary） |
-| **POST** | **/api/templates/refresh** | 重新扫描模版目录 |
-| POST | /api/open-in-explorer | 文件管理器定位 |
-
-> 文档路由全部为**正则路由**（`/^\/api\/doc\/([^\/]+)\/(raw|html|comments|watch|cells)$/`），修复 Express 5 中 `:file` 参数吞掉后缀导致中文文件名匹配失败的问题。
-
-### 后端 ↔ Pi Agent
-- 后端进程内调用 `@earendil-works/pi-coding-agent` SDK
-- `createAgentSession()` 创建常驻会话，自动发现 skills
-- `session.prompt()` 发送指令，`session.subscribe()` 接收事件流
-- agent 拥有完整工具链：read/bash/edit/write + 自定义 officecli 工具 + **kb_search（知识库搜索）+ kb_read（知识库读取）**
-- 推理强度：`setThinkingLevel(low|medium|high)` 对应 ⚡/⚖/🧠
-
-### 文件定位机制
-1. **当前文件注入**：用户打开文件后，发送消息时前端自动附加 `[当前打开文件: xxx.docx]`
-2. **officecli 工具**：agent 通过自定义 `officecli` 工具操作文档，文件名相对于 workspace 目录
-3. **agent 上下文**：每轮注入 TaskEnvelope、当前工作区、分层记忆和 KB 使用说明；输出固定总结读取来源、修改文件、产物、假设和下一步
-
-## 知识库设计（KnowledgeBase + KnowledgeGraph）
-
-### 知识库索引服务（server/kb.mjs）
-- **配置**：`kb.json` 持久化（roots[] 根目录路径、imaSkillDir），前端可添加/移除根目录
-- **扫描**：递归遍历 roots 下的 .md 文件（跳过 node_modules/.git/.venv 等），基于 mtime+size 增量缓存（8s 去重窗口，解析版本号强制失效）
-- **解析**：frontmatter（title/tags）、第一个 `# 标题`、`[[wikilink]]`、内联 `#tag`（排除 hex 色值）、headings[]、links[]
-- **全文索引**：子串匹配打分（标题×10 / 标签×6 / 标题行×4 / 正文×1），每项独立计数（上限10），返回排序结果 + 摘要片段（首次命中±60/140字符窗口）
-- **图谱生成**：节点=文件/标签/目录（受 maxNodes 上限保护），边=wikilink 双向边 / 内容相似边 / 标签边 / 目录边，相似边算法：
-  - 提取文档前6000字符的 CJK/字母数字字符二元组 Set
-  - pair-wise overlap = |A∩B| / min(|A|,|B|)，阈值≥8 且 overlap≥0.16
-  - 按 overlap 降序截断至 files×3 上限，simCache 按 rootIdx 缓存
-
-### 前端 KnowledgeBase.jsx
-- **状态管理**：roots/rootIdx/tree/searchQ/results/doc/graphData/graphInc/view(浏览|图谱)/imaOpen/imaResults
-- **顶部工具栏**：返回办公模式、根目录下拉选择（含添加/移除）、搜索框（Enter 触发）、浏览/图谱切换、IMA 标签
-- **浏览模式**：左树/右信息面板/中预览（MarkdownBody 复用），@ 到对话按钮（插入 `@知识库[路径@根目录名]`）
-- **图谱模式**：KnowledgeGraph 全屏，顶栏控制（similar/links/tags/folders 复选框，重新布局按钮）
-
-### KnowledgeGraph.jsx（antv G6 v5）
-- `new Graph({data, node, edge, layout, behaviors})`，`graph.render()`
-- 节点样式：文件青绿色(16px)、标签黄色(9px)、目录蓝色(7px)，标签下方显示
-- 边样式：链接青绿色(1.4px)、相似蓝色(0.8px/0.45透明度)、标签/目录灰色
-- 布局：force 力导向（linkDistance:130, nodeStrength:-320, preventOverlap, collideStrength:0.9）
-- 行为：drag-canvas / zoom-canvas / drag-element / hover-activate / click-select
-- 事件：node:click → 回传 onSelectNode（带 relPath/rootIdx），联动打开文档预览
-- 高亮：graph.focusElement(highlightId) 聚焦当前打开文档节点
-
-### @ 引用分析链路
-1. 前端知识库文档「到对话」按钮 → `chatInputRef.insertText(`@知识库[${relPath}@${rootName}]`)`
-2. agent 收到 prompt（含 `@知识库[...]` 格式文本），ResourceLoader 上下文告知 agent 这是知识库引用格式
-3. agent 调用 `kb_read(path)` 工具（path=`相对路径@根目录名`）→ kb.mjs getDoc() 返回完整 Markdown 内容（含标签/反链）
-4. agent 读取全文后进行分析/回答
-
-## SSE 事件流
-
-```
-SSE Event Types:
-├── token        → 文本输出 token（流式追加，rAF 节流渲染）
-├── thinking     → 思考过程 token（默认展开实时可见）
-├── tool_start   → 工具调用开始 {name, input}
-├── tool_output  → 工具执行输出流 {name, output}
-├── tool_end     → 工具调用结束 {name, isError, result}
-├── message_start/end → 消息生命周期
-├── agent_end    → agent 完成（关闭 busy 状态）
-├── agent_error  → 错误
-└── file_changed → 文件变更通知 {files: [...]}
+```text
+App.jsx（总编排：会话、工作区、模式、三栏布局、懒加载）
+├─ SessionSidebar.jsx        左栏：文件/历史标签、技能广场、智能体广场
+│  ├─ FileSidebar.jsx        文件树、右键菜单、搜索
+│  └─ SkillsManager / AgentMarket（懒加载）
+├─ DocViewer.jsx             中栏文件分派（懒加载）
+│  ├─ DocxViewer.jsx         docx-preview 高保真、批注/修订
+│  ├─ PptxViewer.jsx         Canvas 渲染 + OfficeCLI 高保真回退
+│  ├─ ExcelGrid.jsx          多 sheet 查看/编辑
+│  ├─ MarkdownBody.jsx       GFM/KaTeX/高亮/锚点
+│  │  └─ MarkdownToc.jsx     目录浮窗
+│  └─ CommentMarker.jsx      批注定位、黄底高亮、编号徽标
+├─ ChatPanel.jsx             右栏：模型、思考强度、消息流、输入区
+│  ├─ 执行流 / 思考块 / 工具卡 / 审批卡 / ask_user 卡
+│  ├─ 任务板（解析 - [ ] / - [x]）
+│  └─ 模型切换分割线、token/用时、运行终态
+├─ 任务中心.jsx              并行任务、状态筛选、取消/恢复/重试
+├─ 工作产物面板.jsx          本轮/历史产物、diff、验收、回滚
+├─ 对象栏.jsx                本轮产出/来源/技能/记忆汇总
+├─ 工作流启动器.jsx          结构化工作流入口与依赖提示
+├─ 内置浏览器面板.jsx        打开/截图/点击/输入/标签
+├─ SettingsPanel.jsx         模型、网络、外观、集成、诊断
+├─ MemoryTab.jsx             记忆建议审核
+├─ CommandPalette.jsx        命令面板
+├─ KnowledgeBase.jsx         知识库全屏（懒加载）
+│  ├─ KnowledgeGraph.jsx     G6 力导向图
+│  ├─ MindMap.jsx            大纲 ↔ 脑图
+│  └─ MarkdownBody.jsx       文档预览
+├─ TemplateLibrary.jsx       模板库全屏（懒加载）
+├─ MapPanel.jsx              地图模式（懒加载）
+│  ├─ MapViewer.jsx          MapLibre 地图
+│  ├─ LayerPanel.jsx         图层分组/排序/样式
+│  ├─ AttributeTable.jsx     属性表/搜索/导出
+│  └─ MapExportView.jsx      导出/报告
+├─ Feedback.jsx              toast / 确认框 / 错误提示
+├─ Resizer.jsx               三栏拖拽
+└─ Icon.jsx                  统一线性图标
 ```
 
-## Office 查看器设计
+规则：
 
-### DocxViewer（docx-preview）
-- 高保真渲染：分页、表格、图片、样式完整还原
-- 工具栏：批注开关（`renderComments`）、修订开关（`renderChanges`）、翻页
-- 数据源：`/api/doc/:file/raw` 原始文件流（Buffer 直传，避免 HTML 中转失真）
-- 样式容器：`.oaw-docx-wrap`，纸张白底、周围灰底（暗/亮主题适配）
+- 重型模块（文档预览、地图、知识库、模板库、设置、命令面板）继续使用 `React.lazy`。
+- 组件只消费视图模型；事件解析放在 `运行展示投影.js`、`事件展示.js`、`对象聚合.js` 等纯模块。
+- 不新增全局状态库；服务端事实以 API/SSE 为准，界面偏好用 `persist-ui.js`/localStorage。
 
-### PptxViewer（pptxviewjs）
-- Canvas 逐页渲染，工具栏：上一页/下一页/页码输入/总页数
-- 数据源：`/api/doc/:file/raw`
-- 样式容器：`.oaw-pptx-wrap`
+## 4. 布局与响应式
 
-### ExcelGrid（x-spreadsheet）
-- 多 sheet 切换，单元格直接编辑
-- 保存：POST /api/doc/:file/cells 写回文件，保存后触发预览刷新
+- 三栏宽度可拖拽，左右栏有最小宽度；具体像素以 `client/src/styles.css` 为准，不在文档复制第二份数值。
+- 中间画布可切换文档、知识库、模板库、地图、工作产物、对象栏等页签。
+- 对话栏可折叠；地图模式使用紧凑对话栏，顶部状态行显示当前项目与视口。
+- 左侧栏折叠入口位于品牌行（logo 右侧动作组内）；收起后展开入口位于中间顶栏最左侧，随流布局，不得绝对定位遮挡标题或模式切换。
+- 窄屏：侧栏/对话栏降级为抽屉或单栏；核心操作（发送、停止、打开文件、切换模式）必须可达。
+- 焦点管理：关闭面板后焦点回到触发按钮；键盘用户不丢位置。
+- 拖拽/折叠状态持久化，刷新后恢复上次布局。
 
-### MarkdownBody
-- rehype-slug 生成标题锚点，MarkdownToc 目录浮窗定位（ID+文本双重查找）
-- KaTeX 公式、代码高亮、GFM 表格
+## 5. 视觉系统
 
-## 消息渲染
+### 5.1 主题
 
-### 思考过程
-- 折叠块：默认展开（实时可见），点击收起/展开
-- 左边框 accent 色标记
+- 暗色为默认；亮色通过 `data-theme="light"` 切换，localStorage key `oaw_theme`。
+- 主题切换不闪白、不丢布局；组件不得假设只有一种主题。
+- 状态色语义：成功=绿、失败=红、警示=琥珀、运行=强调蓝、无状态=中性灰。
 
-### 工具调用卡片
-- 状态着色：pending(黄) / success(绿) / error(红)
-- 点击展开显示：输入参数 + 执行输出/结果
-- 输出超过 200 字符自动截断预览
+### 5.2 基础配色（暗色，默认）
 
-### PlanBoard 任务板
-- 从 agent 回复的 `- [ ]` / `- [x]` 解析为可勾选任务列表
-- 顶部进度条（已完成/总数），勾选状态本地维护
-
-### 文件上下文标记
-- 用户消息气泡顶部显示 `[当前文件: xxx]` 小标签
-- 同时注入到发送给 agent 的 prompt 文本中
-
-### 批注定位（CommentMarker）
-- Word 式批注：点击 → 定位段落 + 整段黄底高亮 + 段落旁编号徽标 + 滚动居中
-- 关键词匹配：从批注指令提取关键词匹配正文（TreeWalker 文本级定位），失败回退首段
-- md/txt 批注：服务端 `/api/doc/:file/comments` 返回会话衍生的修订记录（行号/段落匹配）
-- 手动刷新按钮，文件修改后自动重新拉取
-
-## 模型选择与推理强度
-- 下拉菜单显示所有 30+ 可用模型，`[V]` 前缀标记 13 个视觉模型
-- 选择后实时切换 agent 会话模型（POST /api/agent/model）
-- 附图片时若当前模型不支持视觉，显示黄色提示条
-- 推理强度：⚡快速(low) / ⚖标准(medium) / 🧠深度(high) 三档，映射 setThinkingLevel
-
-## 设计规范
-
-### 配色（pi dark 主题，默认）
-```
-:root (dark):
+```text
 --body-bg:   #1a1a2e   --panel-bg:  #16162a
 --panel2-bg: #1e1e3a   --surface:   #222240
 --text:      #d4d4d4   --muted:     #808080
@@ -246,8 +109,9 @@ SSE Event Types:
 --warning:   #f0c674   --user-bg:   #2a3a3a
 ```
 
-### 亮色主题（[data-theme="light"]）
-```
+### 5.3 亮色主题
+
+```text
 --body-bg:   #f5f6fa   --panel-bg:  #ffffff
 --panel2-bg: #eef0f6   --surface:   #e4e7f0
 --text:      #2d3142   --muted:     #5c6270
@@ -256,53 +120,214 @@ SSE Event Types:
 --error:     #c0392b   --success:   #5c7a1f
 --warning:   #b7791f   --user-bg:   #e6f0ee
 ```
-主题切换：ThemeProvider（theme.jsx），`document.documentElement.setAttribute("data-theme", ...)`，localStorage key `oaw_theme`。
 
-### 字体
-```
-font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
-```
-> 注：上行为**等宽栈**（代码 / 路径 / 参数 / 数字场景）。正文实际使用系统 sans 栈，见下方「排版与字体（现状）」。
+### 5.4 设计令牌三层结构
 
-### 间距与细节
-- 基准字号 12px，行高 18px；按钮圆角 3px，padding 2-8px；卡片圆角 3-4px
-- 全局滚动条：8px 细滚动条、圆角、hover 高亮，CSS 变量自动适配暗/亮主题
-- 头像：圆形，用户蓝色系、agent 青绿色
+后两层只允许引用上一层；新增颜色必须落到令牌层，不得在规则里直写色值。由 `scripts/设计令牌一致性测试.mjs` 的硬编码色值棘轮守护（2026-10-18 基线：393 处 / 129 种，只允许下降）。
 
-### 设计令牌三层结构（2026-10-18 起）
-后两层只允许引用上一层；新增颜色必须落到令牌层，不得在规则里直写色值——由 `scripts/设计令牌一致性测试.mjs` 的「硬编码色值棘轮」守护（当前 393 处 / 129 种，只允许下降）。
+第 1 层 · 基础色阶（只声明取值，不带语义）：
 
-第 1 层 · 基础色阶（只声明取值，不带语义）
-```
+```text
 --op-gray-000 → --op-gray-900   共 13 阶（暗色方向 000 最暗、900 最亮）
 --op-blue-400/500/600   --op-green-500   --op-red-500   --op-amber-500
 ```
 
-第 2 层 · 语义令牌（只引用基础色阶 / 前景透明度，不写死基础层已提供的色值）
-```
+第 2 层 · 语义令牌（只引用基础色阶/前景透明度）：
+
+```text
 --body-bg  --panel-bg  --panel2-bg  --surface  --text  --muted  --dim
 --border  --selected  --accent  --accent-hi  --success  --error  --warning
 --user-bg  --user-fg      （成对声明：无障碍测试会校验配对）
 ```
 
-第 3 层 · 组件变量（组件只消费本层）
-```
+第 3 层 · 组件变量（组件只消费本层）：
+
+```text
 --op-comp-chat-bg  --op-comp-toolcard-border
 --op-comp-toolcard-pending  --op-comp-toolcard-success  --op-comp-toolcard-error
 ```
 
-以上三层**目前只存在于 Qoder 视觉层**（见下节）；默认主题仍使用本文档上方「配色 / 亮色主题」两节的取值。
+> 说明：三层令牌目前主要存在于 Qoder 视觉层；默认主题仍使用 §5.2/§5.3 的语义变量。新增组件优先使用语义令牌，不直接写十六进制色值。
 
-### Qoder 视觉层（opt-in · 默认关）
-- **生效条件**：`<html data-oaw-style="qoder">`；由运行开关 `qoderStyle` / `OAW_QODER_STYLE` 控制，**默认关闭**——关闭时外观逐像素回到 pi-dark 基线（只「覆盖」变量取值，不删不改名任何既有规则）。
-- **内容**：
-  1. 整站配色：中性灰阶打底（去掉蓝紫倾向）+ 单一冷蓝强调 + 语义三色统一饱和（§3.1）；
-  2. 令牌三层结构（见上节）；
-  3. 组件交互规范（§3.3）：执行流状态点五态（运行 = 强调蓝 + 呼吸 / 完成 = 绿 / 降级 = 琥珀 / 失败 = 红 / 无状态 = 中性灰）、思考块左竖线 2px · 强调色 22%（hover 45%）、工具卡片状态色只留左侧 3px 边条与状态图标（本体中性）、审批卡左侧形态条 + 拒绝按钮红描边。
-- **动效令牌**：`--dur-fast 120ms / --dur-base 200ms / --dur-slow 320ms / --ease-out`，只作用于 `transform` / `opacity`；统一动效闸门（`data-reduce-motion` / `data-motion-level="off"`）仍可用 `!important` 覆盖，关闭动效后呼吸点静止、信息不丢。
-- **回滚**：见 `docs/plans/2026-10-18-004-Qoder优化开关与回滚说明.md`（开关级 / 单文件级 / 整站级三层）。
+### 5.5 Qoder 视觉层（opt-in · 默认关）
 
-### 排版与字体（现状 · 2026-10-18 核对）
-- 正文：系统 sans 栈 —— `-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif`；Qoder 视觉层对 `body` 显式固化同一栈，避免被 `inherit` 链改回等宽。
-- 代码 / 路径 / 参数 / 数字：等宽栈 —— `ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace`（局部使用 `'SF Mono', 'Fira Code', …`）。
-- **待办（需确认）**：计划里「把 font-family 拆为 `--font-sans` / `--font-mono` 两个令牌」尚未做——它要改基线 `body` 的字体声明行（外观核心行），故先以文档记录现状取值，改动等确认。
+- 生效条件：`<html data-oaw-style="qoder">`；由 `qoderStyle` / `OAW_QODER_STYLE` 控制，默认关闭。
+- 关闭时回到 pi-dark 基线，只覆盖变量取值，不删不改既有规则名。
+- 内容：中性灰阶打底、单一冷蓝强调、语义三色统一饱和；令牌三层结构；组件交互规范（执行流状态点、思考块、工具卡、审批卡）。
+- 动效令牌：`--dur-fast 120ms / --dur-base 200ms / --dur-slow 320ms / --ease-out`，只作用于 `transform` / `opacity`。
+- 回滚：见 `docs/plans/2026-10-18-004-Qoder优化开关与回滚说明.md`（开关级/单文件级/整站级三层）。
+
+### 5.6 字体与排版
+
+- 正文：系统 sans 栈：`-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif`。
+- 代码/路径/参数/数字：等宽栈：`ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace`。
+- 基准字号 12px，行高 18px；长文可调字号，设置需持久化。
+- 等宽字体只用于代码与技术信息，不用于整站正文。
+
+### 5.7 间距、圆角、滚动条与图标
+
+- 按钮圆角 3px，padding 2–8px；卡片圆角 3–4px；具体值以令牌/样式为准。
+- 全局滚动条 8px、圆角、hover 高亮，随主题适配。
+- 功能图标统一 `Icon.jsx` 线性 SVG；禁止 emoji 充当功能图标。
+- 头像圆形：用户蓝色系、Agent 青绿色。
+- 分隔线、边框、阴影优先使用令牌；不新增散落魔法值。
+
+## 6. 组件交互规范
+
+### 6.1 执行流与运行终态
+
+执行流状态点五态：
+
+| 状态 | 表现 | 语义 |
+|---|---|---|
+| 运行 | 强调蓝 + 呼吸 | 正在执行 |
+| 完成 | 绿 | 正常结束 |
+| 降级 | 琥珀 | 部分完成/受阻/需注意 |
+| 失败 | 红 | 执行失败 |
+| 无状态 | 中性灰 | 尚未开始/无事件 |
+
+运行状态（`completed / failed / cancelled / aborted`）与任务完成状态（`success / partial / blocked / failed / cancelled`）必须分开表达；不得用“运行结束”替代“任务达成”。
+
+运行终态必须区分：
+
+- `completed`：完成（绿色），但不自动等于任务达成。
+- `failed`：失败（红色），给出错误原因与下一步。
+- `cancelled/aborted`：取消/中断（中性/警示），不显示成功语义。
+- `partial`：部分完成（琥珀），明确未完成项。
+- `blocked`：受阻（琥珀/红色），说明阻塞原因。
+
+禁止：运行失败显示“任务完成”；`partial/blocked` 使用成功色；用前端文案替代服务端终态。
+
+### 6.2 思考块
+
+- 左竖线 2px，强调色 22%，hover 45%。
+- 默认展开，可折叠；长思考独立滚动，不挤压最终回答。
+- 思考中不混入工具结果与最终结论。
+
+### 6.3 工具调用卡片
+
+- 状态只通过左侧 3px 边条与状态图标表达，卡片本体保持中性。
+- 展开显示输入参数、输出摘要、错误原因；长输出截断并可展开。
+- 工具名使用语义图标；不堆叠多个同义图标。
+
+### 6.4 审批卡与 ask_user 卡
+
+- 审批卡：左侧形态条 + 操作按钮；拒绝按钮红描边；显示工具、目标、风险与来源（子代理带归属标签）。
+- ask_user：问题、快捷选项、输入框、超时回执；回答后继续，不重复追问。
+- 自动批准不覆盖显式 deny；拒绝后给出可执行的下一步。
+
+### 6.5 任务中心与产物面板
+
+- 任务中心：并行任务列表、状态筛选、模式筛选（Chat/Work/Review）、取消/恢复/重试、打开会话。
+- 运行结束与任务达成分开表达；失败原因可搜索。
+- 产物面板：按本轮/历史分层；文本给行级 diff，Office/PDF/图片给大小与哈希摘要。
+- 回滚需确认；未验收不显示“已验收/已完成”。
+- 归属不确定时标记“待确认”，不硬说成本轮产物。
+
+### 6.6 空态、加载、错误与反馈
+
+- 空态：说明“为什么空”和“下一步能做什么”，不只写“暂无数据”。
+- 加载：骨架/占位防白屏；长任务显示阶段与可取消。
+- 错误：用户可读原因 + 下一步 + 可复制诊断；不泄露路径/密钥。
+- 反馈统一 `Feedback.jsx`（toast/确认框）；关键路径不用原生 alert/confirm。
+
+## 7. 对话工作台
+
+- 顶部：模型选择、思考强度、上下文用量、审批模式、设置入口。
+- 消息流：思考/工具/最终文本独立条目，不加分组框；最终回复宽度与事件流一致。
+- 输入区：当前文件标签、引用 chip、上传/图片、发送/停止；发送前可移除引用。
+- 发送/停止三态：空闲+无输入禁用发送；空闲+有输入发送；运行中+无输入显示停止；运行中+有输入显示排队发送并保留停止入口。
+- 压缩上下文期间禁止发送（按钮禁用并说明原因）；停止/中断后如实提示仍保留的排队条数，队列项可继续编辑或发送。
+- 队列坞：默认折叠、200 字单行预览、附件缩略（最多 3 张）；支持行内编辑、单条删除、提升为插话、清空；空队列不占位。
+- 长期目标 GoalBar：位于输入框上方、队列坞之下；六状态（进行中/已暂停/受阻/达轮次上限/达预算上限/已完成）；`complete` 后不渲染；详情浮层展示轮次、Token、活跃时长与预算输入；状态变化 `aria-live="polite"`。
+- 消息操作：用户消息可编辑并分支重发（旧分支保留）；助手消息可分叉为独立会话；末轮可重新生成并切换“第 N / M 版”；live 运行中不提供分叉/重新生成。
+- 历史与草稿：历史默认 50 条/页，加载更早时保持视口不跳顶；未发送草稿按会话写入 localStorage，刷新恢复、发送后清除。
+- 任务板：解析 `- [ ] / - [x]`，显示进度；完成项即时更新。
+- 模型切换：运行中切换排队，本轮结束生效并显示分割线。
+- 流式输出：rAF 节流；刷新/重连不重复、不丢消息。
+- 模式提示：Chat/Work/Review 的边界用短提示，不把工具说明混入用户输入。
+
+## 8. 文档工作区
+
+- 左栏文件树：懒加载、目录折叠、搜索、右键菜单、上传/删除。
+- 中栏按文件类型分派：docx/pptx/xlsx/md/html/txt/pdf。
+- Word：分页、表格、图片、批注、修订；批注点击定位段落并高亮。
+- PPT：翻页/跳页/页码；超大或失败回退 OfficeCLI 高保真。
+- Excel：多 sheet、单元格编辑、保存后刷新。
+- Markdown：GFM/KaTeX/代码高亮/目录浮窗。
+- 文件修改后预览自动刷新；写入前按审批策略确认。
+- 右侧“工作产物”画布页签：预览 / 改动 / 产物 / 链接 /（按需）子代理；链接页签从助手消息提取 URL 并去重，提供打开/复制、空态与“外部网页不可信”提示。
+- OfficeCLI 状态在设置/诊断中可见，写入失败与状态检查分开报告。
+
+## 9. 知识库、模板库与地图
+
+### 9.1 知识库
+
+- 三视图：浏览 / 知识图谱 / 脑图。
+- 浏览：文件树 + Markdown 预览 + 右侧信息（反链/标签/标题）。
+- 图谱：节点=文档/标签/目录；边=双向链接/相似/标签/目录；可过滤、缩放、聚焦、隐藏孤立节点。
+- 脑图：大纲 ↔ 树状脑图联动，右侧文档预览。
+- 颜色语义：文件青绿、标签黄、目录蓝；链接青绿、相似蓝、标签/目录灰。
+- IMA 云端知识库为可选增强；未配置时显示引导，不影响本地知识库。
+
+### 9.2 模板库
+
+- 分类浏览 + 搜索；Markdown/HTML/Word/PDF/PPT 预览。
+- `@模板` / `@模板目录` 注入对话；红头会议通知按 GB/T 9704 版式。
+- HTML 模板使用 iframe 首页渲染；预览失败有回退与说明。
+
+### 9.3 地图
+
+- MapLibre + 矢量瓦片；图层面板支持分组、排序、显隐、符号、样式编辑、右键操作。
+- 属性表：字段、搜索、排序、分页、CSV 导出、地图定位。
+- 测量/绘制：距离、面积、标绘点；等时圈分析。
+- 地图对话栏紧凑呈现，顶部显示项目与视口；临时图层有未保存提示。
+- 临时层与正式层视觉区分；删除/覆盖正式层需确认。
+- 演示数据必须在图层名/面板/报告中标注“演示数据”。
+
+## 10. 状态与持久化
+
+- 服务端事实：会话、Run、事件、模型、文件、项目、地图状态以 API/SSE 为准。
+- 界面偏好：主题、栏宽、页签、展开状态、字号等用 `persist-ui.js`/localStorage；不得存服务端事实的副本作为权威。
+- SSE 统一经 `client/src/长连接预算.js`；组件不各自建 EventSource。
+- 事件到 UI 的转换统一走投影模块；组件不重复解析原始事件。
+- 错误边界兜底渲染异常；关键面板失败不影响整个工作台。
+
+## 11. 无障碍与动效
+
+- 键盘可达：主要面板/按钮/菜单/弹窗可 Tab 到，Esc 关闭，焦点可见。
+- ARIA：按钮有可读标签；展开/选中状态正确；弹窗有 role/焦点管理。
+- 对比度：暗/亮主题分别审计；状态色不单独依赖颜色传达信息（配合文字/图标）。
+- 窄屏：核心操作可达；抽屉/单栏不遮挡输入区。
+- 动效：只作用于 `transform`/`opacity`；遵循 `data-reduce-motion` / 动效档位；降级后信息不丢。
+- 持续动画必须进白名单，不能无限新增。
+- 守护测试：`test:a11y`、`test:motion`、`test:design-tokens`、`test:component-spec`。
+
+## 12. 设计验收清单
+
+- [ ] 暗/亮主题都检查；无新增硬编码色值。
+- [ ] 窄屏/键盘/焦点/ARIA 可用；无仅靠颜色表达的状态。
+- [ ] 运行终态、失败、取消、partial/blocked 表达真实，不伪装成功。
+- [ ] 空态/加载/错误/超时都有可执行下一步。
+- [ ] 图标统一 `Icon.jsx`；无 emoji 功能图标。
+- [ ] 设计令牌改动同步 `DESIGN.md` 与令牌测试。
+- [ ] 不出现 Office 模式入口；历史 office 会话显示为 Work。
+- [ ] 重型模块懒加载；无新增全局状态库/UI 框架。
+- [ ] 动效可降级；持续动画在白名单内。
+- [ ] 产物/任务状态与 PRD 验收口径一致。
+
+## 13. 设计不做清单
+
+- 不做 Qoder 皮肤引擎式多主题换肤；只做受控视觉层。
+- 不引入 UI 框架、CSS-in-JS、全局状态库。
+- 不复刻其他产品界面；只对齐视觉语言与交互范式。
+- 不用“假成功/假进度/假产物”换视觉整洁。
+- 不恢复 Office 独立模式。
+- 不在组件里直写颜色/间距/圆角/动效魔法值。
+
+## 14. 变更与决策
+
+- 视觉方向、令牌基线、组件规范的重大变化：先更新本文件，再改代码，并补决策记录。
+- 普通组件/样式改动：同步本文件相关小节与 `test:design-tokens`/`test:a11y`/`test:motion`。
+- 与 PRD 冲突时：以 PRD 的范围与验收为准；设计不能扩大或缩小产品能力。
+- 所有 UI 行为变更都要在 `变更日志.md` 记录，并说明回滚方式。
