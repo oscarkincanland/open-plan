@@ -283,11 +283,11 @@ console.log("\n▶ 最小点击目标与窄屏");
 });
 
 检查("窄窗口断点与折叠规则在位", () => {
-  for (const 断点 of ["@media (max-width: 1080px)", "@media (max-width: 900px)", "@media (max-width: 760px)", "@media (max-width: 720px)", "@media (max-width: 520px)"]) {
+  for (const 断点 of ["@media (max-width: 1024px)", "@media (max-width: 900px)", "@media (max-width: 768px)", "@media (max-width: 720px)", "@media (max-width: 520px)"]) {
     assert.ok(样式.includes(断点), `缺少断点 ${断点}`);
   }
-  // 预览栏在最窄的主流桌面宽度先让位
-  assert.match(样式, /@media \(max-width: 1080px\) \{\s*\.preview-half \.app-preview-slot \{ flex-basis: 0; \}/, "窄屏应折叠预览栏");
+  // 预览栏在最窄的主流桌面宽度先让位（1080 已并入 1024，见设计一致性整改）
+  assert.match(样式, /@media \(max-width: 1024px\) \{\s*\.preview-half \.app-preview-slot \{ flex-basis: 0; \}/, "窄屏应折叠预览栏");
   // 命令面板在小窗口不越界，且内部可滚动
   assert.match(样式, /\.cmd-panel \{[^}]*max-width: 92vw/, "命令面板宽度应受视口约束");
   assert.match(样式, /\.cmd-panel \{[^}]*max-height: 72vh/, "命令面板高度应受视口约束");

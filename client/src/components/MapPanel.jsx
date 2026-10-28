@@ -1917,7 +1917,7 @@ export default function MapPanel({
               )}
               {flag("mapBookmarks") && (
                 <>
-                  <div style={{ borderTop: "1px solid #d6dce5", margin: "6px 0" }} />
+                  <div style={{ borderTop: "1px solid var(--border)", margin: "6px 0" }} />
                   <div style={{ display: "flex", gap: 6, padding: "0 4px 4px" }}>
                     <input
                       aria-label="视角名称"
@@ -1925,7 +1925,7 @@ export default function MapPanel({
                       onChange={(e) => setBookmarkName(e.target.value)}
                       onKeyDown={(e) => { if (e.key === "Enter") addBookmark(); }}
                       placeholder="视角名称（可留空）"
-                      style={{ flex: 1, minWidth: 0, fontSize: 12, padding: "4px 8px", border: "1px solid #d6dce5", borderRadius: 6 }}
+                      style={{ flex: 1, minWidth: 0, fontSize: 12, padding: "4px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-md)" }}
                     />
                     <button className="btn-sm" onClick={addBookmark} title="把当前中心/缩放/旋转/倾角存为书签（存进项目配置）">
                       <Icon name="star" size={12} /> 收藏当前
@@ -2349,7 +2349,7 @@ export default function MapPanel({
                 输出 150-300dpi 报告插图：地图 + 标题 + 比例尺 + 指北针 + 图例（图例取当前可见图层）。
               </div>
               {flag("mapExport") && (
-                <div className="mp-iso-batch" style={{ borderTop: "1px solid #d6dce5", marginTop: 14, paddingTop: 12 }}>
+                <div className="mp-iso-batch" style={{ borderTop: "1px solid var(--border)", marginTop: 14, paddingTop: 12 }}>
                   <div className="mp-iso-label" style={{ fontWeight: 600, marginBottom: 8 }}>批量导出（后台队列）</div>
                   <div className="mp-iso-row" style={{ alignItems: "flex-start" }}>
                     <span className="mp-iso-label">项目</span>

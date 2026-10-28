@@ -21,8 +21,8 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const 样式 = fs.readFileSync(path.join(ROOT, "client", "src", "styles.css"), "utf8");
 
-/** 硬编码色值棘轮基线（2026-10-18 P1-7 落地时实测；只允许下降，不许上升）。 */
-const 硬编码基线 = { 总数: 383, 不同值: 129 };
+/** 硬编码色值棘轮基线（2026-10-28 设计一致性整改后实测；只允许下降，不许上升）。 */
+const 硬编码基线 = { 总数: 378, 不同值: 129 };
 
 let failed = 0;
 const test = (name, fn) => {

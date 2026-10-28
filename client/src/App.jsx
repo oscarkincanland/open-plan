@@ -115,7 +115,7 @@ class AppErrorBoundary extends React.Component {
       return (
         <div className="app-error">
           <div className="app-error-content">
-            <div className="app-error-icon">⚠</div>
+            <div className="app-error-icon"><Icon name="warning" size={32} /></div>
             <div className="app-error-title">应用出错</div>
             <div className="app-error-text">{this.state.error?.message || "未知错误"}</div>
             <button className="btn primary" onClick={() => window.location.reload()}>

@@ -44,7 +44,7 @@ export default function CommentMarker({ comments, containerRef, activeComment, s
 
   // 收集 docx-preview 渲染生成的批注锚点注释节点（按文档顺序）。
   // docx-preview 将批注范围渲染为 HTML 注释节点：
-  //   "start of comment #N"（范围起点）/ "comment #N by author on date"（💬 引用处）
+  //   "start of comment #N"（范围起点）/ "comment #N by author on date"（批注引用处）
   const collectCommentAnchors = useCallback((doc, container) => {
     const anchors = [];
     try {
