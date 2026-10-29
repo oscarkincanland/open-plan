@@ -376,6 +376,26 @@ export default function App() {
   // v0.13.9：画布第五/六个页签——文件树与新会话（无 flag 门控，点页签打开，可关闭）。
   const [filesTabOpen, setFilesTabOpen] = useState(false);
   const [newchatTabOpen, setNewchatTabOpen] = useState(false);
+  // v0.13.10 双面板常驻：工作产物（WorkPanel）与浏览器（Canvas）并排显示。
+  // 默认关（opt-in）；生效条件 = 用户开启 + 两面板均打开 + 非 1280 以下窄屏
+  // （窄屏自动降级单面板）+ 产物非半屏/全屏布局 + 浏览器非全屏。
+  const [dualPanePref, setDualPanePrefState] = useState(() => {
+    try { return localStorage.getItem("oaw_dual_pane") === "on"; } catch { return false; }
+  });
+  const setDualPanePref = useCallback((value) => {
+    setDualPanePrefState(Boolean(value));
+    try { localStorage.setItem("oaw_dual_pane", value ? "on" : "off"); } catch {}
+  }, []);
+  const [narrowViewport, setNarrowViewport] = useState(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 1280px)").matches : false);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
+    const query = window.matchMedia("(max-width: 1280px)");
+    const onChange = (event) => setNarrowViewport(event.matches);
+    query.addEventListener?.("change", onChange);
+    return () => query.removeEventListener?.("change", onChange);
+  }, []);
+  const dualPaneActive = dualPanePref && previewOpen && browserPanelOpen && !browserFullscreen && previewLayout === 0 && !narrowViewport;
   const workspaceTab = workspaceTabPref === "workflows" && workflowsOpen ? "workflows"
     : workspaceTabPref === "objects" && objectsOpen ? "objects"
       : workspaceTabPref === "browser" && browserPanelOpen ? "browser"
@@ -1942,6 +1962,17 @@ export default function App() {
                   <button role="menuitemcheckbox" aria-checked={previewOpen && workspaceTab === "preview"} className={previewOpen && workspaceTab === "preview" ? "on" : ""} onClick={() => { if (previewOpen) setPreviewLayout(0); else setWorkspaceTabPref("preview"); setPreviewOpen((v) => !v); }} title={previewOpen && workspaceTab === "preview" ? "隐藏工作产物画布" : "显示工作产物画布"}>
                     <Icon name="package" size={14} /><span>工作产物</span>
                   </button>
+                  {/* v0.13.10 双面板：工作产物与浏览器并排；默认关，需要两者均开启，≤1280 自动降级单面板 */}
+                  <button
+                    role="menuitemcheckbox"
+                    aria-checked={dualPanePref}
+                    className={dualPanePref ? "on" : ""}
+                    disabled={!(previewOpen && browserPanelOpen)}
+                    onClick={() => setDualPanePref(!dualPanePref)}
+                    title={previewOpen && browserPanelOpen ? "双面板：工作产物与浏览器并排显示（≤1280 窄屏自动降级单面板）" : "双面板需要工作产物与浏览器均已开启"}
+                  >
+                    <Icon name="columns" size={14} /><span>双面板</span>
+                  </button>
                   <button role="menuitemcheckbox" aria-checked={browserPanelOpen} className={browserPanelOpen ? "on" : ""} onClick={() => { if (browserPanelOpen) closeBrowserPanel(); else { browserAutoOpenBlockedRef.current = false; if (flag("narrowRestore") && typeof window !== "undefined" && window.innerWidth <= 1024 && previewOpenRef.current) previewOpenBeforeBrowserRef.current = true; setBrowserActivityPing(0); setWorkspaceTabPref("browser"); setBrowserPanelOpen(true); } }} title={browserPanelOpen ? "隐藏内置浏览器" : "显示内置浏览器"}>
                     <Icon name="globe" size={14} /><span>内置浏览器</span>{browserActivityPing > 0 && !browserPanelOpen && <i className="browser-activity-dot" aria-hidden="true" />}
                   </button>
@@ -2028,13 +2059,13 @@ export default function App() {
             <div className="center-chat-slot">{!activeModule && sharedChatPanel}</div>
           </div>
         </div>
-        {previewOpen && workspaceTab === "preview" && <Resizer side="right" min={280} max={680} cssVar="--preview-w" />}
+        {previewOpen && (workspaceTab === "preview" || dualPaneActive) && <Resizer side="right" min={280} max={680} cssVar="--preview-w" />}
         {/* v0.13.9：文件树/新会话页签共用产物画布的宽度约束（280–680） */}
         {(workspaceTab === "files" || workspaceTab === "newchat") && <Resizer side="right" min={280} max={680} cssVar="--preview-w" />}
         {objectsOpen && workspaceTab === "objects" && <Resizer side="right" min={260} max={620} cssVar="--objects-w" />}
         {workflowsOpen && workspaceTab === "workflows" && <Resizer side="right" min={280} max={720} cssVar="--workflows-w" />}
         {(previewOpen || browserPanelOpen || objectsOpen || workflowsOpen || filesTabOpen || newchatTabOpen) && (
-          <aside className={`app-canvas-slot ${workspaceTab === "browser" ? "canvas-tab-browser" : workspaceTab === "objects" ? "canvas-tab-objects" : workspaceTab === "workflows" ? "canvas-tab-workflows" : workspaceTab === "files" ? "canvas-tab-files" : workspaceTab === "newchat" ? "canvas-tab-newchat" : "canvas-tab-preview"}`}>
+          <aside className={`app-canvas-slot ${workspaceTab === "browser" ? "canvas-tab-browser" : workspaceTab === "objects" ? "canvas-tab-objects" : workspaceTab === "workflows" ? "canvas-tab-workflows" : workspaceTab === "files" ? "canvas-tab-files" : workspaceTab === "newchat" ? "canvas-tab-newchat" : "canvas-tab-preview"}${dualPaneActive ? " dual-pane" : ""}`}>
             <div className="preview-panel-head app-canvas-head">
               <div className="app-canvas-tabs" role="tablist" aria-label="工作区画布">
                 <button
@@ -2150,7 +2181,7 @@ export default function App() {
             </div>
             {/* 两个页签体都保持挂载、用 CSS 显隐：切换不卸载，DocViewer/浏览器状态零丢失 */}
             {previewOpen && (
-              <div className={`app-canvas-body canvas-body-preview ${workspaceTab === "preview" ? "" : "canvas-hidden"}`}>
+              <div className={`app-canvas-body canvas-body-preview ${(workspaceTab === "preview" || dualPaneActive) ? "" : "canvas-hidden"}`}>
                 <div className="preview-panel-tabs">
                   {[['document', '预览'], ['changes', '改动'], ['artifacts', '产物'], ['links', '链接'], ...(subagentDetail ? [['subagent', '子代理']] : [])].map(([id, label]) => (
                     <button key={id} className={previewTab === id ? "active" : ""} onClick={() => { previewTabManualAtRef.current = Date.now(); setPreviewTab(id); }}>
@@ -2191,7 +2222,7 @@ export default function App() {
               </div>
             )}
             {browserPanelOpen && (
-              <div className={`app-canvas-body canvas-body-browser ${workspaceTab === "browser" ? "" : "canvas-hidden"}`}>
+              <div className={`app-canvas-body canvas-body-browser ${(workspaceTab === "browser" || dualPaneActive) ? "" : "canvas-hidden"}`}>
                 <BrowserPanel clientId={clientId} threadId={threadId} fullscreen={browserFullscreen} onToggleFullscreen={() => setBrowserFullscreen((value) => !value)} />
               </div>
             )}
@@ -2237,7 +2268,7 @@ export default function App() {
             )}
           </aside>
         )}
-        {browserPanelOpen && workspaceTab === "browser" && <Resizer side="right" min={340} max={960} cssVar="--browser-w" />}
+        {browserPanelOpen && (workspaceTab === "browser" || dualPaneActive) && <Resizer side="right" min={340} max={960} cssVar="--browser-w" />}
         <DeferredModule label="技能管理">
         <SkillsManager
           open={activeModule === "skills"}

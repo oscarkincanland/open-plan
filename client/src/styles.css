@@ -11080,6 +11080,20 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 /* v0.13.9：文件树/新会话页签共用产物画布宽度（--preview-w，280–680 由 Resizer 约束） */
 .app-canvas-slot.canvas-tab-files, .app-canvas-slot.canvas-tab-newchat { width: var(--preview-w, 420px); max-width: 520px; flex: 0 0 var(--preview-w, 420px); }
 .app-canvas-slot.canvas-tab-browser { width: var(--browser-w, min(48vw, 760px)); max-width: 1100px; min-width: 340px; flex: 0 0 var(--browser-w, min(48vw, 760px)); }
+/* ===== v0.13.10 双面板常驻：工作产物（WorkPanel）与浏览器（Canvas）并排 =====
+   仅 >1280 且两面板同开时由 JS 挂 dual-pane 类（窄屏自动降级单面板）；
+   面板宽度各受 --preview-w / --browser-w 与 vw 上限约束，保证对话输入区不被压扁。 */
+.app-canvas-slot.dual-pane {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  width: auto;
+  max-width: 78vw;
+  flex: 0 0 auto;
+}
+.app-canvas-slot.dual-pane > .app-canvas-head { flex: 0 0 100%; }
+.app-canvas-slot.dual-pane .canvas-body-preview { flex: 0 0 min(var(--preview-w, 420px), 34vw); width: auto; }
+.app-canvas-slot.dual-pane .canvas-body-browser { flex: 1 1 min(var(--browser-w, min(48vw, 760px)), 44vw); width: auto; min-width: 0; border-left: 1px solid var(--border); }
 .app-canvas-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; min-height: 50px; }
 .app-canvas-tabs { display: flex; gap: 6px; }
 .app-canvas-tabs button {
