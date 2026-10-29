@@ -316,7 +316,7 @@ await test("agent.mjs 接线：幂等复用 + 阻塞冒泡均门控在开关上"
   const src = fs.readFileSync(path.join(ROOT, "server", "agent.mjs"), "utf8");
   assert.match(src, /subagentDelegationCache\.run\(/, "run_subagent 应接入委派幂等缓存");
   assert.match(src, /RUNTIME_FLAGS\.subagentIdempotent && parentToolCallId/, "幂等路径应门控 subagentIdempotent");
-  assert.match(src, /return runOrchestration\(\);/, "开关关闭时应直接执行编排主体（基线行为）");
+  assert.match(src, /const orchestration = await runOrchestration\(\);/, "开关关闭时应直接 await 编排主体（v0.13.3 基线行为，逐字保留）");
   assert.match(src, /emitChild\("subagent_blocked"/, "应冒泡 subagent_blocked");
   assert.match(src, /emitChild\("subagent_unblocked"/, "应冒泡 subagent_unblocked");
   assert.match(src, /RUNTIME_FLAGS\.subagentBlockedBubble && matchToolAction\("write"/, "冒泡应门控 subagentBlockedBubble");
