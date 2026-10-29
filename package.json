@@ -58,6 +58,8 @@
     "test:first-token-fix": "node scripts/首字延迟修复测试.mjs",
     "test:run-recovery": "node scripts/运行恢复判定测试.mjs",
     "test:stream-quota": "node scripts/长连接预算测试.mjs",
+    "test:fsync-batch": "node scripts/写盘批量测试.mjs",
+    "test:queue-indicator": "node scripts/排队提示测试.mjs",
     "test:approval": "node scripts/审批作用域测试.mjs",
     "test:startup": "node scripts/启动与会话恢复测试.mjs",
     "test:main-flow": "node scripts/主任务流可信度测试.mjs",

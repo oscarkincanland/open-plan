@@ -316,6 +316,48 @@ const runCache = new Map();
 // 全部 Run（含 events/steps/快照）重新 JSON.parse。索引按文件指纹增量维护，
 // 写入时用内存里的最新 Run 直接刷新，外部改动/删除则按指纹自动回退重建。
 const runIndex = new Map();
+/**
+ * P2：recordRunEvent 的合并写队列。
+ *
+ * Run 事件密集时，每条事件都把整份 Run（可达 1MB）重新 JSON 化并原子写盘，
+ * 实测 p95 约 23ms，会持续占用事件循环。这里把事件写盘合并到 200ms：
+ *   - 事件仍立即进入内存与全局事件流；
+ *   - 读取（getRun/listRuns）优先返回待写队列里的最新对象，不读旧盘；
+ *   - 生命周期写（beginRun/finishRun/step/todo/终稿）仍走 saveRun 立即落盘；
+ *   - 进程退出/服务关闭前 flush，最多丢失最后一个 200ms 窗口。
+ */
+const pendingRunSaves = new Map();
+let runSaveFlushTimer = null;
+
+function scheduleRunSave(run, delayMs = 200) {
+  pendingRunSaves.set(run.id, run);
+  if (runSaveFlushTimer) return run;
+  runSaveFlushTimer = setTimeout(() => {
+    runSaveFlushTimer = null;
+    flushPendingRunSaves();
+  }, Math.max(20, Number(delayMs) || 200));
+  runSaveFlushTimer.unref?.();
+  return run;
+}
+
+/** 立即写出所有待合并的 Run（服务关闭、进程退出、测试断言前调用）。 */
+export function flushPendingRunSaves() {
+  if (runSaveFlushTimer) {
+    clearTimeout(runSaveFlushTimer);
+    runSaveFlushTimer = null;
+  }
+  for (const [id, run] of [...pendingRunSaves]) {
+    pendingRunSaves.delete(id);
+    try { saveRun(run); } catch (error) { console.warn(`[runs] 合并写盘失败：${String(error?.message || error).slice(0, 160)}`); }
+  }
+}
+
+let runSaveExitHookInstalled = false;
+function installRunSaveExitHook() {
+  if (runSaveExitHookInstalled) return;
+  runSaveExitHookInstalled = true;
+  process.once("exit", flushPendingRunSaves);
+}
 
 // 与 listRuns 的 query 过滤保持一致的检索文本（小写）。
 function runSearchText(run) {
@@ -344,6 +386,9 @@ function buildRunMeta(run) {
 }
 
 function runIndexEntry(id) {
+  // P2：待合并的 Run 以内存最新状态为准，避免列表读到上一次磁盘快照。
+  const pending = pendingRunSaves.get(id);
+  if (pending) return buildRunMeta(pending);
   const file = runFile(id);
   let stat;
   try {
@@ -361,6 +406,9 @@ function runIndexEntry(id) {
 }
 
 function loadRun(id) {
+  // P2：事件合并窗口内，内存对象比磁盘新；所有读取都优先返回它。
+  const pending = pendingRunSaves.get(id);
+  if (pending) return pending;
   const file = runFile(id);
   let stat;
   try {
@@ -393,6 +441,8 @@ function loadRun(id) {
 function saveRun(run) {
   run.updatedAt = new Date().toISOString();
   safeJsonWrite(runFile(run.id), run);
+  // 立即写已经覆盖内存状态，合并队列里的同一 Run 不再需要延迟写。
+  pendingRunSaves.delete(run.id);
   // 写后失效缓存：下次读取以磁盘为准，避免缓存与持久化状态分叉
   runCache.delete(run.id);
   // 列表索引直接用内存里的最新 Run 刷新，列表无需等到下次全量解析才更新。
@@ -803,9 +853,12 @@ export function recordRunEvent(id, type, data = {}) {
   const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
   run.eventSeq = seq;
   if (run.events.length < 800) run.events.push({ seq, type, data, at: new Date().toISOString() });
-  const saved = saveRun(run);
+  // P2：事件写盘合并到 200ms；getRun/listRuns 读合并队列里的最新对象，
+  // beginRun/finishRun/step/todo/终稿等生命周期仍走 saveRun 立即落盘。
+  installRunSaveExitHook();
+  scheduleRunSave(run);
   appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type, data });
-  return saved;
+  return run;
 }
 
 /** 幂等更新 Run 检查点；相同状态重复上报不会追加重复事件。 */

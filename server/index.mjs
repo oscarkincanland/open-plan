@@ -15,7 +15,7 @@ import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs } from "./runs.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves } from "./runs.mjs";
 import { attachRunTimingMeta, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
@@ -27,7 +27,7 @@ import { loadHookConfig, HOOK_EVENTS } from "./Hook事件层.mjs";
 import { listToolMetadata, metadataCoverageReport, TOOL_NAMES } from "./工具元数据.mjs";
 import { validateArtifacts } from "./产物验证.mjs";
 import { listPublishedArtifacts, publishArtifact, inspectRunAcceptance, confirmArtifactAcceptance, rollbackPublishedArtifact } from "./成果管理.mjs";
-import { atomicWriteFile, atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
+import { atomicWriteFile, atomicWriteJson, ensureDirectory, flushPendingFsync } from "./持久化工具.mjs";
 import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs";
 import { listConnectors, getConnector, beginConnectorAuth, setConnectorStatus } from "./connectors.mjs";
 import * as projectManager from "./项目管理.mjs";
@@ -6007,6 +6007,10 @@ async function shutdownService(reason, exitCode = 0) {
   try { stopAllWatches(); } catch (error) { recordProcessFault("shutdown_watch_failed", error); }
   try { await browserModule.shutdownBrowsers(); } catch (error) { recordProcessFault("shutdown_browser_failed", error); }
   if (memoryWatcher) { try { memoryWatcher.close(); } catch (error) { recordProcessFault("shutdown_memory_watch_failed", error); } }
+  // P2：退出前把仍处于合并窗口内的 JSONL 追加与 Run 事件落盘，
+  // 避免“服务正常关闭但最后一批数据未写”。
+  try { flushPendingRunSaves(); } catch (error) { recordProcessFault("shutdown_run_flush_failed", error); }
+  try { flushPendingFsync(); } catch (error) { recordProcessFault("shutdown_fsync_failed", error); }
   if (httpServer) {
     await new Promise((resolve) => {
       let settled = false;
