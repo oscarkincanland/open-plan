@@ -199,7 +199,7 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
     try {
       const result = await queueBrowserInput(payload);
       if (result?.ok === false) setMessage(result.error || "操作失败");
-      if (["click", "pointer", "wheel", "type", "key", "scroll", "back", "reload", "tab_new", "tab_switch", "tab_close"].includes(payload.action)) setTakeover(true);
+      // 归属由服务端 ownership 驱动（state.ownership → userOwns），交互后不再做本地布尔置位。
     } catch (error) {
       setMessage(String(error.message || error));
     } finally {
