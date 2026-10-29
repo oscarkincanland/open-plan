@@ -76,6 +76,12 @@ jobs:
       - name: AVA 会话分组（分页 / 工作区 / 20 条）
         run: node scripts/CI运行测试.mjs AVA会话分组测试
 
+      - name: AVA 智能体提及（触发转义 / 角色注入 / 会话继承）
+        run: node scripts/CI运行测试.mjs AVA提及测试
+
+      - name: AVA 欢迎页（点击即发送 / 端点回退 / 模式语义）
+        run: node scripts/CI运行测试.mjs AVA欢迎页测试
+
       - name: 长连接预算与流去重（切工作区/切会话卡死防护）
         run: node scripts/CI运行测试.mjs 长连接预算与流去重测试
 
