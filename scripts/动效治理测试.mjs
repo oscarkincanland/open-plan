@@ -113,7 +113,7 @@ assert.deepEqual(
 
 // 每个持续动画的宿主选择器都必须在闸门清单里
 const 持续动画宿主 = {
-  spin: [".loading-spinner"],
+  spin: [".loading-spinner", ".icon-loading"],
   "agent-avatar-breathe": [".avatar.agent-avatar.is-streaming"],
   blink: [".typing", ".run-summary-dot.running"],
   "dot-breathe-soft": [".efp-pulse", ".execution-flow-item.running .execution-flow-dot", ".streaming-dot"],

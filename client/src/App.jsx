@@ -1780,6 +1780,8 @@ export default function App() {
               projects={projects}
               currentProjectId={currentProject?.id || ""}
               onProjectChange={handleProjectChange}
+              // v0.13.8：工作区菜单「创建新任务」——在该项目工作区下新建会话
+              onCreateTask={(project) => { handleNewSession(project?.rootPath || undefined); }}
               workspaces={workspaces}
               currentWorkspace={currentWorkspace}
               onWorkspaceChange={handleWorkspaceChange}
@@ -1878,6 +1880,18 @@ export default function App() {
               </button>
             </div>
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
+            {/* v0.13.8：顶栏搜索入口——聚焦既有命令面板（Ctrl/Cmd+K 同源），不新建搜索后端 */}
+            <提示气泡 label="搜索（命令面板）">
+              <button
+                type="button"
+                className="btn-sm topbar-search-btn"
+                onClick={() => setPaletteOpen(true)}
+                aria-label="搜索（打开命令面板）"
+                title="搜索（Ctrl/Cmd+K）"
+              >
+                <Icon name="search" size={14} />
+              </button>
+            </提示气泡>
             <div className="topbar-tools" ref={topbarToolsRef}>
               <提示气泡 label="工作区工具">
                 <button

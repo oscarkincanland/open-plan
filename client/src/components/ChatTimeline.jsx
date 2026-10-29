@@ -38,6 +38,21 @@ export default function ChatTimeline({ messages, containerRef }) {
   const [cursorIdx, setCursorIdx] = useState(null); // 弹层里高亮的消息下标
   const [activeIdx, setActiveIdx] = useState(null); // 当前阅读位置（跟随滚动）
   const [popupTop, setPopupTop] = useState(null);   // 弹层垂直位置（px，夹在轨道内）
+  // v0.13.8：显示门槛之一——容器宽 ≥900px 才挂载轨道（窄屏隐藏），
+  // 用 ResizeObserver 监听对话区宽度，跨过门槛时保持其余状态。
+  const [wideEnough, setWideEnough] = useState(() => {
+    const width = containerRef?.current?.clientWidth || 0;
+    return width === 0 ? true : width >= 900;
+  });
+  useEffect(() => {
+    const root = containerRef?.current;
+    if (!root || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) setWideEnough(entry.contentRect.width >= 900);
+    });
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, [containerRef]);
 
   // 历史消息是渐进挂载的：目标消息可能还没进 DOM。这时退到最近的一条已挂载消息，
   // 保证"点了有反应"，而不是静默什么都不做。
@@ -127,6 +142,8 @@ export default function ChatTimeline({ messages, containerRef }) {
     const stride = Math.max(1, Math.ceil(raw.length / 24));
     return raw.filter((_, i) => i % stride === 0 || i === raw.length - 1);
   }, [entries, messages]);
+  // v0.13.8：显示门槛之二——用户轮次 ≥2（1 轮会话无需轨道导航）。
+  const userTurnCount = useMemo(() => entries.filter((entry) => entry.role === "user").length, [entries]);
 
   // 高亮"当前刻度"：取不超过滚动位置的那条；没有则落到第一条。
   const activeKey = (() => {
@@ -234,6 +251,8 @@ export default function ChatTimeline({ messages, containerRef }) {
   }, [open, anchorBead, windowEntries.length]);
 
   if (!messages || messages.length === 0 || !beads.length) return null;
+  // v0.13.8 门槛：用户轮次 ≥2 且容器 ≥900px；设置开关仍然优先（原有行为保留）。
+  if (userTurnCount < 2 || !wideEnough) return null;
 
   const cursorEntry = entries.find((entry) => entry.idx === cursorIdx) || null;
   const cursorPosition = windowEntries.find((entry) => entry.idx === cursorIdx)?.position ?? 0;

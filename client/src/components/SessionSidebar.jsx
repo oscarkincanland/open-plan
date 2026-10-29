@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { Document, Packer, Paragraph } from "docx";
-import { uploadFile, deleteFile, fileToBase64, searchFiles, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, pickWorkspace, cancelWorkspacePick, listFileRoots, addFileRoot, removeFileRoot, pickNativeFiles, openInSystem, revealInSystem } from "../api.js";
+import { uploadFile, deleteFile, fileToBase64, searchFiles, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, pickWorkspace, cancelWorkspacePick, listFileRoots, addFileRoot, removeFileRoot, pickNativeFiles, openInSystem, revealInSystem, archiveProject } from "../api.js";
 import { sortFiles } from "./文件排序.js";
 import { artifactTypeInfo } from "../产物类型.js";
 import ContextMenu from "./ContextMenu.jsx";
@@ -224,6 +224,8 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
       onFocus={() => setActionsId(s.id)}
     >
       {selecting && <button type="button" className="session-select" onClick={(e) => { e.stopPropagation(); toggleSelected(s.id); }} aria-pressed={selectedIds.has(s.id)} title={selectedIds.has(s.id) ? "取消选择" : "选择会话"}>{selectedIds.has(s.id) ? "✓" : ""}</button>}
+      {/* v0.13.8：运行态用旋转图标替代纯状态点（跟随 prefers-reduced-motion 静止）；跑马灯保留 */}
+      {RUNNING_SESSION_STATUSES.has(s.runStatus) && <Icon name="loading" size={12} className="session-running-icon icon-loading" />}
       <div className="session-indicator" data-status={s.runStatus && s.runStatus !== "idle" ? s.runStatus : "idle"} />
       <div className="session-info">
         {editingId === s.id ? (
@@ -356,9 +358,12 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   );
 }
 
-export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onAtMention, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onBatchDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenMcp, onOpenPiPlugins, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, onCollapseSidebar, theme = "dark", loadStatus = {}, changedFiles = NO_CHANGED_FILES }) {
+export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onAtMention, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onBatchDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenMcp, onOpenPiPlugins, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, onCollapseSidebar, onCreateTask, theme = "dark", loadStatus = {}, changedFiles = NO_CHANGED_FILES }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
+  // v0.13.8：项目卡片工作区菜单（创建新任务 / 在资源管理器打开 / 归档）
+  const [projectMenuId, setProjectMenuId] = useState(null);
+  const [projectActionBusy, setProjectActionBusy] = useState("");
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
   const [modalTab, setModalTab] = useState("settings"); // 设置弹窗子 tab：settings | memory
   const [fileQ, setFileQ] = useState("");    // 文件搜索关键词
@@ -603,6 +608,30 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       }
     }
   };
+
+  // v0.13.8：归档项目（工作区菜单）——只移除记录，不动磁盘文件；
+  // 归档的是当前项目时回退到剩余项目的工作区（或第一个工作区）。
+  const handleArchiveProject = useCallback(async (project) => {
+    if (!project?.id) return;
+    if (!(await askConfirm(`归档项目「${project.name}」？仅移除记录，不删除磁盘文件。`))) return;
+    setProjectActionBusy(project.id);
+    try {
+      const result = await archiveProject(project.id, true);
+      if (!result?.ok) throw new Error(result?.error || "归档失败");
+      setProjectMenuId(null);
+      onProjectUpdated?.();
+      notifySuccess(`已归档「${project.name}」`);
+      if (project.id === currentProjectId) {
+        const next = projects.find((item) => item.id !== project.id && item.rootPath);
+        if (next?.rootPath) onWorkspaceChange?.(next.rootPath);
+        else if (workspaces.length) onWorkspaceChange?.(workspaces[0].path);
+      }
+    } catch (error) {
+      notifyError(error?.message || "归档失败");
+    } finally {
+      setProjectActionBusy("");
+    }
+  }, [currentProjectId, projects, workspaces, onProjectUpdated, onWorkspaceChange]);
 
   // 用系统默认应用打开（不做 shell 拼接，服务端只接受工作区内/刚选中的路径）
   const handleOpenWithDefaultApp = async (filePath) => {
@@ -903,7 +932,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
             </span>
           </div>
           {projects.map((project) => (
-            <div key={project.id} className={"sidebar-project-card " + (project.id === currentProjectId ? "active" : "")} role="button" tabIndex={0} onClick={() => onProjectChange?.(project.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onProjectChange?.(project.id); }}>
+            <div key={project.id} className={"sidebar-project-card " + (project.id === currentProjectId ? "active" : "") + (projectMenuId === project.id ? " menu-open" : "")} role="button" tabIndex={0} onClick={() => onProjectChange?.(project.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onProjectChange?.(project.id); }} onMouseLeave={() => setProjectMenuId(null)}>
               <Icon name="folder" size={15} />
               <span className="sidebar-project-main">
                 <跑马灯文本
@@ -912,6 +941,25 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                   className="sidebar-project-name"
                 />
                 <small>{project.type || "综合项目"} · {project.status || "进行中"}</small>
+              </span>
+              {/* v0.13.8：工作区菜单——创建新任务 / 在资源管理器打开 / 归档（仅移除记录不删磁盘） */}
+              <span className="sidebar-project-tools" onClick={(e) => e.stopPropagation()}>
+                <提示气泡 label="项目操作">
+                  <button type="button" className="project-menu-btn" aria-label={`项目操作：${project.name}`} aria-expanded={projectMenuId === project.id} aria-haspopup="menu" onClick={() => setProjectMenuId(projectMenuId === project.id ? null : project.id)}><Icon name="more" size={12} /></button>
+                </提示气泡>
+                {projectMenuId === project.id && (
+                  <div className="project-menu" role="menu" aria-label={`项目操作菜单：${project.name}`}>
+                    <button role="menuitem" onClick={() => { setProjectMenuId(null); onCreateTask?.(project); }} disabled={projectActionBusy === project.id}>
+                      <Icon name="chatPlus" size={12} /> 创建新任务
+                    </button>
+                    <button role="menuitem" onClick={() => { setProjectMenuId(null); if (project.rootPath) handleRevealInFileManager(project.rootPath); }} disabled={!project.rootPath || projectActionBusy === project.id}>
+                      <Icon name="folderOpen" size={12} /> 在资源管理器打开
+                    </button>
+                    <button role="menuitem" className="danger" onClick={() => handleArchiveProject(project)} disabled={projectActionBusy === project.id}>
+                      <Icon name="trash" size={12} /> 归档项目
+                    </button>
+                  </div>
+                )}
               </span>
               {project.pendingMemoryCount > 0 && <span className="sidebar-project-badge">待沉淀 {project.pendingMemoryCount}</span>}
               <span className="sidebar-project-count">会话 {project.sessionCount ?? projectSessions(project).length}</span>

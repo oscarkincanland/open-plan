@@ -5,6 +5,7 @@ import MarkdownBody from "./MarkdownBody.jsx";
 import 提及菜单 from "./提及菜单.jsx";
 import { detectMentionTrigger, filterAgentsForMention, buildMentionPrefix } from "./提及逻辑.js";
 import 欢迎卡片 from "./欢迎卡片.jsx";
+import { ATTACHMENT_SIZE_LIMIT, ATTACHMENT_ALLOWED_EXT, mediaKindFor, formatBytes } from "./媒体工具.js";
 import Icon, { ProviderIcon } from "./Icon.jsx";
 import 提示气泡 from "./提示气泡.jsx";
 import ToolIdentityIcon from "./工具语义图标.jsx";
@@ -878,6 +879,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     }, 80);
   }, [replaceExecutionEvents]);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  // v0.13.8：离开底部期间累计的新助手消息数；回底或滚到底清零（TurnRail 配套）。
+  const [unreadBelow, setUnreadBelow] = useState(0);
+  const assistantSeenCountRef = useRef(null); // 最后一条助手消息 id（未读判定基准）
   // 本轮系统提示（上下文压缩 / 文件变更等）：聚合为一条可展开摘要，
   // 不再往对话流里逐条堆气泡——那些气泡既不会随回合结束清理，刷新回放时还会重复出现。
   const [systemNotes, setSystemNotes] = useState([]);
@@ -1278,6 +1282,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     if (historyThreadId && historyThreadId !== threadId) return;
     if (historyMessages) {
       followLatestRef.current = true;
+      setUnreadBelow(0); // 切会话未读归零：旧会话的未读不再延续到新会话
       const normalizedHistory = normalizeHistoryMessages(historyMessages);
       seedFinishedRuns(threadId, normalizedHistory);
       setMessages(normalizedHistory);
@@ -3703,18 +3708,23 @@ case "runtime_connecting":
   const handleFiles = async (list) => {
     const addedImgs = [];
     const addedAtts = [];
-    const ALLOWED_EXT = /\.(docx|xlsx|pptx|md|markdown|txt|pdf|html|htm|csv|json)$/i;
+    // v0.13.8：文档白名单扩展音视频（mp4/webm/mov、mp3/wav/m4a）；
+    // 音视频不作为图片进模型，作为附件暂存，Agent 通过工作区读取；100MB 上限。
+    const skipped = [];
     for (const f of Array.from(list).slice(0, 6)) {
+      if (f.size > ATTACHMENT_SIZE_LIMIT) { skipped.push(`${f.name}（超过 ${formatBytes(ATTACHMENT_SIZE_LIMIT)} 上限）`); continue; }
       if (f.type.startsWith("image/")) {
         try {
           const { mediaType, data } = await fileToBase64(f);
           addedImgs.push({ mediaType, data, dataUrl: `data:${mediaType};base64,${data}`, name: f.name });
         } catch {}
-      } else if (ALLOWED_EXT.test(f.name)) {
+      } else if (ATTACHMENT_ALLOWED_EXT.test(f.name)) {
         try {
           const { mediaType, data } = await fileToBase64(f);
-          addedAtts.push({ mediaType, data, dataUrl: `data:${mediaType};base64,${data}`, name: f.name });
+          addedAtts.push({ mediaType, data, dataUrl: `data:${mediaType};base64,${data}`, name: f.name, size: f.size, mediaKind: mediaKindFor(f.name) });
         } catch {}
+      } else {
+        skipped.push(f.name);
       }
     }
     if (addedImgs.length) setImages((im) => [...im, ...addedImgs]);
@@ -3724,7 +3734,15 @@ case "runtime_connecting":
       setModelMsg(`已加入上下文 ${count} 个文件`);
       setTimeout(() => setModelMsg(""), 2200);
     }
+    if (skipped.length) {
+      setModelMsg(`已跳过 ${skipped.length} 个文件：${skipped.slice(0, 3).join("、")}${skipped.length > 3 ? " 等" : ""}`);
+      setTimeout(() => setModelMsg(""), 3200);
+    }
   };
+
+  // v0.13.8：全区域拖拽——整个输入区容器（含附件栏）都接受拖入，显示高亮遮罩。
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepthRef = useRef(0);
 
   const handleClipboardPaste = (e) => {
     const files = Array.from(e.clipboardData?.items || [])
@@ -3889,14 +3907,27 @@ case "runtime_connecting":
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     followLatestRef.current = atBottom;
     setShowScrollToBottom(!atBottom && el.scrollHeight > el.clientHeight + 80);
+    if (atBottom) setUnreadBelow(0);
   };
   const scrollToLatest = () => {
     const el = bodyRef.current;
     if (!el) return;
     followLatestRef.current = true;
     setShowScrollToBottom(false);
+    setUnreadBelow(0);
     el.scrollTo({ top: el.scrollHeight, behavior: motionScrollBehavior() });
   };
+  // v0.13.8 未读累计：以"最后一条助手消息 id"为准——只有尾部新到达的回复才计数，
+  // 历史分页向头部插入旧消息、切会话重放都不会误增；离开底部期间到达才累计。
+  useEffect(() => {
+    const lastAssistant = [...messages].reverse().find((message) => message?.role === "assistant") || null;
+    const lastId = lastAssistant?.id || null;
+    const previousId = assistantSeenCountRef.current;
+    assistantSeenCountRef.current = lastId;
+    if (lastId && previousId && lastId !== previousId && !followLatestRef.current) {
+      setUnreadBelow((count) => Math.min(999, count + 1));
+    }
+  }, [messages]);
   useEffect(() => {
     if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
     scrollTimerRef.current = setTimeout(() => {
@@ -4305,9 +4336,9 @@ case "runtime_connecting":
            }); })()}
           </div>
           {showScrollToBottom && (
-            <button type="button" className="chat-scroll-latest" onClick={scrollToLatest} title="回到底部" aria-label="回到底部">
+            <button type="button" className="chat-scroll-latest" onClick={scrollToLatest} title="回到底部" aria-label={unreadBelow > 0 ? `回到底部，${unreadBelow} 条未读` : "回到底部"}>
               <Icon name="chevronDown" size={14} />
-              <span>回到底部</span>
+              <span>{unreadBelow > 0 ? `回到底部 · ${unreadBelow} 条未读` : "回到底部"}</span>
             </button>
           )}
           {/* 会话消息目录栏：收纳在聊天滚动区右侧，靠近滚动条；悬停显示摘要 */}
@@ -4330,9 +4361,10 @@ case "runtime_connecting":
         {attachments.length > 0 && (
           <div className="att-preview-row">
             {attachments.map((att, i) => (
-              <div className="att-chip" key={i} title={att.name}>
-                <Icon name="file" size={14} />
+              <div className={`att-chip${att.mediaKind === "video" ? " media-video" : att.mediaKind === "audio" ? " media-audio" : ""}`} key={i} title={`${att.name}${att.size ? ` · ${formatBytes(att.size)}` : ""}${att.mediaKind === "video" ? "（视频附件，不自动播放）" : att.mediaKind === "audio" ? "（音频附件）" : ""}`}>
+                <Icon name={att.mediaKind === "video" ? "play" : att.mediaKind === "audio" ? "audio" : "file"} size={14} />
                 <span className="att-name">{att.name}</span>
+                {att.size ? <span className="att-size">{formatBytes(att.size)}</span> : null}
                 <button className="att-remove" onClick={() => setAttachments((at) => at.filter((_, j) => j !== i))}>
                   <Icon name="close" size={12} />
                 </button>
@@ -4384,7 +4416,19 @@ case "runtime_connecting":
         {/* 任务卡放在输入框之外：它表达的是"本轮进度"，不是输入内容。
             放在 .chat-input 里面时会被读成"被输入框吞掉的一块"，而且输入框按内容撑高，
             忙时状态会把对话区压到几十像素（实测 720px 窗口只剩 364px、420px 只剩 95px）。 */}
-        <div className="chat-compose">
+        <div
+          className={`chat-compose${dragActive ? " drag-active" : ""}`}
+          onDragEnter={(e) => { e.preventDefault(); dragDepthRef.current += 1; setDragActive(true); }}
+          onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; }}
+          onDragLeave={(e) => { e.preventDefault(); dragDepthRef.current = Math.max(0, dragDepthRef.current - 1); if (dragDepthRef.current === 0) setDragActive(false); }}
+          onDrop={(e) => { e.preventDefault(); dragDepthRef.current = 0; setDragActive(false); handleFiles(e.dataTransfer?.files || []); }}
+        >
+          {dragActive && (
+            <div className="compose-drag-mask" role="status" aria-label="松开以添加附件">
+              <Icon name="file" size={22} />
+              <span>松开以添加附件（视频/音频/文档 ≤100MB）</span>
+            </div>
+          )}
           {todoItems.length > 0 && <TaskProgressCard tasks={todoItems} running={busy} />}
           <div className="chat-input">
           {busy && (
@@ -4555,7 +4599,7 @@ case "runtime_connecting":
           {/* 工具栏按“上下文 / Agent 设置 / 会话”分组；Chat / Work 已移到顶栏 */}
           <div className="chat-toolbar">
             <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
-            <input ref={attInputRef} type="file" accept=".docx,.xlsx,.pptx,.md,.markdown,.txt,.pdf,.html,.htm,.csv,.json" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
+            <input ref={attInputRef} type="file" accept=".docx,.xlsx,.pptx,.md,.markdown,.txt,.pdf,.html,.htm,.csv,.json,.mp4,.webm,.mov,.mp3,.wav,.m4a" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
             <div className="chat-toolbar-group toolbar-context-group" title="上下文工具">
               <span className="chat-toolbar-label">上下文</span>
               <提示气泡 label="上传图片">
