@@ -38,7 +38,7 @@ test("ask_user 声明 fields 参数与五种字段类型", () => {
 
 test("ask_user 事件与持久化携带 fields", () => {
   assert.match(agent, /\.\.\.\(fields\.length \? \{ fields \} : \{\}\)/);
-  assert.match(agent, /options: opts,\n\s+\.\.\.\(fields\.length \? \{ fields \} : \{\}\),\n\s+status: "pending"/);
+  assert.match(agent, /options: opts,\n\s+(?:previewFile: previewFile \|\| null,\n\s+)?\.\.\.\(fields\.length \? \{ fields \} : \{\}\),\n\s+status: "pending"/);
 });
 
 test("回答接口支持 values 并序列化", () => {

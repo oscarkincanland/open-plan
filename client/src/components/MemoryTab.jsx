@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import Icon from "./Icon.jsx";
-import { approveMemoryProposal, editMemoryProposal, listMemoryProposals, memoryProposalHistory, mergeMemoryProposals, rejectMemoryProposal } from "../api.js";
+import { approveMemoryProposal, editMemoryProposal, listMemoryProposals, memoryProposalHistory, mergeMemoryProposals, rejectMemoryProposal, getTabId } from "../api.js";
 import { acquireStream } from "../长连接预算.js";
 import { askText } from "./Feedback.jsx";
 
@@ -69,7 +69,7 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
   useEffect(() => {
     const slot = acquireStream("memory-changes", { priority: 4, label: "记忆变更流" });
     if (!slot) return undefined;
-    const es = new EventSource("/api/memory/stream");
+    const es = new EventSource(`/api/memory/stream?tab=${encodeURIComponent(getTabId())}`);
     slot.attach(() => es.close());
     es.onmessage = (e) => {
       try {

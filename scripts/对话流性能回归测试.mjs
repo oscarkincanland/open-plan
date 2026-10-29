@@ -408,7 +408,8 @@ try {
   }
   assert.match(serverSource, /app\.get\("\/api\/diagnostics\/streams"/, "应提供长连接诊断端点");
   const streamModuleSource = fs.readFileSync(new URL("../server/流连接.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
-  assert.match(streamModuleSource, /const MAX_SAME_KEY = 2;/, "同键允许一个备用读者（多标签页/监测工具不再互踢）");
+  assert.match(streamModuleSource, /const MAX_SAME_KEY = 1;/, "同键只保留 1 条（S1：tab 维度已隔离，不再需要备用读者）");
+  assert.match(streamModuleSource, /streamKeyOf\(\{ path, client = "", thread = "", tab = "" \}\)/, "流键必须包含标签页维度");
   console.log("对话流性能回归：通过");
 } finally {
   if (runId) {

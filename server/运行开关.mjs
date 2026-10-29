@@ -130,8 +130,7 @@ export const RUNTIME_FLAGS = Object.freeze({
   streamQuotaRetryAfterSeconds: readPositiveInt("OAW_STREAM_QUOTA_RETRY_AFTER_S", 5),
   /** P1-2：事件负载结构校验（默认关 = 不校验；打开则只告警并计数，不改变落盘与投递行为） */
   eventSchemaCheck: readFlag("OAW_EVENT_SCHEMA_CHECK") || QODER_ALIGN,
-  /** P1-8：右侧对象栏（本轮对象聚合：产出/来源/技能与 MCP/网页查阅/记忆 + 环境信息 + 后台进程） */
-  qoderObjectBar: readFlag("OAW_QODER_OBJECT_BAR") || QODER_ALIGN,
+  /** P1-8：右侧对象栏（本轮对象聚合：产出/来源/技能与 MCP/网页查阅/记忆 + 环境信息 + 后台进程） */  qoderObjectBar: readFlag("OAW_QODER_OBJECT_BAR") || QODER_ALIGN,
   /** §4：声明式交通规划领域工作流（注册表 + 六个声明 + preflight 硬约束，默认关 = 不加载也不下发） */
   domainWorkflows: readFlag("OAW_DOMAIN_WORKFLOWS") || QODER_ALIGN,
   /** Qoder P0-2：超大 tool_output 单帧切分（默认关 = 原样单帧下发，与基线逐字一致） */
@@ -140,6 +139,8 @@ export const RUNTIME_FLAGS = Object.freeze({
   qoderToolOutputFrameMaxBytes: readPositiveInt("OAW_QODER_TOOL_OUTPUT_FRAME_MAX_BYTES", 256 * 1024),
   /** P1-4：交互（HITL）归属——ask_user / tool_approval_request 载荷附带 owner{kind,id}（默认关 = 载荷与基线逐字一致） */
   qoderInteractionOwner: readFlag("OAW_QODER_INTERACTION_OWNER") || QODER_ALIGN,
+  /** Office 写作规范层：模板路由 / 场景参数 / 版式令牌 / 规则闸门（默认关 = 旧行为逐字一致） */
+  officeFormat: readFlag("OAW_OFFICE_FORMAT"),
 
   /* ===== ZCode Harness 对标开关族（默认全关）===== */
   /** 总开关：一键打开 H 线整族（仅测试/预览；关闭即整体回滚） */
@@ -229,6 +230,7 @@ export function runtimeFlagsSnapshot() {
     domainWorkflows: RUNTIME_FLAGS.domainWorkflows,
     qoderToolOutputSplit: RUNTIME_FLAGS.qoderToolOutputSplit,
     qoderInteractionOwner: RUNTIME_FLAGS.qoderInteractionOwner,
+    officeFormat: RUNTIME_FLAGS.officeFormat,
     // ZCode Harness 对标开关族
     harnessAlign: RUNTIME_FLAGS.harnessAlign,
     toolMetadata: RUNTIME_FLAGS.toolMetadata,

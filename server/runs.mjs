@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { getWorkspace } from "./workspace.mjs";
 import { appendEvent } from "./事件存储.mjs";
 import { recordRunFinished as recordGoalRunFinished } from "./goal.mjs";
-import { atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
+import { atomicWriteFile, atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
 import { attachRunTimingSpans } from "./首字延迟.mjs";
 import { RUNTIME_FLAGS } from "./运行开关.mjs";
 import {
@@ -111,7 +111,10 @@ function ensureDir(dir) {
 
 function safeJsonWrite(file, value) {
   ensureDir(path.dirname(file));
-  atomicWriteJson(file, value);
+  // P2：Run 记录每个事件都会全量重写。pretty-print（2 空格缩进）让 1MB 级 Run
+  // 的字符串化与写盘成本额外增加 30%+，而 Run JSON 只被程序读取、不面向人工 diff。
+  // 改为紧凑 JSON（仍是合法 JSON），减少事件级写放大；读路径无需改动。
+  atomicWriteFile(file, JSON.stringify(value), "utf8");
 }
 
 function runFile(id) {
@@ -1146,7 +1149,23 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
     if (shouldTrackWorkspace) copyAfterBlobs(run, rawChanges, after);
     run.after = after;
     // C01：补全审计字段 + 剔除“没有内容差异”的疑似变更（必须在 after blob 复制之后判定）
-    run.artifacts = shouldTrackWorkspace ? finalizeFileChanges(run, rawChanges, after) : [];
+    const recomputedArtifacts = shouldTrackWorkspace ? finalizeFileChanges(run, rawChanges, after) : [];
+    // R1：失败/取消收尾不能清空已经落盘并通过校验的产物。
+    // 恢复性完成（source=recovered）同样保留既有产物：重启后工作区可能已被继续修改，
+    // 重算结果未必能覆盖原产物，不能因为“重新扫描”把成果抹掉。
+    const previousArtifacts = Array.isArray(run.artifacts) ? run.artifacts : [];
+    if (finalStatus === "completed" && completion?.source !== "recovered") {
+      run.artifacts = recomputedArtifacts;
+    } else {
+      const seenArtifactPaths = new Set(recomputedArtifacts.map((item) => String(item?.path || "").replace(/\\/g, "/")));
+      run.artifacts = [...recomputedArtifacts];
+      for (const item of previousArtifacts) {
+        const key = String(item?.path || "").replace(/\\/g, "/");
+        if (!key || seenArtifactPaths.has(key)) continue;
+        seenArtifactPaths.add(key);
+        run.artifacts.push({ ...item, preserved: true });
+      }
+    }
     const artifacts = run.artifacts;
     run.snapshotTruncated = Boolean(run.before?.truncated || after.truncated);
     run.status = finalStatus;
@@ -1269,7 +1288,45 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
 /**
  * 服务重启后，磁盘上仍为活动态的 Run 不可能继续持有旧进程内存，
  * 先标记为 recovering，交给任务中心显式继续，避免假装仍在执行。
+ *
+ * R1：收尾判定必须以客观完成证据为准。agent 已经产出终稿（finalText /
+ * assistant_final / agent_end）时，重启只是打断了收尾流程，不能把任务判成失败；
+ * 否则用户会看到“活干完了、产物也有，但任务显示失败”。证据判定同时用于
+ * 长期未收口（默认 6 小时）的 Run，避免 11 天悬挂只能等下一次重启清理。
  */
+const RECOVER_MAX_RUNNING_MS = Math.max(
+  30 * 60_000,
+  Number.parseInt(process.env.OAW_RUN_RECOVER_MAX_AGE_MS || String(6 * 60 * 60_000), 10) || 6 * 60 * 60_000,
+);
+
+function runCompletionEvidence(run) {
+  const events = Array.isArray(run.events) ? run.events : [];
+  const finalText = String(run.finalText || "").trim();
+  const hasAssistantFinal = events.some((event) => event?.type === "assistant_final" && String(event?.data?.text || "").trim());
+  const hasAgentEnd = events.some((event) => event?.type === "agent_end");
+  return {
+    finished: Boolean(finalText || hasAssistantFinal || hasAgentEnd),
+    finalText: finalText || String(events.find((event) => event?.type === "assistant_final")?.data?.text || "").trim(),
+    artifacts: Array.isArray(run.artifacts) ? run.artifacts.length : 0,
+  };
+}
+
+function recoveredCompletion(run, evidence) {
+  const summary = evidence.finalText
+    || run.completion?.summary
+    || run.summary
+    || "任务在服务重启前已完成，按已产出终稿收尾";
+  return {
+    status: "success",
+    source: "recovered",
+    summary,
+    incomplete: [],
+    blockers: [],
+    verification: null,
+    at: new Date().toISOString(),
+  };
+}
+
 export function recoverActiveRuns({ onlyIds = null } = {}) {
   ensureDir(RUNS_DIR);
   reclaimStaleWriteLocks();
@@ -1278,9 +1335,19 @@ export function recoverActiveRuns({ onlyIds = null } = {}) {
   for (const name of fs.readdirSync(RUNS_DIR).filter((item) => item.endsWith(".json"))) {
     const run = loadRun(path.basename(name, ".json"));
     if (!run || !ACTIVE_RUN_STATUSES.has(run.status)) continue;
-    // 上次重启已经标记为 recovering、这次重启仍然挂着：说明用户没有再继续它，
-    // 按失败收尾（discard staging + 补 run_finished），避免 run_started 永远没有终态。
+    // 上次重启已经标记为 recovering、这次重启仍然挂着：先看客观完成证据。
+    // 有终稿/agent_end → 按完成收尾；没有 → 才判失败（discard staging + 补 run_finished）。
     if (run.status === "recovering") {
+      const evidence = runCompletionEvidence(run);
+      if (evidence.finished) {
+        const finished = finishRun(run.id, {
+          status: "completed",
+          summary: run.summary || "服务重启后按已产出终稿自动收尾",
+          completion: recoveredCompletion(run, evidence),
+        });
+        if (finished) recovered.push(`${run.id}(按终稿收尾)`);
+        continue;
+      }
       const finished = finishRun(run.id, {
         status: "failed",
         error: run.error || "服务重启两次后未被恢复，任务已终止",
@@ -1290,6 +1357,18 @@ export function recoverActiveRuns({ onlyIds = null } = {}) {
       continue;
     }
     if (allowList && !allowList.has(run.id)) continue;
+    // 长期未收口：重启时已经没有旧进程，超过阈值不可能再继续。
+    // 有终稿按完成收尾，没有才判失败；避免“运行中”永久悬挂。
+    const startedAtMs = Date.parse(run.startedAt || "");
+    if (Number.isFinite(startedAtMs) && Date.now() - startedAtMs > RECOVER_MAX_RUNNING_MS) {
+      const evidence = runCompletionEvidence(run);
+      const hours = Math.round(RECOVER_MAX_RUNNING_MS / 3600_000);
+      const finished = evidence.finished
+        ? finishRun(run.id, { status: "completed", summary: run.summary || "运行超时后按已产出终稿自动收尾", completion: recoveredCompletion(run, evidence) })
+        : finishRun(run.id, { status: "failed", error: run.error || `运行超过 ${hours} 小时未收口，已自动收尾`, summary: "任务长时间未收口，已自动收尾" });
+      if (finished) recovered.push(`${run.id}(${evidence.finished ? "按终稿收尾" : "超时收尾"})`);
+      continue;
+    }
     run.status = "recovering";
     run.recovery = { required: true, reason: "服务重启后需要用户确认继续", detectedAt: new Date().toISOString() };
     run.events = Array.isArray(run.events) ? run.events : [];

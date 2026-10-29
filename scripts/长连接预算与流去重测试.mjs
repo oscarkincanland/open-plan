@@ -144,23 +144,16 @@ test("waitForStreamSlot 在有槽位时立刻回调，满时等释放后回调",
 });
 
 console.log("\n服务端流登记表：");
-test("同键保留上限：同一 (path, client, thread) 允许一个备用读者，超出才收掉最旧的", () => {
+test("同键只保留 1 条：同 (path, client, tab, thread) 的旧流被收掉", () => {
   const closedA = [];
   const first = registerServerStream({ path: "/api/agent/stream", client: "c1", thread: "t1", close: () => closedA.push(first.id) });
   const second = registerServerStream({ path: "/api/agent/stream", client: "c1", thread: "t1", close: () => closedA.push(second.id) });
-  // 第二个读者不该把第一个踢掉（多标签页/监测工具共存）
-  assert.deepEqual(second.replaced.map((item) => item.reason), [], "第二个同键读者不应触发去重");
-  assert.equal(closedA.length, 0, "第一个读者的连接必须保留");
-  // 第三个才触发上限：收掉最旧的那个
-  const third = registerServerStream({ path: "/api/agent/stream", client: "c1", thread: "t1", close: () => closedA.push(third.id) });
-  assert.deepEqual(third.replaced.map((item) => item.reason), ["same-key"], "超出保留上限应收掉最旧连接");
-  assert.equal(closedA.length, 1, "只应收掉一条（最旧的）");
+  // S1：加入 tab 维度后，同一标签页的同键流只保留最新一条，旧连接立即收掉
+  assert.deepEqual(second.replaced.map((item) => item.reason), ["same-key"], "同键第二个读者应顶掉旧连接");
+  assert.equal(closedA.length, 1, "旧连接必须被关闭");
   assert.equal(listServerStreams().some((item) => item.id === first.id), false, "最旧的流不应留在登记表");
-  assert.equal(listServerStreams().filter((item) => item.id === second.id).length, 1, "中间那条应保留");
-  assert.equal(listServerStreams().filter((item) => item.id === third.id).length, 1, "最新的流应登记在册");
+  assert.equal(listServerStreams().filter((item) => item.id === second.id).length, 1, "最新的流应登记在册");
   releaseServerStream(second.id);
-  releaseServerStream(third.id);
-  assert.equal(listServerStreams().some((item) => item.id === third.id), false);
 });
 
 test("不同 thread 的对话流可以并存", () => {
@@ -202,9 +195,10 @@ test("写入记账区分活跃与挂死的流，按条件关闭生效", () => {
   assert.equal(listServerStreams().some((item) => item.id === handle.id), false);
 });
 
-test("streamKeyOf 归一化键", () => {
-  assert.equal(streamKeyOf({ path: "/a", client: "c", thread: "t" }), "/a|c|t");
-  assert.equal(streamKeyOf({ path: "/a" }), "/a||");
+test("streamKeyOf 归一化键（含标签页维度）", () => {
+  assert.equal(streamKeyOf({ path: "/a", client: "c", thread: "t" }), "/a|c||t");
+  assert.equal(streamKeyOf({ path: "/a", client: "c", tab: "tab1", thread: "t" }), "/a|c|tab1|t");
+  assert.equal(streamKeyOf({ path: "/a" }), "/a|||");
 });
 
 test("清扫：probe 判定已断开的流被摘掉，存活的保留", () => {

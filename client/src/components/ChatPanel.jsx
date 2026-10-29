@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
 import { createPortal } from "react-dom";
-import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, branchAgentSession, getSession, getSessionMessageVersions, getSessionGoal, setSessionGoal, sessionGoalAction, clearSessionGoal, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns } from "../api.js";
+import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, branchAgentSession, getSession, getSessionMessageVersions, getSessionGoal, setSessionGoal, sessionGoalAction, clearSessionGoal, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns, getTabId } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon, { ProviderIcon } from "./Icon.jsx";
 import 提示气泡 from "./提示气泡.jsx";
@@ -1849,7 +1849,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       // 否则 Runtime 重建后新通道的前 N 个事件会被旧游标整段过滤。
       const knownStreamId = streamIdsRef.current.get(streamKey) || "";
       const streamQuery = knownStreamId ? `&stream=${encodeURIComponent(knownStreamId)}` : "";
-      const nextSource = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId || "")}${workspaceQuery}${cursorQuery}${streamQuery}`);
+      const nextSource = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}&tab=${encodeURIComponent(getTabId())}&thread=${encodeURIComponent(threadId || "")}${workspaceQuery}${cursorQuery}${streamQuery}`);
       es = nextSource;
       slot?.attach(() => closeEventSourceQuietly(nextSource, { client: clientId, thread: threadId || "" }));
       
@@ -2547,6 +2547,10 @@ case "runtime_connecting":
           if (streamBufRef.current) flushNow(aid);
           setBusy(true);
           setAgentPhase("等待你的回答");
+          // 计划 008：提问时若带草稿，自动打开预览，让用户先确认内容再回答。
+          if (data.previewFile) {
+            try { onOpenFile?.(data.previewFile); } catch {}
+          }
           setRunState((s) => ({ ...s, status: "waiting_user", runId: data.runId || s.runId || null }));
           const askId = data.askId || `${data.runId || "ask"}:${data.question || ""}`;
           patch(aid, (m) => m.blocks?.some((block) => block.type === "ask" && block.id === askId)
@@ -4419,6 +4423,14 @@ case "runtime_connecting":
             onAnswered={(blockId, answer) => handleMessageAskAnswered(pendingAsk?.messageId, blockId, answer)}
             onExpired={(blockId) => markAskExpired(pendingAsk?.messageId, blockId)}
           />
+          {runState.capabilityPlan?.hint?.code === "MODE_SWITCH_REQUIRED" && (
+            <div className="pending-action-bar mode-switch-hint" role="status" aria-live="polite">
+              <span className="pending-action-label">{runState.capabilityPlan.hint.message}</span>
+              <span className="pending-action-buttons">
+                <button type="button" className="btn-xs" onClick={() => setEditMode("agent")}>切到 Work</button>
+              </span>
+            </div>
+          )}
           <div className="chat-input-row">
             {composerMenu && composerItems.length > 0 && (
               <div className="composer-suggestions" role="listbox" aria-label="输入建议">
