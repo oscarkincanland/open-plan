@@ -3017,6 +3017,8 @@ function buildSessionMeta(f, h, text, { truncated = false } = {}) {
     parentSessionId: h.parentSessionId || null,
     branchSourceMessageId: h.branchSourceMessageId || null,
     branchPurpose: h.branchPurpose || "",
+    // v0.13.7 Agent 继承：会话 header 记录的智能体 id，供新建沿用与界面展示
+    agentId: typeof h.agentId === "string" ? h.agentId : "",
     created: h.created || "",
     title,
     hasUserMessage,
@@ -4775,14 +4777,22 @@ app.post("/api/runs/:id/resume", (req, res) => handleContinuation(req, res, "res
 app.post("/api/runs/:id/retry", (req, res) => handleContinuation(req, res, "retry"));
 
 app.post("/api/agent/new", async (req, res) => {
-  const { client, thread, cwd, projectId, label } = req.body || {};
+  const { client, thread, cwd, projectId, label, agentId } = req.body || {};
   if (!client || !thread) return res.status(400).json({ error: "client and thread required" });
   try {
     const workspace = normalizeWorkspace(cwd || getWorkspace()) || getWorkspace();
     const result = await agentManager.newThread(agentKey(client, thread), thread, workspace);
     annotateSessionThread(result.sessionId, thread);
     const project = projectManager.getProject(projectId) || projectManager.getProjectForWorkspace(workspace);
-    updateSessionHeader(result.sessionId, { projectId: project?.id || null, label: String(label || "").trim() });
+    // v0.13.7 Agent 继承：新建会话可携带 agentId 落盘到 header；
+    // 只接受真实存在的智能体，避免把无效引用写进会话元数据。
+    const inheritedAgentId = String(agentId || "").trim();
+    const agentExists = inheritedAgentId ? listAgents().some((item) => item?.id === inheritedAgentId) : false;
+    updateSessionHeader(result.sessionId, {
+      projectId: project?.id || null,
+      label: String(label || "").trim(),
+      ...(agentExists ? { agentId: inheritedAgentId } : {}),
+    });
     res.json(result);
   } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });

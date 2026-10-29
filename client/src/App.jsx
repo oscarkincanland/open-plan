@@ -516,7 +516,7 @@ export default function App() {
   // 而失败又被吞掉、界面照常切换，用户看到的是"清空了但没有新会话"。
   // 现在：只接受字符串工作区，连续点击去重，失败保留旧会话与草稿并给出可重试提示，
   // 成功后才提交 thread 与清空旧上下文。
-  const handleNewSession = useCallback(async (workspaceArg) => {
+  const handleNewSession = useCallback(async (workspaceArg, options = {}) => {
     const requested = typeof workspaceArg === "string" ? workspaceArg.trim() : "";
     const targetWorkspace = requested || currentWorkspaceRef.current || currentWorkspace;
     if (newSessionInFlightRef.current) return null;
@@ -531,7 +531,12 @@ export default function App() {
     try {
       // 先让后端创建并固定 session/workspace，再切换前端 thread，避免 SSE 先创建一个错误 cwd 的空 Agent。
       const project = projects.find((item) => sameWorkspacePath(item.rootPath, targetWorkspace));
-      created = await createAgentThread(clientId, next, targetWorkspace || undefined, { projectId: project?.id || null });
+      // v0.13.7 Agent 继承：options.agentId 非空时随 /api/agent/new 落盘到会话 header。
+      const inheritedAgentId = String(options?.agentId || "").trim();
+      created = await createAgentThread(clientId, next, targetWorkspace || undefined, {
+        projectId: project?.id || null,
+        ...(inheritedAgentId ? { agentId: inheritedAgentId } : {}),
+      });
     } catch (e) {
       newSessionInFlightRef.current = false;
       setCreatingSession(false);
@@ -1640,10 +1645,11 @@ export default function App() {
       onLoadOlderHistory={loadOlderSessionHistory}
       onReloadHistory={reloadCurrentSessionHistory}
       onLinksChange={setChatLinks}
-      onNewSession={() => handleNewSession()}
+      onNewSession={(ws, opts) => handleNewSession(ws, opts)}
       onOpenFile={handleChatOpenFile}
       referenceFiles={files.map((file) => currentDir ? currentDir + "/" + file.name : file.name)}
       sessions={visibleSessions}
+      sessionAgentId={currentSession?.agentId || ""}
       onSelectSession={handleSelectSession}
       onSessionChange={handleSessionChange}
       onRefreshSessions={refreshSessions}
@@ -1902,7 +1908,7 @@ export default function App() {
                       <Icon name="file" size={14} /><span>本轮新产物：{artifactNotice.name}</span>
                     </button>
                   )}
-                  <button role="menuitem" onClick={() => { setTopbarMenuOpen(false); handleNewSession(); }} disabled={creatingSession} title="新建对话">
+                  <button role="menuitem" onClick={() => { setTopbarMenuOpen(false); handleNewSession(undefined, { agentId: currentSession?.agentId || "" }); }} disabled={creatingSession} title={currentSession?.agentId ? "新建对话（沿用当前会话的智能体）" : "新建对话"}>
                     <Icon name="chatPlus" size={14} /><span>新建对话</span>
                   </button>
                   <button role="menuitemcheckbox" aria-checked={previewOpen && workspaceTab === "preview"} className={previewOpen && workspaceTab === "preview" ? "on" : ""} onClick={() => { if (previewOpen) setPreviewLayout(0); else setWorkspaceTabPref("preview"); setPreviewOpen((v) => !v); }} title={previewOpen && workspaceTab === "preview" ? "隐藏工作产物画布" : "显示工作产物画布"}>

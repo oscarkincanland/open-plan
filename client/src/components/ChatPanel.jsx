@@ -1,7 +1,10 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
 import { createPortal } from "react-dom";
-import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, branchAgentSession, getSession, getSessionMessageVersions, getSessionGoal, setSessionGoal, sessionGoalAction, clearSessionGoal, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns, getTabId } from "../api.js";
+import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, branchAgentSession, getSession, getSessionMessageVersions, getSessionGoal, setSessionGoal, sessionGoalAction, clearSessionGoal, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns, getTabId, listAgents } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
+import 提及菜单 from "./提及菜单.jsx";
+import { detectMentionTrigger, filterAgentsForMention, buildMentionPrefix } from "./提及逻辑.js";
+import 欢迎卡片 from "./欢迎卡片.jsx";
 import Icon, { ProviderIcon } from "./Icon.jsx";
 import 提示气泡 from "./提示气泡.jsx";
 import ToolIdentityIcon from "./工具语义图标.jsx";
@@ -595,7 +598,7 @@ function parseReferenceMarkers(text = "") {
   for (const m of String(text).matchAll(/&会话\[([^\]]+)\]/g)) add("session", m[1], m[0]);
   for (const m of String(text).matchAll(/(^|[\s(])@([^\s@，。！？\]}]+)/g)) {
     const target = m[2].replace(/[),;。！？]+$/, "");
-    if (/^(?:文件|知识库|模板|模板目录)\[/.test(target)) continue;
+    if (/^(?:文件|知识库|模板|模板目录|智能体)\[/.test(target)) continue;
     if (target.includes("/") || target.includes("\\") || /\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i.test(target)) add("file", target, `@${target}`);
   }
   return refs;
@@ -632,7 +635,7 @@ export function extractSessionLinks(messages = []) {
   return [...seen.values()];
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "" }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   // 草稿按 thread 恢复（交互 3）：模块导航会卸载本组件，重挂载时从缓存取回未发送内容。
@@ -647,6 +650,35 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   // v0.13.0：长期目标（会话级），由服务端 .oaw/goals 持久化。
   const [goal, setGoal] = useState(null);
   const [goalDetailsSignal, setGoalDetailsSignal] = useState(0);
+  // v0.13.7：智能体列表（既有只读端点 /api/agents），供 @ 提及菜单与欢迎卡片建议；
+  // 拉取失败保持空数组，两处 UI 各自回退（菜单不弹 / 卡片用静态示例）。
+  const [agents, setAgents] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    listAgents()
+      .then((data) => { if (alive) setAgents(Array.isArray(data?.agents) ? data.agents : []); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  // v0.13.7：@ 提及触发状态（{ start, query }）；mentionIndex 为键盘高亮位。
+  const [mentionState, setMentionState] = useState(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const mentionFiltered = useMemo(
+    () => filterAgentsForMention(agents, mentionState?.query || ""),
+    [agents, mentionState],
+  );
+  // 选中候选：把触发区间替换为 `@智能体[名称] ` 标记（与 @文件[…] 同构，发送时解析注入）。
+  const pickMention = useCallback((agent) => {
+    if (!agent?.name || !mentionState) return;
+    const { start, query } = mentionState;
+    setInput((previous) => {
+      const next = String(previous).slice(0, start) + `@智能体[${agent.name}] ` + String(previous).slice(start + 1 + query.length);
+      writeDraft(threadId, next);
+      return next;
+    });
+    setMentionState(null);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [mentionState, threadId]);
   // 输入变化即写回草稿缓存：模块导航导致的卸载不会丢掉未发送内容。
   const updateInput = useCallback((value) => {
     setInput((previous) => {
@@ -3263,7 +3295,7 @@ case "runtime_connecting":
       clearInput();
       setComposerMenu(null);
       if (command === "/compact") return compactContext();
-      if (command === "/new") { onNewSession?.(workspace); return; }
+      if (command === "/new") { onNewSession?.(workspace, { agentId: sessionAgentId }); return; }
       if (["/chat", "/agent", "/review"].includes(command)) {
         const mode = command.slice(1);
         setEditMode(mode);
@@ -3387,7 +3419,10 @@ case "runtime_connecting":
     // 能力规划必须只基于用户的原始意图、显式引用和结构化 task 字段。
     // 不能把“Agent 可以使用 Skills / Office CLI”之类的 UI 说明混入 text，
     // 否则普通输入也会被关键词规划器误判为 Office / Skills 任务。
-    const fullText = contextPrefix + mapContextPrefix + contextPrefixWithSpacing + attachPrefix + (rawText || text);
+    // v0.13.7：`@智能体[名称]` 提及在发送时注入角色指令与技能（注入层只在 prompt
+    // 前缀，用户可见 text 与 task.goal 原文不变；@@ 转义形式不会被解析）。
+    const mentionPrefix = buildMentionPrefix(rawText || text, agents);
+    const fullText = mentionPrefix + contextPrefix + mapContextPrefix + contextPrefixWithSpacing + attachPrefix + (rawText || text);
 
     if (!mountedRef.current) return;
 
@@ -4153,6 +4188,8 @@ case "runtime_connecting":
           <details className="agent-capability-preview" title="本轮 Agent 启动前能力预览">
             <summary><span>{editMode === "review" ? "Review" : "Work"}</span><span>能力已就绪 · 点击查看配置</span></summary>
             <div className="agent-capability-details">
+              {/* v0.13.7：展示会话继承的 Agent（header agentId）；无则显示默认 */}
+              <span>Agent：{sessionAgentId ? (agents.find((item) => item.id === sessionAgentId)?.name || sessionAgentId) : "未指定（默认）"}</span>
               <span>Profile：{project?.settings?.agentProfile || project?.agentProfile || "通用 Agent"}</span>
               <span>模型：{model || defaultModel || "按 Pi 配置"}</span>
               <span>Skills：{project?.settings?.skills?.length ? `${project.settings.skills.length} 项` : "按任务加载"}</span>
@@ -4184,34 +4221,12 @@ case "runtime_connecting":
           </div>
           <div className="chat-body" ref={bodyRef} onScroll={updateScrollFollowState}>
           {messages.length === 0 && (
-            <div className={`chat-empty mode-${normalizeUiMode(editMode)}`}>
-              <div className="chat-empty-title">{emptyExample.title}</div>
-              <ol className="chat-empty-steps">
-                {emptyExample.steps.map((step) => <li key={step}>{step}</li>)}
-              </ol>
-              <div className="chat-empty-examples" aria-label="可执行示例">
-                {emptyExample.examples.map((example) => (
-                  <button
-                    key={example}
-                    type="button"
-                    className="chat-empty-example"
-                    title="点一下填入输入框，可再修改"
-                    onClick={() => { updateInput(example); setComposerMenu(null); textareaRef.current?.focus(); }}
-                  >
-                    {example}
-                  </button>
-                ))}
-              </div>
-              <div className="hint">
-                {editMode === "chat"
-                  ? "Chat 只读：不会修改或生成文件；需要产出时切到 Work。"
-                  : editMode === "review"
-                    ? "请先打开或 @ 引用要审查的材料，原文默认不改，只生成报告与批注副本。"
-                    : "会写入工作区，按审批提示确认；结束时以验收结果为准。"}
-                <br />
-                @ 引用文件，/ 调用 Skill，# 使用能力，& 引用会话；粘贴图片可辅助说明（需选择支持图片的模型）
-              </div>
-            </div>
+            <欢迎卡片
+              mode={normalizeUiMode(editMode)}
+              emptyExample={emptyExample}
+              agents={agents}
+              onSend={(text) => send(text)}
+            />
           )}
           {(hiddenMessageCount > 0 || (historyWindow?.hasMore && !olderHistory.exhausted)) && (
             <button className="chat-load-older" type="button" onClick={handleLoadOlder} disabled={olderHistory.loading}>
@@ -4450,12 +4465,36 @@ case "runtime_connecting":
                 ))}
               </div>
             )}
+            {mentionState && mentionFiltered.length > 0 && (
+              <提及菜单
+                agents={mentionFiltered}
+                query=""
+                activeIndex={mentionIndex}
+                onPick={pickMention}
+                onClose={() => setMentionState(null)}
+              />
+            )}
             <textarea
               ref={textareaRef}
               value={input}
               disabled={frozen}
               placeholder={frozen ? "会话已冻结，可新建分支继续分析" : busy ? "输入后可排队执行，或仅注入下一轮上下文…" : "输入消息…"}
               onKeyDown={(e) => {
+                if (mentionState && mentionFiltered.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+                  e.preventDefault();
+                  setMentionIndex((index) => (index + (e.key === "ArrowDown" ? 1 : -1) + mentionFiltered.length) % mentionFiltered.length);
+                  return;
+                }
+                if (mentionState && mentionFiltered.length && e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  pickMention(mentionFiltered[mentionIndex] || mentionFiltered[0]);
+                  return;
+                }
+                if (mentionState && e.key === "Escape") {
+                  e.preventDefault();
+                  setMentionState(null);
+                  return;
+                }
                 if (composerMenu && composerItems.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
                   e.preventDefault();
                   setComposerIndex((index) => (index + (e.key === "ArrowDown" ? 1 : -1) + composerItems.length) % composerItems.length);
@@ -4486,6 +4525,9 @@ case "runtime_connecting":
                 const value = e.target.value;
                 updateInput(value);
                 setComposerMenu(composerTrigger(value));
+                // v0.13.7：@ 智能体提及检测（@@ 转义不触发；与 / 斜杠菜单互不干扰）
+                setMentionState(detectMentionTrigger(value, e.target.selectionStart ?? value.length));
+                setMentionIndex(0);
               }}
             />
             <div className="input-send">
