@@ -82,6 +82,12 @@ jobs:
       - name: AVA 欢迎页（点击即发送 / 端点回退 / 模式语义）
         run: node scripts/CI运行测试.mjs AVA欢迎页测试
 
+      - name: AVA 时间线与运行态（TurnRail 门槛 / 未读 / 运行图标 / 顶栏搜索）
+        run: node scripts/CI运行测试.mjs AVA时间线测试
+
+      - name: AVA 附件与工作区菜单（音视频 / 拖拽 / 归档不删磁盘）
+        run: node scripts/CI运行测试.mjs AVA附件测试
+
       - name: 长连接预算与流去重（切工作区/切会话卡死防护）
         run: node scripts/CI运行测试.mjs 长连接预算与流去重测试
 
