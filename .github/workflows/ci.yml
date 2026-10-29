@@ -88,6 +88,9 @@ jobs:
       - name: AVA 附件与工作区菜单（音视频 / 拖拽 / 归档不删磁盘）
         run: node scripts/CI运行测试.mjs AVA附件测试
 
+      - name: AVA 画布页签（文件树 / 新会话 / 切换不卸载 / 宽度约束）
+        run: node scripts/CI运行测试.mjs AVA画布页签测试
+
       - name: 长连接预算与流去重（切工作区/切会话卡死防护）
         run: node scripts/CI运行测试.mjs 长连接预算与流去重测试
 
