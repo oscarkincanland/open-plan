@@ -1467,6 +1467,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       setRunState((state) => ({ ...state, mode: nextMode }));
       return true;
     },
+    // v0.13.9：画布新会话页签创建会话后聚焦输入框
+    focusInput() {
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    },
     insertText(text) {
       const found = parseReferenceMarkers(text);
       if (found.length) setReferences((prev) => [...prev, ...found.filter((r) => !prev.some((p) => p.id === r.id))]);

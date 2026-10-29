@@ -11077,6 +11077,8 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   animation: oaw-pop-in 170ms ease-out both;
 }
 .app-canvas-slot.canvas-tab-preview { width: var(--preview-w, 420px); max-width: 520px; flex: 0 0 var(--preview-w, 420px); }
+/* v0.13.9：文件树/新会话页签共用产物画布宽度（--preview-w，280–680 由 Resizer 约束） */
+.app-canvas-slot.canvas-tab-files, .app-canvas-slot.canvas-tab-newchat { width: var(--preview-w, 420px); max-width: 520px; flex: 0 0 var(--preview-w, 420px); }
 .app-canvas-slot.canvas-tab-browser { width: var(--browser-w, min(48vw, 760px)); max-width: 1100px; min-width: 340px; flex: 0 0 var(--browser-w, min(48vw, 760px)); }
 .app-canvas-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; min-height: 50px; }
 .app-canvas-tabs { display: flex; gap: 6px; }
@@ -11112,10 +11114,12 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 /* 响应式断点：与旧 app-preview-slot / app-browser-slot 断点同口径 */
 @media (max-width: 1280px) {
   .app-canvas-slot.canvas-tab-preview { min-width: 260px; }
+  .app-canvas-slot.canvas-tab-files, .app-canvas-slot.canvas-tab-newchat { min-width: 260px; }
   .app-canvas-slot.canvas-tab-browser { min-width: 300px; }
 }
 @media (max-width: 1024px) {
   .app-canvas-slot.canvas-tab-preview { min-width: 0; }
+  .app-canvas-slot.canvas-tab-files, .app-canvas-slot.canvas-tab-newchat { min-width: 0; }
   .app-canvas-slot.canvas-tab-browser { min-width: 0; }
 }
 @media (max-width: 768px) {
@@ -11382,6 +11386,42 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   flex: 0 0 var(--workflows-w, 360px);
 }
 .canvas-body-workflows { background: var(--panel-bg); }
+
+/* ===== v0.13.9 画布文件树 / 新会话页签 ===== */
+.canvas-body-files, .canvas-body-newchat { background: var(--panel-bg); overflow: auto; }
+.canvas-filetree { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 8px 10px; gap: 8px; }
+.canvas-filetree-toolbar { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.canvas-filetree-toolbar button { padding: 3px 10px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--dim); font: inherit; font-size: 11px; cursor: pointer; }
+.canvas-filetree-toolbar button:hover { color: var(--text); }
+.canvas-filetree-toolbar button.active { border-color: var(--border); background: var(--selected); color: var(--accent); }
+.canvas-filetree-refresh { margin-left: auto; display: inline-flex; align-items: center; }
+.canvas-filetree-empty { color: var(--muted); font-size: 11px; padding: 14px 4px; text-align: center; }
+.canvas-filetree-list { list-style: none; margin: 0; padding: 0; overflow: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 1px; }
+.canvas-filetree-item {
+  display: flex; align-items: center; gap: 7px; width: 100%; padding: 5px 8px; border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer; min-width: 0;
+}
+.canvas-filetree-item:hover { background: var(--selected); color: var(--accent); }
+.canvas-filetree-item.active { background: var(--selected); color: var(--accent); }
+.canvas-filetree-item .icon { flex: 0 0 auto; color: var(--dim); }
+.canvas-filetree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.canvas-newchat { display: flex; flex-direction: column; align-items: center; justify-content: flex-start; flex: 1; min-height: 0; overflow: auto; padding: 26px 14px; gap: 16px; }
+.canvas-newchat-card { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; padding: 18px 16px; border: 1px dashed var(--border); border-radius: var(--radius-lg, 12px); max-width: 320px; width: 100%; }
+.canvas-newchat-card .icon { color: var(--accent); }
+.canvas-newchat-card h3 { margin: 2px 0 0; font-size: 13px; color: var(--text); }
+.canvas-newchat-card p { margin: 0; font-size: 11px; color: var(--muted); line-height: 1.6; }
+.canvas-newchat-btn { margin-top: 6px; }
+.canvas-newchat-recent { display: flex; flex-direction: column; gap: 2px; width: 100%; max-width: 320px; }
+.canvas-newchat-recent-head { display: flex; align-items: center; gap: 5px; color: var(--dim); font-size: 10px; padding: 2px 4px 6px; }
+.canvas-newchat-session {
+  display: flex; align-items: center; gap: 7px; width: 100%; padding: 6px 8px; border: 1px solid transparent; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer; min-width: 0;
+}
+.canvas-newchat-session:hover { background: var(--selected); border-color: var(--border); }
+.canvas-newchat-session > i { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); flex-shrink: 0; }
+.canvas-newchat-session > i[data-status="running"], .canvas-newchat-session > i[data-status="queued"] { background: var(--accent); }
+.canvas-newchat-session-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.canvas-newchat-session small { color: var(--accent); font-size: 10px; flex-shrink: 0; }
 .wf-panel { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px 18px; display: flex; flex-direction: column; gap: 8px; }
 .wf-empty { display: flex; align-items: center; gap: 6px; margin: 6px 0; font-size: 12px; color: var(--muted); }
 .wf-picker { display: flex; flex-wrap: wrap; gap: 6px; }

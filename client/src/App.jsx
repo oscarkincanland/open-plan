@@ -22,6 +22,8 @@ import SettingsPanel from "./components/SettingsPanel.jsx";
 import MemoryTab from "./components/MemoryTab.jsx";
 import 对象栏 from "./components/对象栏.jsx";
 import 工作流启动器 from "./components/工作流启动器.jsx";
+import 文件树页签 from "./components/文件树页签.jsx";
+import 新会话页签 from "./components/新会话页签.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
 import { acquireStream } from "./长连接预算.js";
@@ -354,7 +356,14 @@ export default function App() {
   // P10 工作区画布：工作产物与内置浏览器合并为一个 tab 化容器（proma 式画布）。
   // 两个 open flag 语义保持不变（自动打开 / 窄屏恢复 / 徽标逻辑零改动），
   // 只新增「当前激活页签」偏好：打开谁就激活谁；关闭激活页签时自动回退到另一个仍打开的面板。
-  const [workspaceTabPref, setWorkspaceTabPref] = useState("preview");
+  // v0.13.9：激活页签偏好持久化（刷新后回到上次的页签）。
+  const [workspaceTabPref, setWorkspaceTabPrefState] = useState(() => {
+    try { return localStorage.getItem("oaw_workspace_tab") || "preview"; } catch { return "preview"; }
+  });
+  const setWorkspaceTabPref = useCallback((value) => {
+    setWorkspaceTabPrefState(value);
+    try { localStorage.setItem("oaw_workspace_tab", value); } catch {}
+  }, []);
   const workspaceOpen = previewOpen || browserPanelOpen;
   // P1-8 对象栏：作为画布第三个页签接入（开关关闭时 objectsOpen 恒为 false，
   // 下面 workspaceTab 的取值与基线逐字一致——`x || false === x`）。
@@ -364,11 +373,16 @@ export default function App() {
   // workflowsOpen 恒为 false，下面 workspaceTab 的取值与接入前逐字一致）。
   const [workflowsOpenState, setWorkflowsOpenState] = useState(false);
   const workflowsOpen = flag("domainWorkflows") ? workflowsOpenState : false;
+  // v0.13.9：画布第五/六个页签——文件树与新会话（无 flag 门控，点页签打开，可关闭）。
+  const [filesTabOpen, setFilesTabOpen] = useState(false);
+  const [newchatTabOpen, setNewchatTabOpen] = useState(false);
   const workspaceTab = workspaceTabPref === "workflows" && workflowsOpen ? "workflows"
     : workspaceTabPref === "objects" && objectsOpen ? "objects"
       : workspaceTabPref === "browser" && browserPanelOpen ? "browser"
         : workspaceTabPref === "preview" && previewOpen ? "preview"
-          : objectsOpen ? "objects" : workflowsOpen ? "workflows" : browserPanelOpen ? "browser" : "preview";
+          : workspaceTabPref === "files" && filesTabOpen ? "files"
+            : workspaceTabPref === "newchat" && newchatTabOpen ? "newchat"
+              : objectsOpen ? "objects" : workflowsOpen ? "workflows" : browserPanelOpen ? "browser" : previewOpen ? "preview" : filesTabOpen ? "files" : newchatTabOpen ? "newchat" : "preview";
 
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
@@ -2015,10 +2029,12 @@ export default function App() {
           </div>
         </div>
         {previewOpen && workspaceTab === "preview" && <Resizer side="right" min={280} max={680} cssVar="--preview-w" />}
+        {/* v0.13.9：文件树/新会话页签共用产物画布的宽度约束（280–680） */}
+        {(workspaceTab === "files" || workspaceTab === "newchat") && <Resizer side="right" min={280} max={680} cssVar="--preview-w" />}
         {objectsOpen && workspaceTab === "objects" && <Resizer side="right" min={260} max={620} cssVar="--objects-w" />}
         {workflowsOpen && workspaceTab === "workflows" && <Resizer side="right" min={280} max={720} cssVar="--workflows-w" />}
-        {(previewOpen || browserPanelOpen || objectsOpen || workflowsOpen) && (
-          <aside className={`app-canvas-slot ${workspaceTab === "browser" ? "canvas-tab-browser" : workspaceTab === "objects" ? "canvas-tab-objects" : workspaceTab === "workflows" ? "canvas-tab-workflows" : "canvas-tab-preview"}`}>
+        {(previewOpen || browserPanelOpen || objectsOpen || workflowsOpen || filesTabOpen || newchatTabOpen) && (
+          <aside className={`app-canvas-slot ${workspaceTab === "browser" ? "canvas-tab-browser" : workspaceTab === "objects" ? "canvas-tab-objects" : workspaceTab === "workflows" ? "canvas-tab-workflows" : workspaceTab === "files" ? "canvas-tab-files" : workspaceTab === "newchat" ? "canvas-tab-newchat" : "canvas-tab-preview"}`}>
             <div className="preview-panel-head app-canvas-head">
               <div className="app-canvas-tabs" role="tablist" aria-label="工作区画布">
                 <button
@@ -2062,6 +2078,25 @@ export default function App() {
                     <Icon name="flow" size={13} /> 工作流
                   </button>
                 )}
+                {/* v0.13.9：文件树与新会话页签（点开即激活，可关闭；切换不卸载） */}
+                <button
+                  role="tab"
+                  aria-selected={workspaceTab === "files"}
+                  className={workspaceTab === "files" ? "active" : ""}
+                  onClick={() => { setFilesTabOpen(true); setWorkspaceTabPref("files"); }}
+                  title="文件树：工作区文件快速导航（全部 / 代码 / 网页）"
+                >
+                  <Icon name="folder" size={13} /> 文件树
+                </button>
+                <button
+                  role="tab"
+                  aria-selected={workspaceTab === "newchat"}
+                  className={workspaceTab === "newchat" ? "active" : ""}
+                  onClick={() => { setNewchatTabOpen(true); setWorkspaceTabPref("newchat"); }}
+                  title="新会话：在当前工作区开始新对话"
+                >
+                  <Icon name="chatPlus" size={13} /> 新会话
+                </button>
               </div>
               <span className="preview-panel-actions">
                 {workspaceTab === "preview" ? (
@@ -2086,6 +2121,14 @@ export default function App() {
                 ) : workspaceTab === "workflows" ? (
                   <提示气泡 label="隐藏领域工作流">
                     <button className="btn-icon" onClick={closeWorkflows} aria-label="隐藏领域工作流"><Icon name="close" size={14} /></button>
+                  </提示气泡>
+                ) : workspaceTab === "files" ? (
+                  <提示气泡 label="关闭文件树">
+                    <button className="btn-icon" onClick={() => setFilesTabOpen(false)} aria-label="关闭文件树"><Icon name="close" size={14} /></button>
+                  </提示气泡>
+                ) : workspaceTab === "newchat" ? (
+                  <提示气泡 label="关闭新会话页签">
+                    <button className="btn-icon" onClick={() => setNewchatTabOpen(false)} aria-label="关闭新会话页签"><Icon name="close" size={14} /></button>
                   </提示气泡>
                 ) : (
                   <>
@@ -2168,6 +2211,28 @@ export default function App() {
             {workflowsOpen && (
               <div className={`app-canvas-body canvas-body-workflows ${workspaceTab === "workflows" ? "" : "canvas-hidden"}`}>
                 <工作流启动器 onClose={closeWorkflows} />
+              </div>
+            )}
+            {/* v0.13.9：文件树/新会话页签体——与其他页签同构，保持挂载、CSS 显隐（切换不卸载） */}
+            {filesTabOpen && (
+              <div className={`app-canvas-body canvas-body-files ${workspaceTab === "files" ? "" : "canvas-hidden"}`}>
+                <文件树页签
+                  files={files}
+                  loading={loadStatus?.files === "loading"}
+                  currentName={current?.name || ""}
+                  onOpenFile={open}
+                  onRefresh={() => { void refreshFiles(currentDir); }}
+                />
+              </div>
+            )}
+            {newchatTabOpen && (
+              <div className={`app-canvas-body canvas-body-newchat ${workspaceTab === "newchat" ? "" : "canvas-hidden"}`}>
+                <新会话页签
+                  sessions={sessions}
+                  busyCreating={creatingSession}
+                  onNewSession={async () => { await handleNewSession(currentWorkspaceRef.current || currentWorkspace); chatInputRef.current?.focusInput?.(); }}
+                  onSelectSession={handleSelectSession}
+                />
               </div>
             )}
           </aside>
