@@ -47,7 +47,7 @@ function sheetToGridKey(sheetData) {
   return rows;
 }
 
-export default function ExcelGrid({ name, sheets, grids, truncated, maxRows, officeHtmlUrl = "" }) {
+export default function ExcelGrid({ name, sheets, grids, truncated, maxRows, officeHtmlUrl = "", lazySheets = false, sheetBase = "" }) {
   const hostRef = useRef(null);
   const [spread, setSpread] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -56,8 +56,24 @@ export default function ExcelGrid({ name, sheets, grids, truncated, maxRows, off
   const [officeMode, setOfficeMode] = useState(false);
   const sheetNames = Array.isArray(sheets) ? sheets : [];
   const hasSheets = sheetNames.length > 0;
+  const isLazy = Boolean(lazySheets && sheetBase && hasSheets);
+  // P3-c 懒加载态：当前展示的表与已取回的网格缓存（name → grid）
+  const [activeSheet, setActiveSheet] = useState(() => sheetNames[0] || "");
+  const sheetCacheRef = useRef(new Map());
+  const [loadingSheet, setLoadingSheet] = useState("");
+  const [sheetTruncated, setSheetTruncated] = useState(Array.isArray(truncated) ? truncated : []);
+  const activeSheetRef = useRef(activeSheet);
+  activeSheetRef.current = activeSheet;
   // 保存时记录每个 sheet 的初始数据
   const initialRef = useRef({});
+
+  // 换文件即弃缓存：网格缓存/活动表/截断提示都跟当前文件走（声明在种缓存 effect 之前，先执行）
+  useEffect(() => {
+    sheetCacheRef.current = new Map();
+    setActiveSheet(Array.isArray(sheets) ? sheets[0] || "" : "");
+    setSheetTruncated(Array.isArray(truncated) ? truncated : []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name]);
 
   useEffect(() => {
     if (!hostRef.current || !hasSheets) return undefined;
@@ -70,18 +86,70 @@ export default function ExcelGrid({ name, sheets, grids, truncated, maxRows, off
     return () => { if (typeof s.destroy === "function") try { s.destroy(); } catch {} };
   }, [hasSheets]);
 
-  // 一次加载所有 sheets（带 name），x-spreadsheet 底部标签栏可切换；
+  // 整簿模式（基线）：一次加载所有 sheets（带 name），x-spreadsheet 底部标签栏可切换；
   // merges/cols 透传给渲染器（合并单元格 + 原生列宽，此前全部丢失）。
+  // 懒加载模式：只把「已取回网格」的表灌入（懒加载下初始只有第一个表），
+  // 切页签由自建页签条接管（见下方 switchSheet）。
   useEffect(() => {
     if (!spread || !hasSheets) return;
-    const allSheets = sheetNames.map((s) => gridToSheetData(s, grids?.[s]));
-    initialRef.current = {};
+    // P3-c：把服务端已返回的网格种入缓存（懒加载首屏只有第一个表；整簿模式全量种入）
     for (const s of sheetNames) {
-      initialRef.current[s] = sheetToGridKey(gridToSheetData(s, grids?.[s]));
+      if (grids?.[s] && !sheetCacheRef.current.has(s)) sheetCacheRef.current.set(s, grids[s]);
+    }
+    const loaded = isLazy ? sheetNames.filter((s) => sheetCacheRef.current.has(s)) : sheetNames;
+    const allSheets = loaded.map((s) => gridToSheetData(s, sheetCacheRef.current.get(s) || grids?.[s]));
+    initialRef.current = {};
+    for (const s of loaded) {
+      initialRef.current[s] = sheetToGridKey(gridToSheetData(s, sheetCacheRef.current.get(s) || grids?.[s]));
     }
     spread.loadData(allSheets);
     if (typeof spread.change === "function") spread.change(() => {});
-  }, [spread, hasSheets, sheetNames, grids]);
+  }, [spread, hasSheets, sheetNames, grids, isLazy]);
+
+  // 懒加载：按需取回单表网格（缓存命中不重复请求；快照开关未开启时本组件不会收到 lazySheets）
+  const fetchSheet = async (sheetName) => {
+    if (!sheetBase || !sheetName) return null;
+    try {
+      const sep = sheetBase.includes("?") ? "&" : "?";
+      const r = await fetch(`${sheetBase}${sep}sheet=${encodeURIComponent(sheetName)}`, { cache: "no-store" });
+      if (!r.ok) throw new Error(`请求失败（${r.status}）`);
+      const data = await r.json();
+      if (data?.grid) sheetCacheRef.current.set(data.name || sheetName, data.grid);
+      setSheetTruncated(Array.isArray(data?.truncated) ? data.truncated : []);
+      return data?.grid || null;
+    } catch (e) {
+      setMsg(`加载工作表失败：${e.message || "网络错误"}`);
+      setTimeout(() => setMsg(""), 3000);
+      return null;
+    }
+  };
+
+  // 懒加载切页签：有未保存修改先确认（当前 Widget 只装一张表，切换即离开该表数据）；
+  // 成功后把新表灌入 Widget。
+  const switchSheet = async (sheetName) => {
+    if (!spread || !isLazy || sheetName === activeSheetRef.current || loadingSheet) return;
+    const sd = spread.getData?.()?.[0];
+    if (sd) {
+      const current = sheetToGridKey(sd);
+      const initial = initialRef.current[activeSheetRef.current] || {};
+      const keys = new Set([...Object.keys(current), ...Object.keys(initial)]);
+      const dirty = [...keys].some((ri) => {
+        const cells = new Set([...Object.keys(current[ri]?.cells || {}), ...Object.keys(initial[ri]?.cells || {})]);
+        return [...cells].some((ci) => (current[ri]?.cells?.[ci]?.text ?? "") !== (initial[ri]?.cells?.[ci]?.text ?? ""));
+      });
+      if (dirty && !window.confirm("当前工作表有未保存的修改，切换后将丢失。确定切换？")) return;
+    }
+    setLoadingSheet(sheetName);
+    let grid = sheetCacheRef.current.get(sheetName);
+    if (!grid) grid = await fetchSheet(sheetName);
+    setLoadingSheet("");
+    if (!grid) return;
+    setActiveSheet(sheetName);
+    const sheetData = gridToSheetData(sheetName, grid);
+    initialRef.current[sheetName] = sheetToGridKey(sheetData);
+    spread.loadData([sheetData]);
+    if (typeof spread.change === "function") spread.change(() => {});
+  };
 
   // sheets 为空（文件读取失败）时显示错误。放在 hooks 之后，避免文件从加载中
   // 变为可读时触发 React 的 hooks 顺序错误。
@@ -99,12 +167,12 @@ export default function ExcelGrid({ name, sheets, grids, truncated, maxRows, off
     );
   }
 
-  const truncatedList = Array.isArray(truncated) ? truncated : [];
+  const truncatedList = isLazy ? sheetTruncated : (Array.isArray(truncated) ? truncated : []);
   const truncatedNames = new Set(truncatedList.map((t) => t?.name));
 
   const handleSave = async () => {
     if (!spread) return;
-    // getData 返回所有 sheet 的数据数组
+    // getData 返回所有 sheet 的数据数组（懒加载模式只有当前表一张）
     const allData = spread.getData(); // [{ name, rows }]
     const changedBySheet = {};
     for (const sd of allData) {
@@ -148,7 +216,7 @@ export default function ExcelGrid({ name, sheets, grids, truncated, maxRows, off
     <div className="excel-wrap">
       <div className="excel-toolbar">
         <span className="badge">工作簿 · {sheets.length} 个工作表</span>
-        <span className="excel-sheet-hint">底部标签栏可切换工作表</span>
+        {!isLazy && <span className="excel-sheet-hint">底部标签栏可切换工作表</span>}
         <span className="badge">仅显示单元格值</span>
         <span className="excel-sheet-hint">公式、样式、合并单元格不在网格预览中；底部标签栏可切换工作表</span>
         {truncatedList.length > 0 && (
@@ -171,13 +239,30 @@ export default function ExcelGrid({ name, sheets, grids, truncated, maxRows, off
         )}
         {msg && <span className="save-msg">{msg}</span>}
       </div>
-      <div ref={hostRef} className="excel-host" style={officeMode ? { display: "none" } : undefined} />
       {officeMode && officeHtmlUrl && (
         <div className="excel-office">
           <iframe title={`${name} 高保真预览`} src={officeHtmlUrl} className="excel-office-frame" />
           <div className="excel-office-hint">OfficeCLI 高保真只读渲染；如显示异常可切回表格编辑。</div>
         </div>
       )}
+      {isLazy && (
+        <div className="excel-lazy-tabs" role="tablist" aria-label="工作表切换">
+          {sheetNames.map((s) => (
+            <button
+              key={s}
+              role="tab"
+              aria-selected={s === activeSheet}
+              className={`excel-lazy-tab${s === activeSheet ? " is-active" : ""}${truncatedNames.has(s) ? " has-truncated" : ""}`}
+              title={truncatedNames.has(s) ? `该表共 ${truncatedList.find((t) => t?.name === s)?.totalRows ?? "?"} 行，已截断显示` : s}
+              onClick={() => switchSheet(s)}
+            >
+              {s}
+            </button>
+          ))}
+          {loadingSheet && <span className="excel-lazy-loading">加载 {loadingSheet} …</span>}
+        </div>
+      )}
+      <div ref={hostRef} className="excel-host" style={officeMode ? { display: "none" } : undefined} />
     </div>
   );
 }

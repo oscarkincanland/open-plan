@@ -133,6 +133,8 @@ export function buildDocUrls(identity) {
     watch: q("/watch"),
     watchStop: q("/watch/stop"),
     rawSave: q("/raw-save"),
+    // P3-c：Excel sheet 懒加载取数地址（sheet 名由调用方追加 &sheet= 参数）
+    sheetBase: q("/sheet"),
   };
 }
 

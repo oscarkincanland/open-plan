@@ -465,6 +465,14 @@ export const mapSettingsSave = (basemaps) =>
   api("/api/map/settings", { method: "POST", body: JSON.stringify({ basemaps }) });
 export const mapDeleteLayer = (name, layerId) =>
   api("/api/map/layer/delete", { method: "POST", body: JSON.stringify({ name, layerId }) });
+export const mapResetProject = (name) =>
+  api("/api/map/reset", { method: "POST", body: JSON.stringify({ name }) });
+export const mapLayerVersions = (name, layer) =>
+  api(`/api/map/layer/versions?name=${encodeURIComponent(name)}&layer=${encodeURIComponent(layer)}`);
+export const mapRestoreLayerVersion = (name, layer, file) =>
+  api("/api/map/layer/restore", { method: "POST", body: JSON.stringify({ name, layer, file }) });
+export const mapSetLayerArchived = (name, layer, archived) =>
+  api("/api/map/layer/archive", { method: "POST", body: JSON.stringify({ name, layer, archived }) });
 export const mapGetLayer = (name, layerId) =>
   api(`/api/map/layer?name=${encodeURIComponent(name)}&layer=${encodeURIComponent(layerId)}`);
 export const mapIsochrone = (params) =>

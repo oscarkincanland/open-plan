@@ -121,7 +121,7 @@ await check("路由 / Agent 工具 / 运行开关三处口径一致", () => {
   assert.match(read("server/agent.mjs"), /name: "map_template"/);
   assert.match(read("server/agent.mjs"), /mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool/);
   assert.match(read("server/agent.mjs"), /"map_analyze", "map_template", "map_save_analysis"/);
-  assert.match(read("server/运行开关.mjs"), /mapTemplates: readFlag\("OAW_MAP_TEMPLATES"\)/);
+  assert.match(read("server/运行开关.mjs"), /mapTemplates: readFlagWithDefault\("OAW_MAP_TEMPLATES", true\)/, "模板能力默认开启（用户批准的默认值变更）");
 });
 
 fs.rmSync(tmp, { recursive: true, force: true });

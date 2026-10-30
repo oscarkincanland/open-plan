@@ -317,7 +317,7 @@ test("agent.mjs：cad_read/cad_edit 定义并在三处注册（customTools/tools
   assert.match(agentSource, /name: "cad_edit"/);
   assert.match(agentSource, /cadReadTool, cadEditTool,/);
   assert.match(agentSource, /"cad_read", "cad_edit", "memory_update"/);
-  assert.match(agentSource, /"cad_read", "cad_edit", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "run_subagent"/);
+  assert.match(agentSource, /"cad_read", "cad_edit", "memory_update", "complete_task"[\s\S]{0,900}"run_subagent"/);
 });
 test("cad_edit 落盘走统一写入通道（审批 + writeWorkspaceFile），工具执行校验 cadAgent", () => {
   assert.match(agentSource, /const ctx = activeWriteContext\("cad_edit"\)/);

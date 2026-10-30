@@ -20,7 +20,7 @@ export const TASK_MODES = Object.freeze(["chat", "office", "agent", "review"]);
 const READ_ONLY_TOOLS = Object.freeze([
   "read", "grep", "find", "ls", "ask_user", "kb_search", "kb_read", "context_read", "skills_search", "skills_read",
   "web_search", "web_fetch",
-  "map_read", "map_analyze", "map_clear_analysis", "map_datasets",
+  "map_read", "map_analyze", "map_clear_analysis", "map_datasets", "map_screenshot",
 ]);
 // Office 模式专注文档处理，不暴露地图工具（地图能力只在 Chat 与 Work 出现）。
 const OFFICE_TOOLS = Object.freeze([
@@ -36,7 +36,7 @@ const AGENT_TOOLS = Object.freeze([
   ...OFFICE_TOOLS,
   "bash", "write", "edit",
   // Work 模式持有全部地图工具（含只读四件套与三个写工具）。
-  "map_read", "map_analyze", "map_clear_analysis", "map_datasets",
+  "map_read", "map_analyze", "map_clear_analysis", "map_datasets", "map_screenshot",
   "map_edit", "map_import", "map_save_analysis",
   "memory_update", "todo", "complete_task",
   // P2-A：编辑流水线（生成 Word/PPT 初稿的原生流水线，仅 Work 模式）
@@ -244,7 +244,7 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
   const ctx = collectContext({ text, task, references, attachments });
   const intent = routeTaskIntent({ text, task, references, attachments });
   const clarification = assessClarification({ text, route: intent.route, template: intent.template, scene: intent.scene });
-  const { mode, source, refList, document, output } = ctx;
+  const { mode, source, refList, document, output, cad } = ctx;
   // Chat 模式下识别到写作意图时，前端提示切换到 Work（不改变只读边界）。
   const hint = mode === "chat" && ctx.output && ctx.office
     ? { code: "MODE_SWITCH_REQUIRED", message: "当前是 Chat 只读模式；生成文档请切换到 Work。" }

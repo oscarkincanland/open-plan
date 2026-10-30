@@ -61,9 +61,13 @@ export default function LayerPanel({
   onSetLayout,
   onSetLabel, onCreateGroup, onMoveLayerToGroup,
   layerViews = [], tempLayers = [],
+  onTransientToggle, onTransientLocate, onTransientRemove, onTransientPaint,
+  onArchiveLayer, onLayerVersions, onRestoreVersion,
 }) {
   const [collapsed, setCollapsed] = useState({});          // 组折叠
   const [expanded, setExpanded] = useState({});            // 图层图例展开
+  const [tempEditorOpen, setTempEditorOpen] = useState({}); // 临时层样式编辑展开 {id: bool}
+  const [versions, setVersions] = useState(null);          // 历史版本弹层 {layerId, items, loading}
   const [dragId, setDragId] = useState(null);
   const dragIdRef = useRef(null);
   const [ctx, setCtx] = useState(null);                    // 右键菜单 {x,y,layerId}
@@ -85,6 +89,7 @@ export default function LayerPanel({
       if (name && !map.has(name)) map.set(name, []);
     }
     for (const meta of cfg?.layers || []) {
+      if (meta.archived) continue; // 归档层不在常规组里展示（底部"已归档"组单独列出）
       const g = meta.group || GROUP_FALLBACK[meta.type] || "其他";
       if (!map.has(g)) map.set(g, []);
       map.get(g).push(meta.id);
@@ -117,6 +122,8 @@ export default function LayerPanel({
     () => allGroups.map(([name, ids]) => [name, ids.filter((id) => !isSharedLayer(id))]).filter(([, ids]) => ids.length),
     [allGroups, isSharedLayer],
   );
+  // 归档图层：折叠在面板底部，可一键恢复
+  const archivedIds = useMemo(() => (cfg?.layers || []).filter((l) => l.archived).map((l) => l.id), [cfg]);
 
   // ---- 组显隐（组内所有图层） ----
   const groupAllVisible = useCallback((ids) => ids.every((id) => {
@@ -453,15 +460,126 @@ export default function LayerPanel({
             {!collapsed.__temp__ && (
               <div className="lp-group-body">
                 {tempLayers.map((item) => (
-                  <div key={item.key} className="lp-row lp-row-temp" title="临时可视化，不写入项目">
-                    <span className="lp-eye-spacer" />
-                    <span className="lp-symbol lp-symbol-temp"><Icon name="star" size={12} /></span>
-                    <span className="lp-row-name">
-                      {item.label}
-                      <span className="lp-row-type">未保存</span>
-                    </span>
-                  </div>
+                  item.transient ? (
+                    <div key={item.key}>
+                      <div
+                        className="lp-row lp-row-temp"
+                        title="临时图层：可显隐 / 定位 / 改样式 / 移除（不写入项目）"
+                      >
+                        <label className="lp-eye" title={item.visible ? "隐藏" : "显示"}>
+                          <input
+                            type="checkbox"
+                            checked={!!item.visible}
+                            onChange={(e) => onTransientToggle?.(item.id, e.target.checked)}
+                          />
+                        </label>
+                        <span className="lp-symbol lp-symbol-temp"><Icon name="star" size={12} /></span>
+                        <span
+                          className="lp-row-name"
+                          title="点击展开样式编辑"
+                          onClick={() => setTempEditorOpen((p) => ({ ...p, [item.id]: !p[item.id] }))}
+                        >
+                          {item.label}
+                          <span className="lp-row-type">{item.count != null ? `${item.count} 要素` : "未保存"}</span>
+                        </span>
+                        <button
+                          className="lp-caret-btn"
+                          title="定位到图层"
+                          onClick={() => onTransientLocate?.(item.id)}
+                        >
+                          <Icon name="locate" size={12} />
+                        </button>
+                        <button
+                          className="lp-caret-btn"
+                          title="移除该临时图层"
+                          onClick={() => onTransientRemove?.(item.id)}
+                        >
+                          <Icon name="trash" size={12} />
+                        </button>
+                      </div>
+                      {tempEditorOpen[item.id] && (
+                        <div style={{ padding: "6px 10px 8px 30px", borderBottom: "1px dashed #d6dce5" }} onClick={(e) => e.stopPropagation()}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
+                            <span style={{ fontSize: 11, color: "#5a6b84", width: 34 }}>颜色</span>
+                            {PALETTES[0].map((c) => (
+                              <button
+                                key={c}
+                                title={c}
+                                onClick={() => onTransientPaint?.(item.id, { color: c })}
+                                style={{ width: 16, height: 16, borderRadius: 4, border: "1px solid rgba(0,0,0,0.18)", background: c, cursor: "pointer", padding: 0 }}
+                              />
+                            ))}
+                          </div>
+                          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#5a6b84", marginBottom: 4 }}>
+                            <span style={{ width: 34 }}>不透明</span>
+                            <input
+                              type="range" min={0.1} max={1} step={0.05} defaultValue={0.9}
+                              onChange={(e) => onTransientPaint?.(item.id, { opacity: Number(e.target.value) })}
+                              style={{ flex: 1, minWidth: 0 }}
+                            />
+                          </label>
+                          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#5a6b84" }} title="线图层改线宽，点图层改半径">
+                            <span style={{ width: 34 }}>宽度</span>
+                            <input
+                              type="range" min={0.5} max={12} step={0.5} defaultValue={2.5}
+                              onChange={(e) => onTransientPaint?.(item.id, { width: Number(e.target.value), radius: 4 + Number(e.target.value) * 1.2 })}
+                              style={{ flex: 1, minWidth: 0 }}
+                            />
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div key={item.key} className="lp-row lp-row-temp" title="临时可视化，不写入项目">
+                      <span className="lp-eye-spacer" />
+                      <span className="lp-symbol lp-symbol-temp"><Icon name="star" size={12} /></span>
+                      <span className="lp-row-name">
+                        {item.label}
+                        <span className="lp-row-type">未保存</span>
+                      </span>
+                    </div>
+                  )
                 ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 已归档图层（折叠展示，可恢复） */}
+        {archivedIds.length > 0 && (
+          <div className="lp-group lp-group-temp">
+            <div
+              className="lp-group-head"
+              onClick={() => setCollapsed((p) => ({ ...p, "__archived__": !p.__archived__ }))}
+              title="已归档图层：地图上隐藏，可随时恢复"
+            >
+              <span className="lp-caret">{collapsed.__archived__ ? <Icon name="chevronRight" size={12} /> : <Icon name="chevronDown" size={12} />}</span>
+              <span className="lp-caret-spacer" />
+              <span className="lp-group-name"><Icon name="folderOpen" size={12} /> 已归档</span>
+              <span className="lp-group-count">{archivedIds.length}</span>
+            </div>
+            {!collapsed.__archived__ && (
+              <div className="lp-group-body">
+                {archivedIds.map((id) => {
+                  const meta = cfg?.layers?.find((l) => l.id === id);
+                  return (
+                    <div key={id} className="lp-row lp-row-temp" title="已归档图层（地图上隐藏）">
+                      <span className="lp-eye-spacer" />
+                      <span className="lp-symbol lp-symbol-temp"><Icon name="folderOpen" size={12} /></span>
+                      <span className="lp-row-name">
+                        {meta?.name || id}
+                        <span className="lp-row-type">已归档</span>
+                      </span>
+                      <button
+                        className="lp-caret-btn"
+                        title="恢复该图层"
+                        onClick={() => onArchiveLayer?.(id, false)}
+                      >
+                        <Icon name="refresh" size={12} />
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -506,6 +624,22 @@ export default function LayerPanel({
             <Icon name="penTool" size={12} /> 重命名
           </button>
           <button onClick={ctxAction(() => onDuplicateLayer(ctx.layerId))}><Icon name="copy" size={12} /> 复制图层</button>
+          <button
+            onClick={ctxAction(async () => {
+              setVersions({ layerId: ctx.layerId, items: null, loading: true });
+              try {
+                const items = await onLayerVersions?.(ctx.layerId);
+                setVersions({ layerId: ctx.layerId, items: items || [], loading: false });
+              } catch {
+                setVersions({ layerId: ctx.layerId, items: [], loading: false });
+              }
+            })}
+          >
+            <Icon name="history" size={12} /> 历史版本
+          </button>
+          <button onClick={ctxAction(() => onArchiveLayer?.(ctx.layerId, true))}>
+            <Icon name="folderOpen" size={12} /> 归档图层
+          </button>
           <div className="lp-ctx-group">
             <span>移动到组</span>
             <select
@@ -518,6 +652,36 @@ export default function LayerPanel({
           </div>
           <div className="lp-ctx-sep" />
           <button className="danger" onClick={ctxAction(() => onDeleteLayer(ctx.layerId))}><Icon name="trash" size={12} /> 删除图层</button>
+        </div>
+      )}
+
+      {/* 历史版本弹层（图层回溯） */}
+      {versions && (
+        <div className="lp-ctx" style={{ left: 12, bottom: 12, top: "auto", minWidth: 240, maxHeight: 260, overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+          <div className="lp-ctx-group" style={{ padding: "2px 4px 6px" }}>
+            <span style={{ fontWeight: 600 }}>
+              <Icon name="history" size={12} /> {cfg?.layers?.find((l) => l.id === versions.layerId)?.name || versions.layerId} 历史版本
+            </span>
+          </div>
+          {versions.loading && <div style={{ padding: "4px 8px", fontSize: 12, color: "#5a6b84" }}>加载中…</div>}
+          {!versions.loading && versions.items.length === 0 && (
+            <div style={{ padding: "4px 8px", fontSize: 12, color: "#5a6b84" }}>暂无历史版本（覆盖导入时自动快照，保留最近 10 份）。</div>
+          )}
+          {versions.items.map((v) => (
+            <button
+              key={v.file}
+              title={`恢复到 ${new Date(v.time).toLocaleString()}`}
+              onClick={async () => {
+                const layerId = versions.layerId;
+                setVersions(null);
+                await onRestoreVersion?.(layerId, v.file);
+              }}
+            >
+              <Icon name="refresh" size={12} /> {new Date(v.time).toLocaleString()}（{(v.size / 1024).toFixed(1)} KB）
+            </button>
+          ))}
+          <div className="lp-ctx-sep" />
+          <button onClick={() => setVersions(null)}><Icon name="close" size={12} /> 关闭</button>
         </div>
       )}
 

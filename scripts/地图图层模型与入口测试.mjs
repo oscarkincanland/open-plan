@@ -248,13 +248,17 @@ test("组头复选框仍是展开/折叠语义，未被改成显隐（保护既�
   assert.match(layerPanelSrc, /__temp__/, "临时层折叠状态应有独立 key");
 });
 
-test("临时层只展示不可写（不提供删除/保存操作）", () => {
+test("临时层：transient 行可显隐/定位/移除，但不得复用正式图层写操作", () => {
   const start = layerPanelSrc.indexOf("lp-group-temp");
   assert.ok(start > 0, "应存在临时层分组");
-  const body = layerPanelSrc.slice(start, start + 1400);
-  assert.doesNotMatch(body, /onDeleteLayer/, "临时层不应出现删除操作");
+  const body = layerPanelSrc.slice(start, start + 4000);
+  assert.doesNotMatch(body, /onDeleteLayer/, "临时层不应出现删除操作（正式图层删除）");
   assert.doesNotMatch(body, /onRenameLayer/, "临时层不应出现重命名操作");
-  assert.match(body, /未保存/, "应标明未保存");
+  assert.match(body, /onTransientToggle/, "transient 行应支持显隐");
+  assert.match(body, /onTransientLocate/, "transient 行应支持定位");
+  assert.match(body, /onTransientRemove/, "transient 行应支持移除");
+  assert.match(body, /onTransientPaint/, "transient 行应支持样式编辑");
+  assert.match(body, /未保存/, "非 transient 临时可视化仍应标明未保存");
 });
 
 test("样式已定义归属分组（CSS 预算内）", () => {

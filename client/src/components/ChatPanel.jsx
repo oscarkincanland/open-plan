@@ -5530,6 +5530,35 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
     );
     return null;
   };
+  // P3-b（开关 activitySummary，默认关 = 工具卡照常平铺）：把过程区内连续的工具卡
+  // 聚合为「一行活动摘要 + 可展开明细」（不足 3 个的短串保持原样，避免噪音）。
+  // 聚合只影响展示顺序内的连续 tool 段，thinking/ask/approval 等其余过程块原位不动。
+  const ACTIVITY_SUMMARY_MIN_TOOLS = 3;
+  const renderProcessItems = (items) => {
+    if (!activitySummaryOn) return items.map(renderProcessBlock);
+    const out = [];
+    let toolRun = [];
+    const flushToolRun = () => {
+      if (!toolRun.length) return;
+      if (toolRun.length < ACTIVITY_SUMMARY_MIN_TOOLS) {
+        toolRun.forEach((item) => out.push(renderProcessBlock(item)));
+      } else {
+        out.push(
+          <ActivitySummaryRow key={`activity-${toolRun[0].blockIndex}`} tools={toolRun}>
+            {toolRun.map((item) => renderProcessBlock(item))}
+          </ActivitySummaryRow>,
+        );
+      }
+      toolRun = [];
+    };
+    items.forEach((item) => {
+      if (item.block?.type === "tool") { toolRun.push(item); return; }
+      flushToolRun();
+      out.push(renderProcessBlock(item));
+    });
+    flushToolRun();
+    return out;
+  };
   // 渲染时才读取 processOpenMap（状态声明在后面），因此这里是函数而不是常量数组。
   const renderMessageBlocks = () => renderSegments.map((segment, segmentIndex) => {
     if (segment.kind === "block") {
@@ -5573,7 +5602,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
         </summary>
         <div className="message-process-fold-body">
           <div className="message-process-scroll" ref={isLastProcess ? processScrollRef : undefined} onScroll={isLastProcess ? handleProcessScroll : undefined}>
-            {segment.items.map(renderProcessBlock)}
+            {renderProcessItems(segment.items)}
             {isLastProcess && messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
           </div>
         </div>
@@ -5591,6 +5620,14 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
   const processWasLiveRef = useRef(isTaskLive);
   const processScrollRef = useRef(null);
   const followProcessTailRef = useRef(true);
+  // P3-b：活动摘要行开关——快照异步到达后置 ready 触发重渲染（就绪前按关闭=基线处理）。
+  const [activitySummaryReady, setActivitySummaryReady] = useState(false);
+  useEffect(() => {
+    let active = true;
+    flagsReady.then(() => { if (active) setActivitySummaryReady(true); });
+    return () => { active = false; };
+  }, []);
+  const activitySummaryOn = activitySummaryReady && flag("activitySummary");
 
   useEffect(() => {
     if (isTaskLive && !processWasLiveRef.current) {
@@ -6773,6 +6810,50 @@ function toolPhrase(name, input, done) {
 }
 
 // ========== 工具调用行（Proma ToolUseBlock：状态图标 + 语义短语 + 展开详情） ==========
+/**
+ * P3-b 活动摘要行（开关 activitySummary，默认关）：过程区内连续 ≥3 个工具卡
+ * 聚合为一行摘要（调用数 / 高频工具 chip / 运行中或失败状态 / 总耗时），
+ * 展开后显示原工具卡明细——明细经 children 由调用方用既有 renderProcessBlock
+ * 渲染，各自的 onToggle 与折叠逻辑保持不变。
+ */
+function ActivitySummaryRow({ tools, children }) {
+  const [open, setOpen] = useState(false);
+  const failed = tools.filter((item) => item.block.isError).length;
+  const running = tools.filter((item) => !item.block.done).length;
+  const counts = new Map();
+  tools.forEach((item) => {
+    const name = String(item.block.name || "tool");
+    counts.set(name, (counts.get(name) || 0) + 1);
+  });
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 4);
+  const totalSeconds = tools.reduce((sum, item) => sum + (Number(item.block.duration) || 0), 0);
+  return (
+    <details
+      className={`activity-summary-row${open ? " is-open" : ""}`}
+      open={open}
+      onToggle={(event) => { const next = event.currentTarget.open; if (next !== open) setOpen(next); }}
+    >
+      <summary>
+        <Icon name="tool" size={12} />
+        <span className="activity-summary-title">{tools.length} 个工具调用</span>
+        <span className="activity-summary-chips">
+          {top.map(([name, count]) => (
+            <span key={name} className="activity-chip">{name}{count > 1 ? `×${count}` : ""}</span>
+          ))}
+          {counts.size > top.length ? <span className="activity-chip is-more">+{counts.size - top.length}</span> : null}
+        </span>
+        {running > 0
+          ? <span className="activity-summary-state is-running">运行中 {running}</span>
+          : failed > 0
+            ? <span className="activity-summary-state is-error">失败 {failed}</span>
+            : <span className="activity-summary-state is-ok">全部成功</span>}
+        {totalSeconds > 0 ? <span className="activity-summary-time">{totalSeconds.toFixed(1)}s</span> : null}
+      </summary>
+      <div className="activity-summary-body">{children}</div>
+    </details>
+  );
+}
+
 function ToolCard({ tool, onToggle }) {
   const { name, input, output, done, isError, expanded, duration } = tool;
   // 命令预览：bash/officecli 等命令行工具显示 $ 前缀

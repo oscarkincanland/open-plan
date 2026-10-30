@@ -2530,11 +2530,12 @@ execute: async (_toolCallId, params) => {
       name: "map_import",
       label: "地图数据导入",
       description:
-        "把工作区中的 GeoJSON 文件导入为地图项目的新图层（自动生成矢量瓦片）。参数 file 为相对工作区根目录的路径，layerId 可选（默认取文件名）。导入后前端图层树会显示新图层。",
+        "把工作区中的 GeoJSON 文件导入为地图图层。默认作为临时图层直接上屏（不写项目文件、免审批，适合演示/分析/中间产物；地图「清除」按钮或刷新即可移除，样式重载自动重放）；要长期保留传 transient:false 落盘为正式图层（自动生成矢量瓦片，走审批）。参数 file 为相对工作区根目录的路径。",
       parameters: Type.Object({
         file: Type.String({ description: "相对工作区的 GeoJSON 文件路径，如 maps_data/highways.geojson" }),
         project: Type.Optional(Type.String({ description: "项目名，默认 zhejiang-map" })),
         layerId: Type.Optional(Type.String({ description: "图层 id（字母数字下划线），默认取文件名" })),
+        transient: Type.Optional(Type.Boolean({ description: "默认 true=临时图层（直接上屏不落盘）；false=正式图层（写入项目并生成瓦片，需审批）" })),
       }),
       execute: async (_toolCallId, params) => {
         const map = await import("./map.mjs");
@@ -2549,11 +2550,6 @@ execute: async (_toolCallId, params) => {
         if (!fs.existsSync(fp)) {
           return { content: [{ type: "text", text: `文件不存在: ${rel}` }], details: {} };
         }
-        const ctx = activeWriteContext("map_import");
-        await requireToolApproval({
-          entry, tool: "map_import", input: String(rel || ""),
-          runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
-        });
         const name = params.project || entry.task?.mapProject || map.DEFAULT_PROJECT;
         // 导入会同时更新当前地图项目的 GeoJSON、配置、样式和瓦片；以项目目录
         // 作为本 Run 的归属边界，不能把输入源文件误算成产物。
@@ -2563,6 +2559,23 @@ execute: async (_toolCallId, params) => {
         }
         const fallbackId = path.basename(rel, path.extname(rel)).replace(/[^a-zA-Z0-9_-]/g, "_") || "layer";
         const layerId = (params.layerId || fallbackId).replace(/[^a-zA-Z0-9_-]/g, "_");
+        // 临时图层工作流（用户批准默认临时）：transient !== false 时**不落盘、免审批**，
+        // 经 map_action 在前端注册为临时层（样式重载自动重放；清除按钮/刷新即可移除）。
+        // 正式落盘需显式 transient:false（走审批 + 瓦片重建）。
+        if (params.transient !== false) {
+          const count = geojson.features?.length || 0;
+          const action = { action: "add_transient", id: `transient-${layerId}`, name: layerId, project: name, geojson, updatedAt: Date.now() };
+          emitChannelSafe(entry, "map_action", action);
+          return {
+            content: [{ type: "text", text: `已将 ${layerId}（${count} 个要素）作为临时图层上屏：未写入项目文件，地图「清除」按钮或刷新即可移除。确认要长期保留时，用 map_save_analysis 保存为正式图层，或 transient:false 重新导入（走审批）。` }],
+            details: { mapAction: action, transient: true },
+          };
+        }
+        const ctx = activeWriteContext("map_import");
+        await requireToolApproval({
+          entry, tool: "map_import", input: String(rel || ""),
+          runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+        });
         const r = await withWorkspaceWriteLock(ctx, "map_import", async () => {
           // 台账记**具体文件**（不是项目目录）：产物归属按精确路径匹配，
           // 记目录会让导入的图层只落到"待确认"（run-window）而不是"已确认"（write-ledger）。
@@ -2890,15 +2903,61 @@ execute: async (_toolCallId, params) => {
     const mapClearAnalysisTool = defineTool({
       name: "map_clear_analysis",
       label: "清除地图分析",
-      description: "清除地图上的临时分析结果，不修改项目文件。用户要求清除上一次热力图、OD 或等时圈时使用。",
+      description: "清除地图上的临时分析结果与临时图层，不修改项目文件。用户要求清除热力图、OD、等时圈或「地图上那些圈」时使用；all=true 一次清空全部。",
       parameters: Type.Object({
+        all: Type.Optional(Type.Boolean({ description: "true=清除地图上全部临时图层与分析结果（推荐；默认只清 agent-analysis 一条）" })),
         layerId: Type.Optional(Type.String({ description: "可选，指定分析图层 id" })),
         id: Type.Optional(Type.String({ description: "分析结果 id，默认 agent-analysis" })),
       }),
       execute: async (_toolCallId, params) => {
-        const action = { action: "clear_analysis", id: params.layerId || params.id || "agent-analysis", updatedAt: Date.now() };
+        const action = { action: "clear_analysis", ...(params.all ? { all: true } : {}), id: params.all ? "__all__" : (params.layerId || params.id || "agent-analysis"), updatedAt: Date.now() };
         emitChannelSafe(entry, "map_action", action);
-        return { content: [{ type: "text", text: "已清除地图临时分析结果。" }], details: { mapAction: action } };
+        return { content: [{ type: "text", text: params.all ? "已清除地图上全部临时图层与分析结果。" : "已清除地图临时分析结果。" }], details: { mapAction: action } };
+      },
+    });
+
+    const mapScreenshotTool = defineTool({
+      name: "map_screenshot",
+      label: "地图截图",
+      description:
+        "对地图项目的当前配置视图截图并保存 PNG，返回图片绝对路径。生成/修改图层或样式之后用它自查视觉效果（线宽/配色/标注/压盖）：用 read 工具查看该图片，不满意就继续用 map_edit 调整。需要支持图片的模型才能真正「看图」。",
+      parameters: Type.Object({
+        project: Type.Optional(Type.String({ description: "项目名，默认 zhejiang-map" })),
+        width: Type.Optional(Type.Number({ description: "截图宽度 px，默认 1280（400-2400）" })),
+        height: Type.Optional(Type.Number({ description: "截图高度 px，默认 800（300-1600）" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        if (!RUNTIME_FLAGS.mapSelfReview) {
+          return { content: [{ type: "text", text: "地图截图自检未开启（OAW_MAP_SELF_REVIEW=1）。开启后可对地图视口截图并用视觉自查。" }], details: {} };
+        }
+        try {
+          const browser = await import("./内置浏览器.mjs");
+          const name = String(params.project || entry.task?.mapProject || "zhejiang-map").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 60) || "zhejiang-map";
+          const width = Math.max(400, Math.min(2400, Math.round(Number(params.width) || 1280)));
+          const height = Math.max(300, Math.min(1600, Math.round(Number(params.height) || 800)));
+          // 复用 G7 导出底座：专用浏览器会话（map-export|snap，与批量导出分键不互斥）
+          const key = browser.browserSessionKey("map-export", "snap");
+          const port = String(process.env.PORT || "3002");
+          const url = `http://127.0.0.1:${port}/?export=map&project=${encodeURIComponent(name)}&title=${encodeURIComponent("视口截图")}`;
+          await browser.browserOpen(key, url);
+          await browser.browserResize(key, width, height);
+          await browser.browserWaitForExpression(key, "window.__OAW_EXPORT_READY === true", { timeoutMs: 45000 });
+          const capture = await browser.browserScreenshot(key, { format: "png" });
+          const ws = path.resolve(entry.workspace || getWorkspace());
+          const outDir = path.join(ws, "地图导出", "截图");
+          fs.mkdirSync(outDir, { recursive: true });
+          const target = path.join(outDir, `snap-${name}-${Date.now()}.png`);
+          if (!target.startsWith(ws)) throw new Error("截图路径越界");
+          fs.writeFileSync(target, Buffer.from(capture.base64 || "", "base64"));
+          const rel = path.relative(ws, target);
+          emitChannelSafe(entry, "map_action", { action: "screenshot", project: name, file: rel, updatedAt: Date.now() });
+          return {
+            content: [{ type: "text", text: `地图视口截图已保存：${target}\n请立即用 read 工具查看该图片，检查线宽/配色/标注/压盖是否符合预期；需要调整时用 map_edit setPaint 或重新生成数据后再截图复核。` }],
+            details: { file: rel, project: name },
+          };
+        } catch (e) {
+          return { content: [{ type: "text", text: `地图截图失败：${e?.message || e}` }], details: {} };
+        }
       },
     });
 
@@ -2987,7 +3046,7 @@ execute: async (_toolCallId, params) => {
         } catch (e) {
           return { content: [{ type: "text", text: `CAD 修改失败：${e?.message || e}` }], details: {} };
         }
-        // 落盘走统一写入通道：审批 → writeWorkspaceFile（run 备份/写入清单/事件）
+        // 落盘走统一写入通道：审批 → 写锁 → writeWorkspaceFile（run 备份/写入清单/事件）
         await requireToolApproval({
           entry, tool: "write", input: prepared.targetPath,
           runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
@@ -3773,8 +3832,8 @@ execute: async (_toolCallId, params) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, cadReadTool, cadEditTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, browserWaitForTool, browserActTool, browserExtractTool, browserSelectOptionTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
-        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_datasets", "map_edit", "map_import", "map_analyze", "map_template", "map_save_analysis", "map_clear_analysis", "cad_read", "cad_edit", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "browser_wait_for", "browser_act", "browser_extract", "browser_select_option", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames],
+        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, mapScreenshotTool, cadReadTool, cadEditTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, browserWaitForTool, browserActTool, browserExtractTool, browserSelectOptionTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
+        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_datasets", "map_edit", "map_import", "map_analyze", "map_template", "map_save_analysis", "map_clear_analysis", "map_screenshot", "cad_read", "cad_edit", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "browser_wait_for", "browser_act", "browser_extract", "browser_select_option", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames],
       }));
     } catch (error) {
       piRuntimeManager.markFailure(runtimeRecord.runtimeId, error, { recovering: true, reason: "session_create_failed" });

@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import {
   CHANNEL_HISTORY_LIMIT,
   PROTOCOL_VERSION,
+  channelEvictionStatsSnapshot,
   createStreamId,
   isHistoryTruncated,
   pushChannelEvent,
@@ -110,6 +111,18 @@ test("全部为生命周期事件时退回 FIFO 且不超限", () => {
 test("默认上限为 4000 且与协议版本一致", () => {
   assert.equal(CHANNEL_HISTORY_LIMIT, 4000);
   assert.equal(PROTOCOL_VERSION, 2);
+});
+
+// ---------- 3.5 P2-5 淘汰量遥测 ----------
+test("P2-5 淘汰遥测：按类型累计淘汰量（增量断言，不受前序用例累计影响）", () => {
+  const before = new Map(channelEvictionStatsSnapshot().map((row) => [row.type, row.evicted]));
+  const channel = { history: [], seq: 0, historyLimit: 4 };
+  for (let i = 0; i < 10; i += 1) {
+    pushChannelEvent(channel, { id: ++channel.seq, type: "token", at: new Date().toISOString(), data: {} });
+  }
+  const row = channelEvictionStatsSnapshot().find((item) => item.type === "token");
+  const delta = (row?.evicted || 0) - (before.get("token") || 0);
+  assert.equal(delta, 6, "10 条 token 挤进上限 4 的窗口应淘汰 6 条");
 });
 
 // ---------- 4. 服务端接入点检查 ----------

@@ -159,6 +159,12 @@ export const RUNTIME_FLAGS = Object.freeze({
   streamQuota: readFlag("OAW_STREAM_QUOTA") || QODER_ALIGN,
   /** P1-5 拒绝时的 Retry-After 秒数（默认 5） */
   streamQuotaRetryAfterSeconds: readPositiveInt("OAW_STREAM_QUOTA_RETRY_AFTER_S", 5),
+  /** P1-6：陈旧流停摆——同键新流接管后宽限期外旧流标记 stale 停推数据帧、保留心跳（默认关 = 旧流照常推送，行为与基线一致） */
+  staleStreamSuspend: readFlag("OAW_STALE_STREAM_SUSPEND") || QODER_ALIGN,
+  /** P3-b：活动摘要行——过程区内连续工具卡聚合为「摘要行+可展开明细」（默认关 = 工具卡照常平铺，与基线一致） */
+  activitySummary: readFlag("OAW_ACTIVITY_SUMMARY"),
+  /** P3-c：Excel 预览 sheet 懒加载——首屏只解析首个工作表，切页签按需取（默认关 = 整簿一次解析，与基线一致） */
+  previewLazySheets: readFlag("OAW_PREVIEW_LAZY_SHEETS"),
   /** P1-2：事件负载结构校验（默认关 = 不校验；打开则只告警并计数，不改变落盘与投递行为） */
   eventSchemaCheck: readFlag("OAW_EVENT_SCHEMA_CHECK") || QODER_ALIGN,
   /** P1-8：右侧对象栏（本轮对象聚合：产出/来源/技能与 MCP/网页查阅/记忆 + 环境信息 + 后台进程） */  qoderObjectBar: readFlag("OAW_QODER_OBJECT_BAR") || QODER_ALIGN,
@@ -275,6 +281,9 @@ export function runtimeFlagsSnapshot() {
     visualEffectsOff: RUNTIME_FLAGS.visualEffectsOff,
     qoderSeqGapAlert: RUNTIME_FLAGS.qoderSeqGapAlert,
     streamQuota: RUNTIME_FLAGS.streamQuota,
+    staleStreamSuspend: RUNTIME_FLAGS.staleStreamSuspend,
+    activitySummary: RUNTIME_FLAGS.activitySummary,
+    previewLazySheets: RUNTIME_FLAGS.previewLazySheets,
     eventSchemaCheck: RUNTIME_FLAGS.eventSchemaCheck,
     qoderObjectBar: RUNTIME_FLAGS.qoderObjectBar,
     domainWorkflows: RUNTIME_FLAGS.domainWorkflows,

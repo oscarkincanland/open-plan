@@ -15,6 +15,7 @@ import { askConfirm, askText, notifyError } from "./Feedback.jsx";
 import {
   mapProjects, mapCreateProject, mapProject, mapSaveStyle, mapSaveConfig,
   mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute, mapDemoAnalysis,
+  mapResetProject, mapLayerVersions, mapRestoreLayerVersion, mapSetLayerArchived,
   mapDuplicateProject, mapRenameProject, mapArchiveProject, mapDeleteProject,
   mapExportBatch, mapExportStatus,
 } from "../api.js";
@@ -25,6 +26,13 @@ const BASEMAP_FALLBACK = [
   { id: "gaode-road", name: "路网" },
   { id: "gaode-sat", name: "卫星" },
   { id: "gaode-sat-label", name: "卫星注记" },
+];
+// 底图调节滑块行（视图菜单）：范围与 MapViewer.applyBasemapAdjust 的 paint 钳制一致
+const BASEMAP_ADJUST_ROWS = [
+  { key: "opacity", label: "不透明度", min: 0, max: 1, step: 0.05, def: 1 },
+  { key: "brightness", label: "亮度", min: 0, max: 1, step: 0.05, def: 1 },
+  { key: "contrast", label: "对比度", min: -1, max: 1, step: 0.05, def: 0 },
+  { key: "saturation", label: "饱和度", min: -1, max: 1, step: 0.05, def: 0 },
 ];
 const ISO_MODES = [
   { id: "driving", label: "驾车" },
@@ -514,6 +522,7 @@ export default function MapPanel({
     { key: "iso", match: (id) => id.startsWith("iso-"), label: "等时圈" },
     { key: "route", match: (id) => id === "route-line" || id === "route-pts", label: "路径规划" },
     { key: "draw", match: (id) => id.startsWith("draw-"), label: "测量 / 绘制" },
+    { key: "transient", match: (id) => id.startsWith("transient-"), label: "临时图层" },
     { key: "analysis", match: (id) => id.includes("agent-analysis") || id.startsWith("analysis-"), label: "分析结果" },
   ]), []);
 
@@ -524,10 +533,90 @@ export default function MapPanel({
     try { ids = (m.getStyle().layers || []).map((l) => String(l.id)); } catch { ids = []; }
     const found = [];
     for (const item of TEMP_LAYER_LABELS) {
+      if (item.key === "transient") continue; // transient 单独逐层列出（带定位/编辑操作）
       if (ids.some((id) => item.match(id))) found.push({ key: item.key, label: item.label });
+    }
+    // transient 导入层：逐层从 MapViewer 注册表取（标题/要素数/可见性），可定位可编辑
+    const transientList = mapRef.current?.listTransientLayers?.() || [];
+    for (const t of transientList) {
+      found.push({ key: t.id, label: t.title, transient: true, id: t.id, count: t.count, visible: t.visible });
     }
     setTempLayers(found);
   }, [TEMP_LAYER_LABELS]);
+
+  // ---- 临时层操作（客户端内存态，不写项目文件） ----
+  const transientToggle = useCallback((id, visible) => {
+    mapRef.current?.setTransientLayerVisible?.(id, visible);
+    setTempLayers((prev) => prev.map((t) => (t.key === id ? { ...t, visible } : t)));
+  }, []);
+  const transientLocate = useCallback((id) => {
+    mapRef.current?.fitTransientLayer?.(id);
+  }, []);
+  const transientRemove = useCallback((id) => {
+    mapRef.current?.clearAnalysis?.(id);
+    setTempLayers((prev) => prev.filter((t) => t.key !== id));
+    flash("已移除临时图层");
+  }, [flash]);
+  const transientPaint = useCallback((id, patch) => {
+    mapRef.current?.updateTransientLayerPaint?.(id, patch);
+  }, []);
+
+  // ---- 项目级图层管理：归档 / 版本回溯 ----
+  const archiveLayer = useCallback(async (layerId, archived) => {
+    try {
+      await mapSetLayerArchived(project, layerId, archived);
+      await loadProject(project);
+      await mapRef.current?.reloadStyle?.();
+      flash(archived ? `已归档「${layerId}」（地图上隐藏，可在面板底部恢复）` : `已恢复「${layerId}」`);
+    } catch (e) {
+      flash("归档操作失败: " + e.message);
+    }
+  }, [project, loadProject, flash]);
+  const fetchLayerVersions = useCallback(async (layerId) => {
+    const r = await mapLayerVersions(project, layerId);
+    return r.versions || [];
+  }, [project]);
+  const restoreLayerVersionById = useCallback(async (layerId, file) => {
+    try {
+      await mapRestoreLayerVersion(project, layerId, file);
+      await loadProject(project);
+      await mapRef.current?.reloadStyle?.();
+      flash(`已回溯「${layerId}」到 ${file}`);
+    } catch (e) {
+      flash("版本回溯失败: " + e.message);
+    }
+  }, [project, loadProject, flash]);
+
+  // ---- 地图选区（OAW）：选点/框选 → 自动注入对话上下文，agent 感知用户选中位置 ----
+  const chatRef = useRef(null);
+  const [selectMode, setSelectMode] = useState(null); // null | "point" | "bbox"
+  const startSelection = useCallback((kind) => {
+    if (selectMode === kind) {
+      // 再点一次取消
+      setSelectMode(null);
+      mapRef.current?.stopDraw?.();
+      return;
+    }
+    setSelectMode(kind);
+    mapRef.current?.startSelection?.(kind, {
+      onResult: (sel) => {
+        setSelectMode(null);
+        let text = "";
+        if (sel.kind === "point") {
+          text = `地图选点：经度 ${sel.lngLat[0]}，纬度 ${sel.lngLat[1]}（[${sel.lngLat[0]}, ${sel.lngLat[1]}]）`;
+        } else {
+          const [[w, s], [e, n]] = sel.bounds;
+          text = `地图框选区域：bbox [${w}, ${s}, ${e}, ${n}]（西 ${w} 南 ${s} 东 ${e} 北 ${n}）`;
+        }
+        chatRef.current?.insertContext?.(text);
+        flash("选区已加入对话上下文，请补充指令后发送");
+      },
+      onCancel: () => {
+        setSelectMode(null);
+        flash("已取消选区");
+      },
+    });
+  }, [selectMode, flash]);
 
   // 临时层变化没有统一事件源：跟随样式与选中状态做轻量重扫（开销极小，仅读 id 列表）。
   useEffect(() => {
@@ -1587,6 +1676,24 @@ export default function MapPanel({
   const [bookmarkName, setBookmarkName] = useState("");
   const bookmarks = cfg?.bookmarks || [];
 
+  // ---- 底图调节（视图菜单）：不透明度/亮度/对比度/饱和度，仅客户端运行时生效，不写项目配置 ----
+  const [basemapAdjust, setBasemapAdjust] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("oaw-basemap-adjust") || "null"); } catch { return null; }
+  });
+  const applyBasemapAdjust = useCallback((next) => {
+    setBasemapAdjust(next);
+    try {
+      if (next) localStorage.setItem("oaw-basemap-adjust", JSON.stringify(next));
+      else localStorage.removeItem("oaw-basemap-adjust");
+    } catch { /* localStorage 不可用（隐私模式等）：仅本次会话生效 */ }
+    mapRef.current?.setBasemapAdjust?.(next);
+  }, []);
+  // 挂载时重放用户上次保存的调节参数（MapViewer 样式重载后也会自动重放）
+  useEffect(() => {
+    if (basemapAdjust) mapRef.current?.setBasemapAdjust?.(basemapAdjust);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const addBookmark = useCallback(async () => {
     const m = mapRef.current?.getMap?.();
     if (!m) return flash("地图尚未就绪，请稍后再保存视角");
@@ -1635,10 +1742,38 @@ export default function MapPanel({
   const handleMapAction = useCallback((action) => {
     if (!action || action.project && action.project !== project) return;
     if (action.action === "clear_analysis") {
+      // all=true：清空全部临时图层与分析结果（agent 的 map_clear_analysis all / 地图「清除」按钮）
+      if (action.all) {
+        mapRef.current?.clearAllAnalysis?.();
+        setActiveAnalysis(null);
+        syncTempLayers();
+        flash("已清除地图全部临时图层与分析结果");
+        return;
+      }
       mapRef.current?.clearAnalysis(action.id || "agent-analysis");
       setActiveAnalysis(null);
       syncTempLayers();
       flash("已清除地图临时分析结果");
+      return;
+    }
+    if (action.action === "add_transient") {
+      // 临时图层工作流（map_import transient）：geojson 经 showAnalysis 直接上屏，
+      // 进入 analysisPayloads 后随样式重载自动重放，不写任何项目文件；fitBounds 自动飞到数据范围。
+      if (!action.geojson) return;
+      const payload = { id: String(action.id || `transient-${Date.now()}`), type: "layer", geojson: action.geojson, title: action.name || "临时图层", fitBounds: true };
+      let attempts = 0;
+      const render = () => {
+        attempts += 1;
+        const rendered = mapRef.current?.showAnalysis(payload);
+        if (rendered || attempts >= 12) {
+          clearInterval(timer);
+          // 渲染成功后再重扫清单，否则面板里看不到刚导入的临时层。
+          syncTempLayers();
+        }
+      };
+      const timer = setInterval(render, 250);
+      render();
+      flash(`临时图层「${payload.title}」已上屏（未写入项目文件）`);
       return;
     }
     setActiveAnalysis(action);
@@ -1916,6 +2051,29 @@ export default function MapPanel({
                   <Icon name="comment" size={14} /> {chatVisible ? "隐藏 Agent 对话" : "显示 Agent 对话"}
                 </button>
               )}
+              <div style={{ borderTop: "1px solid #d6dce5", margin: "6px 0" }} />
+              <div className="mp-menu-label">底图调节</div>
+              {BASEMAP_ADJUST_ROWS.map(({ key, label, min, max, step, def }) => (
+                <label
+                  key={key}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 6px 4px", fontSize: 12, cursor: "default" }}
+                  title={`调节底图${label}（仅本地生效，不写入项目配置）`}
+                >
+                  <span style={{ width: 54, color: "#3a4657" }}>{label}</span>
+                  <input
+                    type="range" min={min} max={max} step={step}
+                    value={basemapAdjust?.[key] ?? def}
+                    onChange={(e) => applyBasemapAdjust({ ...(basemapAdjust || {}), [key]: Number(e.target.value) })}
+                    style={{ flex: 1, minWidth: 0 }}
+                  />
+                  <span style={{ width: 30, textAlign: "right", color: "#5a6b84", fontVariantNumeric: "tabular-nums" }}>
+                    {(basemapAdjust?.[key] ?? def).toFixed(2)}
+                  </span>
+                </label>
+              ))}
+              <button onClick={() => applyBasemapAdjust(null)} title="恢复底图默认显示效果">
+                <Icon name="refresh" size={14} /> 重置底图调节
+              </button>
               {flag("mapBookmarks") && (
                 <>
                   <div style={{ borderTop: "1px solid var(--border)", margin: "6px 0" }} />
@@ -2008,6 +2166,13 @@ export default function MapPanel({
             files={files}
             layerViews={layerViews}
             tempLayers={tempLayers}
+            onTransientToggle={transientToggle}
+            onTransientLocate={transientLocate}
+            onTransientRemove={transientRemove}
+            onTransientPaint={transientPaint}
+            onArchiveLayer={archiveLayer}
+            onLayerVersions={fetchLayerVersions}
+            onRestoreVersion={restoreLayerVersionById}
             selected={selectedLayer}
             onSelect={setSelectedLayer}
             onToggleLayer={toggleLayer}
@@ -2094,6 +2259,22 @@ export default function MapPanel({
             >
               <Icon name="penTool" size={14} /> 绘制
             </button>
+            <button
+              className={`mp-float-btn ${selectMode === "point" ? "active" : ""}`}
+              onClick={() => startSelection("point")}
+              title="选点：点击地图取一个坐标，自动加入对话上下文（Esc 取消）"
+              aria-pressed={selectMode === "point"}
+            >
+              <Icon name="locate" size={14} /> 选点
+            </button>
+            <button
+              className={`mp-float-btn ${selectMode === "bbox" ? "active" : ""}`}
+              onClick={() => startSelection("bbox")}
+              title="框选：按住拖拽画一个范围框，自动加入对话上下文（Esc 取消）"
+              aria-pressed={selectMode === "bbox"}
+            >
+              <Icon name="maximize" size={14} /> 框选
+            </button>
             {(activeAnalysis || tempLayers.length > 0 || measureResult) && (
               <button
                 className="mp-float-btn"
@@ -2113,6 +2294,9 @@ export default function MapPanel({
                       if (rich) { analysisBases.add(rich[1]); continue; }
                       const agent = id.match(/^(agent-.+?)-(heat|circles|labels|fill|line|od-lines)$/);
                       if (agent) analysisBases.add(agent[1]);
+                      // 临时图层工作流（map_import transient）：transient-<layerId>-<suffix> 族
+                      const transient = id.match(/^transient-(.+?)-(heat|circles|labels|fill|line|lines|lines-src|source|src|od-lines)$/);
+                      if (transient) analysisBases.add(`transient-${transient[1]}`);
                     }
                   } catch { /* 读不到样式时退回逐条清 */ }
                   const ids = new Set(["agent-analysis", "analysis"]);
@@ -2134,6 +2318,25 @@ export default function MapPanel({
                 <Icon name="trash" size={14} /> 清除
               </button>
             )}
+            <button
+              className="mp-float-btn"
+              onClick={async () => {
+                const ok = await askConfirm("地图清零：将移除所有非初始图层（agent/演示产物），已注册图层恢复默认样式与可见性，数据文件移入回收目录可找回。确认执行？");
+                if (!ok) return;
+                try {
+                  const r = await mapResetProject(project);
+                  await loadProject(project);
+                  await mapRef.current?.reloadStyle?.();
+                  syncTempLayers();
+                  flash(`已清零：移除 ${r.removedStyleLayers || 0} 个样式层 / ${(r.removedFiles || []).length} 个数据文件`);
+                } catch (e) {
+                  flash("清零失败: " + e.message);
+                }
+              }}
+              title="一键清零：移除全部非初始图层并恢复项目初始图层状态"
+            >
+              <Icon name="refresh" size={14} /> 清零
+            </button>
           </div>
           {/* 测量/绘制提示条 */}
           {draw && (
@@ -2165,6 +2368,7 @@ export default function MapPanel({
         {/* 右栏：agent 对话；地图模式可由 App 提供同一个常驻 ChatPanel，避免切换地图时丢失消息流。 */}
         {!hideChat && <div className="mp-right" style={{ width: rightW, minWidth: rightW, maxWidth: rightW }}>
           <ChatPanel
+              ref={chatRef}
               compact
               clientId={clientId}
               threadId={threadId}

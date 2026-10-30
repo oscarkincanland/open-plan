@@ -99,39 +99,6 @@
       "origin": "shared"
     },
     {
-      "id": "taizhou_od",
-      "name": "taizhou_od",
-      "type": "road",
-      "group": "公路网",
-      "visible": true,
-      "minzoom": 5,
-      "maxzoom": 13,
-      "origin": "workspace",
-      "owner": "F:\\Claude code本地文件\\office-agent-web\\office-workspace"
-    },
-    {
-      "id": "ningbo-zhoushan-port-areas",
-      "name": "ningbo-zhoushan-port-areas",
-      "type": "point",
-      "group": "设施点",
-      "visible": true,
-      "minzoom": 5,
-      "maxzoom": 13,
-      "origin": "workspace",
-      "owner": "F:\\Claude code本地文件\\office-agent-web\\office-workspace"
-    },
-    {
-      "id": "yiwu_od_demo",
-      "name": "yiwu_od_demo",
-      "type": "point",
-      "group": "设施点",
-      "visible": true,
-      "minzoom": 5,
-      "maxzoom": 13,
-      "origin": "workspace",
-      "owner": "G:\\opencode文件夹"
-    },
-    {
       "id": "yiwu_od_demo-lines",
       "name": "yiwu_od_demo-lines",
       "type": "road",
@@ -152,6 +119,17 @@
       "maxzoom": 14,
       "origin": "workspace",
       "owner": "D:\\Claude code文件\\office-agent-web\\office-workspace"
+    },
+    {
+      "id": "yiwu_od_province",
+      "name": "OD期望线（市际客流·全省）",
+      "type": "road",
+      "group": "OD分析",
+      "visible": true,
+      "minzoom": 0,
+      "maxzoom": 14,
+      "origin": "workspace",
+      "owner": "F:\\Claude code本地文件\\office-agent-web\\office-workspace"
     }
   ],
   "groups": [

@@ -710,7 +710,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
             />
           </div>
         )}
-        {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} truncated={doc.truncated} maxRows={doc.maxRows} officeHtmlUrl={urls.html} />}
+        {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} truncated={doc.truncated} maxRows={doc.maxRows} officeHtmlUrl={urls.html} lazySheets={doc.lazySheets} sheetBase={urls?.sheetBase || ""} />}
         {doc.kind === "cad" && <CadViewer doc={doc} />}
         {doc.kind === "htmlfile" && (
           <div className="docframe-container">

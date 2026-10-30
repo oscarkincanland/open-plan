@@ -36,7 +36,7 @@ import { listAgents, createAgent, updateAgent, deleteAgent } from "./智能体�
 import { writeWorkspaceFile, withWriteLockAsync } from "./写入协调.mjs";
 import { evaluateWorkspaceWrite, runRuntimeEvaluation } from "./运行评测.mjs";
 import { normalizeOfficeFailure, normalizeWorkspaceWriteError, workspaceWriteHttpStatus } from "./文件权限错误.mjs";
-import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, CHANNEL_HISTORY_LIMIT } from "./事件协议.mjs";
+import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, channelEvictionStatsSnapshot, CHANNEL_HISTORY_LIMIT } from "./事件协议.mjs";
 import * as searchModule from "./联网搜索.mjs";
 import { nativeCapabilities, openWithDefaultApp, pickFiles, pickFolder, revealInFileManager, cancelActivePicker, activePickerInfo } from "./原生文件.mjs";
 import { DIFF_LIMITS, diffFileContents } from "./文件差异.mjs";
@@ -47,7 +47,7 @@ import { listMcpServers, saveMcpServer, updateMcpServer, deleteMcpServer, testMc
 import { listPiExtensions, addPiExtension, updatePiExtension, checkPiExtension, deletePiExtension } from "./pi扩展管理.mjs";
 import { readGoal, setGoal as setSessionGoalRecord, actOnGoal, clearGoal, goalPromptContext } from "./goal.mjs";
 import { searchPiPackageCatalog, resolveInstalledPiPackage } from "./pi包目录.mjs";
-import { registerServerStream, releaseServerStream, noteStreamWrite, listServerStreams, serverStreamStats, closeServerStreams, sweepServerStreams, streamQuotaOf, rejectStreamQuota } from "./流连接.mjs";
+import { registerServerStream, releaseServerStream, noteStreamWrite, isStreamStale, listServerStreams, serverStreamStats, closeServerStreams, sweepServerStreams, streamQuotaOf, rejectStreamQuota } from "./流连接.mjs";
 // P1-1 统一执行句柄：执行 / 中断 / 响应交互 / 释放 / 订阅 / 可用性 / 能力
 import {
   执行句柄,
@@ -292,47 +292,99 @@ function clampGridRows(rows) {
   return out;
 }
 
+function buildXlsxSheetGrid(XLSX, wb, name) {
+  const ws = wb.Sheets[name] || {};
+  // raw:false → 取 Excel 显示值：日期/金额/百分比按单元格格式输出，
+  // 而不是 45000+ 日期序列号或 0.0345 裸小数（2026-10-20 用户反馈"数据显示不对"）。
+  const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: false });
+  const totalRows = data.length;
+  const rows = {};
+  const rowCount = Math.min(totalRows, XLSX_PREVIEW_MAX_ROWS);
+  for (let ri = 0; ri < rowCount; ri += 1) {
+    const cells = {};
+    const row = data[ri] || [];
+    const colCount = Math.min(row.length, XLSX_PREVIEW_MAX_COLS);
+    for (let ci = 0; ci < colCount; ci += 1) {
+      const val = row[ci];
+      if (val !== "" && val != null) cells[ci] = { text: String(val) };
+    }
+    rows[ri] = { cells };
+  }
+  const grid = { rows, totalRows };
+  // 合并单元格：!merges 转为 x-spreadsheet 的 A1 引用串
+  const merges = (ws["!merges"] || []).map((m) => XLSX.utils.encode_range(m));
+  if (merges.length) grid.merges = merges;
+  // 列宽：!cols 的 wpx / wch 转像素（0-based 键，与 Cols.setData 一致）
+  const cols = {};
+  (ws["!cols"] || []).forEach((c, i) => {
+    if (!c) return;
+    const px = c.wpx || (c.wch ? Math.round(c.wch * 7 + 5) : 0);
+    if (px) cols[i] = { width: Math.min(400, Math.max(40, Math.round(px))) };
+  });
+  if (Object.keys(cols).length) grid.cols = cols;
+  return { grid, truncated: totalRows > XLSX_PREVIEW_MAX_ROWS ? [{ name, totalRows }] : [] };
+}
+
 function buildXlsxGrids(XLSX, wb) {
   const grids = {};
   const truncated = [];
   const names = (wb.SheetNames || []).slice(0, XLSX_PREVIEW_MAX_SHEETS);
   for (const name of names) {
-    const ws = wb.Sheets[name] || {};
-    // raw:false → 取 Excel 显示值：日期/金额/百分比按单元格格式输出，
-    // 而不是 45000+ 日期序列号或 0.0345 裸小数（2026-10-20 用户反馈"数据显示不对"）。
-    const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: false });
-    const totalRows = data.length;
-    const rows = {};
-    const rowCount = Math.min(totalRows, XLSX_PREVIEW_MAX_ROWS);
-    for (let ri = 0; ri < rowCount; ri += 1) {
-      const cells = {};
-      const row = data[ri] || [];
-      const colCount = Math.min(row.length, XLSX_PREVIEW_MAX_COLS);
-      for (let ci = 0; ci < colCount; ci += 1) {
-        const val = row[ci];
-        if (val !== "" && val != null) cells[ci] = { text: String(val) };
-      }
-      rows[ri] = { cells };
-    }
-    const grid = { rows, totalRows };
-    // 合并单元格：!merges 转为 x-spreadsheet 的 A1 引用串
-    const merges = (ws["!merges"] || []).map((m) => XLSX.utils.encode_range(m));
-    if (merges.length) grid.merges = merges;
-    // 列宽：!cols 的 wpx / wch 转像素（0-based 键，与 Cols.setData 一致）
-    const cols = {};
-    (ws["!cols"] || []).forEach((c, i) => {
-      if (!c) return;
-      const px = c.wpx || (c.wch ? Math.round(c.wch * 7 + 5) : 0);
-      if (px) cols[i] = { width: Math.min(400, Math.max(40, Math.round(px))) };
-    });
-    if (Object.keys(cols).length) grid.cols = cols;
-    if (totalRows > XLSX_PREVIEW_MAX_ROWS) truncated.push({ name, totalRows });
-    grids[name] = grid;
+    const built = buildXlsxSheetGrid(XLSX, wb, name);
+    grids[name] = built.grid;
+    truncated.push(...built.truncated);
   }
   return { sheets: wb.SheetNames || [], grids, truncated, maxRows: XLSX_PREVIEW_MAX_ROWS };
 }
 
-async function readWorkbook(file) {
+/**
+ * P3-c：工作簿解析结果 LRU 缓存（开关 previewLazySheets 开启时使用）。
+ * key = 绝对路径，mtime 变化即失效重读；上限 6 本防止多文件预览撑爆内存。
+ * 切页签的 /sheet 请求复用缓存，不再整簿重读（xlsx readFile 本身要解压全簿，
+ * 缓存命中的收益 = 省掉重复解压 + 只对当前查看的表跑 sheet_to_json）。
+ */
+const XLSX_WB_CACHE_MAX = 6;
+const xlsxWbCache = new Map();
+
+async function loadWorkbookCached(file) {
+  const stat = fs.statSync(file);
+  const hit = xlsxWbCache.get(file);
+  if (hit && hit.mtimeMs === stat.mtimeMs) {
+    xlsxWbCache.delete(file);
+    xlsxWbCache.set(file, hit);
+    return hit;
+  }
+  const xlsxModule = await import("xlsx");
+  const XLSX = xlsxModule.default || xlsxModule;
+  const wb = XLSX.readFile(file, { cellNF: true });
+  const entry = { XLSX, wb, mtimeMs: stat.mtimeMs };
+  xlsxWbCache.set(file, entry);
+  while (xlsxWbCache.size > XLSX_WB_CACHE_MAX) {
+    xlsxWbCache.delete(xlsxWbCache.keys().next().value);
+  }
+  return entry;
+}
+
+async function readWorkbook(file, { lazy = false } = {}) {
+  // P3-c：懒加载——首屏只解析首个工作表；解析失败的整簿路径照常回落，
+  // 保持"能预览"优先于"省性能"。
+  if (lazy) {
+    try {
+      const entry = await loadWorkbookCached(file);
+      const names = entry.wb.SheetNames || [];
+      const first = names[0];
+      const grids = {};
+      let truncated = [];
+      if (first) {
+        const built = buildXlsxSheetGrid(entry.XLSX, entry.wb, first);
+        grids[first] = built.grid;
+        truncated = built.truncated;
+      }
+      return { sheets: names.slice(0, XLSX_PREVIEW_MAX_SHEETS), grids, truncated, maxRows: XLSX_PREVIEW_MAX_ROWS, lazySheets: true };
+    } catch {
+      // 回落到下方整簿路径
+    }
+  }
   // 预览优先用 xlsx 包原生读取：显示值（日期/数字格式）、合并单元格、列宽都能还原，
   // 且不依赖外部二进制、无 officecli 冷启动；officecli 保留为解析失败时的兜底。
   try {
@@ -715,7 +767,9 @@ app.get(/^\/api\/map\/data\/([^/]+)\/style\.json$/, (req, res) => {
   const p = path.join(map.STATIC_ROOT, name, "style.json");
   if (!fs.existsSync(p)) return res.status(404).json({ error: "style not found" });
   try {
-    const style = map.hydrateBasemapSources(JSON.parse(fs.readFileSync(p, "utf8")));
+    // 弹性读取：写入方已改为原子 rename，这里再兜底短重试 + 最后好样式缓存，
+    // 避免瞬时共享冲突把前端样式轮询打成 500（表现为地图「加载失败」）。
+    const style = map.hydrateBasemapSources(map.readProjectStyleResilient(name));
     const origin = `${req.protocol}://${req.get("host")}`;
     for (const s of Object.values(style.sources || {})) {
       if (Array.isArray(s.tiles)) {
@@ -890,6 +944,34 @@ app.post("/api/map/rebuild", (req, res) => {
 app.post("/api/map/layer/delete", (req, res) => {
   const { name, layerId } = req.body || {};
   const r = map.deleteLayer(name || map.DEFAULT_PROJECT, layerId);
+  res.json(r);
+});
+
+// 一键清零：移除全部非初始图层（agent/演示产物），注册层恢复默认样式与可见性
+app.post("/api/map/reset", (req, res) => {
+  try {
+    const r = map.resetProjectToInitial(req.body?.name || map.DEFAULT_PROJECT);
+    if (!r) return res.status(400).json({ error: "invalid project" });
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 图层版本回溯与归档（项目级图层管理）
+app.get("/api/map/layer/versions", (req, res) => {
+  res.json({ versions: map.listLayerVersions(req.query.name || map.DEFAULT_PROJECT, req.query.layer) });
+});
+app.post("/api/map/layer/restore", (req, res) => {
+  const { name, layer, file } = req.body || {};
+  const r = map.restoreLayerVersion(name || map.DEFAULT_PROJECT, layer, file);
+  if (!r) return res.status(400).json({ error: "version not found" });
+  res.json(r);
+});
+app.post("/api/map/layer/archive", (req, res) => {
+  const { name, layer, archived } = req.body || {};
+  const r = map.setLayerArchived(name || map.DEFAULT_PROJECT, layer, Boolean(archived));
+  if (!r) return res.status(400).json({ error: "layer not found" });
   res.json(r);
 });
 
@@ -1189,7 +1271,7 @@ app.get(/^\/api\/doc\/(.+)\/text$/, async (req, res) => {
 // open document
 app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
   const fileName = decodeURIComponent(req.params[0]);
-  if (/(?:^|\/)(?:raw|text|html|comments|watch|outline)(?:\/stop)?$/.test(fileName)) return next();
+  if (/(?:^|\/)(?:raw|text|html|comments|watch|outline|sheet)(?:\/stop)?$/.test(fileName)) return next();
   // 支持按调用方指定的工作区解析（产物可能属于其他工作区，不能只看全局当前工作区）
   const requestedCwd = requestedPreviewWorkspace(req);
   const p = resolvePath(fileName, requestedCwd);
@@ -1205,7 +1287,7 @@ app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
   }
   try {
     if (ext === "xlsx" || ext === "xls") {
-      const wb = await readWorkbook(p);
+      const wb = await readWorkbook(p, { lazy: RUNTIME_FLAGS.previewLazySheets });
       res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "xlsx", name: fileName, identity, ...wb });
     } else if (["md", "markdown", "txt", "csv", "json"].includes(ext)) {
@@ -1238,6 +1320,30 @@ app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
       res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "html", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/html${cwdQuery}` });
     }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// P3-c：Excel 预览 sheet 懒加载（开关 previewLazySheets，默认关 = 404，基线不变）。
+// 首屏 readWorkbook 只解析首个工作表；前端切页签时按需取单表网格，
+// 服务端复用工作簿 LRU 缓存，不再整簿重读。
+app.get(/^\/api\/doc\/(.+)\/sheet$/, async (req, res) => {
+  if (!RUNTIME_FLAGS.previewLazySheets) return res.status(404).json({ error: "not found" });
+  const fileName = decodeURIComponent(req.params[0]);
+  const requestedCwd = requestedPreviewWorkspace(req);
+  const p = resolvePath(fileName, requestedCwd);
+  if (!p) return res.status(404).json({ error: "not found" });
+  if (!/\.(xlsx|xls)$/i.test(p)) return res.status(400).json({ error: "仅支持 Excel 工作簿" });
+  const sheetName = String(req.query.sheet || "").trim();
+  try {
+    const entry = await loadWorkbookCached(p);
+    const names = entry.wb.SheetNames || [];
+    const target = names.includes(sheetName) ? sheetName : names[0];
+    if (!target) return res.status(404).json({ error: "工作簿没有工作表" });
+    const built = buildXlsxSheetGrid(entry.XLSX, entry.wb, target);
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    res.json({ ok: true, kind: "xlsx-sheet", name: target, sheets: names.slice(0, XLSX_PREVIEW_MAX_SHEETS), grid: built.grid, truncated: built.truncated, maxRows: XLSX_PREVIEW_MAX_ROWS, lazySheets: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1666,9 +1772,44 @@ app.delete("/api/agent/model-configs/:provider", async (req, res) => {
   res.json({ ok: true, provider });
 });
 
-// 从供应商接口地址拉取模型列表（OpenAI 兼容 GET /models），供前端一键导入
+// 从供应商接口地址拉取模型列表，供前端一键导入。
+// 支持三种协议（按 api 参数或内置目录推断）：
+//   openai-completions / openai-responses / openai-codex-responses → GET {baseUrl}/models（Bearer）
+//   anthropic-messages → GET {baseUrl}/v1/models（x-api-key + anthropic-version）
+//   google-generative-ai → GET {baseUrl}/models?key=（过滤 generateContent，去 models/ 前缀）
+// 其余协议（azure/bedrock/vertex/mistral 等）返回 422，走内置静态模型清单。
+const MODELS_FETCH_PROTOCOLS = new Set([
+  "openai-completions",
+  "openai-responses",
+  "openai-codex-responses",
+  "anthropic-messages",
+  "google-generative-ai",
+]);
+
+function normalizeModelsFetchEntries(api, body) {
+  if (api === "anthropic-messages") {
+    const rows = Array.isArray(body?.data) ? body.data : [];
+    return rows.map((item) => ({ id: String(item?.id || "").trim(), name: String(item?.display_name || item?.id || "").trim() })).filter((item) => item.id);
+  }
+  if (api === "google-generative-ai") {
+    const rows = Array.isArray(body?.models) ? body.models : [];
+    return rows
+      .filter((item) => Array.isArray(item?.supportedGenerationMethods) ? item.supportedGenerationMethods.includes("generateContent") : true)
+      .map((item) => {
+        const raw = String(item?.name || "").trim();
+        const id = raw.startsWith("models/") ? raw.slice("models/".length) : raw;
+        return { id, name: String(item?.displayName || id).trim() };
+      })
+      .filter((item) => item.id);
+  }
+  // OpenAI 兼容家族：data[].id
+  const rows = Array.isArray(body?.data) ? body.data : [];
+  return rows.map((item) => ({ id: String(item?.id || "").trim(), name: String(item?.id || "").trim() })).filter((item) => item.id);
+}
+
 app.post("/api/agent/model-configs/fetch-models", async (req, res) => {
   const { provider, baseUrl, apiKey } = req.body || {};
+  let api = String(req.body?.api || "").trim();
   let url = String(baseUrl || "").trim().replace(/\/+$/, "");
   let key = String(apiKey || "").trim();
   if (!url && provider) {
@@ -1678,18 +1819,32 @@ app.post("/api/agent/model-configs/fetch-models", async (req, res) => {
     const auth = listAuth() || {};
     key = String(auth[provider]?.key || auth[provider]?.apiKey || auth[provider]?.token || "").trim();
   }
+  // 协议未显式给出时按内置目录推断；目录里没有的默认按 OpenAI 兼容处理。
+  if (!MODELS_FETCH_PROTOCOLS.has(api)) {
+    const builtin = provider ? builtinProviderDetail(provider) : null;
+    api = MODELS_FETCH_PROTOCOLS.has(builtin?.api) ? builtin.api : "openai-completions";
+  }
   if (!/^https?:\/\//i.test(url)) return res.status(400).json({ ok: false, error: "接口地址必须以 http:// 或 https:// 开头", code: "MODELS_FETCH_INVALID_URL" });
   if (!key) return res.status(400).json({ ok: false, error: "缺少 API Key：请先保存凭据，或临时填写 Key", code: "MODELS_FETCH_NO_KEY" });
+  // 各协议的列表端点与鉴权头：anthropic 无 /v1 时补拼；google 用 query 传 key；openai 用 Bearer。
+  let endpoint = `${url}/models`;
+  const headers = { "Content-Type": "application/json" };
+  if (api === "anthropic-messages") {
+    endpoint = /\/v1$/.test(url) ? `${url}/models` : `${url}/v1/models`;
+    headers["x-api-key"] = key;
+    headers["anthropic-version"] = "2023-06-01";
+  } else if (api === "google-generative-ai") {
+    endpoint = `${url}/models?key=${encodeURIComponent(key)}`;
+  } else {
+    headers.Authorization = `Bearer ${key}`;
+  }
   const adapter = createPiNetworkAdapter();
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
     let response;
     try {
-      response = await adapter.fetch(`${url}/models`, {
-        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-        signal: controller.signal,
-      });
+      response = await adapter.fetch(endpoint, { headers, signal: controller.signal });
     } catch (error) {
       clearTimeout(timer);
       const message = String(error?.oawNetwork?.message || error?.message || error).slice(0, 300);
@@ -1706,23 +1861,23 @@ app.post("/api/agent/model-configs/fetch-models", async (req, res) => {
         code: response.status === 401 || response.status === 403 ? "MODELS_FETCH_AUTH" : "MODELS_FETCH_FAILED",
       });
     }
-    const ids = Array.isArray(body?.data) ? body.data.map((item) => String(item?.id || "").trim()).filter(Boolean) : [];
-    if (!ids.length) return res.status(422).json({ ok: false, error: "接口未返回模型列表（响应缺少 data[]）", code: "MODELS_FETCH_EMPTY" });
-    const unique = [...new Set(ids)];
+    const entries = normalizeModelsFetchEntries(api, body);
+    if (!entries.length) return res.status(422).json({ ok: false, error: "接口未返回模型列表", code: "MODELS_FETCH_EMPTY" });
+    const unique = [...new Map(entries.map((item) => [item.id, item])).values()];
     // 拉到的模型 ID 去 Pi 内置目录里对一遍：对上的直接带出上下文窗口 / 图片 / 思考能力，
     // 前端就不用一个个手填（对不上的仍可手填）。
-    const models = unique.map((id) => {
-      const known = findBuiltinModel(id);
+    const models = unique.map((entry) => {
+      const known = findBuiltinModel(entry.id);
       return {
-        id,
-        name: known?.name || id,
+        id: entry.id,
+        name: known?.name || entry.name || entry.id,
         contextWindow: known?.contextWindow || null,
         vision: known ? known.vision : null,
         reasoning: known ? known.reasoning : null,
         matchedProvider: known?.provider || null,
       };
     });
-    res.json({ ok: true, models, ids: unique, count: unique.length, matched: models.filter((model) => model.matchedProvider).length, fetchedAt: new Date().toISOString() });
+    res.json({ ok: true, models, ids: unique.map((item) => item.id), count: unique.length, matched: models.filter((model) => model.matchedProvider).length, fetchedAt: new Date().toISOString() });
   } catch (error) {
     res.status(500).json({ ok: false, error: String(error?.message || error).slice(0, 300), code: "MODELS_FETCH_UNEXPECTED" });
   } finally {
@@ -2296,6 +2451,15 @@ function enforceStreamQuota(res, path) {
   return true;
 }
 
+/**
+ * Qoder P1-6：陈旧流停摆门（开关 staleStreamSuspend，默认关 = 旧流照常推送，行为与基线一致）。
+ * 已被同键新流接管（stale）的旧流停止数据帧下发、保留心跳；连接不主动关闭，
+ * 由前端自身重连机制自然换新，避免"新流接上、旧流挂着"占满同源连接池。
+ */
+function isStaleSuspended(id) {
+  return Boolean(id) && RUNTIME_FLAGS.staleStreamSuspend && isStreamStale(id);
+}
+
 app.get("/api/browser/stream", (req, res) => {
   const client = String(req.query.client || "");
   const thread = String(req.query.thread || "");
@@ -2339,6 +2503,8 @@ app.get("/api/browser/stream", (req, res) => {
   let writable = true;
   const pump = () => {
     if (closed || !writable) return;
+    // P1-6：stale 流不再消费队列（数据帧在 write 入口即被丢弃，此处只兜底清残留）。
+    if (isStaleSuspended(streamId)) { pendingEvents.length = 0; pendingFrame = null; return; }
     for (;;) {
       const next = pendingEvents.shift() || pendingFrame;
       if (!next) return;
@@ -2361,6 +2527,8 @@ app.get("/api/browser/stream", (req, res) => {
   };
   const write = (payload) => {
     if (closed) return;
+    // P1-6：stale 流丢弃数据帧（心跳走独立通道保留，连接不断、前端可自行重连）。
+    if (isStaleSuspended(streamId)) return;
     if (payload.type === "frame") pendingFrame = payload;
     else pendingEvents.push(payload);
     pump();
@@ -3227,7 +3395,8 @@ app.get("/api/agent/events", (req, res) => {
   };
   const matches = (event) => event.clientId === clientId && (!threadId || event.threadId === threadId);
   const send = (event) => {
-    if (closed || !event || !matches(event) || Number(event.seq) <= lastSent) return;
+    // P1-6：已被同键新流接管（stale）的旧流停止数据/回放下发，心跳保留。
+    if (closed || (isStaleSuspended(streamId)) || !event || !matches(event) || Number(event.seq) <= lastSent) return;
     lastSent = Number(event.seq);
     try {
       const chunk = `id: ${event.seq}\ndata: ${JSON.stringify({ event })}\n\n`;
@@ -3265,7 +3434,8 @@ app.get("/api/agent/events", (req, res) => {
 app.get("/api/agent/events/state", (req, res) => {
   const clientId = String(req.query.client || "").trim();
   if (!clientId) return res.status(400).json({ error: "client required" });
-  res.json({ ...eventStoreInfo(), readCursor: getReadCursor(clientId) });
+  // P2-5：channelEvictions = 通道历史淘汰量（按类型），与 typeStats（投递/落盘）互补。
+  res.json({ ...eventStoreInfo(), readCursor: getReadCursor(clientId), channelEvictions: channelEvictionStatsSnapshot() });
 });
 
 app.post("/api/agent/events/read", (req, res) => {
@@ -4986,8 +5156,11 @@ app.get("/api/agent/stream", async (req, res) => {
       pumping = false;
     }
   };
-  const write = (chunk) => {
+  const write = (chunk, { heartbeatFrame = false } = {}) => {
     if (closed) return false;
+    // P1-6：stale 流停止数据帧下发（心跳带 heartbeatFrame 豁免，连接保持不断，
+    // 前端旧标签页可凭自身重连机制换新流）。返回 true 让调用方走"已写入"分支。
+    if (!heartbeatFrame && isStaleSuspended(streamId)) return true;
     if (!RUNTIME_FLAGS.qoderSseBackpressure) {
       // ── 基线分支（开关关闭时执行，与优化前逐字一致）──
       try {
@@ -5019,7 +5192,7 @@ app.get("/api/agent/stream", async (req, res) => {
   // 5 秒粒度比默认 15 秒更适合浏览器切换会话后的半开连接检测；
   // 前端会把它当作传输层心跳，不会提前标记 Agent 已握手。
   heartbeat = setInterval(() => {
-    write(`event: heartbeat\ndata: ${JSON.stringify({ type: "heartbeat", at: new Date().toISOString() })}\n\n`);
+    write(`event: heartbeat\ndata: ${JSON.stringify({ type: "heartbeat", at: new Date().toISOString() })}\n\n`, { heartbeatFrame: true });
     // P2-2：心跳间隔由开关提供，默认 5000 = 基线值（不设环境变量时行为完全不变）。
   }, RUNTIME_FLAGS.heartbeatChatMs);
 
@@ -5256,7 +5429,7 @@ app.get("/api/memory/stream", (req, res) => {
     if (streamId) releaseServerStream(streamId);
   };
   const onChange = (data) => {
-    if (closed) return;
+    if (closed || (isStaleSuspended(streamId))) return;
     try {
       const chunk = `data: ${JSON.stringify(data)}\n\n`;
       res.write(chunk);

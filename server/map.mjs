@@ -172,7 +172,7 @@ export function saveMapSettings(basemaps = {}) {
     esriToken: String(basemaps.esriToken ?? cur.basemaps.esriToken ?? ""),
   };
   fs.mkdirSync(MAPS_ROOT, { recursive: true });
-  fs.writeFileSync(MAP_SETTINGS_LOCAL_PATH, JSON.stringify({ basemaps: cur.basemaps }, null, 2));
+  writeJsonAtomic(MAP_SETTINGS_LOCAL_PATH, JSON.stringify({ basemaps: cur.basemaps }, null, 2));
   return cur;
 }
 
@@ -403,6 +403,72 @@ function readJson(p, fallback = null) {
   try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return fallback; }
 }
 
+// ---- Windows 并发读写防护 ----
+// style.json / map.config.json 会被前端地图每几秒轮询，同时被 agent 与前端写回。
+// writeFileSync 原地截断在 Windows 上与并发读冲突时抛 UNKNOWN（共享冲突），
+// 曾导致样式接口 500、地图端「加载失败」与进程崩溃重启。
+// 统一走「临时文件 + rename 重试」原子写；读取侧短重试并保留最后好样式兜底。
+const IO_RETRY_CODES = new Set(["UNKNOWN", "EPERM", "EACCES", "EBUSY", "EMFILE"]);
+
+function isTransientIoError(e) {
+  return IO_RETRY_CODES.has(String(e?.code || ""));
+}
+
+function sleepSync(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* 平台不支持时退化为忙等一档 */ }
+}
+
+function renameWithRetry(tmp, target) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(tmp, target);
+      return;
+    } catch (e) {
+      // 目标文件正被读取的瞬间 rename 会短暂失败；重试后仍失败则回退原地写（保底不丢数据）。
+      if (attempt >= 4 || !isTransientIoError(e)) {
+        try { fs.copyFileSync(tmp, target); fs.unlinkSync(tmp); } catch { /* 回退失败时保留 tmp 便于排查 */ }
+        return;
+      }
+      sleepSync(30 * 2 ** attempt);
+    }
+  }
+}
+
+/** 原子写 JSON/文本：临时文件 + rename，读方要么看到旧文件要么看到新文件，不会读到半截。 */
+function writeJsonAtomic(file, data) {
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, data);
+  renameWithRetry(tmp, file);
+}
+
+// 最后好样式缓存：读取遭遇瞬时锁冲突时兜底返回上一份成功解析的样式，避免前端样式轮询 500。
+const styleGoodCache = new Map();
+
+function readStyleResilient(stylePath, projectName) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const style = JSON.parse(fs.readFileSync(stylePath, "utf8"));
+      styleGoodCache.set(projectName, style);
+      return style;
+    } catch (e) {
+      lastErr = e;
+      if (e?.code === "ENOENT") break; // 文件真不存在：重试无意义
+      if (attempt < 3 && isTransientIoError(e)) sleepSync(40 * 2 ** attempt);
+    }
+  }
+  const cached = styleGoodCache.get(projectName);
+  if (cached) return cached;
+  throw lastErr || new Error("style read failed");
+}
+
+/** 供 /api/map/data/:project/style.json 使用：短重试 + 最后好样式兜底。 */
+export function readProjectStyleResilient(name) {
+  const dir = projectDir(name);
+  if (!dir) throw new Error("invalid project name");
+  return readStyleResilient(path.join(dir, "style.json"), name);
+}
+
 // 样式文件可能被提交到仓库，持久化时把底图服务凭证替换为占位符。
 // 运行时由 /api/map/data/:project/style.json 注入真实 URL，因此地图仍可正常加载。
 function redactBasemapCredentials(style) {
@@ -554,8 +620,8 @@ export function ensureProject(name = DEFAULT_PROJECT, options = {}) {
   const cfgPath = path.join(dir, "map.config.json");
   const stylePath = path.join(dir, "style.json");
   const config = readJson(cfgPath, null) || defaultConfig(name, options);
-  if (!fs.existsSync(cfgPath)) fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
-  if (!fs.existsSync(stylePath)) fs.writeFileSync(stylePath, JSON.stringify(redactBasemapCredentials(getDefaultStyle(name, config.baseProject)), null, 2));
+  if (!fs.existsSync(cfgPath)) writeJsonAtomic(cfgPath, JSON.stringify(config, null, 2));
+  if (!fs.existsSync(stylePath)) writeJsonAtomic(stylePath, JSON.stringify(redactBasemapCredentials(getDefaultStyle(name, config.baseProject)), null, 2));
   return dir;
 }
 
@@ -626,7 +692,7 @@ export function duplicateProject({ project, name = null } = {}) {
   config.name = `${config.name || source} 副本`;
   config.duplicatedFrom = source;
   config.duplicatedAt = new Date().toISOString();
-  fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
+  writeJsonAtomic(cfgPath, JSON.stringify(config, null, 2));
   return getProject(target);
 }
 
@@ -684,7 +750,7 @@ export function renameProject({ project, name } = {}) {
   const config = readJson(cfgPath, {}) || {};
   config.project = target;
   config.name = String(config.name || target);
-  fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
+  writeJsonAtomic(cfgPath, JSON.stringify(config, null, 2));
   return getProject(target);
 }
 
@@ -697,7 +763,7 @@ export function archiveProject(name, archived = true) {
   const config = readJson(cfgPath, {}) || {};
   config.archived = Boolean(archived);
   config.archivedAt = archived ? new Date().toISOString() : null;
-  fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
+  writeJsonAtomic(cfgPath, JSON.stringify(config, null, 2));
   return config;
 }
 
@@ -771,14 +837,14 @@ export function getProject(name = DEFAULT_PROJECT) {
 export function saveStyle(name, style) {
   const dir = ensureProject(name);
   if (!dir || !style || typeof style !== "object") return null;
-  fs.writeFileSync(path.join(dir, "style.json"), JSON.stringify(style, null, 2));
+  writeJsonAtomic(path.join(dir, "style.json"), JSON.stringify(style, null, 2));
   return true;
 }
 
 export function saveConfig(name, config) {
   const dir = ensureProject(name);
   if (!dir || !config) return null;
-  fs.writeFileSync(path.join(dir, "map.config.json"), JSON.stringify(config, null, 2));
+  writeJsonAtomic(path.join(dir, "map.config.json"), JSON.stringify(config, null, 2));
   return true;
 }
 
@@ -797,7 +863,7 @@ export function rebuildBasemapStyle(name = DEFAULT_PROJECT) {
 
   let style = readJson(stylePath, null);
   if (!style || typeof style !== "object" || !style.sources) {
-    fs.writeFileSync(stylePath, JSON.stringify(redactBasemapCredentials(getDefaultStyle(name)), null, 2));
+    writeJsonAtomic(stylePath, JSON.stringify(redactBasemapCredentials(getDefaultStyle(name)), null, 2));
     return true;
   }
   // 保留非底图 sources（底图 source 带 metadata.basemap 标记）
@@ -884,7 +950,7 @@ export function rebuildBasemapStyle(name = DEFAULT_PROJECT) {
     dedupedKeep.push(l);
   }
   style.layers = [...baseLayers, ...dedupedKeep];
-  fs.writeFileSync(stylePath, JSON.stringify(redactBasemapCredentials(style), null, 2));
+  writeJsonAtomic(stylePath, JSON.stringify(redactBasemapCredentials(style), null, 2));
   return true;
 }
 
@@ -895,13 +961,15 @@ export async function importLayer(name, layerId, geojson) {
   if (!dir || !safeId) return null;
   const stats = validateGeoJSON(geojson);
   const target = path.join(dir, "layers", `${safeId}.geojson`);
-  fs.writeFileSync(target, typeof geojson === "string" ? geojson : JSON.stringify(geojson));
+  // 版本快照：覆盖已有图层前把当前文件存入 versions/（每层最多 10 份，供回溯）
+  if (fs.existsSync(target)) snapshotLayerVersion(dir, safeId);
+  writeJsonAtomic(target, typeof geojson === "string" ? geojson : JSON.stringify(geojson));
   // 把新图层加入 config（若不存在）
   const config = readJson(path.join(dir, "map.config.json"), defaultConfig(name));
   if (!config.layers.some((l) => l.id === safeId)) {
     const type = guessType(geojson);
     config.layers.push({ id: safeId, name: safeId, type, group: GROUP_BY_TYPE[type] || "其他", visible: true, minzoom: 5, maxzoom: 13 });
-    fs.writeFileSync(path.join(dir, "map.config.json"), JSON.stringify(config, null, 2));
+    writeJsonAtomic(path.join(dir, "map.config.json"), JSON.stringify(config, null, 2));
   }
   // 重建该图层瓦片（缺 def 时按通用参数）
   const def = LAYER_DEFS.find((d) => d.id === safeId) || { id: safeId, minzoom: 5, maxzoom: 13, tolerance: 0.0001 };
@@ -990,13 +1058,177 @@ export function deleteLayer(name, layerId) {
   style.layers = style.layers.filter((l) => l.id !== safeId && !l.id.startsWith(`basemap-${safeId}`));
   if (style.sources?.[safeId]) delete style.sources[safeId];
   if (style.layers.length !== before) {
-    fs.writeFileSync(path.join(dir, "style.json"), JSON.stringify(style, null, 2));
+    writeJsonAtomic(path.join(dir, "style.json"), JSON.stringify(style, null, 2));
   }
   // config 里移除条目
   const config = readJson(path.join(dir, "map.config.json"), defaultConfig(name));
   config.layers = (config.layers || []).filter((l) => l.id !== safeId);
-  fs.writeFileSync(path.join(dir, "map.config.json"), JSON.stringify(config, null, 2));
+  writeJsonAtomic(path.join(dir, "map.config.json"), JSON.stringify(config, null, 2));
   return { ok: true };
+}
+
+/**
+ * 一键清零：移除所有「非初始图层」（不在 config.layers 注册表中的 style 层与数据文件），
+ * 注册层恢复默认样式与 config.visible 可见性，底图保持项目配置不变。
+ * 数据文件不直接删除，移入项目 trash/ 目录可找回。用于把 agent/演示期间的产物一次性清干净。
+ */
+export function resetProjectToInitial(name = DEFAULT_PROJECT) {
+  const dir = projectDir(name);
+  if (!dir || !fs.existsSync(path.join(dir, "map.config.json"))) return null;
+  const config = readJson(path.join(dir, "map.config.json"), null) || defaultConfig(name);
+  ensureProject(name);
+  const stylePath = path.join(dir, "style.json");
+  const style = readJson(stylePath, null) || getDefaultStyle(name, config.baseProject);
+
+  const registered = new Set((config.layers || []).map((l) => l.id));
+  const keepLayerId = (raw) => {
+    const id = String(raw);
+    if (id.startsWith("basemap-")) return true;
+    if (registered.has(id)) return true;
+    for (const rid of registered) {
+      if (id.startsWith(`${rid}-`)) return true; // 注册层的伴随层（-label 等）
+    }
+    return false;
+  };
+  const before = style.layers.length;
+  style.layers = (style.layers || []).filter((l) => keepLayerId(l.id));
+
+  // 注册层恢复默认样式与可见性（config.visible 为准；伴随层不动）
+  const byId = new Map((config.layers || []).map((l) => [l.id, l]));
+  style.layers = style.layers.map((l) => {
+    const meta = byId.get(String(l.id));
+    if (!meta) return l;
+    const def = LAYER_DEFS.find((d) => d.id === meta.id) || { id: meta.id, type: meta.type };
+    const fresh = layerStyle(def);
+    return {
+      ...l,
+      type: fresh.type || l.type,
+      layout: { ...(fresh.layout || {}), visibility: meta.visible === false ? "none" : "visible" },
+      paint: fresh.paint || l.paint,
+    };
+  });
+
+  // 清理无引用的非底图 source
+  const referenced = new Set(style.layers.map((l) => l.source).filter(Boolean));
+  for (const sid of Object.keys(style.sources || {})) {
+    const src = style.sources[sid];
+    const isBasemap = src?.metadata?.basemap || String(sid).startsWith("basemap-");
+    if (!referenced.has(sid) && !isBasemap) delete style.sources[sid];
+  }
+
+  // 非注册数据文件移入回收目录（不直接删除，可找回）
+  const trashDir = path.join(dir, "trash");
+  fs.mkdirSync(trashDir, { recursive: true });
+  const removedFiles = [];
+  const layersDir = path.join(dir, "layers");
+  if (fs.existsSync(layersDir)) {
+    const stamp = Date.now().toString(36);
+    for (const f of fs.readdirSync(layersDir)) {
+      if (!f.endsWith(".geojson")) continue;
+      const id = f.replace(/\.geojson$/, "");
+      if (registered.has(id)) continue;
+      try {
+        fs.renameSync(path.join(layersDir, f), path.join(trashDir, `${id}.${stamp}.geojson`));
+        removedFiles.push(id);
+      } catch { /* 单文件失败不连累整体 */ }
+    }
+  }
+
+  writeJsonAtomic(stylePath, JSON.stringify(redactBasemapCredentials(style), null, 2));
+  return {
+    ok: true,
+    removedStyleLayers: before - style.layers.length,
+    removedFiles,
+    keptLayers: [...registered],
+  };
+}
+
+// ---------- 图层版本回溯与归档（项目级图层管理） ----------
+
+const LAYER_VERSION_KEEP = 10;
+
+/** 覆盖导入前快照当前图层文件到 versions/{id}.{时间戳}.geojson，每层保留最近 10 份 */
+function snapshotLayerVersion(dir, id) {
+  const src = path.join(dir, "layers", `${id}.geojson`);
+  const verDir = path.join(dir, "versions");
+  try {
+    fs.mkdirSync(verDir, { recursive: true });
+    const dest = path.join(verDir, `${id}.${Date.now().toString(36)}.geojson`);
+    fs.copyFileSync(src, dest);
+    const olds = fs.readdirSync(verDir)
+      .filter((f) => f.startsWith(`${id}.`) && f.endsWith(".geojson"))
+      .sort();
+    for (const f of olds.slice(0, Math.max(0, olds.length - LAYER_VERSION_KEEP))) {
+      try { fs.unlinkSync(path.join(verDir, f)); } catch { /* 单文件清理失败忽略 */ }
+    }
+  } catch { /* 快照失败不阻断导入 */ }
+}
+
+/** 图层版本清单（新→旧） */
+export function listLayerVersions(name, layerId) {
+  const dir = projectDir(name);
+  const id = String(layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+  if (!dir || !id) return [];
+  const verDir = path.join(dir, "versions");
+  if (!fs.existsSync(verDir)) return [];
+  return fs.readdirSync(verDir)
+    .filter((f) => f.startsWith(`${id}.`) && f.endsWith(".geojson"))
+    .sort()
+    .reverse()
+    .map((f) => {
+      const st = fs.statSync(path.join(verDir, f));
+      return { file: f, time: st.mtimeMs, size: st.size };
+    });
+}
+
+/** 恢复图层到指定版本（恢复前先快照当前内容），并重建该层瓦片 */
+export function restoreLayerVersion(name, layerId, file) {
+  const dir = ensureProject(name);
+  const id = String(layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+  const safeFile = String(file || "").replace(/[^a-zA-Z0-9._-]/g, "");
+  if (!dir || !id || !safeFile) return null;
+  const verPath = path.join(dir, "versions", safeFile);
+  const target = path.join(dir, "layers", `${id}.geojson`);
+  if (!verPath.startsWith(path.join(dir, "versions")) || !fs.existsSync(verPath)) return null;
+  if (!JSON.parse(fs.readFileSync(verPath, "utf8"))) return null; // 快照必须是合法 JSON
+  if (fs.existsSync(target)) snapshotLayerVersion(dir, id);
+  fs.copyFileSync(verPath, target);
+  const geojson = JSON.parse(fs.readFileSync(target, "utf8"));
+  const config = readJson(path.join(dir, "map.config.json"), defaultConfig(name));
+  if (!config.layers.some((l) => l.id === id)) {
+    const type = guessType(geojson);
+    config.layers.push({ id, name: id, type, group: GROUP_BY_TYPE[type] || "其他", visible: true, minzoom: 5, maxzoom: 13 });
+    writeJsonAtomic(path.join(dir, "map.config.json"), JSON.stringify(config, null, 2));
+  }
+  const def = LAYER_DEFS.find((d) => d.id === id) || { id, minzoom: 5, maxzoom: 13, tolerance: 0.0001 };
+  let tiles = null;
+  try { tiles = buildProjectTiles(dir, { layerIds: [id], force: true, defs: [def] }); } catch { /* 瓦片失败不阻断恢复 */ }
+  return { ok: true, layerId: id, restoredFrom: safeFile, tiles };
+}
+
+/** 图层归档/取消归档：归档层在 style 中隐藏（config.visible 不变），面板折叠展示可恢复 */
+export function setLayerArchived(name, layerId, archived) {
+  const dir = ensureProject(name);
+  const id = String(layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+  if (!dir || !id) return null;
+  const config = readJson(path.join(dir, "map.config.json"), defaultConfig(name));
+  const meta = (config.layers || []).find((l) => l.id === id);
+  if (!meta) return null;
+  meta.archived = Boolean(archived);
+  meta.archivedAt = archived ? new Date().toISOString() : null;
+  writeJsonAtomic(path.join(dir, "map.config.json"), JSON.stringify(config, null, 2));
+  // style 同步显隐：归档=隐藏；取消归档=按 config.visible 恢复
+  const style = readJson(path.join(dir, "style.json"), null);
+  if (style?.layers) {
+    const want = archived ? "none" : (meta.visible === false ? "none" : "visible");
+    for (const l of style.layers) {
+      if (l.id === id || (String(l.id).startsWith(`${id}-`) && String(l.id).endsWith("-label"))) {
+        l.layout = { ...(l.layout || {}), visibility: want };
+      }
+    }
+    writeJsonAtomic(path.join(dir, "style.json"), JSON.stringify(redactBasemapCredentials(style), null, 2));
+  }
+  return { ok: true, layerId: id, archived: meta.archived };
 }
 
 // ---------- 外部服务 ----------
