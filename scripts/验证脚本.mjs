@@ -50,6 +50,15 @@ try {
   fail("前端构建失败: " + (e.message || "").split("\n").slice(-3).join(" | "));
 }
 
+// ---------- 2.1 样式语法门禁 ----------
+section("样式语法检查 (test:css-syntax)");
+try {
+  runSync("npm run -s test:css-syntax", { stdio: "pipe" });
+  ok("关键选择器与块结构完整");
+} catch (e) {
+  fail("样式语法检查失败: " + (e.message || "").split("\n").slice(-4).join(" | "));
+}
+
 // ---------- 3. API 冒烟测试 ----------
 section("API 冒烟测试");
 const PORT = 3199;

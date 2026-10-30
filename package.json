@@ -176,6 +176,7 @@
     "test:harness-flags": "node scripts/Harness开关对照测试.mjs",
     "test:harness-api": "node scripts/Harness接口冒烟测试.mjs",
     "test:harness": "node scripts/工具元数据契约测试.mjs && node scripts/权限决策审计测试.mjs && node scripts/工具结果外置测试.mjs && node scripts/用量归集测试.mjs && node scripts/记忆召回测试.mjs && node scripts/记忆抽取调度测试.mjs && node scripts/上下文段落契约测试.mjs && node scripts/Skill注入契约测试.mjs && node scripts/Hook事件层测试.mjs && node scripts/子代理profile与后台测试.mjs && node scripts/工具错误契约测试.mjs && node scripts/配置优先级测试.mjs && node scripts/工作流日志测试.mjs && node scripts/工作流执行器接线测试.mjs && node scripts/插件清单测试.mjs && node scripts/计划文件测试.mjs && node scripts/观测导出测试.mjs && node scripts/Harness开关对照测试.mjs && node scripts/Harness接口冒烟测试.mjs",
+    "test:css-syntax": "node scripts/样式语法测试.mjs",
     "test:chat-layout": "node scripts/对话区布局测试.mjs",
     "test:file-type-icons": "node scripts/文件类型图标测试.mjs",
     "test:image-paste": "node scripts/图片粘贴测试.mjs",
