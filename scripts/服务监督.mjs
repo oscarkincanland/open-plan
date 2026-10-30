@@ -10,6 +10,13 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SERVER_ENTRY = path.join(ROOT, "server", "index.mjs");
 const LOG_DIR = path.join(ROOT, "运行日志");
 const LOG_FILE = path.join(LOG_DIR, "服务监督.log");
+// 本地运行配置（.env 已被 .gitignore 忽略）：Node 原生加载，缺失即跳过。
+// 只用于本地开启默认关闭的能力（如 OAW_CAD_PREVIEW/OAW_CAD_AGENT），不改变代码默认值；
+// 显式传入的环境变量优先（loadEnvFile 不覆盖已有 process.env）。
+try {
+  const envFile = path.join(ROOT, ".env");
+  if (fs.existsSync(envFile)) process.loadEnvFile(envFile);
+} catch {}
 const HOST = String(process.env.HOST || "127.0.0.1");
 const PORT = Number.parseInt(String(process.env.PORT || "3002"), 10);
 const HEALTH_INTERVAL_MS = 15_000;
