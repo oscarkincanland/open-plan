@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import Spreadsheet from "x-data-spreadsheet";
 import "x-data-spreadsheet/dist/xspreadsheet.css";
 import { saveCells } from "../api.js";
+import Icon from "./Icon.jsx";
 
 function indexToCol(i) { let s = ""; while (i > 0) { const r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = Math.floor((i - r) / 26); } return s; }
 
@@ -46,11 +47,13 @@ function sheetToGridKey(sheetData) {
   return rows;
 }
 
-export default function ExcelGrid({ name, sheets, grids, truncated, maxRows }) {
+export default function ExcelGrid({ name, sheets, grids, truncated, maxRows, officeHtmlUrl = "" }) {
   const hostRef = useRef(null);
   const [spread, setSpread] = useState(null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
+  // 网格只承载“单元格值”；公式/样式/合并单元格由 OfficeCLI HTML 只读预览补足。
+  const [officeMode, setOfficeMode] = useState(false);
   const sheetNames = Array.isArray(sheets) ? sheets : [];
   const hasSheets = sheetNames.length > 0;
   // 保存时记录每个 sheet 的初始数据
@@ -89,7 +92,7 @@ export default function ExcelGrid({ name, sheets, grids, truncated, maxRows }) {
           <span className="badge">可编辑</span>
         </div>
         <div className="excel-empty">
-          <div>⚠ 无法读取工作表</div>
+          <div><Icon name="warning" size={14} /> 无法读取工作表</div>
           <div className="hint">文件可能已损坏、被占用（Excel 打开中），或格式不受支持</div>
         </div>
       </div>
@@ -146,6 +149,8 @@ export default function ExcelGrid({ name, sheets, grids, truncated, maxRows }) {
       <div className="excel-toolbar">
         <span className="badge">工作簿 · {sheets.length} 个工作表</span>
         <span className="excel-sheet-hint">底部标签栏可切换工作表</span>
+        <span className="badge">仅显示单元格值</span>
+        <span className="excel-sheet-hint">公式、样式、合并单元格不在网格预览中；底部标签栏可切换工作表</span>
         {truncatedList.length > 0 && (
           <span
             className="excel-truncated"
@@ -154,12 +159,25 @@ export default function ExcelGrid({ name, sheets, grids, truncated, maxRows }) {
             ⚠ 大表已截断显示（每表前 {maxRows} 行），编辑保存仅覆盖可见区域
           </span>
         )}
-        <button className="btn primary" onClick={handleSave} disabled={saving}>
-          {saving ? "保存中…" : "保存修改"}
-        </button>
+        {officeHtmlUrl && (
+          <button className="btn-sm" onClick={() => setOfficeMode((value) => !value)} title={officeMode ? "切回可编辑的值网格" : "OfficeCLI 高保真只读预览（查看公式/样式/合并单元格）"}>
+            {officeMode ? "表格编辑" : "高保真预览"}
+          </button>
+        )}
+        {!officeMode && (
+          <button className="btn primary" onClick={handleSave} disabled={saving} title="只保存修改过的单元格值；编辑公式单元格会把公式替换为文本">
+            {saving ? "保存中…" : "保存修改"}
+          </button>
+        )}
         {msg && <span className="save-msg">{msg}</span>}
       </div>
-      <div ref={hostRef} className="excel-host" />
+      <div ref={hostRef} className="excel-host" style={officeMode ? { display: "none" } : undefined} />
+      {officeMode && officeHtmlUrl && (
+        <div className="excel-office">
+          <iframe title={`${name} 高保真预览`} src={officeHtmlUrl} className="excel-office-frame" />
+          <div className="excel-office-hint">OfficeCLI 高保真只读渲染；如显示异常可切回表格编辑。</div>
+        </div>
+      )}
     </div>
   );
 }

@@ -242,7 +242,7 @@ export default function PptxViewer({ name, revision = 0, identity, onPreviewStat
             {!largeFile && <button className="btn-xs" onClick={() => { setFallbackReason(""); setRenderer("canvas"); }} title="切换回浏览器 Canvas 渲染">浏览器渲染</button>}
           </>
         )}
-        <span className="oaw-pptx-hint">{renderer === "canvas" ? "Canvas" : "HTML"}</span>
+        <span className="oaw-pptx-hint" title="Canvas 预览不播放动画/切换，文本不可选；字体可能替换">{renderer === "canvas" ? "Canvas · 不播放动画" : "HTML 高保真"}</span>
       </div>
       {loading && <div className="oaw-pptx-loading"><div className="loading-spinner"></div><div>{renderer === "office" ? "正在准备高保真预览..." : "正在渲染幻灯片..."}</div></div>}
       {error && <div className="oaw-pptx-error"><Icon name="warning" size={14} /> {error}</div>}

@@ -159,7 +159,7 @@ function eventMessageText(message, fallback) {
   return text.length > 80 ? `${text.slice(0, 80)}…` : text;
 }
 
-const MODE_LABELS = Object.freeze({ chat: "Chat", agent: "Work", office: "Office", review: "Review" });
+const MODE_LABELS = Object.freeze({ chat: "Chat", agent: "Work", office: "Work", review: "Review" });
 
 /** 事件 → 展示文案 */
 export function flowEventLabel(event) {
@@ -338,7 +338,7 @@ const TOOL_IDENTITY_RULES = [
   [/^(grep|find|ls|glob)$/i, "search"],
   [/^(kb_search|kb_read|memory_update|skills_search|skills_read)$/i, "book"],
   [/^(read|context_read)$/i, "file"],
-  [/^(map_read|map_datasets|map_edit|map_import|map_analyze|map_save_analysis|map_clear_analysis)$/i, "map"],
+  [/^(map_read|map_datasets|map_edit|map_import|map_analyze|map_template|map_save_analysis|map_clear_analysis)$/i, "map"],
   [/^(write|edit|review_source_apply)$/i, "edit"],
   [/^officecli$/i, "doc"],
   [/^(bash|terminal|shell)$/i, "terminal"],

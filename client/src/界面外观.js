@@ -9,28 +9,23 @@ import { useCallback, useEffect, useState } from "react";
  */
 const SETTINGS_KEY = "oaw_settings";
 
+// 跑马灯选项按 DESIGN §11 收敛为 3 样式 × 3 配色 × 2 档速度；
+// 旧值（rainbow/terminal/stripe、violet/amber/emerald、fast）在 loadAppearance 中回落默认。
 export const MARQUEE_STYLES = Object.freeze([
   { id: "shine", label: "流光扫过", hint: "名字滚动 + 一道高光缓缓扫过" },
   { id: "neon", label: "霓虹呼吸", hint: "整体明暗呼吸，像霓虹灯牌" },
-  { id: "rainbow", label: "彩虹渐变", hint: "多色渐变循环流动，最抢眼" },
-  { id: "terminal", label: "终端扫描", hint: "等宽字体 + 硬边扫描线，偏工程风" },
-  { id: "stripe", label: "斜纹跑马", hint: "斜向条纹滚动，像进度条灯带" },
   { id: "static", label: "静态高亮", hint: "不闪动，只用颜色标出运行中" },
 ]);
 
 export const MARQUEE_COLORS = Object.freeze([
   { id: "accent", label: "主题色", hint: "跟随当前皮肤强调色" },
   { id: "cyan", label: "青蓝", hint: "#22d3ee → #3b82f6" },
-  { id: "violet", label: "紫粉", hint: "#a78bfa → #f472b6" },
-  { id: "amber", label: "橙金", hint: "#fbbf24 → #f97316" },
-  { id: "emerald", label: "翠绿", hint: "#34d399 → #10b981" },
   { id: "rainbow", label: "多彩", hint: "红橙黄绿青蓝紫循环" },
 ]);
 
 export const MARQUEE_SPEEDS = Object.freeze([
   { id: "slow", label: "慢", duration: 1.6 },
   { id: "normal", label: "中", duration: 1 },
-  { id: "fast", label: "快", duration: 0.6 },
 ]);
 
 export const MOTION_LEVELS = Object.freeze([

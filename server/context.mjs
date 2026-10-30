@@ -87,6 +87,11 @@ export function parseReferences(text = "") {
   for (const m of source.matchAll(/@模板目录\[([^\]]+)\]/g)) add(makeRef("template_dir", m[1], { source: m[0] }));
   for (const m of source.matchAll(/@模板\[([^\]]+)\]/g)) add(makeRef("template", m[1], { source: m[0] }));
   for (const m of source.matchAll(/@文件\[([^\]]+)\]/g)) add(makeRef("file", m[1], { source: m[0] }));
+  // v0.13.4：`#` 提及。技能/插件只做声明式引用，由 Skills/MCP 清单在运行时解析；
+  // 文件与 @文件 等价，复用同一套工作区路径校验。
+  for (const m of source.matchAll(/#技能\[([^\]]+)\]/g)) add(makeRef("skill", m[1], { source: m[0] }));
+  for (const m of source.matchAll(/#插件\[([^\]]+)\]/g)) add(makeRef("plugin", m[1], { source: m[0] }));
+  for (const m of source.matchAll(/#文件\[([^\]]+)\]/g)) add(makeRef("file", m[1], { source: m[0] }));
   for (const m of source.matchAll(/&会话\[([^\]]+)\]/g)) add(makeRef("session", m[1], { source: m[0] }));
   // @引用裸写法扩展名识别：CAD 开启时把 dxf/dwg 也当文件引用（与 SUPPORTED 同步门控）
   const ext = new RegExp(`\\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm${RUNTIME_FLAGS.cadAgent ? "|dxf|dwg" : ""})$`, "i");
@@ -195,8 +200,8 @@ function resolveFile(ref, workspace = getWorkspace()) {
 export function resolveReference(input, workspace = getWorkspace()) {
   const ref = typeof input === "string" ? makeRef("file", input) : { ...input };
   ref.id ||= idFor(ref);
-  if (["knowledge", "knowledge_dir", "template", "template_dir"].includes(ref.kind)) {
-    return { ...ref, status: "deferred", message: "由知识库/模板索引解析", metadata: null };
+  if (["knowledge", "knowledge_dir", "template", "template_dir", "skill", "plugin"].includes(ref.kind)) {
+    return { ...ref, status: "deferred", message: "由知识库/模板/Skills/插件清单解析", metadata: null };
   }
   if (ref.kind === "session") {
     const session = readSessionReference(ref.target);

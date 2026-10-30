@@ -25,17 +25,20 @@ if ($existing -and $existing.ok) {
 }
 
 # Keep the supervisor in an independent hidden PowerShell process.
+# 脚本路径含空格（如 "D:\Claude code文件\..."）时必须显式加引号，
+# 否则 Start-Process 会把 -File 参数截断成第一个空格之前的内容。
+$quotedServiceScript = '"' + $ServiceScript + '"'
 $arguments = @(
   "-NoProfile",
   "-ExecutionPolicy", "Bypass",
-  "-File", $ServiceScript,
+  "-File", $quotedServiceScript,
   "-AllowOffline"
 )
 if ($StrictNetwork) {
   $arguments = @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
-    "-File", $ServiceScript,
+    "-File", $quotedServiceScript,
     "-StrictNetwork"
   )
 }

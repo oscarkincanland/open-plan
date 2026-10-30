@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
-import { browserClose, browserFullpage, browserInput, browserOpen, browserPdf, browserReset, browserState, browserStreamPause } from "../api.js";
+import 提示气泡 from "./提示气泡.jsx";
+import { browserClose, browserFullpage, browserInput, browserOpen, browserPdf, browserReset, browserState, browserStreamPause, getTabId } from "../api.js";
 import { acquireStream, waitForStreamSlot } from "../长连接预算.js";
 import { flag } from "../运行开关.js";
 import { setBrowserStreamState } from "../浏览器联动.js";
@@ -28,6 +29,18 @@ function isRecoverableBrowserError(error) {
  * - 用户可直接在画面上点击、输入，随时接管（登录、验证码等）；
  * - 只在有活动会话时建立帧流连接，避免空跑。
  */
+/**
+ * 地址栏输入解析：URL 原样打开；域名自动补 https://；其余内容当作搜索词走必应搜索。
+ */
+function resolveTarget(draft) {
+  const value = String(draft || "").trim();
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  if (/^localhost(:\d+)?([/?#].*)?$/i.test(value)) return `http://${value}`;
+  if (/^[\w-]+(\.[\w-]+)+(:\d+)?([/?#].*)?$/.test(value)) return `https://${value}`;
+  return `https://cn.bing.com/search?q=${encodeURIComponent(value)}`;
+}
+
 export default function BrowserPanel({ clientId, threadId, fullscreen = false, onToggleFullscreen }) {
   const [state, setState] = useState({ active: false, url: "", title: "", loading: false, viewport: { width: 1280, height: 800 }, hasFrame: false, ownership: null });
   const [tabs, setTabs] = useState([]);
@@ -43,6 +56,18 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
   const keyboardRef = useRef(null);
   const composingRef = useRef(false);
   const sourceRef = useRef(null);
+  // 画面是否已出现：img 元素只在有帧后渲染，监听器必须等它挂载后再绑定；
+  // 用布尔值而不是 frame 字符串做依赖，避免每 100ms 一帧导致监听器反复重建、拖拽状态被重置。
+  const hasFrame = Boolean(frame);
+
+  // Agent 虚拟鼠标：Agent 的点击/输入/滚动等操作以事件流下发，这里叠加显示，与用户鼠标区分。
+  const [agentAction, setAgentAction] = useState(null);
+  const [agentPoint, setAgentPoint] = useState({ nx: 0.5, ny: 0.5 });
+  const [agentVisible, setAgentVisible] = useState(false);
+  const [imgBox, setImgBox] = useState(null); // 帧画面相对 .browser-view 的像素位置，用于叠加定位
+  const agentSeqRef = useRef(0);
+  const agentHideTimerRef = useRef(null);
+
   const addressEditingRef = useRef(false);
   const inputQueueRef = useRef(Promise.resolve());
 
@@ -68,7 +93,7 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
 
     const connect = () => {
       if (stopped) return;
-      const params = new URLSearchParams({ client: clientId, thread: threadId || "", frames: "1" });
+      const params = new URLSearchParams({ client: clientId, tab: getTabId(), thread: threadId || "", frames: "1" });
       source = new EventSource(`/api/browser/stream?${params.toString()}`);
       slot?.attach(() => source?.close());
       sourceRef.current = source;
@@ -94,6 +119,13 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
           } else if (payload.type === "frame" && payload.data?.data) {
             setFrame(payload.data.data);
             if (payload.data.width && payload.data.height) setFrameSize({ width: payload.data.width, height: payload.data.height });
+          } else if (payload.type === "agent-action") {
+            const data = payload.data || {};
+            if (Number.isFinite(data.nx) && Number.isFinite(data.ny)) setAgentPoint({ nx: data.nx, ny: data.ny });
+            setAgentAction({ ...data, seq: ++agentSeqRef.current });
+            setAgentVisible(true);
+            if (agentHideTimerRef.current) clearTimeout(agentHideTimerRef.current);
+            agentHideTimerRef.current = setTimeout(() => setAgentVisible(false), 6000);
           } else if (payload.type === "closed") {
             setFrame(null);
             setFrameSize({ width: 0, height: 0 });
@@ -127,6 +159,7 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
       stopped = true;
       try { source?.close(); } catch {}
       if (retryTimer) clearTimeout(retryTimer);
+      if (agentHideTimerRef.current) clearTimeout(agentHideTimerRef.current);
       cancelWaiting?.();
       sourceRef.current = null;
       slot?.release();
@@ -166,6 +199,7 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
     try {
       const result = await queueBrowserInput(payload);
       if (result?.ok === false) setMessage(result.error || "操作失败");
+      // 归属由服务端 ownership 驱动（state.ownership → userOwns），交互后不再做本地布尔置位。
     } catch (error) {
       setMessage(String(error.message || error));
     } finally {
@@ -174,7 +208,7 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
   }, [queueBrowserInput]);
 
   const openUrl = useCallback(async (url) => {
-    const target = String(url || "").trim();
+    const target = resolveTarget(url);
     if (!target) return;
     setBusy(true);
     setMessage("");
@@ -271,6 +305,8 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
       img.focus({ preventScroll: true });
       keyboardRef.current?.focus({ preventScroll: true });
       event.preventDefault();
+      // preventDefault 会阻止浏览器默认的聚焦行为；手动聚焦保证点击画面后键盘可直输
+      try { img.focus({ preventScroll: true }); } catch {}
       const point = normalizedPoint(event);
       if (!point) return;
       dragRef.current.active = true;
@@ -301,9 +337,9 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
       window.removeEventListener("mouseup", onUp);
       dragRef.current.active = false;
     };
-    // 注意：不要把 frame 放进依赖。帧流每 ~100ms 更新一次，effect 会被反复重建并
-    // 重置拖拽状态，导致 mouseup 发不出去（表现为点击无效、输入框拿不到焦点）。
-  }, [state.active, normalizedPoint, sendPointer]);
+    // 注意：不要把 frame 本身放进依赖（每 ~100ms 一帧会反复重建监听器、重置拖拽状态）；
+    // 用 hasFrame 布尔值：只在「第一帧出现/画面消失」时重新绑定一次。
+  }, [state.active, hasFrame, normalizedPoint, sendPointer]);
 
   // 滚轮接管：把面板滚轮转发为页面滚动（节流合并，避免刷屏）
   const wheelRef = useRef({ deltaX: 0, deltaY: 0, timer: null, point: null });
@@ -334,7 +370,51 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
       img.removeEventListener("wheel", onWheel);
       if (wheelRef.current.timer) window.clearTimeout(wheelRef.current.timer);
     };
-  }, [state.active, normalizedPoint, queueBrowserInput]);
+  }, [state.active, hasFrame, queueBrowserInput, normalizedPoint]);
+
+  // 测量帧画面在面板中的实际位置，供 Agent 虚拟鼠标叠加定位（标题栏显隐、面板缩放时自动更新）
+  useLayoutEffect(() => {
+    const measure = () => {
+      const img = imgRef.current;
+      const view = viewRef.current;
+      if (!img || !view) { setImgBox(null); return; }
+      const imgRect = img.getBoundingClientRect();
+      const viewRect = view.getBoundingClientRect();
+      const next = { left: imgRect.left - viewRect.left, top: imgRect.top - viewRect.top, width: imgRect.width, height: imgRect.height };
+      setImgBox((previous) => {
+        if (previous
+          && Math.abs(previous.left - next.left) < 0.5
+          && Math.abs(previous.top - next.top) < 0.5
+          && Math.abs(previous.width - next.width) < 0.5
+          && Math.abs(previous.height - next.height) < 0.5) return previous;
+        return next;
+      });
+    };
+    measure();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    if (observer) {
+      if (imgRef.current) observer.observe(imgRef.current);
+      if (viewRef.current) observer.observe(viewRef.current);
+    }
+    window.addEventListener("resize", measure);
+    return () => {
+      if (observer) observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [hasFrame, state.title, fullscreen]);
+
+  const agentBubble = useMemo(() => {
+    if (!agentAction) return "";
+    const { kind } = agentAction;
+    if (kind === "type") return `输入「${String(agentAction.text || "").slice(0, 40)}」`;
+    if (kind === "navigate") return `打开 ${String(agentAction.url || "").replace(/^https?:\/\//, "").slice(0, 46)}`;
+    if (kind === "key") return `按键 ${agentAction.key || "Enter"}`;
+    if (kind === "scroll") return agentAction.direction === "up" ? "向上滚动" : "向下滚动";
+    if (kind === "tab") return agentAction.action === "new" ? "新建标签页" : agentAction.action === "close" ? "关闭标签页" : "切换标签页";
+    if (kind === "back") return "返回上一页";
+    if (kind === "click") return agentAction.text ? `点击「${String(agentAction.text).slice(0, 28)}」` : "";
+    return "";
+  }, [agentAction]);
 
   // 键盘直输：点击画面后把本地键盘焦点交给不可见捕获层，再通过 CDP
   // Input.insertText/dispatchKeyEvent 转发到真实网页，支持中文输入法。
@@ -452,11 +532,11 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
         <div className="browser-idle-card">
           <div className="browser-idle-icon"><Icon name="globe" size={22} /></div>
           <div className="browser-idle-heading"><strong>Open Plan 浏览器</strong><span>Agent 与你共用的可视化网页空间</span></div>
-          <p>Agent 打开网页后，画面会实时出现在这里。你可以直接点击、拖动、滚动、输入，接管登录、验证码或网页操作。</p>
+          <p>Agent 打开网页后，画面会实时出现在这里。你可以直接点击、拖动、滚动、输入，接管登录、验证码或网页操作；地址栏输入关键词可直接搜索。</p>
           <form className="browser-idle-open" onSubmit={(event) => { event.preventDefault(); openUrl(openDraft); }}>
             <Icon name="link" size={14} />
-            <input value={openDraft} onChange={(event) => setOpenDraft(event.target.value)} placeholder="输入网址，例如 https://cn.bing.com" spellCheck={false} />
-            <button type="submit" className="browser-primary-btn" disabled={busy || !openDraft.trim()}><Icon name="arrowRight" size={14} />打开</button>
+            <input value={openDraft} onChange={(event) => setOpenDraft(event.target.value)} placeholder="输入网址或搜索内容，例如：浙江省综合交通规划" spellCheck={false} />
+            <button type="submit" className="browser-primary-btn" disabled={busy || !openDraft.trim()}><Icon name="arrowRight" size={13} />打开</button>
           </form>
           <div className="browser-quick-links">
             <span>快速打开</span>
@@ -496,8 +576,8 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
       </div>
       <div className="browser-toolbar">
         <div className="browser-nav-actions">
-          <button className="btn-icon" onClick={() => send({ action: "back" })} disabled={busy} title="后退" aria-label="后退"><Icon name="back" size={14} /></button>
-          <button className="btn-icon" onClick={() => send({ action: "reload" })} disabled={busy} title="刷新页面" aria-label="刷新页面"><Icon name="refresh" size={14} /></button>
+          <提示气泡 label="后退"><button className="btn-icon" onClick={() => send({ action: "back" })} disabled={busy} aria-label="后退"><Icon name="back" size={14} /></button></提示气泡>
+          <提示气泡 label="刷新页面"><button className="btn-icon" onClick={() => send({ action: "reload" })} disabled={busy} aria-label="刷新页面"><Icon name="refresh" size={14} /></button></提示气泡>
         </div>
         <form
           className="browser-url-form"
@@ -532,20 +612,21 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
         </button>
         {flag("browserFullpage") && (
           <>
-            <button type="button" className="btn-icon" onClick={captureFullpage} disabled={busy || !state.active} title="整页截图（长页面完整保存）" aria-label="整页截图"><Icon name="image" size={14} /></button>
-            <button type="button" className="btn-icon" onClick={exportPdf} disabled={busy || !state.active} title="导出整页 PDF" aria-label="导出整页 PDF"><Icon name="download" size={14} /></button>
+            <提示气泡 label="整页截图（长页面完整保存）"><button type="button" className="btn-icon" onClick={captureFullpage} disabled={busy || !state.active} aria-label="整页截图"><Icon name="image" size={14} /></button></提示气泡>
+            <提示气泡 label="导出整页 PDF"><button type="button" className="btn-icon" onClick={exportPdf} disabled={busy || !state.active} aria-label="导出整页 PDF"><Icon name="download" size={14} /></button></提示气泡>
           </>
         )}
-        <button
-          type="button"
-          className="browser-fullscreen-toggle"
-          onClick={onToggleFullscreen}
-          title={fullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
-          aria-label={fullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
-        >
-          <Icon name={fullscreen ? "minimize" : "maximize"} size={14} />
-        </button>
-        <button className="btn-icon" onClick={handleClose} disabled={busy} title="关闭浏览器" aria-label="关闭浏览器"><Icon name="close" size={14} /></button>
+        <提示气泡 label={fullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}>
+          <button
+            type="button"
+            className="browser-fullscreen-toggle"
+            onClick={onToggleFullscreen}
+            aria-label={fullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
+          >
+            <Icon name={fullscreen ? "minimize" : "maximize"} size={14} />
+          </button>
+        </提示气泡>
+        <提示气泡 label="关闭浏览器"><button className="btn-icon" onClick={handleClose} disabled={busy} aria-label="关闭浏览器"><Icon name="close" size={14} /></button></提示气泡>
       </div>
       {state.title && <div className="browser-title" title={state.title}>{state.title}</div>}
       <div ref={viewRef} className="browser-view" title="滚轮滚动 · 单击接管 · 按住拖动可操作滑块">
@@ -572,6 +653,20 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
           />
         ) : (
           <div className="browser-placeholder"><span>{state.loading ? "正在加载网页…" : "正在获取画面…"}</span><button className="btn-sm" onClick={() => send({ action: "reload" })} disabled={busy}>重新连接</button></div>
+        )}
+        {state.active && agentAction && imgBox && (
+          <div
+            className={`browser-agent-cursor kind-${agentAction.kind} ${agentVisible ? "visible" : ""}`}
+            style={{ left: imgBox.left + imgBox.width * agentPoint.nx, top: imgBox.top + imgBox.height * agentPoint.ny }}
+            title={agentBubble || "Agent 正在操作"}
+          >
+            <span key={agentAction.seq} className="browser-agent-ripple" />
+            <svg width="18" height="24" viewBox="0 0 18 24" aria-hidden="true">
+              <path d="M2 1.5 L2 19.5 L6.6 15.2 L9.6 22 L12.6 20.6 L9.7 14 L16 14 Z" fill="#8b5cf6" stroke="#ffffff" strokeWidth="1.2" strokeLinejoin="round" />
+            </svg>
+            <span className="browser-agent-tag">Agent</span>
+            {agentBubble && <span className="browser-agent-bubble">{agentBubble}</span>}
+          </div>
         )}
       </div>
       <div className="browser-hint"><Icon name="cursor" size={12} /> {userOwns ? "你正在接管：Agent 写操作已暂停，点击「交还 Agent」后恢复" : "点击网页控件后直接键盘输入 · 滚轮滚动 · 按住拖动滑块/验证码 · 回车提交"}</div>

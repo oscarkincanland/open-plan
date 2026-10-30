@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import Icon from "./Icon.jsx";
+import 提示气泡 from "./提示气泡.jsx";
 import { mapGetLayer } from "../api.js";
 
 const GROUP_ORDER = ["行政区划", "公路网", "设施点", "其他"];
@@ -372,8 +373,12 @@ export default function LayerPanel({
         ) : (
           <form className="lp-new-group" onSubmit={submitNewGroup}>
             <input autoFocus value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} placeholder="组名称" />
-            <button type="submit" title="保存"><Icon name="check" size={12} /></button>
-            <button type="button" onClick={() => { setNewGroupOpen(false); setNewGroupName(""); }} title="取消"><Icon name="close" size={12} /></button>
+            <提示气泡 label="保存分组名称">
+              <button type="submit" aria-label="保存分组名称"><Icon name="check" size={12} /></button>
+            </提示气泡>
+            <提示气泡 label="取消新建分组">
+              <button type="button" onClick={() => { setNewGroupOpen(false); setNewGroupName(""); }} aria-label="取消新建分组"><Icon name="close" size={12} /></button>
+            </提示气泡>
           </form>
         )}
       </div>
@@ -715,7 +720,7 @@ export default function LayerPanel({
                     </div>
                     <div className="lp-ed-row lp-ed-actions">
                       <button className="btn-sm primary" onClick={() => applyFieldRender(rm.mode, rm.field, rm.palette, rm.classes)}>应用</button>
-                      <button className="btn-sm" onClick={resetFieldRender}>恢复单一颜色</button>
+                      <提示气泡 label="恢复单一颜色"><button className="btn-sm" onClick={resetFieldRender} aria-label="恢复单一颜色"><Icon name="refresh" size={14} /></button></提示气泡>
                     </div>
                   </>
                 )}

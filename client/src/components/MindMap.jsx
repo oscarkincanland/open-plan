@@ -186,12 +186,21 @@ export default function MindMap({ roots, onSelectDoc, highlightPath, rootIdx: cu
               key={row.key}
               className={`kb-mindmap-row ${row.isDir ? "dir" : "file"} ${activePath === `${row.rootIdx ?? 0}/${row.relPath}` ? "active" : ""}`}
               style={{ paddingLeft: row.depth * 14 + 8 }}
+              role="button"
+              tabIndex={0}
               onClick={() => {
                 if (row.isDir) toggleCollapse(row.key);
                 else onSelectDoc?.(row.relPath, row.rootIdx);
               }}
+              onKeyDown={(e) => {
+                if (e.target !== e.currentTarget) return;
+                if (e.key !== "Enter" && e.key !== " ") return;
+                e.preventDefault();
+                if (row.isDir) toggleCollapse(row.key);
+                else onSelectDoc?.(row.relPath, row.rootIdx);
+              }}
             >
-              <span className="kb-mindmap-caret">{row.isDir ? (collapsed[row.key] ? "▸" : "▾") : ""}</span>
+              <span className="kb-mindmap-caret">{row.isDir ? <Icon name={collapsed[row.key] ? "chevronRight" : "chevronDown"} size={12} /> : null}</span>
               <Icon name={row.isDir ? "folder" : "file"} size={12} />
               <span className="kb-mindmap-name" title={row.name}>{row.name}</span>
             </div>

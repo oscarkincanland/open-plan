@@ -12,7 +12,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), "utf8");
+// 统一换行符：本仓库在 Windows 工作区是 CRLF、CI（Linux）是 LF，
+// 而下面若干断言用 `\n` 写多行源码形状，不归一会「本地红、CI 绿」地漂移。
+const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const 对话面板 = read("../client/src/components/ChatPanel.jsx");
 const 命令面板 = read("../client/src/components/CommandPalette.jsx");
 const 图标 = read("../client/src/components/Icon.jsx");
@@ -24,6 +26,7 @@ const 运行展示投影 = read("../client/src/运行展示投影.js");
 const 智能体管理 = read("../server/智能体管理.mjs");
 const 智能体运行时 = read("../server/agent.mjs");
 const 服务端索引 = read("../server/index.mjs");
+const 执行句柄源码 = read("../server/执行句柄.mjs");
 const 运行记录 = read("../server/runs.mjs");
 const 事件注册表 = read("../server/事件注册表.mjs");
 const 事件展示 = read("../client/src/事件展示.js");
@@ -164,7 +167,7 @@ assert.match(智能体运行时, /function currentModelSpec\(entry\)/, "应能�
 assert.match(事件注册表, /\{ type: "model_switched", lifecycle: true, persist: true/, "model_switched 必须登记进事件注册表");
 assert.match(事件展示, /case "model_switched": \{/, "前端事件展示应有 model_switched 文案");
 assert.match(事件展示, /模型切换已排队：本轮结束后切到/, "排队文案应说明「本轮结束后生效」");
-assert.match(服务端索引, /model: effectiveModel \|\| null/, "beginRun 应记录本轮实际生效的模型");
+assert.match(执行句柄源码, /model: effectiveModel || null/, "beginRun 应记录本轮实际生效的模型（P1-1 起下沉到执行句柄）");
 assert.match(运行记录, /model: model \? String\(model\) : null/, "Run 记录应保存本轮模型");
 assert.match(运行展示投影, /model: String\(data\.model \|\| previous\?\.model \|\| ""\)/, "每轮摘要应携带本轮模型");
 assert.match(对话面板, /case "model_switched": \{/, "前端应消费 model_switched 事件");

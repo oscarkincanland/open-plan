@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
+import 提示气泡 from "./提示气泡.jsx";
 import { openInSystem, revealInSystem } from "../api.js";
 import { PREVIEW_STATE } from "../文件地址.js";
 import { notifyError } from "./Feedback.jsx";
@@ -68,16 +69,22 @@ export default function ImageViewer({ doc, onPreviewState, onPreviewError }) {
         <span className="image-viewer-spacer" />
         <button type="button" className={`btn-xs ${scale === "fit" ? "active" : ""}`} onClick={() => setScale("fit")} title="适应窗口">适应窗口</button>
         <button type="button" className={`btn-xs ${scale === 1 ? "active" : ""}`} onClick={() => setScale(1)} title="原始大小（100%）">100%</button>
-        <button type="button" className="btn-xs" onClick={() => step(-1)} title="缩小"><Icon name="minus" size={12} /></button>
-        <button type="button" className="btn-xs" onClick={() => step(1)} title="放大"><Icon name="plus" size={12} /></button>
+        <提示气泡 label="缩小">
+          <button type="button" className="btn-xs" onClick={() => step(-1)} aria-label="缩小"><Icon name="minus" size={12} /></button>
+        </提示气泡>
+        <提示气泡 label="放大">
+          <button type="button" className="btn-xs" onClick={() => step(1)} aria-label="放大"><Icon name="plus" size={12} /></button>
+        </提示气泡>
         <button type="button" className="btn-xs" onClick={handleOpenOriginal} title="用系统默认应用打开原图"><Icon name="externalLink" size={12} /> 打开原图</button>
-        <button type="button" className="btn-xs" onClick={handleReveal} title="在文件管理器中显示"><Icon name="folderOpen" size={12} /></button>
+        <提示气泡 label="在文件管理器中显示">
+          <button type="button" className="btn-xs" onClick={handleReveal} aria-label="在文件管理器中显示"><Icon name="folderOpen" size={12} /></button>
+        </提示气泡>
       </div>
       {state === PREVIEW_STATE.FAILED && (
         <div className="image-viewer-error" role="alert">
           <Icon name="warning" size={16} />
           <span>图片加载失败：文件可能损坏、格式与扩展名不符，或已不可读。</span>
-          <button type="button" className="btn-xs" onClick={handleOpenOriginal}>用系统应用打开</button>
+          <提示气泡 label="用系统应用打开"><button type="button" className="btn-xs" onClick={handleOpenOriginal} aria-label="用系统应用打开"><Icon name="externalLink" size={12} /></button></提示气泡>
         </div>
       )}
       {state !== PREVIEW_STATE.FAILED && (

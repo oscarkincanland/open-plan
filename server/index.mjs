@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { listWorkspace, searchWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace, isInside } from "./workspace.mjs";
 import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, queryComments, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
 import { getApprovalMode, listPendingApprovals, listPermissionRules, removeUserRule, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
-import { agentManager, classifyAgentError, getCredentialErrors, isAbortLikeError, isProviderTruncation, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
+import { agentManager, classifyAgentError, getCredentialErrors, isAbortLikeError, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
@@ -15,21 +15,25 @@ import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs } from "./runs.mjs";
-import { markRunTiming, attachRunTimingMeta, attachRunTimingSpans, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves } from "./runs.mjs";
+import { attachRunTimingMeta, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
 import { workspaceTrustSummary, setWorkspaceTrust } from "./项目信任.mjs";
 import { runtimeFlagsSnapshot, RUNTIME_FLAGS } from "./运行开关.mjs";
 import { readCadDocument, CAD_ENTITY_LIMIT } from "./CAD解析.mjs";
+import { summarizeRunUsage, exportObservabilityJson } from "./观测导出.mjs";
+import { listPlans, writePlan } from "./计划文件.mjs";
+import { loadHookConfig, HOOK_EVENTS } from "./Hook事件层.mjs";
+import { listToolMetadata, metadataCoverageReport, TOOL_NAMES } from "./工具元数据.mjs";
 import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
 import { listPublishedArtifacts, publishArtifact, inspectRunAcceptance, confirmArtifactAcceptance, rollbackPublishedArtifact } from "./成果管理.mjs";
-import { atomicWriteFile, atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
+import { atomicWriteFile, atomicWriteJson, ensureDirectory, flushPendingFsync } from "./持久化工具.mjs";
 import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs";
 import { listConnectors, getConnector, beginConnectorAuth, setConnectorStatus } from "./connectors.mjs";
 import * as projectManager from "./项目管理.mjs";
 import { listAgents, createAgent, updateAgent, deleteAgent } from "./智能体管理.mjs";
-import { listStagedFilesForValidation, stageWrite, writeWorkspaceFile, withWriteLockAsync } from "./写入协调.mjs";
+import { writeWorkspaceFile, withWriteLockAsync } from "./写入协调.mjs";
 import { evaluateWorkspaceWrite, runRuntimeEvaluation } from "./运行评测.mjs";
 import { normalizeOfficeFailure, normalizeWorkspaceWriteError, workspaceWriteHttpStatus } from "./文件权限错误.mjs";
 import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, CHANNEL_HISTORY_LIMIT } from "./事件协议.mjs";
@@ -37,13 +41,22 @@ import * as searchModule from "./联网搜索.mjs";
 import { nativeCapabilities, openWithDefaultApp, pickFiles, pickFolder, revealInFileManager, cancelActivePicker, activePickerInfo } from "./原生文件.mjs";
 import { DIFF_LIMITS, diffFileContents } from "./文件差异.mjs";
 import * as browserModule from "./内置浏览器.mjs";
-import { inferCompletion } from "./运行轨迹.mjs";
 import { PI_PACKAGE_VERSION, piRuntimeManager } from "./Pi运行时管理.mjs";
 import { createPiNetworkAdapter } from "./Pi网络代理.mjs";
 import { listMcpServers, saveMcpServer, updateMcpServer, deleteMcpServer, testMcpServer, closeMcpConnections } from "./mcp管理.mjs";
 import { listPiExtensions, addPiExtension, updatePiExtension, checkPiExtension, deletePiExtension } from "./pi扩展管理.mjs";
+import { readGoal, setGoal as setSessionGoalRecord, actOnGoal, clearGoal, goalPromptContext } from "./goal.mjs";
 import { searchPiPackageCatalog, resolveInstalledPiPackage } from "./pi包目录.mjs";
 import { registerServerStream, releaseServerStream, noteStreamWrite, listServerStreams, serverStreamStats, closeServerStreams, sweepServerStreams, streamQuotaOf, rejectStreamQuota } from "./流连接.mjs";
+// P1-1 统一执行句柄：执行 / 中断 / 响应交互 / 释放 / 订阅 / 可用性 / 能力
+import {
+  执行句柄,
+  绑定执行依赖,
+  validateStagedArtifacts,
+  waitForFlush,
+  resolveRunCompletion,
+  getRunFinalText,
+} from "./执行句柄.mjs";
 import {
   getConfigStatus,
   importLocalPiConfig,
@@ -65,6 +78,13 @@ import { fetchModelsDevCatalog, readModelsDevCache, writeModelsDevCache } from "
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
 const app = express();
+// P1-1 统一执行句柄：把事件广播、诊断落盘与会话键注入句柄，
+// 句柄因此不必反向依赖 index.mjs（避免模块环）。
+绑定执行依赖({
+  emit: (entry, type, data) => emitChannel(entry, type, data),
+  recordDiagnostic: (req, details) => recordAgentDiagnostic(req, details),
+  agentKey,
+});
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = process.env.PORT || 3002;
 const API_TOKEN = String(process.env.OAW_API_TOKEN || "").trim();
@@ -107,12 +127,9 @@ async function ensureRuntimeWithTimeout(key, options = {}) {
   }
 }
 
-const recoveredRunIds = recoverActiveRuns();
-if (recoveredRunIds.length) console.warn(`[runs] 已将 ${recoveredRunIds.length} 个中断前活动 Run 标记为 recovering，等待用户继续。`);
-
-function validateStagedArtifacts(runId) {
-  return listStagedFilesForValidation(runId).map((item) => validateArtifactFile(item.file, item.root, item.path));
-}
+// R1：中断 Run 的恢复必须在 listen 成功之后执行（见下方 listen 回调）。
+// 此前放在模块顶层，任何重复实例（端口被占、启动失败）都会在退出前把活跃 Run
+// 标记为 recovering/failed，造成“任务没完成、产物被清空”的误判。
 
 app.use(express.json({ limit: "256mb" }));
 
@@ -392,6 +409,55 @@ app.get("/api/status", (req, res) => {
       identity: SERVICE_IDENTITY,
       sandboxIdentity: IS_SANDBOX_IDENTITY,
     },
+  });
+});
+
+// ---------- Harness 诊断（ZCode 对标，只读） ----------
+app.get("/api/harness/tools", (_req, res) => {
+  res.json({
+    ok: true,
+    coverage: metadataCoverageReport(TOOL_NAMES),
+    tools: listToolMetadata(),
+  });
+});
+
+app.get("/api/harness/usage", (req, res) => {
+  res.json({ ok: true, ...summarizeRunUsage({ runId: String(req.query.runId || "") }) });
+});
+
+app.get("/api/harness/observability", (req, res) => {
+  try {
+    res.json({ ok: true, report: JSON.parse(exportObservabilityJson({ runId: String(req.query.runId || "") })) });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error?.message || error) });
+  }
+});
+
+app.get("/api/harness/plans", (_req, res) => {
+  res.json({ ok: true, plans: listPlans(getWorkspace()) });
+});
+
+app.post("/api/harness/plans", express.json({ limit: "2mb" }), (req, res) => {
+  const { title = "任务计划", content = "", runId = null, name = null } = req.body || {};
+  const result = writePlan({ workspace: getWorkspace(), title, content, runId, name });
+  res.status(result.ok ? 200 : 400).json(result);
+});
+
+app.get("/api/harness/hooks", (_req, res) => {
+  const config = loadHookConfig({ workspace: getWorkspace() });
+  res.json({
+    ok: true,
+    events: HOOK_EVENTS,
+    requireTrust: config.requireTrust,
+    errors: config.errors,
+    hooks: config.hooks.map((hook) => ({
+      id: hook.id,
+      event: hook.event,
+      source: hook.source,
+      enabled: hook.enabled !== false,
+      script: hook.script || hook.args?.[0] || null,
+      timeoutMs: hook.timeoutMs || null,
+    })),
   });
 });
 
@@ -2161,6 +2227,7 @@ app.post("/api/browser/open", async (req, res) => {
   if (!client) return res.status(400).json({ ok: false, error: "client required" });
   const key = browserModule.browserSessionKey(client, thread);
   try {
+    // 用户可独立使用内置浏览器（无需 Agent）：未填地址时默认打开必应
     const state = await browserModule.browserOpen(key, String(url || "").trim() || "https://cn.bing.com");
     res.json({ ok: true, state });
   } catch (error) {
@@ -2259,6 +2326,7 @@ app.get("/api/browser/stream", (req, res) => {
   ({ id: streamId } = registerServerStream({
     path: "/api/browser/stream",
     client,
+    tab: String(req.query.tab || ""),
     thread,
     note: withFrames ? "frames" : "state",
     probe: () => !closed && !res.writableEnded && !res.socket?.destroyed,
@@ -2318,6 +2386,9 @@ app.get("/api/browser/stream", (req, res) => {
   } });
   unsubscribe = browserModule.subscribeBrowser(key, (type, data) => {
     if (type === "frame" && !withFrames) return;
+    // 帧流背压：上游推帧快于本连接消费（writableNeedDrain）时丢弃当前帧，
+    // 客户端只保留最新画面即可，避免 SSE 缓冲无限堆积。
+    if (type === "frame" && res.writableNeedDrain) return;
     write({ type, data });
   });
   if (session) {
@@ -3013,6 +3084,8 @@ function buildSessionMeta(f, h, text, { truncated = false } = {}) {
     parentSessionId: h.parentSessionId || null,
     branchSourceMessageId: h.branchSourceMessageId || null,
     branchPurpose: h.branchPurpose || "",
+    // v0.13.7 Agent 继承：会话 header 记录的智能体 id，供新建沿用与界面展示
+    agentId: typeof h.agentId === "string" ? h.agentId : "",
     created: h.created || "",
     title,
     hasUserMessage,
@@ -3166,6 +3239,7 @@ app.get("/api/agent/events", (req, res) => {
   ({ id: streamId } = registerServerStream({
     path: "/api/agent/events",
     client: clientId,
+    tab: String(req.query.tab || ""),
     thread: threadId,
     probe: () => !closed && !res.writableEnded && !res.socket?.destroyed,
     close: () => { cleanup(); try { res.end(); } catch {} },
@@ -3204,6 +3278,23 @@ app.get("/api/runs/:id", (req, res) => {
   const run = getRun(req.params.id);
   if (!run) return res.status(404).json({ error: "run not found" });
   res.json({ run });
+});
+
+app.get("/api/runs/:id/workflow-journal", (req, res) => {
+  if (!RUNTIME_FLAGS.workflowJournal) return res.status(404).json({ ok: false, error: "工作流 journal 未启用" });
+  const run = getRun(req.params.id);
+  if (!run) return res.status(404).json({ ok: false, error: "run not found" });
+  const journal = readJournal(req.params.id);
+  res.json({ ok: true, runId: req.params.id, workflowId: run.task?.workflowId || run.workflow?.id || null, journalCount: journal.length, journal });
+});
+
+app.get("/api/runs/:id/workflow-replay", (req, res) => {
+  if (!RUNTIME_FLAGS.workflowJournal) return res.status(404).json({ ok: false, error: "工作流 journal 未启用" });
+  const run = getRun(req.params.id);
+  if (!run) return res.status(404).json({ ok: false, error: "run not found" });
+  const stages = (run.steps || []).map((step) => step.id || step.name);
+  const journal = readJournal(req.params.id);
+  res.json({ ok: true, runId: req.params.id, workflowId: run.task?.workflowId || run.workflow?.id || null, plan: planReplay(stages, journal), journalCount: journal.length });
 });
 
 app.post("/api/runs/:id/cancel", async (req, res) => {
@@ -3439,6 +3530,32 @@ app.post("/api/sessions/:id/fork", (req, res) => {
     const lines = source.split(/\r?\n/).filter(Boolean);
     if (!lines.length) return res.status(400).json({ error: "empty session" });
     const header = JSON.parse(lines[0]);
+    const sourceMessageId = String(req.body?.sourceMessageId || "").trim();
+    // v0.12.7：从指定消息 fork 时只复制到该消息（含其工具结果），旧会话不受影响。
+    // 不指定 sourceMessageId 时保持原有“整份会话复制”行为。
+    let kept = lines.slice(1);
+    if (sourceMessageId) {
+      const entries = kept.map((line) => {
+        try { return JSON.parse(line); } catch { return null; }
+      });
+      const targetIndex = entries.findIndex((entry) => entry?.id === sourceMessageId);
+      if (targetIndex < 0) return res.status(404).json({ error: "source message not found", code: "SOURCE_MESSAGE_NOT_FOUND" });
+      const target = entries[targetIndex];
+      const toolCallIds = new Set((Array.isArray(target?.message?.content) ? target.message.content : [])
+        .filter((block) => block?.type === "toolCall" || block?.type === "tool_call")
+        .map((block) => block.id || block.toolCallId)
+        .filter(Boolean));
+      let lastIndex = targetIndex;
+      // 助手消息的 toolResult 可能紧跟其后：一起保留，保证工具调用/结果配对。
+      for (let index = targetIndex + 1; index < entries.length; index += 1) {
+        const entry = entries[index];
+        const role = entry?.message?.role;
+        if (!entry || entry.type !== "message" || (role !== "toolResult" && role !== "tool_result")) break;
+        if (toolCallIds.size && !toolCallIds.has(entry.message?.toolCallId)) break;
+        lastIndex = index;
+      }
+      kept = kept.slice(0, lastIndex + 1);
+    }
     const id = crypto.randomUUID();
     const label = String(req.body?.label || `${header.label || "会话"}（分支）`).trim();
     const nextHeader = {
@@ -3447,18 +3564,17 @@ app.post("/api/sessions/:id/fork", (req, res) => {
       sessionId: id,
       threadId: id,
       parentSessionId: header.sessionId || header.id || req.params.id,
-      branchSourceMessageId: String(req.body?.sourceMessageId || "") || null,
-      branchPurpose: String(req.body?.purpose || "") || "从历史会话创建的独立分支",
+      branchSourceMessageId: sourceMessageId || null,
+      branchPurpose: String(req.body?.purpose || "") || (sourceMessageId ? "从指定消息创建的独立分支" : "从历史会话创建的独立分支"),
       created: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       label,
       pinned: false,
       frozen: false,
     };
-    lines[0] = JSON.stringify(nextHeader);
     const fileName = `${id}.jsonl`;
-    atomicWriteFile(path.join(SESSIONS_DIR, fileName), lines.join("\n") + "\n", "utf8");
-    res.json({ ok: true, id, fileName, parentSessionId: nextHeader.parentSessionId, cwd: nextHeader.cwd, threadId: id, label, projectId: nextHeader.projectId || null });
+    atomicWriteFile(path.join(SESSIONS_DIR, fileName), [JSON.stringify(nextHeader), ...kept].join("\n") + "\n", "utf8");
+    res.json({ ok: true, id, fileName, parentSessionId: nextHeader.parentSessionId, cwd: nextHeader.cwd, threadId: id, label, projectId: nextHeader.projectId || null, sourceMessageId: sourceMessageId || null, entryCount: kept.length });
   } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
 
@@ -3744,7 +3860,43 @@ app.get("/api/sessions", (req, res) => {
         });
       } catch {}
     }
-    res.json({ sessions });
+    // v0.13.6：稳定排序 + 可选分页/按工作区分组。
+    // 保持既有调用（无 limit/groupBy）返回全部 sessions，避免破坏前端。
+    sessions.sort((a, b) => {
+      const pin = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
+      if (pin) return pin;
+      return Number(b.modified || 0) - Number(a.modified || 0);
+    });
+    const total = sessions.length;
+    const pageLimit = Math.max(0, Number.parseInt(req.query.limit, 10) || 0);
+    const cursor = Math.max(0, Number.parseInt(req.query.cursor, 10) || 0);
+    const paged = pageLimit > 0 ? sessions.slice(cursor, cursor + pageLimit) : sessions;
+    const nextCursor = pageLimit > 0 && cursor + pageLimit < total ? cursor + pageLimit : null;
+    const groupBy = String(req.query.groupBy || "").trim();
+    let groups;
+    if (groupBy === "workspace") {
+      const byKey = new Map();
+      for (const session of paged) {
+        const key = session.projectId || session.cwd || "ungrouped";
+        if (!byKey.has(key)) {
+          byKey.set(key, {
+            key,
+            label: session.projectName || session.cwd || "未分组",
+            projectId: session.projectId || null,
+            cwd: session.cwd || "",
+            sessions: [],
+          });
+        }
+        byKey.get(key).sessions.push(session);
+      }
+      groups = [...byKey.values()].map((group) => ({ ...group, count: group.sessions.length }));
+    }
+    res.json({
+      sessions: paged,
+      total,
+      ...(pageLimit > 0 ? { cursor, nextCursor } : {}),
+      ...(groups ? { groups } : {}),
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -3812,6 +3964,107 @@ function compactSessionEntryForChat(entry) {
   return { ...entry, message };
 }
 
+// v0.12.5：按 Pi 会话树的活跃 leaf 还原当前分支。SessionManager 的 leafId 就是
+// 文件里最后追加的 entry；navigateTree 后由 agent 追加 oaw_branch_point 标记固化。
+// 老会话没有 parentId 链时不做过滤，避免把整段历史清空。
+function activeLeafSessionEntries(entries) {
+  const byId = new Map();
+  let allIdentified = true;
+  for (const entry of entries) {
+    if (!entry?.id) { allIdentified = false; continue; }
+    byId.set(entry.id, entry);
+  }
+  const leaf = entries[entries.length - 1];
+  if (!allIdentified || !leaf?.id) return { entries: entries.slice(), leafId: leaf?.id || null, filtered: false };
+  const hasParentLinks = entries.some((entry) => entry?.parentId);
+  if (!hasParentLinks) return { entries: entries.slice(), leafId: leaf.id, filtered: false };
+  const path = [];
+  const seen = new Set();
+  let cursor = leaf;
+  while (cursor && !seen.has(cursor.id)) {
+    seen.add(cursor.id);
+    path.push(cursor);
+    cursor = cursor.parentId ? byId.get(cursor.parentId) : null;
+  }
+  path.reverse();
+  if (!path.length) return { entries: entries.slice(), leafId: leaf.id, filtered: false };
+  return { entries: path, leafId: leaf.id, filtered: true };
+}
+
+function sessionMessageText(entry) {
+  const message = entry?.message || {};
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.filter((block) => block?.type === "text" || block?.type === "input_text").map((block) => block.text || block.content || "").join("\n");
+  }
+  return "";
+}
+
+// 从同一 parent 下的兄弟 user 消息还原“第 N 版”回答：版本 = 该 user 消息所在分支的叶子。
+function messageVersionsForSession(entries, messageId) {
+  const byId = new Map();
+  const childrenByParent = new Map();
+  for (const entry of entries) {
+    if (!entry?.id) continue;
+    byId.set(entry.id, entry);
+    const parent = entry.parentId || null;
+    if (!childrenByParent.has(parent)) childrenByParent.set(parent, []);
+    childrenByParent.get(parent).push(entry);
+  }
+  const target = byId.get(messageId);
+  if (!target) return null;
+  // 找到这条消息所属的“回合用户消息”：assistant 向上回溯到最近的 user 消息。
+  let roundUser = target;
+  let guard = 0;
+  while (roundUser && roundUser.message?.role !== "user" && roundUser.parentId && guard < 200) {
+    roundUser = byId.get(roundUser.parentId);
+    guard += 1;
+  }
+  if (!roundUser || roundUser.message?.role !== "user") return null;
+  const parentId = roundUser.parentId || null;
+  const activeLeafId = entries[entries.length - 1]?.id || null;
+  const branchContains = (branchRootId) => {
+    let cursor = activeLeafId ? byId.get(activeLeafId) : null;
+    let hops = 0;
+    while (cursor && hops < 500) {
+      if (cursor.id === branchRootId) return true;
+      cursor = cursor.parentId ? byId.get(cursor.parentId) : null;
+      hops += 1;
+    }
+    return false;
+  };
+  const deepestLeaf = (rootId) => {
+    let cursor = byId.get(rootId);
+    let hops = 0;
+    while (cursor && hops < 500) {
+      const children = (childrenByParent.get(cursor.id) || []).filter((entry) => entry.type === "message" || entry.type === "custom");
+      if (!children.length) return cursor.id;
+      cursor = children[children.length - 1];
+      hops += 1;
+    }
+    return rootId;
+  };
+  const siblings = (childrenByParent.get(parentId) || [])
+    .filter((entry) => entry.type === "message" && entry.message?.role === "user");
+  const versions = siblings.map((entry, index) => ({
+    entryId: entry.id,
+    leafId: branchContains(entry.id) ? activeLeafId : deepestLeaf(entry.id),
+    preview: sessionMessageText(entry).replace(/\s+/g, " ").trim().slice(0, 160),
+    createdAt: entry.timestamp || entry.createdAt || null,
+    active: branchContains(entry.id),
+    version: index + 1,
+  }));
+  const activeIndex = versions.findIndex((item) => item.active);
+  return {
+    parentId,
+    activeLeafId,
+    currentVersion: activeIndex >= 0 ? activeIndex + 1 : versions.length,
+    total: versions.length,
+    versions,
+  };
+}
+
 // GET /api/sessions/:id - 获取会话详情（含 entries、fork 树、leafId）
 app.get("/api/sessions/:id", (req, res) => {
   const found = findSessionFile(req.params.id);
@@ -3820,13 +4073,17 @@ app.get("/api/sessions/:id", (req, res) => {
     const text = readSessionTextCached(found);
     const all = parseJsonl(text);
     const header = all.find((e) => e && e.type === "header") || all[0] || {};
-    const entries = all.filter((e) => e !== header);
+    const allEntries = all.filter((e) => e !== header);
     const chatView = String(req.query.view || "") === "chat";
+    // v0.12.5：Chat 视图只沿活跃 leaf 的父链展示，避免把 navigateTree 后
+    // 被放弃的分支混进当前会话；老会话（无 parentId）保留原有整段返回。
+    const activeLeaf = activeLeafSessionEntries(allEntries);
+    const entries = chatView ? activeLeaf.entries : allEntries;
     // Chat 视图只服务前端展示，不承担 Pi 会话恢复。恢复仍使用磁盘上的完整
     // JSONL；这里按尾部窗口返回，避免切换一个长会话时把整份工具输出一次性
     // 传到浏览器并触发大批量 JSON/Markdown 解析。
     const chatLimit = chatView
-      ? Math.max(80, Math.min(600, Number.parseInt(req.query.limit, 10) || 360))
+      ? Math.max(20, Math.min(600, Number.parseInt(req.query.limit, 10) || 50))
       : entries.length;
     const requestedBefore = chatView ? Number.parseInt(req.query.before, 10) : NaN;
     const historyEnd = Number.isFinite(requestedBefore)
@@ -3836,29 +4093,21 @@ app.get("/api/sessions/:id", (req, res) => {
     const chatEntries = chatView ? entries.slice(historyStart, historyEnd) : entries;
     const responseEntries = chatView ? chatEntries.map(compactSessionEntryForChat) : entries;
 
-    // 按 parentId 组织 fork 层级（key 为 parentId，value 为子节点 id 数组）
+    // 非 Chat 视图继续返回完整 fork 树（供会话树/管理使用）。
     const tree = {};
-    for (const e of entries) {
-      const pid = (e && e.parentId) || null;
-      if (!tree[pid]) tree[pid] = [];
-      tree[pid].push(e.id);
-    }
-
-    // 找 leafId：没有任何子节点的 entry（最深的分支末端）
-    let leafId = null;
-    for (const e of entries) {
-      const kids = tree[e.id];
-      if (!kids || kids.length === 0) {
-        leafId = e.id;
-        break;
+    if (!chatView) {
+      for (const e of allEntries) {
+        const pid = (e && e.parentId) || null;
+        if (!tree[pid]) tree[pid] = [];
+        tree[pid].push(e.id);
       }
     }
 
     res.json({
       entries: responseEntries,
       // Chat 页面不使用 fork tree；不要把几千个节点再复制一份进响应。
-      tree: chatView ? {} : tree,
-      leafId,
+      tree,
+      leafId: activeLeaf.leafId,
       info: {
         id: header.sessionId || header.id || sessionBaseName(found.fileName),
         cwd: header.cwd || "",
@@ -3879,11 +4128,83 @@ app.get("/api/sessions/:id", (req, res) => {
         historyStart: chatView ? historyStart : undefined,
         historyEnd: chatView ? historyEnd : undefined,
         historyHasMore: chatView ? historyStart > 0 : false,
+        historyPageSize: chatView ? chatLimit : undefined,
+        activeLeafId: chatView ? activeLeaf.leafId : undefined,
+        activeLeafFiltered: chatView ? activeLeaf.filtered : undefined,
       },
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// v0.12.8：读取某条消息所属回合的版本列表（同一 parent 下的兄弟 user 消息）。
+app.get("/api/sessions/:id/message-versions", (req, res) => {
+  const found = findSessionFile(req.params.id);
+  if (!found) return res.status(404).json({ ok: false, error: "not found", code: "SESSION_NOT_FOUND" });
+  const messageId = String(req.query.messageId || "").trim();
+  if (!messageId) return res.status(400).json({ ok: false, error: "messageId required", code: "MESSAGE_ID_REQUIRED" });
+  try {
+    const all = parseJsonl(readSessionTextCached(found));
+    const header = all.find((e) => e && e.type === "header") || all[0] || {};
+    const versions = messageVersionsForSession(all.filter((e) => e !== header), messageId);
+    if (!versions) return res.status(404).json({ ok: false, error: "message not found", code: "MESSAGE_NOT_FOUND" });
+    res.json({ ok: true, messageId, ...versions });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message, code: "VERSIONS_READ_FAILED" });
+  }
+});
+
+// v0.13.0：长期目标（Goal）读写——会话级事实源在 .oaw/goals/<sessionId>.json。
+function goalSessionForRequest(req) {
+  const found = findSessionFile(req.params.id);
+  if (!found) return null;
+  const header = readSessionHeader(found);
+  const key = String(header.sessionId || header.id || sessionBaseName(found.fileName) || req.params.id);
+  return { found, header, key };
+}
+
+app.get("/api/sessions/:id/goal", (req, res) => {
+  const session = goalSessionForRequest(req);
+  if (!session) return res.status(404).json({ ok: false, code: "SESSION_NOT_FOUND", error: "not found" });
+  try {
+    res.json({ ok: true, goal: readGoal(session.key) });
+  } catch (e) {
+    res.status(500).json({ ok: false, code: "GOAL_WRITE_FAILED", error: e.message });
+  }
+});
+
+app.post("/api/sessions/:id/goal", (req, res) => {
+  const session = goalSessionForRequest(req);
+  if (!session) return res.status(404).json({ ok: false, code: "SESSION_NOT_FOUND", error: "not found" });
+  const result = setSessionGoalRecord(session.key, req.body || {}, {
+    clientId: String(req.body?.client || "") || null,
+    threadId: String(req.body?.thread || session.key),
+  });
+  if (!result.ok) return res.status(result.status || 400).json(result);
+  res.json(result);
+});
+
+app.post("/api/sessions/:id/goal/action", (req, res) => {
+  const session = goalSessionForRequest(req);
+  if (!session) return res.status(404).json({ ok: false, code: "SESSION_NOT_FOUND", error: "not found" });
+  const result = actOnGoal(session.key, req.body?.action, req.body || {}, {
+    clientId: String(req.body?.client || "") || null,
+    threadId: String(req.body?.thread || session.key),
+  });
+  if (!result.ok) return res.status(result.status || 400).json(result);
+  res.json(result);
+});
+
+app.delete("/api/sessions/:id/goal", (req, res) => {
+  const session = goalSessionForRequest(req);
+  if (!session) return res.status(404).json({ ok: false, code: "SESSION_NOT_FOUND", error: "not found" });
+  const result = clearGoal(session.key, {
+    clientId: String(req.query?.client || "") || null,
+    threadId: String(req.query?.thread || session.key),
+  });
+  if (!result.ok) return res.status(result.status || 400).json(result);
+  res.json(result);
 });
 
 // POST /api/sessions/batch-delete - 批量删除会话历史（运行中的会话跳过）
@@ -3977,11 +4298,8 @@ app.post("/api/agent/abort", async (req, res) => {
         && item.clientId === client && (!thread || !item.threadId || item.threadId === thread));
       runId = running?.id || "";
     }
-    if (runId) requestRunCancellation(runId, "用户在对话栏请求中断");
-    const result = await agentManager.abort(key, { runId });
-    // P2-3：一并回执「取消后仍排队的轮次数量」，前端据此区分「已停」与「排队中已停」
-    // （基线只返回 ok/runId，无法判断是否还有排队的轮次）。字段为新增，不影响既有消费方。
-    res.json({ ...result, runId: result.runId || runId || null, stillQueued: Number(live?.queuedCount || 0) });
+    // P1-1：中断语义下沉到执行句柄（路由只做参数校验与响应封装）。
+    res.json(await 执行句柄.中断(runId, "用户在对话栏请求中断", { client, thread }));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -4059,11 +4377,23 @@ app.get("/api/agent/pending", (req, res) => {
 
 // 回答 agent 的提问（ask_user 工具：用户回答后 agent 继续）
 app.post("/api/agent/answer", (req, res) => {
-  const { client, thread, answer } = req.body || {};
-  if (!client || !answer) return res.status(400).json({ error: "client and answer required" });
-  const result = agentManager.submitAnswer(agentKey(client, thread), String(answer).slice(0, 2000));
+  const { client, thread, answer, values } = req.body || {};
+  // v0.13.5：Schema 表单可直接回传 values；统一序列化为一段可读文本交给执行句柄。
+  const answerText = String(
+    answer ?? (values && typeof values === "object"
+      ? Object.entries(values).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join("、") : value ?? ""}`).join("\n")
+      : ""),
+  ).trim();
+  if (!client || !answerText) return res.status(400).json({ error: "client and answer required" });
+  // P1-1：响应交互下沉到执行句柄（路由只做参数校验与响应封装）。
+  const result = 执行句柄.响应交互(client, answerText, { thread });
   if (!result.ok) return res.status(404).json({ error: "no pending question" });
   res.json(result);
+});
+
+// P1-1：统一执行句柄的只读自述（可用性三态 + 能力清单）。
+app.get("/api/agent/handle", (_req, res) => {
+  res.json({ availability: 执行句柄.可用性(), capabilities: 执行句柄.能力() });
 });
 
 // ---------- 工具审批（参考 opencode 的 allow/ask/deny 三值模型） ----------
@@ -4101,162 +4431,6 @@ app.post("/api/agent/approval", (req, res) => {
   if (!result.ok) return res.status(404).json(result);
   res.json(result);
 });
-
-/**
- * 后台执行已被接收的 Agent Run。
- * HTTP 只负责完成 admission；模型、工具和产物状态统一通过 SSE 回传，
- * 这样供应商慢或断开时不会把浏览器的 prompt 请求长期挂住。
- */
-function getRunFinalText(run) {
-  // 权威终稿优先读 Run 根级投影（由 recordRunFinalText 单写入维护），
-  // 旧 Run 没有该字段时回退到事件流中的最后一条 assistant_final。
-  if (run && String(run.finalText || "").trim()) return String(run.finalText);
-  return [...(run?.events || [])]
-    .reverse()
-    .find((item) => item?.type === "assistant_final" && String(item?.data?.text || "").trim())
-    ?.data?.text || "";
-}
-
-// 其他 run 的暂存清单路径（产物统计时排除，避免并行任务相互污染）
-function otherRunsStagedPaths(currentRunId) {
-  const paths = new Set();
-  const runsDir = path.join(PROJECT_DIR, ".oaw", "runs");
-  let names = [];
-  try { names = fs.readdirSync(runsDir); } catch { return paths; }
-  for (const name of names) {
-    if (name === currentRunId) continue;
-    try {
-      const manifest = JSON.parse(fs.readFileSync(path.join(runsDir, name, "写入清单.json"), "utf8"));
-      if (Array.isArray(manifest.files)) {
-        for (const entry of manifest.files) {
-          if (typeof entry?.path === "string") paths.add(entry.path.replace(/\\/g, "/"));
-        }
-      }
-    } catch {}
-  }
-  return paths;
-}
-
-// 完成语义：显式 complete_task 优先；否则按 Run 终态推断（source:"inferred"），
-// 前端据此区分“回答结束”与“任务真正完成”。
-function resolveRunCompletion(entry, runStatus, { artifacts = 0, validations = [], runId = null } = {}) {
-  const pending = entry?.pendingCompletion && typeof entry.pendingCompletion === "object" ? entry.pendingCompletion : null;
-  // 完成声明必须属于当前 Run：同一会话上一轮的声明不能串到本轮（否则会误报 success）。
-  const explicit = pending && (!runId || !pending.runId || pending.runId === runId) ? pending : null;
-  return explicit || inferCompletion({ runStatus, artifacts, validations });
-}
-
-async function executeAgentRun({ entry, key, client, thread, normalizedText, images, effort, resolved, task, workflow, run, before, runWorkspace, effectiveModel, capabilityPlan, preflight, requestId, admissionReadyAt = 0 }) {
-  const tracksWorkspace = run?.snapshotMode !== "none";
-  try {
-    await agentManager.promptWithContext(key, normalizedText, images, effort, resolved, { runId: run.id, task, workflow, admissionReadyAt: Number(admissionReadyAt) || 0 });
-  } catch (e) {
-    const currentModel = entry?.session?.model;
-    const diagnostic = recordAgentDiagnostic({ requestId }, {
-      client,
-      thread,
-      runId: run?.id || null,
-      model: effectiveModel || (currentModel?.provider && currentModel?.id ? `${currentModel.provider}/${currentModel.id}` : null),
-      error: e,
-    });
-    // 与发送路由同一条规矩：用户主动中断时 SDK 会以 "Request aborted" 拒绝这次 prompt，
-    // 这不是模型/运行时故障——不发 agent_error、不写 runtime_error
-    //（写了会把 Run 标成"需要恢复"、把 Runtime 标成 failed）。
-    const cancelRequestedHere = getRun(run.id)?.status === "cancel_requested"
-      || Boolean(entry?.cancelRequested)
-      || Boolean(entry?.abortRequestedAt && Date.now() - entry.abortRequestedAt < 120000);
-    const userAborted = cancelRequestedHere && isAbortLikeError(diagnostic.message);
-    if (entry && userAborted) {
-      emitChannel(entry, "aborted", { runId: run?.id || null, reason: "用户请求中断" });
-    } else if (entry) {
-      emitChannel(entry, "agent_error", { message: diagnostic.message, code: diagnostic.errorCode || e?.code || null, category: diagnostic.errorCategory || null, providerStatus: diagnostic.providerStatus || null, runId: run?.id || null, requestId, retryable: diagnostic.retryable });
-    }
-    // 失败前已生成的权威文本也写入 run 记录，供前端断线兜底渲染
-    if (run && entry?.lastFinalText) recordRunEvent(run.id, "assistant_final", { text: entry.lastFinalText });
-// 出错也检测产物（agent 可能已部分写入文件）
-    const stagedElsewhere = otherRunsStagedPaths(run?.id || "");
-    const changed = filterRunChanges(run, (tracksWorkspace ? await waitForFlush(before, runWorkspace) : [])
-      .filter((p) => !stagedElsewhere.has(String(p).replace(/\\/g, "/"))));
-    const validations = validateArtifacts(changed, runWorkspace);
-    const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
-    if (changed.length && entry) {
-      emitChannel(entry, "file_changed", { files: changed, runId: run?.id || null });
-      emitChannel(entry, "agent_summary", {
-        products: changed,
-        // A02-3：总结正文只给数量，文件清单走 products/artifacts，不再把全部文件名塞进正文
-        summary: `对话异常结束，仍处理了 ${changed.length} 个文件`,
-        runId: run?.id || null,
-        artifacts: [],
-      });
-    }
-    const runtimeHealth = entry ? agentManager.runtimeHealth(key) : null;
-    // 供应商流截断（未返回 finish_reason）：既不是用户中断，也不该按"模型调用失败"处理——
-    // 关键看这一轮有没有客观产出（文件改动 / 暂存产物 / 模型最终文本）。
-    const truncatedRecoverable = !userAborted
-      && isProviderTruncation(diagnostic.message)
-      && (Boolean(entry?.lastFinalText) || changed.length > 0 || stagedValidations.length > 0);
-    if (runtimeHealth && !userAborted && !truncatedRecoverable) recordRunEvent(run.id, "runtime_error", { code: diagnostic.errorCode || e?.code || null, message: diagnostic.message, runtime: runtimeHealth });
-    const cancelled = userAborted || getRun(run.id)?.status === "cancel_requested";
-    // 供应商流截断但活已经干完：按「部分完成」收尾而不是「本轮失败」——
-    // 判定必须看客观产物（有改动或有过校验通过）与模型的最终文本，而不是只看调用是否干净收尾。
-    const truncationCompletion = truncatedRecoverable
-      ? {
-        status: "partial",
-        source: "inferred",
-        summary: `${entry?.lastFinalText ? String(entry.lastFinalText).slice(0, 4000) : run?.task?.goal || "本轮产物已产出"}\n\n⚠ 模型流被供应商截断（未返回 finish_reason，已自动重试并继续），产物已产出并通过校验，请按结果核对。`,
-        incomplete: [],
-        blockers: [],
-        verification: null,
-        verificationStatus: "not_checked",
-      }
-      : null;
-    const failureCompletion = truncationCompletion || resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations], runId: run.id });
-    const failed = finishRun(run.id, {
-      status: cancelled ? "cancelled" : (truncatedRecoverable ? "completed" : "failed"),
-      sessionId: entry?.session?.sessionId || null,
-      error: cancelled ? "用户请求取消" : (truncatedRecoverable ? "模型流被供应商截断（产物已产出）" : e.message),
-      summary: cancelled ? "任务已中断" : (truncatedRecoverable ? "部分完成（模型流被截断）" : "Agent 执行失败"),
-      validations: [...validations, ...stagedValidations],
-      completion: failureCompletion,
-    });
-    if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)), model: getRun(run.id)?.model || null, finalMessageId: getRun(run.id)?.finalMessageId || null });
-    return;
-  }
-
-// officecli keeps files in a resident process — disk writes flush asynchronously.
-  // Poll until the workspace snapshot stabilizes, then diff.
-  // 把最终权威文本写入 run 记录（assistant_final），前端 run_finished 用它兜底渲染
-  if (run && entry?.lastFinalText) recordRunEvent(run.id, "assistant_final", { text: entry.lastFinalText });
-  const stagedElsewhere = otherRunsStagedPaths(run?.id || "");
-  const changed = filterRunChanges(run, (tracksWorkspace ? await waitForFlush(before, runWorkspace) : [])
-    .filter((p) => !stagedElsewhere.has(String(p).replace(/\\/g, "/"))));
-  const validations = validateArtifacts(changed, runWorkspace);
-  const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
-  const allValidations = [...validations, ...stagedValidations];
-  const publishableStagedValidations = stagedValidations.filter((item) => item.status !== "failed");
-  const verificationNote = allValidations.some((item) => item.status === "failed") ? "，但产物校验发现问题" : allValidations.some((item) => item.status === "warning") ? "，产物校验有提示" : "";
-  const cancelled = run && getRun(run.id)?.status === "cancel_requested";
-  const finalStatus = cancelled ? "cancelled" : "completed";
-  const publishPaths = publishableStagedValidations.map((item) => item.path).filter(Boolean);
-  const publishedCount = changed.length + publishableStagedValidations.length;
-  const completed = run ? finishRun(run.id, { status: finalStatus, sessionId: entry?.session?.sessionId || null, summary: cancelled ? "任务已取消" : (publishedCount ? `本轮对话完成，共处理 ${publishedCount} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更"), validations: allValidations, publishPaths: run ? publishPaths : null, completion: resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }) }) : null;
-  if (entry) {
-    const productPaths = [...changed, ...publishableStagedValidations.map((item) => item.path).filter(Boolean)];
-    if (productPaths.length) emitChannel(entry, "file_changed", { files: productPaths, runId: run?.id || null });
-    // 终态总结必须无条件发出：没有文件变更的轮次也要有结果卡（总结 + 本轮过程行），
-    // 否则对话看起来“没有总结、折叠过程也没做完”。文案与 run 记录里的 summary 保持一致。
-    emitChannel(entry, "agent_summary", {
-      products: productPaths,
-      // A02-3：正文只保留数量，文件清单走 products/artifacts
-      summary: completed?.summary || (cancelled ? "任务已取消" : (publishedCount ? `本轮对话完成，共处理 ${publishedCount} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更")),
-      runId: run?.id || null,
-      artifacts: completed?.artifacts || [],
-      references: resolved,
-      status: completed?.status || finalStatus,
-    });
-    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked", completion: completed?.completion || resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }), finalText: getRunFinalText(getRun(run.id)), model: getRun(run.id)?.model || null, finalMessageId: getRun(run.id)?.finalMessageId || null });
-  }
-}
 
 app.post("/api/agent/prompt", async (req, res) => {
   const admissionStartedAt = new Date().toISOString();
@@ -4328,8 +4502,7 @@ app.post("/api/agent/prompt", async (req, res) => {
     // 早先每次插话都 beginRun 出一条新 Run：同一会话会同时出现两条"执行中"，
     // 会话列表与任务中心互相矛盾，而且真正执行的回合结束后插话 Run 仍留在 running
     // （用户反馈的"会话之间切换混乱"）。
-    const steeringRun = entry.busy && entry.activeRunId ? getRun(entry.activeRunId) : null;
-    let before = [];
+    // 插话（steer）、快照与 Run 创建已下沉到执行句柄；这里只保留失败收口需要的句柄。
     let run = null;
     let resolved = [];
     let task = null;
@@ -4381,6 +4554,11 @@ app.post("/api/agent/prompt", async (req, res) => {
       error.code = "SKILL_PREFLIGHT_FAILED";
       throw error;
     }
+    // v0.13.0：把会话长期目标注入本轮任务摘要；无目标/已完成时不注入。
+    const goalSession = thread ? findSessionFile(thread) : null;
+    const goalHeader = goalSession ? readSessionHeader(goalSession) : null;
+    const goalKey = goalSession ? String(goalHeader?.sessionId || goalHeader?.id || thread) : "";
+    const longTermGoal = goalKey ? goalPromptContext(goalKey) : null;
     task = createTaskEnvelope({
       ...effectiveTaskInput,
       text: normalizedText,
@@ -4389,122 +4567,40 @@ app.post("/api/agent/prompt", async (req, res) => {
       references: resolved,
       workflowId,
       capabilityPlan,
+      longTermGoal,
       constraints: [
         ...(taskInput?.constraints || []),
         ...(workflow && !workflow.valid ? [`工作流缺少技能：${workflow.missing.join(", ")}`] : []),
       ],
     });
-      // Chat 没有上传文件时是严格只读模式，不需要为每轮问答扫描工作区。
-      // 用户明确上传的附件需要在成功后发布为可追溯文件，因此保留完整快照。
-      const tracksWorkspace = task.mode !== "chat" || Boolean(attachments?.length);
-      // 插话沿用当前 Run 的"运行前快照"：整个回合（含插话）的改动要在同一个窗口里比对。
-      before = steeringRun ? (steeringRun.before || []) : (tracksWorkspace ? await timed("snapshot", async () => snapshotWorkspace(runWorkspace)) : []);
-      const runtimeSnapshot = agentManager.runtimeSnapshot(key, {
-        profile: task.agentProfile,
-        taskMode: task.mode,
-        capabilityPlanVersion: capabilityPlan?.version || null,
+      // P1-1：Run 生命周期下沉到统一执行句柄
+      // （建 Run → 暂存附件 → 记录事件 → 广播准入 → 后台跑 Agent → 返回准入应答）。
+      const result = await 执行句柄.执行(normalizedText, {
+        entry,
+        key,
+        client,
+        thread,
+        images,
+        effort,
+        resolved,
+        task,
+        workflow,
+        workflowId,
+        runWorkspace,
+        effectiveModel,
+        capabilityPlan,
+        preflight,
+        requestId: req.requestId,
+        admissionStartedAt,
+        serverReceivedAt,
+        admissionSpans,
+        attachments,
+        projectId: project?.id || null,
+        requestedModel,
+        timed,
       });
-      run = steeringRun || await timed("beginRun", async () => beginRun({
-      clientId: client,
-      threadId: thread || null,
-      sessionId: entry.session?.sessionId || null,
-      cwd: runWorkspace,
-      task,
-      references: resolved,
-      workflow,
-      projectId: project?.id || null,
-      capabilityPlan,
-      runtimeSnapshot,
-      snapshotMode: tracksWorkspace ? "full" : "none",
-      beforeSnapshot: tracksWorkspace ? before : null,
-      // 本轮实际使用的模型（含刚恢复的备用模型）：会话里按轮显示模型与切换分割线都靠它。
-      model: effectiveModel || null,
-      }));
-      // admission 完成（含快照/运行时准备）——这是服务端可控准备耗时的上界。
-      const admissionReadyAt = Date.now();
-      // 插话不重写首字打点：当前 Run 的 marks 已经反映它自己的首个回合。
-      if (!steeringRun) {
-        markRunTiming(run.id, "serverReceivedAt", serverReceivedAt);
-        markRunTiming(run.id, "admissionReadyAt", admissionReadyAt);
-        // 细分耗时：准入这一段到底慢在等什么（运行时/写探针/引用读取/快照/写 Run 记录）
-        attachRunTimingSpans(run.id, { ...admissionSpans, admissionTotal: admissionReadyAt - serverReceivedAt });
-      }
-      attachRunTimingMeta(run.id, { model: requestedModel || taskInput?.model || null, mode: task.mode });
-    // 上传附件先进入当前 Run 的暂存区；Agent 可以通过 staging overlay 读取，成功后才发布到工作区。
-    if (Array.isArray(attachments) && attachments.length) {
-      for (const att of attachments) {
-        const safe = safeName(att.name);
-        if (!safe) continue;
-        stageWrite({
-          runId: run.id,
-          workspace: runWorkspace,
-          targetPath: path.join(runWorkspace, safe),
-          content: Buffer.from(att.data, "base64"),
-          threadId: thread || null,
-          kind: "attachment",
-          onEvent: (type, data) => emitChannel(entry, type, data),
-        });
-      }
-    }
-      recordRunEvent(run.id, "prompt", { text: normalizedText.slice(0, 4000), workflowId, referenceCount: resolved.length, steer: Boolean(steeringRun) });
-      if (steeringRun) recordRunEvent(run.id, "steer", { text: normalizedText.slice(0, 2000), source: "user", merged: true });
-      recordRunEvent(run.id, "capability_plan", { plan: capabilityPlan, preflight });
-      if (runtimeSnapshot) recordRunEvent(run.id, "runtime_health", runtimeSnapshot);
-      // 插话已经并入当前回合：不再重复发 capability_plan/run_admitted（那些属于本轮开头的准入）。
-      if (!steeringRun) {
-        emitChannel(entry, "capability_plan", { plan: capabilityPlan, preflight, runId: run.id });
-        emitChannel(entry, "run_admitted", {
-          runId: run.id,
-          requestId: req.requestId,
-          startedAt: admissionStartedAt,
-          admittedAt: new Date().toISOString(),
-          snapshotMode: tracksWorkspace ? "full" : "none",
-        });
-      }
-    // 先启动入队，再返回 admission 响应。executeAgentRun 在现有 entry 上
-    // 会同步登记 queuedCount，避免响应里的 queued/queuePosition 与真实状态错位。
-    const execution = executeAgentRun({
-      entry,
-      key,
-      client,
-      thread,
-      normalizedText,
-      images,
-      effort,
-      resolved,
-      task,
-      workflow,
-      run,
-      before,
-      runWorkspace,
-      effectiveModel,
-      capabilityPlan,
-      preflight,
-      admissionReadyAt,
-      requestId: req.requestId,
-    });
-    execution.catch((error) => {
-      console.error("[agent] 后台 Run 收尾失败", error);
-    });
-    // 参考 pi-web：先返回“已接收”，最终模型/工具/产物状态由 SSE 事件驱动。
-    res.json({
-      ok: true,
-      accepted: true,
-      queued: Boolean(entry.busy || entry.compacting || entry.queuedCount > 1),
-      queuePosition: Math.max(1, entry.queuedCount || 1),
-      changed: [],
-      runId: run?.id || null,
-      artifacts: [],
-      validations: [],
-      verificationStatus: "pending",
-      status: "accepted",
-      task,
-      sessionId: entry?.session?.sessionId || null,
-      model: effectiveModel || (entry.session?.model?.provider && entry.session?.model?.id ? `${entry.session.model.provider}/${entry.session.model.id}` : null),
-      modelFallbackFrom: entry.modelFallbackFrom || null,
-      thread: thread || null,
-    });
-    return;
+      res.json(result);
+      return;
   } catch (e) {
     if (e?.code === "SKILL_PREFLIGHT_FAILED" || e?.code === "OFFICE_PREFLIGHT_FAILED") {
       emitChannel(entry, "agent_error", { message: e.message, code: e.code, preflight });
@@ -4517,6 +4613,8 @@ app.post("/api/agent/prompt", async (req, res) => {
       return;
     }
     const currentModel = entry?.session?.model;
+    // Run 由执行句柄创建：句柄在出错时把 runId 挂在 error 上，这里据此找回 Run 收口。
+    run = e?.runId ? getRun(e.runId) : null;
     const diagnostic = recordAgentDiagnostic(req, {
       client,
       thread,
@@ -4538,8 +4636,12 @@ app.post("/api/agent/prompt", async (req, res) => {
     } else if (entry) {
       emitChannel(entry, "agent_error", { message: diagnostic.message, code: diagnostic.errorCode || e?.code || null, category: diagnostic.errorCategory || null, providerStatus: diagnostic.providerStatus || null, requestId: req.requestId, retryable: diagnostic.retryable });
     }
-    // 出错也检测产物（agent 可能已部分写入文件）
-    const changed = run ? filterRunChanges(run, await waitForFlush(before, runWorkspace)) : await waitForFlush(before, runWorkspace);
+    // 出错也检测产物（agent 可能已部分写入文件）；清单走内容哈希口径，
+    // 只碰了 mtime、内容没变的文件不算变更。
+    if (run) await waitForFlush(run?.before || [], runWorkspace);
+    const changed = run
+      ? listRunArtifacts(run, runWorkspace).map((item) => item.path)
+      : await waitForFlush(run?.before || [], runWorkspace);
     const validations = validateArtifacts(changed, runWorkspace);
     const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
     if (changed.length) {
@@ -4608,8 +4710,11 @@ async function executeContinuation({ key, entry, run, task, references, workflow
   try {
     await agentManager.promptWithContext(key, continuationPrompt(task, task.recoveryAction), [], undefined, references, { runId: run.id, task, workflow });
     if (entry?.lastFinalText) recordRunEvent(run.id, "assistant_final", { text: entry.lastFinalText });
-    const changed = filterRunChanges(run, await waitForFlush(before, entry.workspace || run.cwd || getWorkspace()));
-    const validations = validateArtifacts(changed, entry.workspace || run.cwd || getWorkspace());
+    const continuationWorkspace = entry.workspace || run.cwd || getWorkspace();
+    await waitForFlush(before, continuationWorkspace);
+    // 内容哈希口径：只碰了 mtime 的文件不算变更
+    const changed = listRunArtifacts(run, continuationWorkspace).map((item) => item.path);
+    const validations = validateArtifacts(changed, continuationWorkspace);
     const stagedValidations = validateStagedArtifacts(run.id);
     const allValidations = [...validations, ...stagedValidations];
     const publishableStagedValidations = stagedValidations.filter((item) => item.status !== "failed");
@@ -4739,14 +4844,22 @@ app.post("/api/runs/:id/resume", (req, res) => handleContinuation(req, res, "res
 app.post("/api/runs/:id/retry", (req, res) => handleContinuation(req, res, "retry"));
 
 app.post("/api/agent/new", async (req, res) => {
-  const { client, thread, cwd, projectId, label } = req.body || {};
+  const { client, thread, cwd, projectId, label, agentId } = req.body || {};
   if (!client || !thread) return res.status(400).json({ error: "client and thread required" });
   try {
     const workspace = normalizeWorkspace(cwd || getWorkspace()) || getWorkspace();
     const result = await agentManager.newThread(agentKey(client, thread), thread, workspace);
     annotateSessionThread(result.sessionId, thread);
     const project = projectManager.getProject(projectId) || projectManager.getProjectForWorkspace(workspace);
-    updateSessionHeader(result.sessionId, { projectId: project?.id || null, label: String(label || "").trim() });
+    // v0.13.7 Agent 继承：新建会话可携带 agentId 落盘到 header；
+    // 只接受真实存在的智能体，避免把无效引用写进会话元数据。
+    const inheritedAgentId = String(agentId || "").trim();
+    const agentExists = inheritedAgentId ? listAgents().some((item) => item?.id === inheritedAgentId) : false;
+    updateSessionHeader(result.sessionId, {
+      projectId: project?.id || null,
+      label: String(label || "").trim(),
+      ...(agentExists ? { agentId: inheritedAgentId } : {}),
+    });
     res.json(result);
   } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
@@ -4827,6 +4940,7 @@ app.get("/api/agent/stream", async (req, res) => {
   ({ id: streamId } = registerServerStream({
     path: "/api/agent/stream",
     client,
+    tab: String(req.query.tab || ""),
     thread,
     probe: () => !closed && !res.writableEnded && !res.socket?.destroyed,
     close: () => { cleanup(); try { res.end(); } catch {} },
@@ -5152,6 +5266,7 @@ app.get("/api/memory/stream", (req, res) => {
   ({ id: streamId } = registerServerStream({
     path: "/api/memory/stream",
     client: String(req.query.client || ""),
+    tab: String(req.query.tab || ""),
     probe: () => !closed && !res.writableEnded && !res.socket?.destroyed,
     close: () => { cleanup(); try { res.end(); } catch {} },
   }));
@@ -5878,20 +5993,6 @@ function walkWorkspaceSnapshot(dir, root, depth = 0, count = { n: 0 }) {
   }
   return out;
 }
-function diffWorkspace(before, after) {
-  const b = new Set(before);
-  return after.filter((x) => !b.has(x)).map((x) => x.split("|")[0]);
-}
-async function waitForFlush(before, workspace = getWorkspace()) {
-  let last = before;
-  for (let i = 0; i < 6; i++) {
-    await new Promise((r) => setTimeout(r, 1500));
-    const snap = snapshotWorkspace(workspace);
-    if (JSON.stringify(snap) === JSON.stringify(last)) break;
-    last = snap;
-  }
-  return diffWorkspace(before, last);
-}
 function emitChannel(entry, type, data) {
   const id = ++entry.channel.seq;
   const at = new Date().toISOString();
@@ -5983,6 +6084,10 @@ async function shutdownService(reason, exitCode = 0) {
   try { stopAllWatches(); } catch (error) { recordProcessFault("shutdown_watch_failed", error); }
   try { await browserModule.shutdownBrowsers(); } catch (error) { recordProcessFault("shutdown_browser_failed", error); }
   if (memoryWatcher) { try { memoryWatcher.close(); } catch (error) { recordProcessFault("shutdown_memory_watch_failed", error); } }
+  // P2：退出前把仍处于合并窗口内的 JSONL 追加与 Run 事件落盘，
+  // 避免“服务正常关闭但最后一批数据未写”。
+  try { flushPendingRunSaves(); } catch (error) { recordProcessFault("shutdown_run_flush_failed", error); }
+  try { flushPendingFsync(); } catch (error) { recordProcessFault("shutdown_fsync_failed", error); }
   if (httpServer) {
     await new Promise((resolve) => {
       let settled = false;
@@ -6028,6 +6133,14 @@ httpServer = app.listen(PORT, HOST, () => {
   void agentManager.modelRuntime().catch((error) => {
     console.warn(`[prewarm] ModelRuntime 预热失败（将在会话创建时重试）：${String(error?.message || error).slice(0, 300)}`);
   });
+  // R1：恢复必须在监听成功之后执行。端口被占的重复实例会在 listen 失败后退出，
+  // 不能让它改写磁盘上的活跃 Run；同时把这段 IO 从启动关键路径移到可用之后。
+  try {
+    const recoveredRunIds = recoverActiveRuns();
+    if (recoveredRunIds.length) console.warn(`[runs] 已将 ${recoveredRunIds.length} 个中断前活动 Run 标记为 recovering，等待用户继续。`);
+  } catch (error) {
+    console.warn(`[runs] 恢复中断 Run 失败：${String(error?.message || error).slice(0, 200)}`);
+  }
 });
 // SSE 连接由 15 秒 heartbeat 保活；关闭 Node 默认的请求/Socket 空闲超时，
 // 避免长文档任务超过默认时限后断流，而 Agent 实际仍在继续执行。

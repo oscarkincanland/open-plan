@@ -34,6 +34,7 @@ assert.match(设置面板, /\["permission", "审批与权限"\]/, "设置应有�
 assert.match(设置面板, /已授权的“总是允许”规则/, "设置应列出已授权规则");
 
 // 4. 自动批准不得绕过 deny
-assert.match(策略, /return readPermissionConfig\(\)\.mode === "auto" && matched === "ask" \? "allow" : matched;/, "自动批准只能放行 ask，不能绕过 deny");
+assert.match(策略, /config.mode === "auto" && matched.action === "ask"/, "自动批准只能提升 ask");
+assert.match(策略, /originalAction: "ask"/, "自动批准必须保留原始 ask 语义，不能绕过 deny");
 
 console.log("审批作用域回归：通过");

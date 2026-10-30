@@ -868,7 +868,10 @@ const authResult = await agentAuth();
   };
 
   const probe = async (targetOverride = "") => {
-    const target = String(targetOverride || activeModel || defaultModel || "").trim();
+    // 兼容 onClick={probe} 这类直接绑定：DOM/合成事件会被当成模型名传入，
+    // String(event) 会变成 "[object Object]"，导致后端报 MODEL_SPEC_INVALID。
+    const override = typeof targetOverride === "string" ? targetOverride : "";
+    const target = String(override || activeModel || defaultModel || "").trim();
     if (!target || probeLoading) {
       if (!target) setProbeMsg("请先选择模型");
       return;

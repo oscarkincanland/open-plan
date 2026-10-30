@@ -3,6 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { APP_DATA_DIR } from "./Pi配置管理.mjs";
 import { atomicWriteJson, ensureDirectory, readJsonFile } from "./持久化工具.mjs";
+import { readManifest, validateRoot } from "./插件清单.mjs";
+import { RUNTIME_FLAGS } from "./运行开关.mjs";
 
 const CONFIG_FILE = path.join(APP_DATA_DIR, "集成", "pi-extensions.json");
 
@@ -50,6 +52,7 @@ function publicExtension(extension) {
     enabled: Boolean(extension.enabled),
     exists: inspected.exists,
     files: inspected.files,
+    ...(RUNTIME_FLAGS.pluginManifest ? { manifest: readManifest(extension.path) } : {}),
     lastCheck: extension.lastCheck || null,
     requiresNewSession: true,
   };
@@ -105,10 +108,15 @@ export function checkPiExtension(id) {
   const extension = config.extensions.find((item) => item.id === id);
   if (!extension) return null;
   const inspected = inspectPath(extension.path);
+  let manifestCheck = null;
+  if (RUNTIME_FLAGS.pluginManifest) {
+    try { manifestCheck = validateRoot(extension.path); } catch (error) { manifestCheck = { ok: false, errors: [String(error?.message || error)] }; }
+  }
   extension.lastCheck = {
     ok: inspected.exists,
     at: new Date().toISOString(),
     files: inspected.files.length,
+    manifest: manifestCheck,
     message: inspected.exists
       ? (inspected.files.length ? `路径有效，发现 ${inspected.files.length} 个 JS/TS 文件；本检查未执行扩展代码。` : "路径有效，但未发现 JS/TS 文件。")
       : "路径不存在或不可读取。",

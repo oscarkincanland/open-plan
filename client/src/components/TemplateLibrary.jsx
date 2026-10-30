@@ -194,7 +194,7 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
         const fileUrl = `/api/templates/file/${encodeURIComponent(preview.relPath)}`;
         return (
           <div className="tpl-preview-body tpl-docx-preview">
-            <div className="tpl-html-note">HTML 模版（已渲染首页 · <a href={fileUrl} target="_blank" rel="noreferrer">新窗口打开 ↗</a>）</div>
+            <div className="tpl-html-note">HTML 模版（已渲染首页 · <a href={fileUrl} target="_blank" rel="noreferrer">新窗口打开 <Icon name="externalLink" size={11} /></a>）</div>
             <iframe
               className="tpl-preview-iframe"
               src={fileUrl}
@@ -283,7 +283,7 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
       {/* 顶栏 */}
       <div className="tpl-topbar">
         <button className="btn-sm" onClick={() => onExit?.(onAtMention ? [] : atMarks)}><Icon name="back" size={14} /> 返回</button>
-        <span className="tpl-title">📋 模版库</span>
+        <span className="tpl-title">模版库</span>
         <span className="tpl-count">{filtered.length} 个模版</span>
         {atMarks.length > 0 && (
           <span className="tpl-at-badge" title="已选模板，已插入或将在返回后插入对话">
@@ -315,7 +315,7 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
           <button className={"btn-sm" + (viewMode === "list" ? " active" : "")} onClick={() => setViewMode("list")}><Icon name="list" size={14} /></button>
         </div>
         <button className="btn-sm primary tpl-notice-btn" onClick={() => setNoticeOpen(true)} title="按公文规范生成红头会议通知">
-          <Icon name="doc" size={14} /> 生成红头通知
+          <Icon name="file" size={14} /> 生成红头通知
         </button>
       </div>
 
@@ -363,19 +363,19 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
         {/* 左栏：分类 */}
         <div className="tpl-left" style={{ width: leftW, minWidth: leftW, maxWidth: leftW }}>
           <div className="tpl-cat-title">分类</div>
-          <div className={"tpl-cat-item" + (activeCategory === "all" ? " active" : "")} onClick={() => setActiveCategory("all")}>
-            <span className="tpl-cat-icon">📁</span>
+          <button type="button" className={"tpl-cat-item" + (activeCategory === "all" ? " active" : "")} onClick={() => setActiveCategory("all")}>
+            <span className="tpl-cat-icon"><Icon name="grid" size={12} /></span>
             <span>全部</span>
             <span className="tpl-cat-count">{templates.length}</span>
-          </div>
+          </button>
           {categories.map((c) => {
             const count = templates.filter((t) => t.category === c.id).length;
             return (
-              <div key={c.id} className={"tpl-cat-item" + (activeCategory === c.id ? " active" : "")} onClick={() => setActiveCategory(c.id)}>
-                <span className="tpl-cat-icon">{c.icon}</span>
+              <button type="button" key={c.id} className={"tpl-cat-item" + (activeCategory === c.id ? " active" : "")} onClick={() => setActiveCategory(c.id)}>
+                <span className="tpl-cat-icon"><Icon name={c.icon} size={12} /></span>
                 <span>{c.name}</span>
                 <span className="tpl-cat-count">{count}</span>
-              </div>
+              </button>
             );
           })}
         </div>
@@ -388,7 +388,7 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
           {viewMode === "grid" ? (
             <div className="tpl-grid">
               {filtered.map((t) => (
-                <div key={t.id} className={"tpl-card" + (preview?.relPath === t.relPath ? " active" : "")} onClick={() => openPreview(t)}>
+                <button type="button" key={t.id} className={"tpl-card" + (preview?.relPath === t.relPath ? " active" : "")} onClick={() => openPreview(t)}>
                   <div className="tpl-card-icon"><Icon name={extIcon(t.ext)} size={32} /></div>
                   <div className="tpl-card-title">{t.title}</div>
                   <div className="tpl-card-meta">
@@ -396,19 +396,19 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
                     <span className="tpl-card-size">{formatSize(t.size)}</span>
                   </div>
                   <div className="tpl-card-cat">{categories.find((c) => c.id === t.category)?.name || t.category}</div>
-                </div>
+                </button>
               ))}
             </div>
           ) : (
             <div className="tpl-list">
               {filtered.map((t) => (
-                <div key={t.id} className={"tpl-list-item" + (preview?.relPath === t.relPath ? " active" : "")} onClick={() => openPreview(t)}>
+                <button type="button" key={t.id} className={"tpl-list-item" + (preview?.relPath === t.relPath ? " active" : "")} onClick={() => openPreview(t)}>
                   <Icon name={extIcon(t.ext)} size={16} />
                   <span className="tpl-list-title">{t.title}</span>
                   <span className="tpl-list-ext">{t.ext.toUpperCase()}</span>
                   <span className="tpl-list-size">{formatSize(t.size)}</span>
-                  <span className="tpl-list-cat">{categories.find((c) => c.id === t.category)?.icon}</span>
-                </div>
+                  <span className="tpl-list-cat"><Icon name={categories.find((c) => c.id === t.category)?.icon || "file"} size={12} /></span>
+                </button>
               ))}
             </div>
           )}
@@ -445,7 +445,7 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
                     const relDir = String(preview.relPath).split("/").slice(0, -1).join("/");
                     addAtMark(`@模板目录[${relDir}]`);
                   }}
-                >@📁 目录</button>
+                >@目录</button>
               )}
               <button className="btn-sm" onClick={closePreview} title="关闭预览" aria-label="关闭预览"><Icon name="close" size={14} /></button>
             </div>

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Icon from "./Icon.jsx";
+import 提示气泡 from "./提示气泡.jsx";
 import MarkdownBody from "./MarkdownBody.jsx";
 import KnowledgeGraph from "./KnowledgeGraph.jsx";
 import MindMap from "./MindMap.jsx";
@@ -8,7 +9,17 @@ import {
   kbStatus, kbAddRoot, kbRemoveRoot, kbTree, kbSearch, kbGraph, kbDoc,
   kbImaStatus, kbImaBases, kbImaSearch, kbImaDoc,
 } from "../api.js";
-import { notifyError, notifySuccess, askConfirm } from "./Feedback.jsx";
+import { notifyError, notifySuccess, askConfirm, askText } from "./Feedback.jsx";
+
+/** 把可点击容器补成键盘可达：Enter / Space 触发，忽略来自内部按钮的事件。 */
+function keyActivate(fn) {
+  return (event) => {
+    if (event.target !== event.currentTarget) return;
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    fn(event);
+  };
+}
 
 /**
  * 知识库全屏模式（Obsidian 风格）
@@ -368,7 +379,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
 
   // 根目录管理
   const handleAddRoot = useCallback(async () => {
-    const p = window.prompt("输入知识库根目录绝对路径（例如 F:\\Claude code本地文件\\义乌物流项目）");
+    const p = await askText("输入知识库根目录绝对路径（例如 F:\\Claude code本地文件\\义乌物流项目）", "");
     if (!p) return;
     try {
       await kbAddRoot(p);
@@ -449,14 +460,31 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
       <ul className="kb-tree" style={{ paddingLeft: dirPath ? 12 : 0 }}>
         {dirs.map((d) => (
           <li key={"d" + d.path} className="kb-tree-item kb-tree-dir">
-            <div className="kb-tree-row" onClick={() => toggleDir(d.path)} title={d.name}>
-              <span className="kb-tree-caret">{expanded[d.path] ? "▾" : "▸"}</span>
+            <div
+              className="kb-tree-row"
+              role="button"
+              tabIndex={0}
+              aria-expanded={Boolean(expanded[d.path])}
+              onClick={() => toggleDir(d.path)}
+              onKeyDown={keyActivate(() => toggleDir(d.path))}
+              title={d.name}
+            >
+              <span className="kb-tree-caret"><Icon name={expanded[d.path] ? "chevronDown" : "chevronRight"} size={12} /></span>
               <Icon name="folder" size={12} />
               <span className="kb-tree-label">{d.name}</span>
               {d.subCount > 0 && <span className="kb-tree-count" title={`${d.subCount} 个子项`}>{d.subCount}</span>}
               <span
                 className="kb-tree-at"
+                role="button"
+                tabIndex={0}
+                aria-label={`引用文件夹 ${d.name}`}
                 onClick={(e) => { e.stopPropagation(); onAtMentionFromDoc(d.path, true); }}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" && e.key !== " ") return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onAtMentionFromDoc(d.path, true);
+                }}
                 title="@ 该文件夹到对话（agent 读取目录下所有文档）"
               >@</span>
             </div>
@@ -467,7 +495,11 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
           <li key={"f" + f.relPath} className="kb-tree-item">
             <div
               className={"kb-tree-row" + (activeTab === f.relPath ? " active" : "")}
+              role="button"
+              tabIndex={0}
+              aria-current={activeTab === f.relPath ? "page" : undefined}
               onClick={() => openDoc(f.relPath)}
+              onKeyDown={keyActivate(() => openDoc(f.relPath))}
               title={f.relPath}
             >
               <span className="kb-tree-caret" />
@@ -476,7 +508,16 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
               {f.linkCount > 0 && <span className="kb-tree-count" title={`${f.linkCount} 条引用`}>{f.linkCount}</span>}
               <span
                 className="kb-tree-at"
+                role="button"
+                tabIndex={0}
+                aria-label={`引用 ${f.name}`}
                 onClick={(e) => { e.stopPropagation(); onAtMentionFromDoc(f.relPath, false); }}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" && e.key !== " ") return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onAtMentionFromDoc(f.relPath, false);
+                }}
                 title="@ 到对话"
               >@</span>
             </div>
@@ -504,7 +545,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
         <button className="btn-sm" onClick={() => onExit?.(atMarks)} title="返回主工作区（@选中的内容将插入对话）">
           <Icon name="back" size={12} /> 返回{atMarks.length > 0 ? ` · @${atMarks.length}项` : ""}
         </button>
-        <span className="kb-title">📚 知识库</span>
+        <span className="kb-title">知识库</span>
         <select className="kb-root-select" value={rootIdx} onChange={(e) => loadRoot(parseInt(e.target.value, 10))}>
           {roots.map((r, i) => (
             <option key={i} value={i}>{r.name}{r.exists ? "" : "（缺失）"}</option>
@@ -530,7 +571,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
         </button>
         <button className={"btn-sm kb-ima-btn" + (imaOpen ? " active" : "")}
           onClick={() => { setImaOpen((v) => !v); if (!imaOpen && !imaBases.length) loadImaBases(); }}
-          title="IMA 云端知识库"><Icon name="cloud" size={14} /> IMA{imaConfigured ? "" : " ⚠"}</button>
+          title="IMA 云端知识库"><Icon name="cloud" size={14} /> IMA{imaConfigured ? null : <Icon name="warning" size={12} className="kb-ima-warn" />}</button>
       </div>
 
       {chatOpen && (
@@ -561,13 +602,13 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
           </div>
           <div className="kb-ima-search">
             <input placeholder="搜索云端知识库…" value={imaQ} onChange={(e) => setImaQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && doImaSearch()} />
-            <button className="btn-sm" onClick={doImaSearch}>搜索</button>
+            <提示气泡 label="搜索云端知识库"><button className="btn-sm" onClick={doImaSearch} aria-label="搜索云端知识库"><Icon name="search" size={14} /></button></提示气泡>
           </div>
           {imaBases.length > 0 && <div className="kb-ima-bases">知识库：{imaBases.map((b) => <span key={b.id} className="tag">{b.name}</span>)}</div>}
           {imaResults && (
             <ul className="kb-ima-results">
               {imaResults.map((r) => (
-                <li key={r.media_id} onClick={() => openImaDoc(r.media_id)}>
+                <li key={r.media_id} role="button" tabIndex={0} onClick={() => openImaDoc(r.media_id)} onKeyDown={keyActivate(() => openImaDoc(r.media_id))}>
                   <b>{r.title || "(未命名)"}</b>
                   <div className="kb-ima-snippet">{r.snippet || ""}</div>
                 </li>
@@ -594,10 +635,10 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
                   <div className="kb-left-title">搜索结果（{results.length}）</div>
                   <ul className="kb-results">
                     {results.map((r, i) => (
-                      <li key={i} onClick={() => openDoc(r.relPath)} className={activeTab === r.relPath ? "active" : ""}>
+                      <li key={i} role="button" tabIndex={0} onClick={() => openDoc(r.relPath)} onKeyDown={keyActivate(() => openDoc(r.relPath))} className={activeTab === r.relPath ? "active" : ""}>
                         <div className="kb-result-title">{r.title}</div>
                         <div className="kb-result-snippet">{r.snippet}</div>
-                        {r.tags.length > 0 && <div className="kb-result-tags">{r.tags.map((t) => <span key={t} className="tag kb-tag-click" onClick={(e) => { e.stopPropagation(); doSearch(t); }}>#{t}</span>)}</div>}
+                        {r.tags.length > 0 && <div className="kb-result-tags">{r.tags.map((t) => <span key={t} className="tag kb-tag-click" role="button" tabIndex={0} aria-label={`按标签 ${t} 搜索`} onClick={(e) => { e.stopPropagation(); doSearch(t); }} onKeyDown={keyActivate(() => doSearch(t))}>#{t}</span>)}</div>}
                       </li>
                     ))}
                   </ul>
@@ -624,9 +665,9 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
               {doc ? (
                 <>
                   <div className="kb-right-section">
-                    <div className="kb-right-title">📄 {doc.title}</div>
+                    <div className="kb-right-title">{doc.title}</div>
                     <div className="kb-meta-path">{doc.rootIdx !== undefined ? roots[doc.rootIdx]?.name + " / " : ""}{doc.relPath}</div>
-                    {doc.tags.length > 0 && <div className="kb-doc-tags">{doc.tags.map((t) => <span key={t} className="tag kb-tag-click" onClick={() => { setSearchQ(t); doSearch(t); }}>#{t}</span>)}</div>}
+                    {doc.tags.length > 0 && <div className="kb-doc-tags">{doc.tags.map((t) => <span key={t} className="tag kb-tag-click" role="button" tabIndex={0} aria-label={`按标签 ${t} 搜索`} onClick={() => { setSearchQ(t); doSearch(t); }} onKeyDown={keyActivate(() => { setSearchQ(t); doSearch(t); })}>#{t}</span>)}</div>}
                   </div>
                   <div className="kb-right-section">
                     <div className="kb-right-title">标题结构</div>
@@ -646,9 +687,14 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
             {tabs.length > 0 && (
               <div className="kb-tabbar">
                 {tabs.map((t) => (
-                  <div key={t.relPath} className={"kb-tab" + (activeTab === t.relPath ? " active" : "")} onClick={() => setActiveTab(t.relPath)} title={t.relPath}>
+                  <div key={t.relPath} className={"kb-tab" + (activeTab === t.relPath ? " active" : "")} role="tab" tabIndex={0} aria-selected={activeTab === t.relPath} onClick={() => setActiveTab(t.relPath)} onKeyDown={keyActivate(() => setActiveTab(t.relPath))} title={t.relPath}>
                     <span className="kb-tab-title">{t.title}</span>
-                    <span className="kb-tab-close" role="button" aria-label={`关闭 ${t.title}`} onClick={(e) => { e.stopPropagation(); closeTab(t.relPath); }}><Icon name="close" size={12} /></span>
+                    <span className="kb-tab-close" role="button" tabIndex={0} aria-label={`关闭 ${t.title}`} onClick={(e) => { e.stopPropagation(); closeTab(t.relPath); }} onKeyDown={(e) => {
+                      if (e.key !== "Enter" && e.key !== " ") return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      closeTab(t.relPath);
+                    }}><Icon name="close" size={12} /></span>
                   </div>
                 ))}
               </div>
@@ -671,13 +717,13 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
                     </button>
                   </div>
                   <div className="kb-doc-breadcrumb">
-                    <span className="kb-crumb" onClick={() => onDirNavigate("")} title={rootName}>{rootName}</span>
+                    <span className="kb-crumb" role="button" tabIndex={0} onClick={() => onDirNavigate("")} onKeyDown={keyActivate(() => onDirNavigate(""))} title={rootName}>{rootName}</span>
                     {doc.relPath.split("/").slice(0, -1).map((d, i, arr) => {
                       const dirPath = arr.slice(0, i + 1).join("/");
                       return (
                         <span key={dirPath}>
                           <span className="kb-crumb-sep">/</span>
-                          <span className="kb-crumb" onClick={() => onDirNavigate(dirPath)}>{d}</span>
+                          <span className="kb-crumb" role="button" tabIndex={0} onClick={() => onDirNavigate(dirPath)} onKeyDown={keyActivate(() => onDirNavigate(dirPath))}>{d}</span>
                         </span>
                       );
                     })}
@@ -698,7 +744,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
                     {doc.backlinks.length > 0 && (
                       <ul className="kb-doc-backlinks-list">
                         {doc.backlinks.slice(0, 12).map((b, i) => (
-                          <li key={i} className="kb-doc-backlink-item" onClick={() => openDoc(b.relPath, b.rootIdx)} title={b.snippet}>
+                          <li key={i} className="kb-doc-backlink-item" role="button" tabIndex={0} onClick={() => openDoc(b.relPath, b.rootIdx)} onKeyDown={keyActivate(() => openDoc(b.relPath, b.rootIdx))} title={b.snippet}>
                             <span className="kb-backlink-title">{b.title}</span>
                             <span className="kb-backlink-snippet">{b.snippet}</span>
                           </li>
@@ -708,7 +754,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
                     {doc.mentions?.length > 0 && (
                       <ul className="kb-doc-backlinks-list">
                         {doc.mentions.slice(0, 6).map((m, i) => (
-                          <li key={"m" + i} className="kb-doc-backlink-item" onClick={() => openDoc(m.relPath, m.rootIdx)} title={m.snippet}>
+                          <li key={"m" + i} className="kb-doc-backlink-item" role="button" tabIndex={0} onClick={() => openDoc(m.relPath, m.rootIdx)} onKeyDown={keyActivate(() => openDoc(m.relPath, m.rootIdx))} title={m.snippet}>
                             <span className="kb-backlink-title">{m.title} <span className="kb-backlink-tag">提及</span></span>
                             <span className="kb-backlink-snippet">{m.snippet}</span>
                           </li>
@@ -735,7 +781,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
                   {doc.links.length === 0 && <div className="kb-meta-muted">无 [[链接]]</div>}
                   <ul className="kb-links">
                     {doc.links.map((l, i) => (
-                      <li key={i} onClick={() => openDoc(l.relPath, l.rootIdx)} title={l.relPath}>
+                      <li key={i} role="button" tabIndex={0} onClick={() => openDoc(l.relPath, l.rootIdx)} onKeyDown={keyActivate(() => openDoc(l.relPath, l.rootIdx))} title={l.relPath}>
                         <Icon name="link" size={12} /> {l.alias || l.title}
                       </li>
                     ))}
@@ -747,13 +793,16 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
                   <ul className="kb-links kb-backlinks">
                     {doc.backlinks.map((b, i) => (
                       <li key={i} className={backOpen[b.relPath] ? "open" : ""}>
-                        <div className="kb-backlink-title" onClick={() => openDoc(b.relPath, b.rootIdx)} title={b.relPath}>
+                        <div className="kb-backlink-title" role="button" tabIndex={0} onClick={() => openDoc(b.relPath, b.rootIdx)} onKeyDown={keyActivate(() => openDoc(b.relPath, b.rootIdx))} title={b.relPath}>
                           <Icon name="backlink" size={12} /> {b.title}
                         </div>
                         {b.snippet && (
                           <div
                             className="kb-backlink-snippet"
+                            role="button"
+                            tabIndex={0}
                             onClick={(e) => { e.stopPropagation(); setBackOpen((o) => ({ ...o, [b.relPath]: !o[b.relPath] })); }}
+                            onKeyDown={keyActivate(() => setBackOpen((o) => ({ ...o, [b.relPath]: !o[b.relPath] })))}
                             title={backOpen[b.relPath] ? "收起" : "展开引用上下文"}
                           >
                             {backOpen[b.relPath] ? b.snippet : (b.snippet.length > 40 ? b.snippet.slice(0, 40) + "…" : b.snippet)}
@@ -769,13 +818,16 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
                   <ul className="kb-links kb-backlinks">
                     {(doc.mentions || []).map((m, i) => (
                       <li key={i} className={backOpen["m" + m.relPath] ? "open" : ""}>
-                        <div className="kb-backlink-title" onClick={() => openDoc(m.relPath, m.rootIdx)} title={m.relPath}>
+                        <div className="kb-backlink-title" role="button" tabIndex={0} onClick={() => openDoc(m.relPath, m.rootIdx)} onKeyDown={keyActivate(() => openDoc(m.relPath, m.rootIdx))} title={m.relPath}>
                           <Icon name="file" size={12} /> {m.title}
                         </div>
                         {m.snippet && (
                           <div
                             className="kb-backlink-snippet"
+                            role="button"
+                            tabIndex={0}
                             onClick={(e) => { e.stopPropagation(); setBackOpen((o) => ({ ...o, ["m" + m.relPath]: !o["m" + m.relPath] })); }}
+                            onKeyDown={keyActivate(() => setBackOpen((o) => ({ ...o, ["m" + m.relPath]: !o["m" + m.relPath] })))}
                             title={backOpen["m" + m.relPath] ? "收起" : "展开提及上下文"}
                           >
                             {backOpen["m" + m.relPath] ? m.snippet : (m.snippet.length > 40 ? m.snippet.slice(0, 40) + "…" : m.snippet)}
@@ -811,7 +863,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
                 {t === "links" ? "双向链接" : t === "similar" ? "内容相似" : t === "tags" ? "标签" : "目录"}
               </label>
             ))}
-            <button className="btn-sm" onClick={loadGraph} disabled={loading}>重新布局</button>
+            <提示气泡 label="重新布局"><button className="btn-sm" onClick={loadGraph} disabled={loading} aria-label="重新布局"><Icon name="refresh" size={14} /></button></提示气泡>
             <button
               className={"btn-sm" + (graphLocal && doc ? " active" : "")}
               onClick={() => setGraphLocal((v) => !v)}

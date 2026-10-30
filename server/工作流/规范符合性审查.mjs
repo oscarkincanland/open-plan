@@ -2,7 +2,7 @@
  * 领域工作流声明：规范符合性审查（Qoder 对标 §4.3）。
  *
  * 「批注写回」阶段 approval=true：写回既有文档前必须经用户确认（对上
- * AGENT.MD「创作模式产物必须写入 office-workspace」与既有
+ * AGENTS.md §6「创作模式产物必须写入 office-workspace」与既有
  * review_waiting_confirmation 写回保护语义）。
  */
 export default {

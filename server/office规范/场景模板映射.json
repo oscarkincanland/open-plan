@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "note": "场景 → 既有模板映射；null 表示该场景没有内容模板，使用场景参数表兜底。不新建模板目录。",
+  "scenes": {
+    "academic": "templates/traffic-material/10_规划研究报告模板.md",
+    "report": "templates/traffic-material/08_汇报材料模板.md",
+    "contract": null,
+    "official-doc": "templates/traffic-material/00_总览通用规范.md",
+    "resume": null,
+    "exam": null,
+    "copywriting": null
+  }
+}

@@ -4,13 +4,14 @@ import ChatPanel from "./ChatPanel.jsx";
 import LayerPanel from "./LayerPanel.jsx";
 import AttributeTable from "./AttributeTable.jsx";
 import Icon from "./Icon.jsx";
+import 提示气泡 from "./提示气泡.jsx";
 import TaskCenter from "./任务中心.jsx";
 // 阶段 2：M2宏观分析 / M3公交分析 / 柬埔寨OD面板 三个旧面板已下线，
 // 统一由可视面板（可视面板.jsx + /api/map/visual 描述符）承担。
 import 可视面板 from "./可视面板.jsx";
 import shp from "shpjs";
 import { registerLayerReplay, unregisterLayerReplay } from "../图层注册表.js";
-import { askConfirm } from "./Feedback.jsx";
+import { askConfirm, askText, notifyError } from "./Feedback.jsx";
 import {
   mapProjects, mapCreateProject, mapProject, mapSaveStyle, mapSaveConfig,
   mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute, mapDemoAnalysis,
@@ -1384,7 +1385,7 @@ export default function MapPanel({
     }
     // 绘制 → 存为图层
     const defaultName = { "draw-point": "新点", "draw-line": "新路线", "draw-polygon": "新区域" }[kind];
-    const name = window.prompt(`命名新图层（${defaultName}）`, defaultName);
+    const name = await askText(`命名新图层（${defaultName}）`, defaultName);
     setDraw(null);
     mapRef.current?.setDrawingMode(false);
     if (!name || !name.trim()) { clearDrawLayers(); return; }
@@ -1493,11 +1494,12 @@ export default function MapPanel({
   }, [project, loadProject]);
 
   const handleCreateProject = useCallback(async () => {
-    const name = window.prompt("新地图项目名称", "新的交通分析项目");
+    const name = await askText("新地图项目名称", "新的交通分析项目");
     if (!name?.trim()) return;
     const suggested = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "map-project";
-    const id = window.prompt("项目标识（仅英文、数字、下划线或短横线）", suggested);
+    const id = await askText("项目标识（仅英文、数字、下划线或短横线）", suggested);
     if (!id?.trim()) return;
+    if (!/^[a-zA-Z0-9_-]+$/.test(id.trim())) { notifyError("项目标识只能包含英文、数字、下划线或短横线"); return; }
     try {
       const created = await mapCreateProject(id.trim(), name.trim(), "zhejiang-map");
       const listed = await mapProjects();
@@ -1521,16 +1523,18 @@ export default function MapPanel({
     if (!project) return;
     try {
       if (action === "duplicate") {
-        const name = window.prompt("副本项目标识（仅英文、数字、下划线或短横线）", `${project}-copy`);
+        const name = await askText("副本项目标识（仅英文、数字、下划线或短横线）", `${project}-copy`);
         if (!name?.trim()) return;
+        if (!/^[a-zA-Z0-9_-]+$/.test(name.trim())) { notifyError("项目标识只能包含英文、数字、下划线或短横线"); return; }
         const created = await mapDuplicateProject(project, name.trim());
         const listed = await mapProjects();
         setProjects(listed.projects || []);
         setProject(created.project || name.trim());
         flash(`已复制为「${created.project || name.trim()}」，可在其上继续分析而不影响原项目`);
       } else if (action === "rename") {
-        const name = window.prompt("新的项目标识（仅英文、数字、下划线或短横线）", project);
+        const name = await askText("新的项目标识（仅英文、数字、下划线或短横线）", project);
         if (!name?.trim() || name.trim() === project) return;
+        if (!/^[a-zA-Z0-9_-]+$/.test(name.trim())) { notifyError("项目标识只能包含英文、数字、下划线或短横线"); return; }
         const renamed = await mapRenameProject(project, name.trim());
         const listed = await mapProjects();
         setProjects(listed.projects || []);
@@ -1914,7 +1918,7 @@ export default function MapPanel({
               )}
               {flag("mapBookmarks") && (
                 <>
-                  <div style={{ borderTop: "1px solid #d6dce5", margin: "6px 0" }} />
+                  <div style={{ borderTop: "1px solid var(--border)", margin: "6px 0" }} />
                   <div style={{ display: "flex", gap: 6, padding: "0 4px 4px" }}>
                     <input
                       aria-label="视角名称"
@@ -1922,7 +1926,7 @@ export default function MapPanel({
                       onChange={(e) => setBookmarkName(e.target.value)}
                       onKeyDown={(e) => { if (e.key === "Enter") addBookmark(); }}
                       placeholder="视角名称（可留空）"
-                      style={{ flex: 1, minWidth: 0, fontSize: 12, padding: "4px 8px", border: "1px solid #d6dce5", borderRadius: 6 }}
+                      style={{ flex: 1, minWidth: 0, fontSize: 12, padding: "4px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-md)" }}
                     />
                     <button className="btn-sm" onClick={addBookmark} title="把当前中心/缩放/旋转/倾角存为书签（存进项目配置）">
                       <Icon name="star" size={12} /> 收藏当前
@@ -2149,9 +2153,11 @@ export default function MapPanel({
             <div className="mp-measure">
               {measureResult.dist !== undefined && <span>距离：{fmtLen(measureResult.dist)}</span>}
               {measureResult.area !== undefined && <span>面积：{fmtArea(measureResult.area)}</span>}
-              <button className="mp-op" title="清除" aria-label="清除" onClick={() => { setMeasureResult(null); clearDrawLayers(); }}>
-                <Icon name="close" size={12} />
-              </button>
+              <提示气泡 label="清除测量结果">
+                <button className="mp-op" aria-label="清除测量结果" onClick={() => { setMeasureResult(null); clearDrawLayers(); }}>
+                  <Icon name="close" size={12} />
+                </button>
+              </提示气泡>
             </div>
           )}
         </div>
@@ -2205,7 +2211,9 @@ export default function MapPanel({
           <div className="mp-iso-panel mp-od-panel" onClick={(e) => e.stopPropagation()}>
             <div className="mp-iso-head">
               <span><Icon name="locate" size={14} /> OD 流量分析</span>
-              <button className="mp-op" onClick={() => setOdOpen(false)} title="关闭" aria-label="关闭"><Icon name="close" size={14} /></button>
+              <提示气泡 label="关闭 OD 流量分析">
+                <button className="mp-op" onClick={() => setOdOpen(false)} aria-label="关闭 OD 流量分析"><Icon name="close" size={14} /></button>
+              </提示气泡>
             </div>
             <div className="mp-iso-body">
               <div className="mp-iso-hint" style={{ border: "none", padding: 0, marginBottom: 8 }}>
@@ -2256,7 +2264,9 @@ export default function MapPanel({
           <div className="mp-iso-panel" onClick={(e) => e.stopPropagation()}>
             <div className="mp-iso-head">
               <span><Icon name="upload" size={14} /> 导入路网数据</span>
-              <button className="mp-op" onClick={() => setImportOpen(false)} title="关闭" aria-label="关闭"><Icon name="close" size={14} /></button>
+              <提示气泡 label="关闭导入路网数据">
+                <button className="mp-op" onClick={() => setImportOpen(false)} aria-label="关闭导入路网数据"><Icon name="close" size={14} /></button>
+              </提示气泡>
             </div>
             <div className="mp-iso-body">
               <div className="mp-iso-modes" style={{ marginBottom: 10 }}>
@@ -2299,7 +2309,9 @@ export default function MapPanel({
           <div className="mp-iso-panel" onClick={(e) => e.stopPropagation()}>
             <div className="mp-iso-head">
               <span><Icon name="download" size={14} /> 导出报告图</span>
-              <button className="mp-op" onClick={() => setExportOpen(false)} title="关闭" aria-label="关闭"><Icon name="close" size={14} /></button>
+              <提示气泡 label="关闭导出报告图">
+                <button className="mp-op" onClick={() => setExportOpen(false)} aria-label="关闭导出报告图"><Icon name="close" size={14} /></button>
+              </提示气泡>
             </div>
             <div className="mp-iso-body">
               <div className="mp-iso-row">
@@ -2346,7 +2358,7 @@ export default function MapPanel({
                 输出 150-300dpi 报告插图：地图 + 标题 + 比例尺 + 指北针 + 图例（图例取当前可见图层）。
               </div>
               {flag("mapExport") && (
-                <div className="mp-iso-batch" style={{ borderTop: "1px solid #d6dce5", marginTop: 14, paddingTop: 12 }}>
+                <div className="mp-iso-batch" style={{ borderTop: "1px solid var(--border)", marginTop: 14, paddingTop: 12 }}>
                   <div className="mp-iso-label" style={{ fontWeight: 600, marginBottom: 8 }}>批量导出（后台队列）</div>
                   <div className="mp-iso-row" style={{ alignItems: "flex-start" }}>
                     <span className="mp-iso-label">项目</span>
@@ -2425,7 +2437,9 @@ export default function MapPanel({
                 <button className={`mp-iso-tab ${iso.tab === "iso" ? "active" : ""}`} onClick={() => setIso((s) => ({ ...s, tab: "iso" }))}>等时圈</button>
                 <button className={`mp-iso-tab ${iso.tab === "route" ? "active" : ""}`} onClick={() => setIso((s) => ({ ...s, tab: "route" }))}>路径规划</button>
               </div>
-              <button className="mp-op" onClick={() => setIsoOpen(false)} title="关闭" aria-label="关闭"><Icon name="close" size={14} /></button>
+              <提示气泡 label="关闭地图分析">
+                <button className="mp-op" onClick={() => setIsoOpen(false)} aria-label="关闭地图分析"><Icon name="close" size={14} /></button>
+              </提示气泡>
             </div>
             <div className="mp-iso-body">
             {iso.tab === "iso" ? (

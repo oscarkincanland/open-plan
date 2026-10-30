@@ -49,6 +49,54 @@ export function childIdFor(toolKey, index, multiple) {
 }
 
 /**
+ * 委派幂等缓存（opt-in，默认关）。
+ *
+ * 背景：Pi 的 provider/retry 流可能重放同一个 tool call（同一个 toolCallId 再来一次）。
+ * run_subagent 每次都会创建真实子会话，重放会重复派发、重复计费，因此需要一个
+ * 「同一 key 只执行一次」的收敛点：命中在途调用时共享同一个 promise，命中已结算调用
+ * 时直接复用结果；失败不缓存，允许后续重放重新执行。
+ *
+ * 纯逻辑（无 Pi / 无 IO），可独立单测。
+ *
+ * @param {{ttlMs?: number, max?: number, now?: () => number}} [options]
+ * @returns {{ run: Function, has: Function, size: Function, clear: Function }}
+ */
+export function createDelegationIdempotencyCache({ ttlMs = 10 * 60 * 1000, max = 200, now = () => Date.now() } = {}) {
+  const maxSize = Math.max(1, Math.floor(Number(max) || 1));
+  const store = new Map(); // key -> { promise, at }
+  const prune = () => {
+    const current = now();
+    for (const [key, entry] of store) {
+      if (current - entry.at > ttlMs) store.delete(key);
+    }
+    while (store.size > maxSize) {
+      const oldest = store.keys().next().value;
+      if (oldest === undefined) break;
+      store.delete(oldest);
+    }
+  };
+  return {
+    /** 同一 key 只执行一次；返回 { deduped, promise }（deduped=true 表示复用了已有调用）。 */
+    run(key, fn) {
+      prune();
+      const hit = store.get(key);
+      if (hit) return { deduped: true, promise: hit.promise };
+      const promise = Promise.resolve().then(fn);
+      store.set(key, { promise, at: now() });
+      promise.catch(() => {
+        const current = store.get(key);
+        if (current && current.promise === promise) store.delete(key);
+      });
+      prune(); // 插入后再收紧上限（新插入项位于末尾，不会被当作最旧项清掉）
+      return { deduped: false, promise };
+    },
+    has(key) { return store.has(key); },
+    size() { return store.size; },
+    clear() { store.clear(); },
+  };
+}
+
+/**
  * 确定性解析 verifier 的判定：
  *  - 「判定：pass|revise|fail」（推荐格式，提示词里要求最后一行输出）；
  *  - 或 JSON {"verdict": "..."}；

@@ -27,16 +27,16 @@ const test = (name, fn) => {
 };
 
 console.log("\n▶ 契约版本与 provider（§4.1）");
-test("能力契约 v2：每个能力都声明 provider", () => {
+test("能力契约 v3：每个能力都声明 provider", () => {
   const plan = planTaskCapabilities({ text: "读取报告.docx 并总结", task: { mode: "agent" }, references: [{ kind: "file", target: "报告.docx" }] });
-  assert.equal(plan.version, 2);
+  assert.equal(plan.version, 3);
   assert.ok(plan.capabilities.length >= 2);
   for (const capability of plan.capabilities) {
     assert.ok(["native", "officecli", "pi"].includes(capability.provider), `${capability.id} 缺少合法 provider`);
   }
 });
 test("能力 ID 全部来自方案枚举或既有模式能力", () => {
-  const allowed = new Set(["chat", "office", "agent", "review", "document", "knowledge", "officecli", "office_generate", "reviewEvidence", "subagent", "map", "skills"]);
+  const allowed = new Set(["chat", "office", "agent", "review", "document", "knowledge", "officecli", "office_generate", "template", "reviewEvidence", "subagent", "map", "skills"]);
   for (const mode of TASK_MODES) {
     const plan = planTaskCapabilities({ text: "生成一份 Word 报告", task: { mode }, references: [] });
     for (const capability of plan.capabilities) assert.ok(allowed.has(capability.id), `未知能力 ${capability.id}`);

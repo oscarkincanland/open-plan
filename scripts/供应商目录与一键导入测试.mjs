@@ -25,7 +25,9 @@ import { fileURLToPath } from "node:url";
 import { builtinProviderDetail, builtinProviderList, buildBuiltinImport, findBuiltinModel, loadBuiltinCatalog } from "../server/供应商目录.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const read = (rel) => fs.readFileSync(path.join(projectRoot, rel), "utf8");
+// 统一换行符：Windows 工作区是 CRLF、CI（Linux）是 LF；
+// 下面有按 `\n` 写多行形状的断言（如品牌图形数据文件的键值解析），不归一会本地红、CI 绿。
+const read = (rel) => fs.readFileSync(path.join(projectRoot, rel), "utf8").replace(/\r\n/g, "\n");
 
 let failed = 0;
 const ok = (msg) => console.log(`  ✓ ${msg}`);
@@ -180,7 +182,7 @@ const list = builtinProviderList();
   const panel = read("client/src/components/SettingsPanel.jsx");
   assert.match(panel, /账号登录（订阅制）/);
   assert.match(panel, /loginMethods\?\.includes\("oauth"\)/);
-  assert.match(panel, /\/login 供应商/);
+  assert.match(panel, /pi auth login 供应商id/);
   assert.match(panel, /从本地 Pi 导入配置/);
 });
 

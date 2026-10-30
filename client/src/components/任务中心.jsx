@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { cancelRun, getRun, getRunAcceptance, listRuns, resumeRun, retryRun } from "../api.js";
 import { verificationLabel } from "../运行轨迹.js";
 import Icon from "./Icon.jsx";
+import 提示气泡 from "./提示气泡.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
 import MarkdownBody from "./MarkdownBody.jsx";
 import { artifactAcceptanceText, acceptanceSummaryText } from "./验收状态.js";
@@ -22,7 +23,10 @@ const statusText = {
 
 function modeText(run) {
   const mode = run?.task?.mode;
-  return mode === "chat" ? "Chat" : mode === "office" ? "Office" : mode === "agent" ? "Agent" : "未标记";
+  if (mode === "chat") return "Chat";
+  if (mode === "review") return "Review";
+  if (mode === "office" || mode === "agent") return "Work";
+  return "未标记";
 }
 
 /** 事件摘要：把 run 级原始事件压成一行可读文本（保留技术细节在 title 里）。 */
@@ -311,14 +315,21 @@ function TaskCenterInternal({ sessions = [], projects = [], currentProjectId = "
   );
 
   const panel = (fullPage || open) && (
-        <div className={`task-center-panel ${fullPage ? "task-center-page-panel" : ""}`}>
+        <div
+          className={`task-center-panel ${fullPage ? "task-center-page-panel" : ""}`}
+          {...(fullPage ? {} : { role: "dialog", "aria-label": "任务中心" })}
+        >
           {fullPage && <div className="module-head task-center-page-head">
-            <button className="module-back" onClick={onClose} title="返回对话"><Icon name="back" size={15} /></button>
+            <提示气泡 label="返回对话">
+              <button className="module-back" onClick={onClose} aria-label="返回对话"><Icon name="back" size={15} /></button>
+            </提示气泡>
             <div><h2>任务中心</h2><p>并行任务、运行状态与历史会话</p></div>
           </div>}
           <div className="task-center-head">
             <span><Icon name="list" size={14} /> 并行任务</span>
-            <button className="btn-xs" onClick={refresh} title="刷新任务状态"><Icon name="refresh" size={12} /></button>
+            <提示气泡 label="刷新任务状态">
+              <button className="btn-xs" onClick={refresh} aria-label="刷新任务状态"><Icon name="refresh" size={12} /></button>
+            </提示气泡>
           </div>
           <div className="task-center-filters">
             <select value={projectScope} onChange={(e) => setProjectScope(e.target.value)} title="项目范围">
@@ -331,7 +342,7 @@ function TaskCenterInternal({ sessions = [], projects = [], currentProjectId = "
               {Object.entries(statusText).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
             </select>
             <select value={modeFilter} onChange={(e) => setModeFilter(e.target.value)} title="任务模式">
-              <option value="all">全部模式</option><option value="chat">Chat</option><option value="office">Office</option><option value="agent">Agent</option>
+              <option value="all">全部模式</option><option value="chat">Chat</option><option value="agent">Work</option><option value="review">Review</option>
             </select>
             <input value={queryFilter} onChange={(e) => setQueryFilter(e.target.value)} placeholder="搜索任务或失败原因" title="搜索任务目标、摘要或失败原因" />
           </div>
@@ -345,7 +356,14 @@ function TaskCenterInternal({ sessions = [], projects = [], currentProjectId = "
             <div className="task-center-list">
               {visibleRuns.length ? visibleRuns.map((run) => <TaskCard key={run.id} run={run} projectName={projectNameFor(run)} onSelect={(id) => {
                 setSelectedId(id);
-              }} />) : <div className="task-center-empty">暂无任务记录</div>}
+              }} />) : (
+                <div className="task-center-empty">
+                  <Icon name="list" size={20} />
+                  <strong>当前还没有任务记录</strong>
+                  <span>新建对话或打开历史会话后，执行中的任务会出现在这里。</span>
+                  <button className="btn-xs" onClick={refresh}>刷新</button>
+                </div>
+              )}
             </div>
           ) : (
             <div className="task-center-detail">

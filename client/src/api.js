@@ -211,7 +211,9 @@ export const listSessions = (fileOrOptions) => {
     if (fileOrOptions) params.set("file", fileOrOptions);
   } else {
     const options = fileOrOptions || {};
-    for (const key of ["file", "projectId", "mode", "runStatus"]) if (options[key]) params.set(key, options[key]);
+    for (const key of ["file", "projectId", "mode", "runStatus", "limit", "cursor", "groupBy"]) {
+      if (options[key] !== undefined && options[key] !== null && options[key] !== "") params.set(key, options[key]);
+    }
     for (const key of ["pinned", "frozen"]) if (options[key] !== undefined && options[key] !== null) params.set(key, String(options[key]));
   }
   const query = params.toString();
@@ -307,6 +309,19 @@ export const freezeSession = (id, frozen = true, reason = "") =>
   api(`/api/sessions/${encodeURIComponent(id)}/freeze`, { method: "POST", body: JSON.stringify({ frozen, reason }) });
 export const forkSession = (id, label, options = {}) =>
   api(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: "POST", body: JSON.stringify({ label, ...options }) });
+// v0.12.6–v0.12.8：会话树分支与回答版本。
+export const branchAgentSession = (client, thread, entryId, options = {}) =>
+  api("/api/agent/session-branch", { method: "POST", body: JSON.stringify({ client, thread, entryId, summarize: options.summarize === true, label: options.label || "" }) });
+export const getSessionMessageVersions = (id, messageId) =>
+  api(`/api/sessions/${encodeURIComponent(id)}/message-versions?messageId=${encodeURIComponent(messageId)}`);
+// v0.13.0–v0.13.1：长期目标（Goal）读写与状态操作。
+export const getSessionGoal = (id) => api(`/api/sessions/${encodeURIComponent(id)}/goal`);
+export const setSessionGoal = (id, payload = {}) =>
+  api(`/api/sessions/${encodeURIComponent(id)}/goal`, { method: "POST", body: JSON.stringify(payload) });
+export const sessionGoalAction = (id, action, payload = {}) =>
+  api(`/api/sessions/${encodeURIComponent(id)}/goal/action`, { method: "POST", body: JSON.stringify({ action, ...payload }) });
+export const clearSessionGoal = (id) =>
+  api(`/api/sessions/${encodeURIComponent(id)}/goal`, { method: "DELETE" });
 export const listRuns = (thread = "", limit = 50, options = {}) => {
   const params = new URLSearchParams();
   if (thread) params.set("thread", thread);
@@ -373,6 +388,26 @@ export function getClientId() {
     localStorage.setItem("oaw_client_id", id);
   }
   return id;
+}
+
+/**
+ * 标签页身份（S1）：clientId 存在 localStorage，同源多标签页共享同一个值；
+ * 服务端据此做流去重时无法区分“同一页重连”和“另一个标签页”，只能放宽配额，
+ * 结果多标签页各开一组 SSE 把浏览器 6 个连接槽占满。
+ * 这里用 sessionStorage 生成每标签页独立、刷新后仍稳定的 tabId，仅用于长连接键，
+ * 不参与会话/游标身份，避免影响既有数据。
+ */
+export function getTabId() {
+  try {
+    let id = sessionStorage.getItem("oaw_tab_id");
+    if (!id) {
+      id = "tab-" + Math.random().toString(36).slice(2, 10);
+      sessionStorage.setItem("oaw_tab_id", id);
+    }
+    return id;
+  } catch {
+    return "tab-default";
+  }
 }
 
 // ---------- 知识库（本地索引 + IMA） ----------

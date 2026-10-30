@@ -65,14 +65,93 @@ export function atomicWriteJson(file, value) {
   return atomicWriteFile(file, JSON.stringify(value, null, 2) + "\n", "utf8");
 }
 
-/** 使用 O_APPEND 写入一条完整 JSONL，并在可用时 flush 到磁盘。 */
+/**
+ * P2：事件流/用量日志的 fsync 批量合并。
+ *
+ * 每次追加都 fsync 是最稳的，但事件密集时（一轮几十个工具事件）会把磁盘同步
+ * 开销全部压进事件循环。这里把 fsync 合并到最多每 250ms 一次：
+ *   - 写入本身（write）仍然立即发生，读进程立刻可见；
+ *   - 只有“掉电持久性”被放宽到最后一次 fsync，退出前会同步 flush；
+ *   - `OAW_FSYNC_INTERVAL_MS=0` 可恢复逐条 fsync 的旧行为。
+ */
+const FSYNC_INTERVAL_MS = Math.max(0, Number(process.env.OAW_FSYNC_INTERVAL_MS ?? 250) || 0);
+const fsyncState = new Map();
+const fsyncStats = { writes: 0, syncs: 0, deferred: 0 };
+let exitHookInstalled = false;
+
+function syncFile(file) {
+  try {
+    const fd = fs.openSync(file, "a");
+    try { fs.fsyncSync(fd); } finally { closeQuietly(fd); }
+    fsyncStats.syncs += 1;
+  } catch {}
+}
+
+function flushPendingFsyncs() {
+  for (const [file, state] of fsyncState) {
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+    if (state.dirty) {
+      state.dirty = false;
+      syncFile(file);
+    }
+  }
+}
+
+function installExitHook() {
+  if (exitHookInstalled) return;
+  exitHookInstalled = true;
+  process.once("exit", flushPendingFsyncs);
+}
+
+function fsyncSoon(file) {
+  const state = fsyncState.get(file) || { lastSyncAt: 0, timer: null, dirty: false };
+  const now = Date.now();
+  if (FSYNC_INTERVAL_MS === 0 || now - state.lastSyncAt >= FSYNC_INTERVAL_MS) {
+    state.lastSyncAt = now;
+    state.dirty = false;
+    fsyncState.set(file, state);
+    syncFile(file);
+    return true;
+  }
+  state.dirty = true;
+  fsyncStats.deferred += 1;
+  if (!state.timer) {
+    state.timer = setTimeout(() => {
+      state.timer = null;
+      if (!state.dirty) return;
+      state.dirty = false;
+      state.lastSyncAt = Date.now();
+      syncFile(file);
+    }, Math.max(20, FSYNC_INTERVAL_MS - (now - state.lastSyncAt)));
+    state.timer.unref?.();
+    installExitHook();
+  }
+  fsyncState.set(file, state);
+  return false;
+}
+
+/** 测试/诊断用：fsync 合并计数与当前策略。 */
+export function fsyncStatsSnapshot() {
+  return { ...fsyncStats, intervalMs: FSYNC_INTERVAL_MS, pendingFiles: [...fsyncState.values()].filter((item) => item.dirty).length };
+}
+
+/** 显式 flush 所有待同步文件（关闭服务前可调用）。 */
+export function flushPendingFsync() {
+  flushPendingFsyncs();
+}
+
+/** 使用 O_APPEND 写入一条完整 JSONL；fsync 按 FSYNC_INTERVAL_MS 合并。 */
 export function appendJsonLine(file, value) {
   const target = path.resolve(file);
   ensureDirectory(path.dirname(target));
   const fd = fs.openSync(target, "a");
   try {
     fs.writeFileSync(fd, JSON.stringify(value) + "\n", "utf8");
-    try { fs.fsyncSync(fd); } catch {}
+    fsyncStats.writes += 1;
+    fsyncSoon(target);
   } finally {
     closeQuietly(fd);
   }

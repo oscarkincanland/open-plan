@@ -102,7 +102,7 @@ export default function AgentBrainGraph({ trace, running = false, onFocusTool })
           ))}
           {(trace.errors || []).length > 0 && (
             <span className="brain-branch static error" title={(trace.errors || []).map((item) => item.message).join("\n")}>
-              <Icon name="x" size={12} /><span>错误</span><b>×{trace.errors.length}</b>
+              <Icon name="close" size={12} /><span>错误</span><b>×{trace.errors.length}</b>
             </span>
           )}
           {(trace.files || []).length > 0 && (

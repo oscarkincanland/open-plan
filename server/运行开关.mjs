@@ -40,6 +40,14 @@ function readStringList(name) {
    全部默认关 = 与历史基线行为完全一致；OAW_QODER_ALIGN=1 可一键打开整族用于预览，
    关掉即整体回滚，无需改代码、无残留。 */
 const QODER_ALIGN = readFlag("OAW_QODER_ALIGN");
+/* ===== ZCode Harness 对标开关族（计划 2026-10-27-004）=====
+   全部默认关 = 与历史基线行为一致；OAW_HARNESS_ALIGN=1 可一键打开整族用于预览，
+   关掉即整体回滚。任一单项开关也可独立打开。 */
+const HARNESS_ALIGN = readFlag("OAW_HARNESS_ALIGN");
+
+/* 浏览器原子操作族开关（Proma 对标）：默认全关 = 与历史基线行为完全一致；
+   OAW_BROWSER_ATOMIC=1 可一键打开整族，关掉即整体回滚，无需改代码、无残留。 */
+const BROWSER_ATOMIC = readFlag("OAW_BROWSER_ATOMIC");
 
 /** 只读快照：进程内唯一事实。模块加载时解析一次（服务生命周期内不热更）。 */
 export const RUNTIME_FLAGS = Object.freeze({
@@ -75,6 +83,24 @@ export const RUNTIME_FLAGS = Object.freeze({
   browserUrlGuard: readFlag("OAW_BROWSER_URL_GUARD"),
   /** B5 白名单配置：域名列表（留空 = 放行全部 http/https；子域名自动匹配） */
   browserUrlAllowlist: readStringList("OAW_BROWSER_URL_ALLOWLIST"),
+  /* ===== 浏览器原子操作（Proma 对标，默认全关；OAW_BROWSER_ATOMIC=1 一键开启整族）===== */
+  /** 族开关：浏览器原子操作（等待 / 点击并等待 / 容器滚动 / 区域抽取 / 原生下拉） */
+  browserAtomic: BROWSER_ATOMIC,
+  /** 原子 A1：按 URL 片段/可见文本/CSS 选择器等待（默认关） */
+  browserWaitFor: readFlag("OAW_BROWSER_WAIT_FOR") || BROWSER_ATOMIC,
+  /** 原子 A2：点击并等待（点击 ref 与等待条件合并为一次串行调用，默认关） */
+  browserAct: readFlag("OAW_BROWSER_ACT") || BROWSER_ATOMIC,
+  /** 原子 A3：内部滚动容器滚动 + 前后滚动指标（默认关） */
+  browserScrollContainer: readFlag("OAW_BROWSER_SCROLL_CONTAINER") || BROWSER_ATOMIC,
+  /** 原子 A4：区域正文抽取（text / 基础 Markdown，默认关） */
+  browserExtract: readFlag("OAW_BROWSER_EXTRACT") || BROWSER_ATOMIC,
+  /** 原子 A5：原生 <select> 选项选择（默认关） */
+  browserSelectOption: readFlag("OAW_BROWSER_SELECT_OPTION") || BROWSER_ATOMIC,
+  /* ===== 子代理增强（Proma 对标，默认全关）===== */
+  /** 子代理 A1：委派幂等缓存（同一 toolCallId 重放只执行一次，默认关） */
+  subagentIdempotent: readFlag("OAW_SUBAGENT_IDEMPOTENT"),
+  /** 子代理 A2：阻塞事件冒泡（子代理等待审批时向父事件流冒泡 blocked/unblocked，默认关） */
+  subagentBlockedBubble: readFlag("OAW_SUBAGENT_BLOCKED_BUBBLE"),
   /** 会话恢复 A3：busy 看门狗（busy 期间超时无 Pi 事件活动则强制放行，默认关） */
   agentBusyWatchdog: readFlag("OAW_BUSY_WATCHDOG"),
   /** A3 阈值：busy 无事件活动多久后放行（毫秒，默认 15 分钟） */
@@ -135,8 +161,7 @@ export const RUNTIME_FLAGS = Object.freeze({
   streamQuotaRetryAfterSeconds: readPositiveInt("OAW_STREAM_QUOTA_RETRY_AFTER_S", 5),
   /** P1-2：事件负载结构校验（默认关 = 不校验；打开则只告警并计数，不改变落盘与投递行为） */
   eventSchemaCheck: readFlag("OAW_EVENT_SCHEMA_CHECK") || QODER_ALIGN,
-  /** P1-8：右侧对象栏（本轮对象聚合：产出/来源/技能与 MCP/网页查阅/记忆 + 环境信息 + 后台进程） */
-  qoderObjectBar: readFlag("OAW_QODER_OBJECT_BAR") || QODER_ALIGN,
+  /** P1-8：右侧对象栏（本轮对象聚合：产出/来源/技能与 MCP/网页查阅/记忆 + 环境信息 + 后台进程） */  qoderObjectBar: readFlag("OAW_QODER_OBJECT_BAR") || QODER_ALIGN,
   /** §4：声明式交通规划领域工作流（注册表 + 六个声明 + preflight 硬约束，默认关 = 不加载也不下发） */
   domainWorkflows: readFlag("OAW_DOMAIN_WORKFLOWS") || QODER_ALIGN,
   /** Qoder P0-2：超大 tool_output 单帧切分（默认关 = 原样单帧下发，与基线逐字一致） */
@@ -155,6 +180,54 @@ export const RUNTIME_FLAGS = Object.freeze({
   cadPreview: readFlag("OAW_CAD_PREVIEW"),
   /** CAD agent 能力：documentRead 读取 CAD + cad_read/cad_edit 工具（默认关） */
   cadAgent: readFlag("OAW_CAD_AGENT"),
+  /** Office 写作规范层：模板路由 / 场景参数 / 版式令牌 / 规则闸门（默认关 = 旧行为逐字一致） */
+  officeFormat: readFlag("OAW_OFFICE_FORMAT"),
+
+  /* ===== ZCode Harness 对标开关族（默认全关）===== */
+  /** 总开关：一键打开 H 线整族（仅测试/预览；关闭即整体回滚） */
+  harnessAlign: HARNESS_ALIGN,
+  /** H1-1 工具能力元数据校验与读取 */
+  toolMetadata: readFlag("OAW_TOOL_METADATA") || HARNESS_ALIGN,
+  /** H1-2 权限决策返回 ruleId 并记录审计 */
+  permissionAudit: readFlag("OAW_PERMISSION_AUDIT") || HARNESS_ALIGN,
+  /** H1-2 allow 决策是否也逐次记录（默认只记 ask/deny） */
+  permissionAuditAllow: readFlag("OAW_PERMISSION_AUDIT_ALLOW") || HARNESS_ALIGN,
+  /** H1-3 超阈值工具结果外置 */
+  toolResultArtifact: readFlag("OAW_TOOL_RESULT_ARTIFACT") || HARNESS_ALIGN,
+  /** H1-3 外置阈值（字节，默认 30KB） */
+  toolResultMaxBytes: readPositiveInt("OAW_TOOL_RESULT_MAX_BYTES", 30 * 1024),
+  /** H1-4 用量归集 */
+  usageLedger: readFlag("OAW_USAGE_LEDGER") || HARNESS_ALIGN,
+  /** H2-1 记忆语义召回 */
+  memoryRecall: readFlag("OAW_MEMORY_RECALL") || HARNESS_ALIGN,
+  /** H2-1 召回注入上限（字节，默认 60KB） */
+  memoryRecallMaxBytes: readPositiveInt("OAW_MEMORY_RECALL_MAX_BYTES", 60 * 1024),
+  /** H2-2 记忆自动抽取 */
+  memoryExtract: readFlag("OAW_MEMORY_EXTRACT") || HARNESS_ALIGN,
+  /** H2-3 上下文分段组装 */
+  contextSections: readFlag("OAW_CONTEXT_SECTIONS") || HARNESS_ALIGN,
+  /** H2-4 Skill 注入块与预算 */
+  skillInjection: readFlag("OAW_SKILL_INJECTION") || HARNESS_ALIGN,
+  /** H2-4 Skill 注入上限（字节，默认 20KB） */
+  skillInjectionMaxBytes: readPositiveInt("OAW_SKILL_INJECTION_MAX_BYTES", 20 * 1024),
+  /** H3-1 声明式 Hook 事件层 */
+  hookEvents: readFlag("OAW_HOOK_EVENTS") || HARNESS_ALIGN,
+  /** H3-1 Hook 默认超时（毫秒，默认 3s） */
+  hookTimeoutMs: readPositiveInt("OAW_HOOK_TIMEOUT_MS", 3000),
+  /** H3-2 子代理 profile 快照与后台/计量 */
+  subagentProfile: readFlag("OAW_SUBAGENT_PROFILE") || HARNESS_ALIGN,
+  /** H3-3 统一工具错误 envelope */
+  toolErrorEnvelope: readFlag("OAW_TOOL_ERROR_ENVELOPE") || HARNESS_ALIGN,
+  /** H3-4 配置来源与资源发现诊断 */
+  configSource: readFlag("OAW_CONFIG_SOURCE") || HARNESS_ALIGN,
+  /** H4-2 工作流阶段 journal 与幂等重跑 */
+  workflowJournal: readFlag("OAW_WORKFLOW_JOURNAL") || HARNESS_ALIGN,
+  /** H4-3 插件清单与完整性校验 */
+  pluginManifest: readFlag("OAW_PLUGIN_MANIFEST") || HARNESS_ALIGN,
+  /** H4-4 计划文件持久化（不做 PlanMode） */
+  planPersistence: readFlag("OAW_PLAN_PERSISTENCE") || HARNESS_ALIGN,
+  /** H4-5 观测导出 */
+  observabilityExport: readFlag("OAW_OBSERVABILITY_EXPORT") || HARNESS_ALIGN,
 });
 
 /** /api/status 下发形态：布尔与数值分开，前端只读布尔位。 */
@@ -174,6 +247,14 @@ export function runtimeFlagsSnapshot() {
     browserAdaptiveStream: RUNTIME_FLAGS.browserAdaptiveStream,
     browserFullpage: RUNTIME_FLAGS.browserFullpage,
     browserUrlGuard: RUNTIME_FLAGS.browserUrlGuard,
+    browserAtomic: RUNTIME_FLAGS.browserAtomic,
+    browserWaitFor: RUNTIME_FLAGS.browserWaitFor,
+    browserAct: RUNTIME_FLAGS.browserAct,
+    browserScrollContainer: RUNTIME_FLAGS.browserScrollContainer,
+    browserExtract: RUNTIME_FLAGS.browserExtract,
+    browserSelectOption: RUNTIME_FLAGS.browserSelectOption,
+    subagentIdempotent: RUNTIME_FLAGS.subagentIdempotent,
+    subagentBlockedBubble: RUNTIME_FLAGS.subagentBlockedBubble,
     agentBusyWatchdog: RUNTIME_FLAGS.agentBusyWatchdog,
     resumeAutoRetry: RUNTIME_FLAGS.resumeAutoRetry,
     spatialAnalysis: RUNTIME_FLAGS.spatialAnalysis,
@@ -203,6 +284,27 @@ export function runtimeFlagsSnapshot() {
     cadPreview: RUNTIME_FLAGS.cadPreview,
     cadAgent: RUNTIME_FLAGS.cadAgent,
     // 数值位：前端 numberFlag() 读取（心跳间隔需下发给前端派生看门狗阈值）。
+    officeFormat: RUNTIME_FLAGS.officeFormat,
+    // ZCode Harness 对标开关族
+    harnessAlign: RUNTIME_FLAGS.harnessAlign,
+    toolMetadata: RUNTIME_FLAGS.toolMetadata,
+    permissionAudit: RUNTIME_FLAGS.permissionAudit,
+    permissionAuditAllow: RUNTIME_FLAGS.permissionAuditAllow,
+    toolResultArtifact: RUNTIME_FLAGS.toolResultArtifact,
+    usageLedger: RUNTIME_FLAGS.usageLedger,
+    memoryRecall: RUNTIME_FLAGS.memoryRecall,
+    memoryExtract: RUNTIME_FLAGS.memoryExtract,
+    contextSections: RUNTIME_FLAGS.contextSections,
+    skillInjection: RUNTIME_FLAGS.skillInjection,
+    hookEvents: RUNTIME_FLAGS.hookEvents,
+    subagentProfile: RUNTIME_FLAGS.subagentProfile,
+    toolErrorEnvelope: RUNTIME_FLAGS.toolErrorEnvelope,
+    configSource: RUNTIME_FLAGS.configSource,
+    workflowJournal: RUNTIME_FLAGS.workflowJournal,
+    pluginManifest: RUNTIME_FLAGS.pluginManifest,
+    planPersistence: RUNTIME_FLAGS.planPersistence,
+    observabilityExport: RUNTIME_FLAGS.observabilityExport,
+    // 数值位：前端 numberFlag() 读取（心跳间隔需下发前端派生看门狗阈值）。
     heartbeatChatMs: RUNTIME_FLAGS.heartbeatChatMs,
     heartbeatEventsMs: RUNTIME_FLAGS.heartbeatEventsMs,
     heartbeatBrowserMs: RUNTIME_FLAGS.heartbeatBrowserMs,

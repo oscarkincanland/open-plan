@@ -21,8 +21,8 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const 样式 = fs.readFileSync(path.join(ROOT, "client", "src", "styles.css"), "utf8");
 
-/** 硬编码色值棘轮基线（2026-10-18 P1-7 落地时实测；只允许下降，不许上升）。 */
-const 硬编码基线 = { 总数: 393, 不同值: 129 };
+/** 硬编码色值棘轮基线（2026-10-29 设计一致性整改收尾实测；只允许下降，不许上升）。 */
+const 硬编码基线 = { 总数: 139, 不同值: 98 };
 
 let failed = 0;
 const test = (name, fn) => {
@@ -168,6 +168,45 @@ for (const [层名, 表] of [["暗色", 暗OptIn], ["亮色", 亮OptIn]]) {
   });
 }
 
+/* ---------------- 2.5) 皮肤状态色语义锁定 ---------------- */
+
+function 色相(hex) {
+  const 值 = String(hex).replace("#", "");
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(值.slice(i, i + 2), 16) / 255);
+  const 最大 = Math.max(r, g, b);
+  const 最小 = Math.min(r, g, b);
+  if (最大 === 最小) return 0;
+  const 差 = 最大 - 最小;
+  let h;
+  if (最大 === r) h = ((g - b) / 差) % 6;
+  else if (最大 === g) h = (b - r) / 差 + 2;
+  else h = (r - g) / 差 + 4;
+  return ((h * 60) + 360) % 360;
+}
+
+const 皮肤块 = [...样式.matchAll(/:root\[data-skin="([^"]+)"\](?:\[data-theme="light"\])?\s*\{([^}]*)\}/g)];
+test("皮肤状态色语义锁定：success 必须为绿色相、error 红色相、warning 琥珀色相", () => {
+  assert.ok(皮肤块.length >= 6, `解析到的皮肤块过少：${皮肤块.length}`);
+  for (const [, 皮肤名, 块] of 皮肤块) {
+    const 取 = (名) => (new RegExp(`${名}\\s*:\\s*(#[0-9a-fA-F]{6})`).exec(块) || [])[1];
+    const 成功 = 取("--success");
+    const 错误 = 取("--error");
+    const 警告 = 取("--warning");
+    if (成功) {
+      const h = 色相(成功);
+      assert.ok(h >= 70 && h <= 170, `皮肤 ${皮肤名} 的 --success=${成功} 色相 ${h.toFixed(0)} 不在绿色区间`);
+    }
+    if (错误) {
+      const h = 色相(错误);
+      assert.ok(h <= 15 || h >= 345, `皮肤 ${皮肤名} 的 --error=${错误} 色相 ${h.toFixed(0)} 不在红色区间`);
+    }
+    if (警告) {
+      const h = 色相(警告);
+      assert.ok(h >= 20 && h <= 55, `皮肤 ${皮肤名} 的 --warning=${警告} 色相 ${h.toFixed(0)} 不在琥珀区间`);
+    }
+  }
+});
+
 /* ---------------- 3) 色值棘轮 + 迁移清单 ---------------- */
 
 function 统计硬编码() {
@@ -205,10 +244,13 @@ test("迁移清单（记录型）：可 1:1 映射到 :root 令牌的色值仍�
     if (命中?.length === 1) 清单.push({ 值, 次, 令牌: 命中[0] });
   }
   清单.sort((a, b) => b.次 - a.次);
+  if (!清单.length) {
+    console.log("    · 散落色值已全部收敛，无待人工迁移的 1:1 映射项。");
+    return;
+  }
   console.log(`    · 可 1:1 映射 ${清单.length} 种 / ${清单.reduce((和, 项) => 和 + 项.次, 0)} 处：`);
   for (const 项 of 清单.slice(0, 12)) console.log(`        ${项.值} ×${项.次} → var(${项.令牌})`);
   console.log("    · 注意：这些替换在**亮色主题**下会改变渲染（同名令牌亮色取值不同），需人工评估后再做。");
-  assert.ok(清单.length >= 10, `可映射清单异常缩小：${清单.length}`);
 });
 
 console.log(failed ? "\n设计令牌一致性测试：存在失败" : "\n设计令牌一致性测试：全部通过");

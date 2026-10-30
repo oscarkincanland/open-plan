@@ -362,3 +362,29 @@ export async function workbookInfo(file) {
   const r = await runOfficecli(["get", file, "/", "--depth", "1", "--json"]);
   return r;
 }
+
+/**
+ * 批量排版参数构造（O-19）：一次 batch 应用多属性，默认原子回滚。
+ * 单独导出便于单测，不依赖 officecli 二进制。
+ */
+export function buildBatchArgs(file, commands, { bestEffort = false, stopOnError = false } = {}) {
+  const args = ["batch", file, "--commands", JSON.stringify(Array.isArray(commands) ? commands : []), "--json"];
+  if (bestEffort) args.push("--best-effort");
+  if (stopOnError) args.push("--stop-on-error");
+  return args;
+}
+
+/** 批量排版：失败整批回滚（officecli 默认原子模式）。 */
+export async function batchProps(file, commands, options = {}) {
+  return runOfficecli(buildBatchArgs(file, commands, options));
+}
+
+/** 渲染抽检参数构造（O-22）。 */
+export function buildScreenshotArgs(file, outFile, extra = []) {
+  return ["view", file, "screenshot", "-o", outFile, ...(Array.isArray(extra) ? extra : [])];
+}
+
+/** 渲染抽检：导出 PNG，供人工 L4 或后续视觉验收使用。 */
+export async function screenshot(file, outFile, extra = []) {
+  return runOfficecli(buildScreenshotArgs(file, outFile, extra));
+}

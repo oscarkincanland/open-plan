@@ -37,6 +37,16 @@ export function restartDelayFor({ uptimeMs, rapidFailures }) {
   };
 }
 
+/**
+ * M1：睡眠/待机唤醒后，定时器会把多次检查合并成一次，表现为相邻两次检查的
+ * 间隔远大于 HEALTH_INTERVAL_MS。此时服务还在恢复，健康检查超时并不代表进程故障；
+ * 必须清零失败计数并跳过本次判定，否则“唤醒 → 连续 3 次失败 → 重启”会误杀服务。
+ */
+export function shouldSkipForResume({ now, lastCheckAt, intervalMs = HEALTH_INTERVAL_MS } = {}) {
+  if (!Number.isFinite(lastCheckAt) || lastCheckAt <= 0) return false;
+  return now - lastCheckAt > Math.max(60_000, intervalMs * 2.5);
+}
+
 function log(message) {
   const line = `[${new Date().toISOString()}] ${message}`;
   try {
@@ -165,6 +175,7 @@ async function launchForeground() {
   let restartRequested = false;
   let healthFailures = 0;
   let healthCheckRunning = false;
+  let lastHealthCheckAt = 0;
   let rapidFailures = 0;
   let childStartedAt = 0;
   let stopTimer = null;
@@ -204,8 +215,19 @@ async function launchForeground() {
   };
 
   const healthTimer = setInterval(async () => {
+    const now = Date.now();
+    const previousCheckAt = lastHealthCheckAt;
+    lastHealthCheckAt = now;
     if (healthCheckRunning || stopping || restartRequested || !child) return;
-    if (Date.now() - childStartedAt < STARTUP_GRACE_MS) return;
+    if (now - childStartedAt < STARTUP_GRACE_MS) return;
+    // M1：唤醒后第一次检查不判失败，直接清零计数（详见 shouldSkipForResume）。
+    if (shouldSkipForResume({ now, lastCheckAt: previousCheckAt })) {
+      if (healthFailures) {
+        log(`健康检查间隔跳变 ${Math.round((now - previousCheckAt) / 1000)}s（疑似睡眠/唤醒），清零失败计数。`);
+      }
+      healthFailures = 0;
+      return;
+    }
     healthCheckRunning = true;
     try {
       const health = await getHealth();
@@ -216,7 +238,11 @@ async function launchForeground() {
       }
       healthFailures += 1;
       log(`健康检查失败（${healthFailures}/${HEALTH_FAILURE_LIMIT}）。`);
-      if (healthFailures >= HEALTH_FAILURE_LIMIT) requestRestart("/api/status 不可用或服务版本不匹配");
+      if (healthFailures >= HEALTH_FAILURE_LIMIT) {
+        // M1：重启前记录端口状态，便于事后区分“进程已死”和“进程活着但卡住”。
+        const occupied = await portIsOccupied();
+        requestRestart(`/api/status 不可用或服务版本不匹配（端口${occupied ? "仍在监听，疑似卡住" : "未监听，进程可能已退出"}）`);
+      }
     } finally {
       healthCheckRunning = false;
     }
@@ -275,8 +301,31 @@ async function launchForeground() {
   startChild();
 }
 
+async function printStatus() {
+  const version = await readPackageVersion();
+  const health = await getHealth();
+  const listening = await portIsOccupied();
+  const healthy = Boolean(health && isHealthyPayload(health.payload, version));
+  const payload = {
+    url: `http://${HOST}:${PORT}`,
+    expectedVersion: version,
+    listening,
+    healthy,
+    runningVersion: health?.payload?.version || null,
+    startedAt: health?.payload?.service?.startedAt || null,
+    uptimeSec: health?.payload?.service?.uptimeSec ?? null,
+  };
+  process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  return healthy ? 0 : 1;
+}
+
 async function main() {
   if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error(`无效 PORT：${process.env.PORT}`);
+  // M1：`npm run service:status` 只读探测，不启动/重启任何进程。
+  if (process.argv.includes("--status")) {
+    process.exitCode = await printStatus();
+    return;
+  }
   const foreground = process.argv.includes("--foreground");
   if (foreground) await launchForeground();
   else await launchBackground();

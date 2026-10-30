@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { Document, Packer, Paragraph } from "docx";
-import { uploadFile, deleteFile, fileToBase64, searchFiles, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, pickWorkspace, cancelWorkspacePick, listFileRoots, addFileRoot, removeFileRoot, pickNativeFiles, openInSystem, revealInSystem } from "../api.js";
+import { uploadFile, deleteFile, fileToBase64, searchFiles, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, pickWorkspace, cancelWorkspacePick, listFileRoots, addFileRoot, removeFileRoot, pickNativeFiles, openInSystem, revealInSystem, archiveProject } from "../api.js";
 import { sortFiles } from "./文件排序.js";
 import { artifactTypeInfo } from "../产物类型.js";
 import ContextMenu from "./ContextMenu.jsx";
@@ -9,7 +9,8 @@ import Logo from "./Logo.jsx";
 import MemoryTab from "./MemoryTab.jsx";
 import SettingsPanel from "./SettingsPanel.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
-import { notifyError, notifySuccess, askConfirm } from "./Feedback.jsx";
+import 提示气泡 from "./提示气泡.jsx";
+import { notifyError, notifySuccess, askConfirm, askText } from "./Feedback.jsx";
 
 // 运行中的状态集合：这些会话的名字用跑马灯 + 灯效展示，一眼看出"还在跑"
 const RUNNING_SESSION_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
@@ -127,6 +128,11 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   const [actionsId, setActionsId] = useState(null);
   const [selecting, setSelecting] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
+  // v0.13.6：会话分组模式（日期 / 工作区），每个工作区默认展示 20 条。
+  const [groupMode, setGroupMode] = useState(() => {
+    try { return localStorage.getItem("oaw_session_group") === "workspace" ? "workspace" : "date"; } catch { return "date"; }
+  });
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set());
   const initialEditAppliedRef = useRef(null);
 
   useEffect(() => {
@@ -181,6 +187,30 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   const pinnedList = filtered.filter(isSessionPinned);
   const unpinned = filtered.filter((s) => !isSessionPinned(s));
   const groups = groupByDate(unpinned);
+  const workspaceGroups = (() => {
+    const map = new Map();
+    for (const session of unpinned) {
+      const key = session.projectId || session.cwd || "ungrouped";
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          label: session.projectName || session.cwd || "未分组",
+          sessions: [],
+        });
+      }
+      map.get(key).sessions.push(session);
+    }
+    return [...map.values()];
+  })();
+  const switchGroupMode = (mode) => {
+    setGroupMode(mode);
+    try { localStorage.setItem("oaw_session_group", mode); } catch {}
+  };
+  const toggleGroup = (key) => setExpandedGroups((current) => {
+    const next = new Set(current);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
 
   const renderItem = (s) => {
     const isPinned = s.pinned ?? pinned.has(s.id);
@@ -194,6 +224,8 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
       onFocus={() => setActionsId(s.id)}
     >
       {selecting && <button type="button" className="session-select" onClick={(e) => { e.stopPropagation(); toggleSelected(s.id); }} aria-pressed={selectedIds.has(s.id)} title={selectedIds.has(s.id) ? "取消选择" : "选择会话"}>{selectedIds.has(s.id) ? "✓" : ""}</button>}
+      {/* v0.13.8：运行态用旋转图标替代纯状态点（跟随 prefers-reduced-motion 静止）；跑马灯保留 */}
+      {RUNNING_SESSION_STATUSES.has(s.runStatus) && <Icon name="loading" size={12} className="session-running-icon icon-loading" />}
       <div className="session-indicator" data-status={s.runStatus && s.runStatus !== "idle" ? s.runStatus : "idle"} />
       <div className="session-info">
         {editingId === s.id ? (
@@ -224,7 +256,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
               />
             </span>
             <span className="session-time">
-              {s.mode && <span className={`session-mode mode-${s.mode}`}>{s.mode === "chat" ? "Chat" : s.mode === "review" ? "Review" : s.mode === "office" ? "Office" : "Work"}</span>}
+              {s.mode && <span className={`session-mode mode-${s.mode === "office" ? "agent" : s.mode}`}>{s.mode === "chat" ? "Chat" : s.mode === "review" ? "Review" : "Work"}</span>}
               {s.runStatus && s.runStatus !== "idle" ? ({ running: "执行中", queued: "排队中", waiting_user: "等待回答", recovering: "恢复中", cancel_requested: "正在中断", completed: "已完成", failed: "失败", aborted: "已中断" }[s.runStatus] || s.runStatus) : formatTime(s.modified)}
               {s.artifactCount > 0 && <span className="session-artifact-count"> · 产物 {s.artifactCount}</span>}
             </span>
@@ -235,21 +267,31 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
       {s.cwd && <div className="session-cwd" title={s.cwd}>{shortenCwd(s.cwd)}</div>}
       {!selecting && actionsId === s.id && (
         <div className="session-actions" onClick={(e) => e.stopPropagation()}>
-        <button className="btn-icon" onClick={() => handleTogglePin(s)} title={isPinned ? "取消置顶" : "置顶"}>
-          <Icon name="pin" size={12} className={isPinned ? "pinned" : ""} />
-        </button>
-        <button
-          className="btn-icon"
-          onClick={() => { setEditingId(s.id); setEditValue(s.label || s.title || ""); }}
-          title="重命名"
-        ><Icon name="penTool" size={12} /></button>
-        <button className="btn-icon" onClick={async () => { if (onFork) await onFork(s.id, `${s.title || s.label || "会话"}（分支）`); }} title="从此会话创建分支"><Icon name="copy" size={12} /></button>
-        <button className="btn-icon" onClick={() => handleToggleFreeze(s)} title={s.frozen ? "解冻会话" : "冻结会话"}><Icon name={s.frozen ? "check" : "stop"} size={12} /></button>
-        <button
-          className="btn-icon danger"
-          onClick={async () => { if (await askConfirm("确认删除此会话?")) { await onDelete(s.id); } }}
-          title="删除"
-        ><Icon name="trash" size={12} /></button>
+        <提示气泡 label={isPinned ? "取消置顶" : "置顶"}>
+          <button className="btn-icon" onClick={() => handleTogglePin(s)} aria-label={isPinned ? "取消置顶" : "置顶"}>
+            <Icon name="pin" size={12} className={isPinned ? "pinned" : ""} />
+          </button>
+        </提示气泡>
+        <提示气泡 label="重命名">
+          <button
+            className="btn-icon"
+            onClick={() => { setEditingId(s.id); setEditValue(s.label || s.title || ""); }}
+            aria-label="重命名"
+          ><Icon name="penTool" size={12} /></button>
+        </提示气泡>
+        <提示气泡 label="从此会话创建分支">
+          <button className="btn-icon" onClick={async () => { if (onFork) await onFork(s.id, `${s.title || s.label || "会话"}（分支）`); }} aria-label="从此会话创建分支"><Icon name="copy" size={12} /></button>
+        </提示气泡>
+        <提示气泡 label={s.frozen ? "解冻会话" : "冻结会话"}>
+          <button className="btn-icon" onClick={() => handleToggleFreeze(s)} aria-label={s.frozen ? "解冻会话" : "冻结会话"}><Icon name="lock" size={12} /></button>
+        </提示气泡>
+        <提示气泡 label="删除">
+          <button
+            className="btn-icon danger"
+            onClick={async () => { if (await askConfirm("确认删除此会话?")) { await onDelete(s.id); } }}
+            aria-label="删除"
+          ><Icon name="trash" size={12} /></button>
+        </提示气泡>
         </div>
       )}
     </div>
@@ -264,6 +306,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
       </div>
       <div className="session-batch-toolbar">
         <button type="button" className={`session-batch-toggle ${selecting ? "active" : ""}`} onClick={() => { setSelecting((value) => !value); setSelectedIds(new Set()); }}>{selecting ? "取消选择" : "选择会话"}</button>
+        <button type="button" className="session-batch-toggle" onClick={() => switchGroupMode(groupMode === "date" ? "workspace" : "date")} title="切换会话分组方式">{groupMode === "workspace" ? "分组：工作区" : "分组：日期"}</button>
         {selecting && <>
           <button type="button" onClick={() => setSelectedIds(new Set(filtered.map((session) => session.id)))}>全选</button>
           <button type="button" onClick={() => setSelectedIds(new Set())}>清空</button>
@@ -289,8 +332,22 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
           {pinnedList.map((s) => renderItem(s))}
         </div>
       )}
-      {/* 日期分组区 */}
-      {groups.map(([label, items]) => (
+      {/* 日期分组区 / 工作区分组区（v0.13.6） */}
+      {groupMode === "workspace" ? workspaceGroups.map((group) => {
+        const expanded = expandedGroups.has(group.key);
+        const visible = expanded ? group.sessions : group.sessions.slice(0, 20);
+        return (
+          <div className="session-group" key={group.key}>
+            <div className="session-group-title">{group.label} · {group.sessions.length}</div>
+            {visible.map((s) => renderItem(s))}
+            {group.sessions.length > 20 && (
+              <button type="button" className="session-group-more" onClick={() => toggleGroup(group.key)}>
+                {expanded ? "收起" : `还有 ${group.sessions.length - 20} 条`}
+              </button>
+            )}
+          </div>
+        );
+      }) : groups.map(([label, items]) => (
         <div className="session-group" key={label}>
           <div className="session-group-title">{label}</div>
           {items.map((s) => renderItem(s))}
@@ -301,9 +358,12 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   );
 }
 
-export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onAtMention, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onBatchDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenMcp, onOpenPiPlugins, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, theme = "dark", loadStatus = {}, changedFiles = NO_CHANGED_FILES }) {
+export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onAtMention, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onBatchDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenMcp, onOpenPiPlugins, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, onCollapseSidebar, onCreateTask, theme = "dark", loadStatus = {}, changedFiles = NO_CHANGED_FILES }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
+  // v0.13.8：项目卡片工作区菜单（创建新任务 / 在资源管理器打开 / 归档）
+  const [projectMenuId, setProjectMenuId] = useState(null);
+  const [projectActionBusy, setProjectActionBusy] = useState("");
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
   const [modalTab, setModalTab] = useState("settings"); // 设置弹窗子 tab：settings | memory
   const [fileQ, setFileQ] = useState("");    // 文件搜索关键词
@@ -549,6 +609,30 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
     }
   };
 
+  // v0.13.8：归档项目（工作区菜单）——只移除记录，不动磁盘文件；
+  // 归档的是当前项目时回退到剩余项目的工作区（或第一个工作区）。
+  const handleArchiveProject = useCallback(async (project) => {
+    if (!project?.id) return;
+    if (!(await askConfirm(`归档项目「${project.name}」？仅移除记录，不删除磁盘文件。`))) return;
+    setProjectActionBusy(project.id);
+    try {
+      const result = await archiveProject(project.id, true);
+      if (!result?.ok) throw new Error(result?.error || "归档失败");
+      setProjectMenuId(null);
+      onProjectUpdated?.();
+      notifySuccess(`已归档「${project.name}」`);
+      if (project.id === currentProjectId) {
+        const next = projects.find((item) => item.id !== project.id && item.rootPath);
+        if (next?.rootPath) onWorkspaceChange?.(next.rootPath);
+        else if (workspaces.length) onWorkspaceChange?.(workspaces[0].path);
+      }
+    } catch (error) {
+      notifyError(error?.message || "归档失败");
+    } finally {
+      setProjectActionBusy("");
+    }
+  }, [currentProjectId, projects, workspaces, onProjectUpdated, onWorkspaceChange]);
+
   // 用系统默认应用打开（不做 shell 拼接，服务端只接受工作区内/刚选中的路径）
   const handleOpenWithDefaultApp = async (filePath) => {
     try {
@@ -657,10 +741,19 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           <strong>Open Plan</strong>
           <span>规聚工作台</span>
         </div>
-        <button className="sidebar-brand-action" onClick={onToggleTheme} title={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}>
-          <Icon name={theme === "dark" ? "sun" : "moon"} size={15} />
-        </button>
-        <button className="sidebar-brand-action" onClick={onOpenCommandPalette} title="命令面板（Ctrl/Cmd+K）"><Icon name="search" size={15} /></button>
+        <提示气泡 label={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}>
+          <button className="sidebar-brand-action" onClick={onToggleTheme} aria-label={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}>
+            <Icon name={theme === "dark" ? "sun" : "moon"} size={15} />
+          </button>
+        </提示气泡>
+        <提示气泡 label="命令面板（Ctrl/Cmd+K）">
+          <button className="sidebar-brand-action" onClick={onOpenCommandPalette} aria-label="打开命令面板"><Icon name="search" size={15} /></button>
+        </提示气泡>
+        {onCollapseSidebar && (
+          <提示气泡 label="收起侧栏">
+            <button className="sidebar-brand-action sidebar-collapse" onClick={onCollapseSidebar} aria-label="收起侧栏"><Icon name="chevronLeft" size={15} /></button>
+          </提示气泡>
+        )}
       </div>
       <div className="sidebar-primary-tabs" role="tablist" aria-label="工作台导航">
         <button className={primaryTab === "project" ? "active" : ""} onClick={() => setPrimaryTab("project")}><Icon name="folder" size={14} /> 项目</button>
@@ -729,7 +822,9 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           {fileRoots.map((root) => (
             <div className="external-root-item" key={root.id} title={root.path}>
               <span>{root.label || root.path}</span>
-              <button className="btn-icon danger" onClick={async () => { await removeFileRoot(root.id); refreshFileRoots(); }} title="移除目录" aria-label="移除目录"><Icon name="close" size={12} /></button>
+              <提示气泡 label="移除目录">
+                <button className="btn-icon danger" onClick={async () => { await removeFileRoot(root.id); refreshFileRoots(); }} aria-label="移除目录"><Icon name="close" size={12} /></button>
+              </提示气泡>
             </div>
           ))}
           {!fileRoots.length && <div className="external-root-empty">尚未登记外部目录</div>}
@@ -837,7 +932,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
             </span>
           </div>
           {projects.map((project) => (
-            <div key={project.id} className={"sidebar-project-card " + (project.id === currentProjectId ? "active" : "")} role="button" tabIndex={0} onClick={() => onProjectChange?.(project.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onProjectChange?.(project.id); }}>
+            <div key={project.id} className={"sidebar-project-card " + (project.id === currentProjectId ? "active" : "") + (projectMenuId === project.id ? " menu-open" : "")} role="button" tabIndex={0} onClick={() => onProjectChange?.(project.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onProjectChange?.(project.id); }} onMouseLeave={() => setProjectMenuId(null)}>
               <Icon name="folder" size={15} />
               <span className="sidebar-project-main">
                 <跑马灯文本
@@ -846,6 +941,25 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                   className="sidebar-project-name"
                 />
                 <small>{project.type || "综合项目"} · {project.status || "进行中"}</small>
+              </span>
+              {/* v0.13.8：工作区菜单——创建新任务 / 在资源管理器打开 / 归档（仅移除记录不删磁盘） */}
+              <span className="sidebar-project-tools" onClick={(e) => e.stopPropagation()}>
+                <提示气泡 label="项目操作">
+                  <button type="button" className="project-menu-btn" aria-label={`项目操作：${project.name}`} aria-expanded={projectMenuId === project.id} aria-haspopup="menu" onClick={() => setProjectMenuId(projectMenuId === project.id ? null : project.id)}><Icon name="more" size={12} /></button>
+                </提示气泡>
+                {projectMenuId === project.id && (
+                  <div className="project-menu" role="menu" aria-label={`项目操作菜单：${project.name}`}>
+                    <button role="menuitem" onClick={() => { setProjectMenuId(null); onCreateTask?.(project); }} disabled={projectActionBusy === project.id}>
+                      <Icon name="chatPlus" size={12} /> 创建新任务
+                    </button>
+                    <button role="menuitem" onClick={() => { setProjectMenuId(null); if (project.rootPath) handleRevealInFileManager(project.rootPath); }} disabled={!project.rootPath || projectActionBusy === project.id}>
+                      <Icon name="folderOpen" size={12} /> 在资源管理器打开
+                    </button>
+                    <button role="menuitem" className="danger" onClick={() => handleArchiveProject(project)} disabled={projectActionBusy === project.id}>
+                      <Icon name="trash" size={12} /> 归档项目
+                    </button>
+                  </div>
+                )}
               </span>
               {project.pendingMemoryCount > 0 && <span className="sidebar-project-badge">待沉淀 {project.pendingMemoryCount}</span>}
               <span className="sidebar-project-count">会话 {project.sessionCount ?? projectSessions(project).length}</span>
@@ -884,8 +998,8 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
         <div className="sidebar-capabilities">
           <div className="sidebar-view-title"><span>工作能力</span><span>按需打开</span></div>
           <button onClick={onOpenKnowledgeBase}><Icon name="book" size={16} /><span><strong>知识库</strong><small>检索与引用</small></span></button>
-          <button onClick={onOpenSkills}><Icon name="skills" size={16} /><span><strong>Skills</strong><small>技能搜索与调用</small></span></button>
-          <button onClick={onOpenTemplates}><Icon name="doc" size={16} /><span><strong>模板库</strong><small>结构与样式</small></span></button>
+          <button onClick={onOpenSkills}><Icon name="sparkles" size={16} /><span><strong>Skills</strong><small>技能搜索与调用</small></span></button>
+          <button onClick={onOpenTemplates}><Icon name="file" size={16} /><span><strong>模板库</strong><small>结构与样式</small></span></button>
           <button onClick={onOpenMap}><Icon name="map" size={16} /><span><strong>地图</strong><small>GIS 分析</small></span></button>
           <button onClick={onOpenAgents}><Icon name="robot" size={16} /><span><strong>智能体广场</strong><small>预置 Agent</small></span></button>
           <button onClick={onOpenTasks}><Icon name="list" size={16} /><span><strong>任务中心</strong><small>并行任务与历史</small></span></button>
@@ -959,12 +1073,21 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
               <div
                 key={filePath}
                 className={`file-item ${!f.isDir && f.name === currentName ? "active" : ""} ${isNew ? "new-file" : ""} ${isChanged ? "changed" : ""}`}
+                role="button"
+                tabIndex={0}
                 onClick={() => {
                   if (f.isDir) {
                     navigateDir(filePath);
                   } else {
                     onOpenFile(filePath);
                   }
+                }}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return;
+                  if (e.key !== "Enter" && e.key !== " ") return;
+                  e.preventDefault();
+                  if (f.isDir) navigateDir(filePath);
+                  else onOpenFile(filePath);
                 }}
                 onContextMenu={(e) => handleContextMenu(e, f)}
                 title={f.name}
@@ -977,16 +1100,36 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                 </span>
                 <span
                   className="file-at"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`引用 ${f.name}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     onAtMention && onAtMention(filePath, f.isDir);
                   }}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter" && e.key !== " ") return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onAtMention && onAtMention(filePath, f.isDir);
+                  }}
                   title="@ 到对话中作为参考"
-                  role="button"
-                  aria-label={`引用 ${f.name}`}
                 >@</span>
                 {!f.isDir && (
-                  <span className="file-del" onClick={(e) => { e.stopPropagation(); handleDeleteFile(filePath); }} role="button" aria-label={`删除 ${f.name}`} title={`删除 ${f.name}`}><Icon name="close" size={12} /></span>
+                  <span
+                    className="file-del"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`删除 ${f.name}`}
+                    title={`删除 ${f.name}`}
+                    onClick={(e) => { e.stopPropagation(); handleDeleteFile(filePath); }}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter" && e.key !== " ") return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      handleDeleteFile(filePath);
+                    }}
+                  ><Icon name="close" size={12} /></span>
                 )}
               </div>
             );
@@ -1009,7 +1152,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       {/* 项目会话历史：会话归属项目，不再和文件列表混在一起 */}
       {modal === "history" && (
         <div className="sb-modal-backdrop" onClick={() => { setModal(null); setHistoryEditSessionId(null); }}>
-          <div className="sb-modal project-history-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="sb-modal project-history-modal" role="dialog" aria-modal="true" aria-label="项目会话历史" onClick={(e) => e.stopPropagation()}>
             <div className="sb-modal-head">
               <Icon name="history" size={14} />
               <span className="sb-modal-title">{historyProject?.name || "项目"} · 会话历史</span>
@@ -1037,7 +1180,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       {/* 产物弹窗 */}
       {modal === "artifacts" && (
         <div className="sb-modal-backdrop" onClick={() => setModal(null)}>
-          <div className="sb-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="sb-modal" role="dialog" aria-modal="true" aria-label="成果" onClick={(e) => e.stopPropagation()}>
             <div className="sb-modal-head">
               <Icon name="package" size={14} />
               <span className="sb-modal-title">成果（{artifactEntries.length}）</span>
@@ -1072,7 +1215,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                         <span className={`artifact-status ${published ? "published" : acceptanceStatus === "failed" ? "failed" : acceptanceStatus === "passed" ? "ready" : "pending"}`} title={acceptance?.summary || "尚未完成成果验收"}>{published ? `v${published.version} 已固定` : acceptance?.readyToPublish ? "验收通过·待固定" : acceptanceStatus === "failed" ? "验收失败" : "待人工确认"}</span>
                         {canConfirm && <button className="btn-xs artifact-publish-btn" onClick={async (e) => {
                           e.stopPropagation();
-                          const note = window.prompt("请输入人工确认说明（可选）", "已检查内容、格式和页面显示");
+                          const note = await askText("请输入人工确认说明（可选）", "已检查内容、格式和页面显示");
                           if (note === null) return;
                           try { await confirmArtifactAcceptance(item.run.id, item.artifactId, note); await refreshArtifacts(); } catch (error) { notifyError("人工确认失败: " + error.message); }
                         }}>人工确认</button>}
@@ -1108,7 +1251,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       {/* 设置弹窗（含记忆） */}
       {modal === "settings" && (
         <div className="sb-modal-backdrop" onClick={() => setModal(null)}>
-          <div className="sb-modal sb-modal-wide" onClick={(e) => e.stopPropagation()}>
+          <div className="sb-modal sb-modal-wide" role="dialog" aria-modal="true" aria-label="设置" onClick={(e) => e.stopPropagation()}>
             <div className="sb-modal-head">
               <Icon name="gear" size={14} />
               <span className="sb-modal-title">设置</span>

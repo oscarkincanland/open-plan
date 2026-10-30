@@ -8,7 +8,7 @@
  *   artifacts → server/成果管理.mjs（核对产物契约）
  *   硬约束     → server/工作流校验.mjs（preflight 检查器）
  *
- * 命名（AGENT.MD §命名规范）：对标报告写作 `server/workflow/*.mjs`，落地统一为
+ * 命名（AGENTS.md 与 docs/规范/代码规范.md）：对标报告写作 `server/workflow/*.mjs`，落地统一为
  * 中文 `server/工作流/` 与 `server/工作流注册表.mjs`。
  *
  * 声明结构（字段齐全才可通过校验）：

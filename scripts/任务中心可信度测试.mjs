@@ -14,7 +14,7 @@ const 运行轨迹 = read("../client/src/运行轨迹.js");
 const 样式 = read("../client/src/styles.css");
 
 // 1. 触发器与面板的渲染边界
-assert.match(任务中心, /const trigger = !fullPage && \(/, "非整页触发器应独立定义");
+assert.match(任务中心, /const trigger = !fullPage && !hideTrigger && \(/, "非整页触发器应独立定义");
 assert.match(任务中心, /const panel = \(fullPage \|\| open\) && \(/, "面板只在打开或整页时渲染");
 // B04：触发按钮留在原位（定位与焦点归还），浮层通过 Portal 挂到 body
 assert.match(任务中心, /<div className="task-center-wrap">\{trigger\}\{floatingPanel\}<\/div>/, "触发器应留在原位，面板不再依赖祖先容器");

@@ -7,7 +7,10 @@ import {
   contextTokensFromUsage,
   createBashToolDefinition,
   createEditToolDefinition,
+  createFindToolDefinition,
+  createGrepToolDefinition,
   createLocalBashOperations,
+  createLsToolDefinition,
   createReadToolDefinition,
   createWriteToolDefinition,
   DefaultResourceLoader,
@@ -42,9 +45,13 @@ import {
 } from "./运行预算.mjs";
 import { importLocalPiSessionFile, readCredentials, readModelsConfig, readModelsStore, readRuntimeSettings, writeCredentials } from "./Pi配置管理.mjs";
 import { resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { recordRunEvent, updateRunTodo, getRun } from "./runs.mjs";
+import { recordRunEvent, updateRunTodo, getRun, isRunTerminal } from "./runs.mjs";
 import { markRunTiming, attachRunTimingSpans } from "./首字延迟.mjs";
-import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode } from "./task.mjs";
+import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode, routeTaskIntent } from "./task.mjs";
+import { classifyToolCall, isReadonlyBash } from "./office规范/执行闸门.mjs";
+
+/** OfficeCLI 工具约束（O-28）：Work/Review 两处 prompt 共用同一常量，避免措辞分叉。 */
+const OFFICE_TOOL_RULE = "- ALWAYS operate on office documents through the `officecli` tool — it resolves file names relative to the current workspace and runs on Windows natively. NEVER try to run `officecli` via the bash tool.";
 
 /**
  * 输出策略（A03）：Chat / Work / Review 共用同一套收尾口径，避免系统提示各要求一套收尾。
@@ -70,6 +77,7 @@ import {
   acquireWriteLockWithRetry,
   ensureStagedDirectory,
   isProtectedMemoryTarget,
+  listStagedFiles,
   materializeStagedReferences,
   releaseWriteLock,
   resolveReadablePath,
@@ -90,21 +98,25 @@ import {
 } from "./记忆管理.mjs";
 import { isGlobalSearchCommand, normalizeBashOptions } from "./命令安全策略.mjs";
 import { normalizeOfficeFailure } from "./文件权限错误.mjs";
-import { requireToolApproval } from "./审批策略.mjs";
+import { matchToolAction, requireToolApproval } from "./审批策略.mjs";
 import { webSearch } from "./联网搜索.mjs";
 import { webFetch } from "./网页读取.mjs";
 import {
+  browserAct,
   browserBack,
   browserClick,
   browserClose,
+  browserExtract,
   browserOpen,
   browserPress,
   browserScreenshot,
   browserScroll,
+  browserSelectOption,
   browserSessionKey,
   browserSnapshot,
   browserTabs,
   browserType,
+  browserWaitFor,
 } from "./内置浏览器.mjs";
 import { CHANNEL_HISTORY_LIMIT, PROTOCOL_VERSION, createStreamId, pushChannelEvent } from "./事件协议.mjs";
 import { completionStatusLabel, inferCompletion, mergeCompletions, normalizeCompletion } from "./运行轨迹.mjs";
@@ -112,9 +124,139 @@ import { evaluateMemoryCandidate } from "./记忆准入.mjs";
 import { getProjectForWorkspace } from "./项目管理.mjs";
 import { cachedMcpTools, callMcpTool } from "./mcp管理.mjs";
 import { enabledPiExtensionEntries, enabledPiExtensionPaths } from "./pi扩展管理.mjs";
+// ZCode Harness 对标（计划 2026-10-27-004）：工具元数据、结果外置、用量、召回、段落、Hook、错误 envelope。
+import { resultBudgetFor, validateToolMetadata } from "./工具元数据.mjs";
+import { externalizeToolResultPayload } from "./工具结果外置.mjs";
+import { recordUsage } from "./用量归集.mjs";
+import { buildRecallContextSync } from "./记忆召回.mjs";
+import { buildExtractionPrompt } from "./记忆抽取调度.mjs";
+import { buildContextSections, renderContextSections, sectionSummary } from "./上下文段落.mjs";
+import { dispatchHooks } from "./Hook事件层.mjs";
+import { normalizeToolError, toolError } from "./工具错误.mjs";
+import { buildSkillInjection } from "./Skill注入.mjs";
+import { buildSubagentProfile } from "./子代理配置.mjs";
+import { skillRootCandidates } from "./资源发现.mjs";
 
-function schemaToTypeBox(schema = {}, depth = 0) {
-  if (!schema || typeof schema !== "object" || depth > 8) return Type.Any();
+const HARNESS_WRAPPED = Symbol.for("oaw.harness.wrapped");
+
+function safeToolJson(value) {
+  try {
+    const text = JSON.stringify(value ?? null);
+    return text.length > 4000 ? text.slice(0, 4000) : text;
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+function toolResultText(result) {
+  if (!result || !Array.isArray(result.content)) return "";
+  return result.content
+    .filter((part) => part && part.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("\n")
+    .slice(0, 4000);
+}
+
+/**
+ * 自定义工具统一包装（H1-3 / H3-1 / H3-3）：
+ *   - PreToolUse Hook：可 deny / 改写输入；
+ *   - 结果超阈值外置：模型只拿预览；
+ *   - PostToolUse Hook：记录/提示；
+ *   - 异常统一 envelope：code/message/suggestion/retryable。
+ * 全部受运行开关控制；关闭时直接调用原 execute，行为与基线一致。
+ */
+function wrapCustomTool(tool, { getEntry, emit } = {}) {
+  if (!tool || typeof tool.execute !== "function" || tool[HARNESS_WRAPPED]) return tool;
+  const original = tool.execute;
+  const wrapped = {
+    ...tool,
+    execute: async (toolCallId, params, signal) => {
+      const entry = typeof getEntry === "function" ? getEntry() : null;
+      const workspace = entry?.workspace || getWorkspace();
+      const runId = entry?.activeRunId || null;
+      let effectiveParams = params;
+      if (RUNTIME_FLAGS.hookEvents) {
+        try {
+          const pre = await dispatchHooks({
+            event: "PreToolUse",
+            payload: { tool: tool.name, input: params, inputText: safeToolJson(params), runId },
+            workspace,
+            timeoutMs: RUNTIME_FLAGS.hookTimeoutMs,
+          });
+          if (pre.behavior === "deny") {
+            try { emit?.("hook_denied", { event: "PreToolUse", tool: tool.name, reason: pre.reason, hookId: pre.hookId || null, runId }); } catch {}
+            return {
+              content: [{ type: "text", text: `Hook 拒绝执行 ${tool.name}：${pre.reason}` }],
+              isError: true,
+              details: { error: toolError("permission_denied", pre.reason, "调整方案或先与用户确认。") },
+            };
+          }
+          if (pre.updatedInput && typeof pre.updatedInput === "object") {
+            effectiveParams = { ...(params && typeof params === "object" ? params : {}), ...pre.updatedInput };
+          }
+        } catch {}
+      }
+      let result;
+      try {
+        result = await original(toolCallId, effectiveParams, signal);
+      } catch (error) {
+        if (!RUNTIME_FLAGS.toolErrorEnvelope) throw error;
+        const normalized = normalizeToolError(error);
+        return {
+          content: [{ type: "text", text: `${tool.name} 失败：${normalized.message}${normalized.suggestion ? `\n建议：${normalized.suggestion}` : ""}` }],
+          isError: true,
+          details: { error: normalized },
+        };
+      }
+      if (RUNTIME_FLAGS.toolResultArtifact && result && typeof result === "object") {
+        try {
+          const budget = resultBudgetFor(tool.name);
+          const externalized = externalizeToolResultPayload(result, {
+            runId,
+            toolName: tool.name,
+            toolCallId,
+            maxInlineBytes: Math.min(Number(budget.maxInlineBytes) || RUNTIME_FLAGS.toolResultMaxBytes, RUNTIME_FLAGS.toolResultMaxBytes),
+            direction: budget.preview?.direction || (tool.name === "bash" ? "tail" : "head"),
+          });
+          if (externalized?.details?.externalizedResults?.length) {
+            result = externalized;
+            for (const artifact of externalized.details.externalizedResults) {
+              try { emit?.("tool_result_externalized", { tool: tool.name, path: artifact.relativePath || artifact.path, bytes: artifact.bytes, runId }); } catch {}
+            }
+          }
+        } catch {}
+      }
+      if (RUNTIME_FLAGS.hookEvents) {
+        try {
+          const post = await dispatchHooks({
+            event: "PostToolUse",
+            payload: {
+              tool: tool.name,
+              input: effectiveParams,
+              inputText: safeToolJson(effectiveParams),
+              output: toolResultText(result),
+              isError: result?.isError === true,
+              runId,
+            },
+            workspace,
+            timeoutMs: RUNTIME_FLAGS.hookTimeoutMs,
+          });
+          if (post.behavior === "deny" && post.reason) {
+            result = {
+              ...(result && typeof result === "object" ? result : {}),
+              content: [...(Array.isArray(result?.content) ? result.content : []), { type: "text", text: `\n[Hook 提示] ${post.reason}` }],
+            };
+          }
+        } catch {}
+      }
+      return result;
+    },
+  };
+  try { Object.defineProperty(wrapped, HARNESS_WRAPPED, { value: true }); } catch {}
+  return wrapped;
+}
+
+function schemaToTypeBox(schema = {}, depth = 0) {  if (!schema || typeof schema !== "object" || depth > 8) return Type.Any();
   if (Array.isArray(schema.enum) && schema.enum.length && schema.enum.length <= 50) {
     const literals = schema.enum.map((value) => {
       if (["string", "number", "boolean"].includes(typeof value) || value === null) return Type.Literal(value);
@@ -279,6 +421,23 @@ function usageFromEvent(event) {
 // 工具结果同时会进入 Pi 上下文和前端事件流。保留首尾，避免一次读取大文档
 // 把后续任务的上下文预算吃满；需要全文时让模型继续按 offset/range 分段读取。
 const TOOL_OUTPUT_MAX_CHARS = 16000;
+
+// 扩展（.pi/extensions、npm 包）注册的工具名。Pi 的 tools 白名单是硬门槛：
+// 未列入白名单的工具连注册都会被过滤，因此扩展工具必须并入白名单才能被模型调用。
+function extensionToolNamesFromLoader(loader) {
+  try {
+    const loaded = loader?.getExtensions?.();
+    const names = new Set();
+    for (const ext of loaded?.extensions || []) {
+      const keys = ext?.tools?.keys?.();
+      if (!keys) continue;
+      for (const name of keys) names.add(name);
+    }
+    return [...names];
+  } catch {
+    return [];
+  }
+}
 function limitToolText(value, max = TOOL_OUTPUT_MAX_CHARS) {
   const text = String(value ?? "");
   if (text.length <= max) return text;
@@ -289,23 +448,23 @@ function limitToolText(value, max = TOOL_OUTPUT_MAX_CHARS) {
 
 // Chat 的 Skills 检索只读本地 SKILL.md，不把目录扫描交给模型自行猜路径。
 // 这样既能复用 Pi/Agents 的技能目录，也避免外部路径被 read 工具误用。
+function localSkillRootCandidates() {
+  return skillRootCandidates({
+    agentDir: AGENT_DIR,
+    userProfile: process.env.USERPROFILE || os.homedir(),
+    projectDir: PROJECT_DIR,
+  });
+}
+
 function localSkillRoots() {
-  return [
-    path.join(AGENT_DIR, "skills"),
-    path.join(process.env.USERPROFILE || os.homedir(), ".agents", "skills"),
-    path.join(process.env.USERPROFILE || os.homedir(), ".claude", "skills"),
-    path.join(PROJECT_DIR, ".agents", "skills"),
-    path.join(PROJECT_DIR, ".pi", "skills"),
-    path.join(PROJECT_DIR, ".claude", "skills"),
-    // 工作根目录（项目目录的上一级）下的 .claude/skills：用相对推导而不是写死某台机器的路径
-    path.resolve(PROJECT_DIR, "..", ".claude", "skills"),
-  ];
+  return localSkillRootCandidates().map((item) => item.path);
 }
 
 function localSkillCatalog() {
   const result = [];
   const seen = new Set();
-  for (const root of localSkillRoots()) {
+  for (const rootInfo of localSkillRootCandidates()) {
+    const root = rootInfo.path;
     if (!fs.existsSync(root)) continue;
     let entries = [];
     try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
@@ -318,7 +477,15 @@ function localSkillCatalog() {
       const frontmatter = content.match(/^---\s*\n([\s\S]*?)\n---/);
       const description = frontmatter?.[1]?.match(/description:\s*["']?([^"'\n]+)/)?.[1]?.trim() || "";
       seen.add(entry.name);
-      result.push({ name: entry.name, description, path: file, source: root.includes(".agents") ? "agents" : root.includes(".pi") ? "pi" : "pi-agent" });
+      result.push({
+        name: entry.name,
+        description,
+        path: file,
+        source: rootInfo.kind,
+        sourceScope: rootInfo.source,
+        sourcePath: root,
+        sourceRank: rootInfo.rank,
+      });
     }
   }
   return result.sort((a, b) => a.name.localeCompare(b.name));
@@ -399,9 +566,14 @@ import {
   SUBAGENT_ROLES,
   resolveRole,
   orchestrateSubagents,
+  createDelegationIdempotencyCache,
 } from "./子代理编排器.mjs";
 // Editorial Pipeline（P2-A）：Planner→Writer→Formatter（原生）→Evaluator 的确定性编排
-import { runEditorialPipeline } from "./编辑流水线.mjs";
+import { runEditorialPipeline, safePipelineName } from "./编辑流水线.mjs";
+
+// 子代理委派幂等缓存（开关 subagentIdempotent，默认关）：Pi 重放同一 tool call 时复用同一次
+// 编排，避免重复创建真实子会话。键含会话前缀，避免跨会话 toolCallId 撞车。
+const subagentDelegationCache = createDelegationIdempotencyCache();
 
 export function noteRepeatedToolCall(entry, session, ev, emit) {
   try {
@@ -681,6 +853,13 @@ async function promptWithFirstEventTimeout(entry, text, options = {}) {
 }
 
 const THINKING_LEVEL_ORDER = Object.freeze(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/** 返回模型真实支持的档位；没有 thinkingLevelMap 时按 Pi 标准七档返回。 */
+export function thinkingLevelsFor(model) {
+  const map = model?.thinkingLevelMap;
+  if (!map || typeof map !== "object") return model?.reasoning === false ? ["off"] : [...THINKING_LEVEL_ORDER];
+  return THINKING_LEVEL_ORDER.filter((level) => map[level] !== null && map[level] !== undefined);
+}
 
 /**
  * Pi 模型目录里的 thinkingLevelMap 才是本模型真正支持的档位。
@@ -1102,14 +1281,17 @@ class AgentManager extends EventEmitter {
               "- **工作区与当前文件**: 每轮对话的「动态上下文」消息已给出当前工作区绝对路径、当前工作文件与上下文文件路径（`.agent-context.<thread>.md` 是权威版本；旧版 `.agent-context.md` 可能被同工作区其他会话覆盖）。不要假设默认工作区路径，需要细节时 read 动态上下文中给出的那个文件。",
               "- **表达语言（重要）**: 面向用户的正文回复、进度小结、待办标题，以及你的内部推理（thinking / reasoning）一律使用与用户相同的语言（默认中文）。工具名、代码、文件路径和专有名词保持原样；不要为了“显得专业”而把思考过程写成英文。",
               ...buildOutputPolicyLines({ mode: options.task?.mode || options.mode || "work" }),
-              "- ALWAYS operate on office documents through the `officecli` tool — it runs on Windows natively and resolves file names relative to the current workspace. NEVER try to run `officecli` via the bash tool.",
+              OFFICE_TOOL_RULE,
               "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text.",
               "- **Word 批注**: 先用 `officecli get <file> /body --depth 3 --json` 或 `query <file> paragraph --json` 找到真实段落路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"批注内容\\\" --json` 写入；一次 get 只传一个 DOM 路径，完成后用 `query <file> comment --json` 回读校验。若错误明确为 sharing violation 或另一个进程占用，再提示关闭 WPS/Word/OfficeCLI 预览；若是 Access denied、is denied、EPERM 或 EACCES，应说明服务进程缺少系统写权限，不要尝试绕过沙箱。",
               "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入 `.agent-context.md` 中的「当前工作区」绝对路径，禁止写入项目目录。否则产物不会被前端检测到。",
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
               "- **地图（GIS）**: 地图项目位于 `当前工作区/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。若改了 layers/*.geojson 数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
               "- **地图分析**: 用户说“在义乌生成热力图/等时圈”、要求 OD 期望线或公交分析时，优先使用 map_analyze 生成并显示临时结果；结果明确标记演示数据，用户确认后再保存为正式图层。",
-              "- **主动询问（克制）**: 关键信息缺失（文档类型、格式、篇幅、受众、数据来源、风格、范围等）且无法合理假设时，才调用 ask_user。整轮默认最多问 1 次，确有必要至多 2 次；后续问题必须说明为什么不能假设。能把相关待定项合并就合并到同一个问题里（用 options 列出组合选项让用户一次确认）。**禁止请示式提问**（「需要我继续吗」「下一步怎么走」）——直接继续，或在结论里给出可选项。用户已回答过的信息不得再问。非关键细节一律自行假设，并在结论中注明假设；除非用户明确要求演示多轮提问，不要把提问做成逐项访谈。",
+              "- **主动询问（克制但必要）**: 当用户要求撰写/生成/修改文字内容，且关键信息缺失 ≥2 项（文档类型、篇幅、受众、数据来源、风格、范围；修改类还包括改哪一段、改成什么、是否保留原格式）时，必须调用 ask_user 主动提问，等待回答后再继续。只缺 1 项时按默认值继续，并在结果中注明假设。整轮默认最多问 1 次，确有必要至多 2 次；相关问题合并到同一题（用 options 列组合选项让用户一次确认）。**禁止请示式提问**（「需要我继续吗」「下一步怎么走」）——直接继续，或在结论里给出可选项。用户已回答过的信息不得再问。",
+              "- **模板优先（重要）**: 用户要求写工可/可研/规划/汇报/交评/预可/选址/物流园区/年度报告等交通规划文体时，先用 read 读取 `templates/traffic-material/` 下对应模板（14 个），按其章节骨架、必备图表与格式规则写作；不要凭记忆自造结构。",
+              "- **改文档先读后改**: 修改既有 Office 文档时，先 `officecli view <file> text|outline` 确认内容，再 `get` 取真实路径，最后 `set/add`；禁止直接 set 未知路径。",
+              "- **草稿确认**: 如果已经生成 Markdown 草稿，调用 ask_user 时用 `previewFile` 指向该草稿（工作区相对路径），让用户先看内容再继续写入。",
               "- **复杂任务待办**: 预计超过两步的任务，先调用 `todo` 工具创建 2-6 项结构化待办；每完成一项或状态发生变化后，立即用 `todo` 提交完整清单。不要把每个工具调用都拆成待办项。Markdown 清单只能作为可选的人类可读摘要，任务区以 `todo` 工具状态为准。",
               "- **回合结束沉淀记忆**: 每轮任务真正完成后，检查本轮是否出现对后续任务仍有价值的新项目事实、稳定工作规则、用户偏好或可复用经验（纯问答或一次性咨询不必检查，也不必为此额外追问）。若有，主动调用一次 memory_update 生成一条待审核建议；若没有，不要强行生成。只记录短句，不记录临时状态、完整对话、敏感凭据或大段原文。",
               "- **显式收尾（complete_task）**: 回答最后一步调用 `complete_task`：status 用 success/partial/blocked/failed 如实声明本轮结果；partial 必须列出未完成项；blocked 必须列出阻塞原因；generated 产物用 read 回读验证后再声明 success。不要跳过此工具，跳过时系统只能按回合结束推断，用户无法区分“回答完了”和“任务真完成了”。同一轮只调用一次，不要用重复声明去「确认收工」；summary 必须是实质结论（做了什么、关键决策与假设、产物位置、待核项、如何验证），禁止“无新增工作”这类空结论。最后一条发给用户的正文同样必须是实质结论——即使任务被要求中途停止或「不用再做了」，也要以「已交付什么 + 停在哪 + 可选下一步」收尾，禁止以「没有待办了/随时找我」这类寒暄作为最后一屏。",
@@ -1117,7 +1299,7 @@ class AgentManager extends EventEmitter {
               "- **内置浏览器（browser_*）**: 用户要求“打开浏览器/去网页上搜索/在网站里操作/看页面”时使用。搜索类需求直接 browser_open 打开引擎结果页（推荐 https://cn.bing.com/search?q={{关键词}}，百度易触发人机验证），随后 browser_snapshot 读取编号 → browser_click / browser_type 操作；页面跳转后必须重新快照。浏览器支持多标签页：用 browser_tabs 列表/新建/切换/关闭；链接在新标签页打开时用 browser_tabs 切换过去。用户可在右侧“浏览器”面板实时观看并接管（登录、验证码由用户完成）。**接管仲裁**：用户在操作浏览器时会持有短期 lease，期间你的写操作（open/click/type/press/scroll/back/reload/标签页变更）会被拒绝并返回 BROWSER_USER_TAKEOVER；此时不要反复重试，改为只读观察（browser_snapshot/browser_screenshot）或请用户点击「交还 Agent」，lease 到期会自动交还。web_search 未配置或需要真实浏览动态页面时，改用浏览器完成检索。**任务结束默认保留浏览器**（用户可能继续查看或接管），只有用户明确要求关闭时才调用 browser_close；用户在浏览器操作期间不要执行会打断页面的操作。",
               "- **模板引用（@模板）**: 用户以 `@模板[文件名或相对路径]` 引用模板库中的模板时，优先使用本轮结构化引用里的 `context_read(refId)` 读取，避免只凭模板标题猜路径；若需兼容旧版本，再用 find 在 `templates/`、`_报告模板/` 和 `.claude/skills/` 下按文件名包含匹配搜索，找到后用 read 读取全文，作为撰写文档的结构与风格参考。产出保存到当前工作区（见 .agent-context.md）。用户以 `@模板目录[相对路径]` 引用整个模板目录时（如 `@模板目录[templates/opendesign/templates/html-ppt-tech-sharing]`），用 find 列出该目录下所有文件并逐个 read 理解其风格与结构，产出时保持该风格。",
               "- **规划素材库（traffic-material）**: 项目 `templates/traffic-material/` 内置 14 份交通规划详版模板（00_总览通用规范、01_年度工作报告、02_五年发展规划、03_规划文本条文式、04_工程可行性研究报告、05_线位论证预可、06_选址用地预审、07_交通影响评价、08_汇报材料、09_物流园区规划、10_规划研究报告、11_PPT汇报、12_素材库深挖）。用户要求撰写交通规划/工可/汇报/年度报告等文档时，**先用 read 工具读取对应模板作为结构参考**（如 04_工程可行性研究报告模板.md、08_汇报材料模板.md），产出保存到当前工作区。完整列表可用 GET /api/templates?category=sucaiku 查看。",
-              "- **模板库（OpenDesign HTML PPT）**: 项目 `templates/opendesign/` 内置 157 个 HTML 模板（64 款 html-ppt-* 演示风格 + landing/dashboard 等），每个模板目录含 example.html 首页可直接预览（模版库页面已接入）。用户要求生成 PPT/演示/海报/网页作品时，优先用 read 工具读取 `templates/opendesign/<模板名>/example.html` 作为风格与结构参考（如 html-ppt-zhangzara-studio、html-ppt-tech-sharing、html-ppt-pitch-deck、html-ppt-taste-editorial），产出应保存到当前工作区。另项目 `.claude/skills/` 内置了 67 个办公/设计/飞书/工程流程技能（docx/pptx/xlsx/baoyu-*/lark-*/ultimate-ppt-master 等），需要对应能力时遵循其 SKILL.md 指引。",
+              "- **模板库（OpenDesign HTML PPT）**: 项目 `templates/opendesign/` 内置 157 个 HTML 模板（64 款 html-ppt-* 演示风格 + landing/dashboard 等），每个模板目录含 example.html 首页可直接预览（模版库页面已接入）。用户要求生成 PPT/演示/海报/网页作品时，优先用 read 工具读取 `templates/opendesign/<模板名>/example.html` 作为风格与结构参考（如 html-ppt-zhangzara-studio、html-ppt-tech-sharing、html-ppt-pitch-deck、html-ppt-taste-editorial），产出应保存到当前工作区。另项目 `.claude/skills/` 内置了 " + localSkillCatalog().length + " 个办公/设计/飞书/工程流程技能（docx/pptx/xlsx/baoyu-*/lark-*/ultimate-ppt-master 等），需要对应能力时遵循其 SKILL.md 指引。",
               "- When you modify a document, confirm what changed. Files are auto-refreshed in the browser.",
               "",
               // 工作区记忆（AGENTS.md + memory/）——每次对话前刷新在 .agent-context.md 的「工作区记忆」段
@@ -1142,11 +1324,44 @@ class AgentManager extends EventEmitter {
       return { runId, workspace: entry.workspace, threadId: entry.threadId, kind };
     };
     const writeEvent = (type, data) => emitChannelSafe(entry, type, data);
+
+    /** Office 执行闸门上下文（计划 008）：路由、管线产出、澄清待回答。 */
+    const officeGateContext = () => ({
+      route: entry?.task?.capabilityPlan?.route,
+      officeFormat: Boolean(entry?.officeGateOn ?? RUNTIME_FLAGS.officeFormat),
+      pipelineProduced: Boolean(entry?.pipelineProduced),
+      clarificationPending: entry?.clarificationPending || null,
+      mode: entry?.mode || "agent",
+      manualAllowed: Boolean(entry?.manualOfficeAllowed),
+    });
+
+    /** 执行闸门：被拒时发 tool_gate_denied 并抛可读错误；放行时返回闸门结果（可能带 sanitizedInput）。 */
+    const enforceOfficeGate = (tool, input) => {
+      const gate = classifyToolCall({ tool, input, context: officeGateContext() });
+      if (!gate.blocked) return gate;
+      writeEvent("tool_gate_denied", {
+        runId: entry?.activeRunId || null,
+        kind: tool,
+        name: tool,
+        code: gate.code,
+        reason: gate.reason,
+        suggestion: gate.suggestion || "",
+      });
+      const error = new Error([gate.reason, gate.suggestion].filter(Boolean).join(" "));
+      error.code = gate.code;
+      throw error;
+    };
     const mcpToolRegistrations = configuredMcpTools.map(({ server, tool }) => {
       const hash = crypto.createHash("sha1").update(`${server.id}:${tool.name}`).digest("hex").slice(0, 6);
       const name = safePiToolName(`mcp_${server.id.slice(0, 18)}_${tool.name.slice(0, 30)}_${hash}`, 62);
       return { server, tool, name };
     });
+    const declaredToolNames = [...new Set([
+      ...toolPolicyForMode("agent").tools,
+      ...mcpToolRegistrations.map((item) => item.name),
+      ...piExtensionToolNames,
+    ])];
+    const metadataReport = RUNTIME_FLAGS.toolMetadata ? validateToolMetadata(declaredToolNames) : null;
     const mcpToolDefinitions = mcpToolRegistrations.map(({ server, tool, name }) => defineTool({
         name,
         label: `${server.name}: ${tool.name}`.slice(0, 100),
@@ -1244,11 +1459,15 @@ class AgentManager extends EventEmitter {
         },
       },
     });
+    const managedGrepTool = createGrepToolDefinition(workspace);
+    const managedFindTool = createFindToolDefinition(workspace);
+    const managedLsTool = createLsToolDefinition(workspace);
     const managedWriteTool = createWriteToolDefinition(workspace, {
       operations: {
         mkdir: async (directory) => ensureStagedDirectory({ ...activeWriteContext("write"), targetPath: directory, kind: "write" }),
         writeFile: async (absolutePath, content) => {
           const ctx = activeWriteContext("write");
+          enforceOfficeGate("write", { path: absolutePath });
           assertReviewWriteAllowed(absolutePath, "write");
           // 敏感文件（.env 等）写入被规则表直接拒绝
           await requireToolApproval({
@@ -1274,6 +1493,7 @@ class AgentManager extends EventEmitter {
         },
         writeFile: async (absolutePath, content) => {
           assertReviewWriteAllowed(absolutePath, "edit");
+          enforceOfficeGate("edit", { path: absolutePath });
           return stageWrite({ ...activeWriteContext("edit"), targetPath: absolutePath, content, onEvent: writeEvent });
         },
       },
@@ -1335,12 +1555,15 @@ class AgentManager extends EventEmitter {
 exec: async (command, cwd, options) => {
           const ctx = activeWriteContext("bash");
           const commandText = String(command || "");
+          // 计划 008：写作路由下拦截 docx 生成脚本/转换命令（--allow-manual 可逃逸）
+          const bashGate = enforceOfficeGate("bash", { command: commandText });
+          const effectiveCommand = String(bashGate.sanitizedInput?.command || commandText);
           // 删除/破坏类命令默认进入用户审批（规则表见 审批策略.mjs）
           await requireToolApproval({
-            entry, tool: "bash", input: commandText,
+            entry, tool: "bash", input: effectiveCommand,
             runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
           });
-          if (isGlobalSearchCommand(commandText)) {
+          if (isGlobalSearchCommand(effectiveCommand)) {
             const error = new Error("禁止从系统根目录执行全盘搜索，请限定在当前工作区内，并使用绝对路径或当前工作区相对路径。");
             error.code = "BASH_SCOPE_BLOCKED";
             writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error.code, message: error.message });
@@ -1348,8 +1571,8 @@ exec: async (command, cwd, options) => {
             writeEvent("tool_gate_denied", { runId: ctx.runId, kind: "bash", code: error.code, name: "bash", reason: error.message });
             throw error;
           }
-          const targetsProtectedMemory = isProtectedMemoryTarget(ctx.workspace, path.resolve(cwd || ctx.workspace, ".")) || /(?:memory[\\/]|(?:^|[\s"'\\/])AGENTS\.md\b)/i.test(commandText);
-          if (targetsProtectedMemory && /(?:>|>>|tee|set-content|out-file|write[_-]?text|writefile|sed\s+-i|perl\s+-i|\b(?:mv|cp|rm|del)\b)/i.test(commandText)) {
+          const targetsProtectedMemory = isProtectedMemoryTarget(ctx.workspace, path.resolve(cwd || ctx.workspace, ".")) || /(?:memory[\\/]|(?:^|[\s"'\\/])AGENTS\.md\b)/i.test(effectiveCommand);
+          if (targetsProtectedMemory && /(?:>|>>|tee|set-content|out-file|write[_-]?text|writefile|sed\s+-i|perl\s+-i|\b(?:mv|cp|rm|del)\b)/i.test(effectiveCommand)) {
             const error = new Error("长期记忆不能通过 Bash 直接修改，请使用 memory_update 提交待审核建议");
             error.code = "MEMORY_WRITE_REQUIRES_PROPOSAL";
             writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error.code, message: error.message });
@@ -1357,16 +1580,24 @@ exec: async (command, cwd, options) => {
             writeEvent("tool_gate_denied", { runId: ctx.runId, kind: "bash", code: error.code, name: "bash", reason: error.message });
             throw error;
           }
+          // bash 只认真实磁盘：先把本轮暂存文件物化，避免 write 后 bash 看不到而反复重写。
+          try {
+            const stagedPaths = listStagedFiles(ctx.runId).map((item) => item.path).filter(Boolean);
+            const materialized = materializeStagedReferences({ runId: ctx.runId, workspace: ctx.workspace, paths: stagedPaths });
+            if (materialized.length) {
+              writeEvent("artifact_materialized", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, paths: materialized, reason: "bash_visibility" });
+            }
+          } catch {}
+          const runBash = async () => RUNTIME_FLAGS.piBashSidecar
+            ? await getBashSidecar().execute(effectiveCommand, { cwd: cwd || ctx.workspace })
+            : await localBash.exec(effectiveCommand, cwd, normalizeBashOptions(options));
+          // 只读命令（ls/grep/unzip -p 等）不占工作区写锁，避免 Word/PPT 两个任务互相挡。
+          if (isReadonlyBash(effectiveCommand)) return runBash();
           return withWorkspaceWriteLock(ctx, "bash", async () => {
-            writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", command: commandText.slice(0, 500) });
+            writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", command: effectiveCommand.slice(0, 500) });
             writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash" });
             try {
-              // U5：flag on 时经侧车管理器执行（独立进程 + 并发上限 + 执行统计）；
-              // off（默认）走 createLocalBashOperations 原路径，行为与基线一致。
-              const result = RUNTIME_FLAGS.piBashSidecar
-                ? await getBashSidecar().execute(commandText, { cwd: cwd || ctx.workspace })
-                : await localBash.exec(command, cwd, normalizeBashOptions(options));
-              return result;
+              return await runBash();
             } catch (error) {
               writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error?.code || "BASH_FAILED", message: String(error?.message || error) });
               throw error;
@@ -1385,13 +1616,18 @@ exec: async (command, cwd, options) => {
         "PROP VALUES: write them as key=value tokens; values with spaces are fine as one token (--prop author=规聚 Agent is parsed as one value) — do NOT wrap them in escaped quotes like \\\"...\\\". " +
         "For Word comments, first locate a real paragraph path with get/query, use one get path per command, then verify with query <file> comment --json. " +
         "STRICT RULES (avoid wasted retries): (1) the file path must be a workspace-relative path such as '报告.docx' or '初稿/报告.docx' — absolute paths and ../ are rejected; (2) 'view' requires a mode from the list above, never call bare 'view'; (3) only these options exist: --json, --find, --compact, --fields, -o/--output, -h/--help — there is NO --limit/--page/--offset, unknown options abort the command; (4) 'query <file> <selector>' takes a CSS-like selector as its own argument ('paragraph', 'paragraph[style=Normal]', 'table', 'run', '*'); do not pass subcommand names or paths as the selector; (5) 'add <file> / --type markdown --prop src=<file.md>' reads the source from disk: if you just wrote that .md with the write tool it may still be staged, so pass it through this tool's args (it gets materialized) and do not retry more than twice; (6) very large workbooks may return code 'decompression_bomb' (>3,000,000 XML elements): do not retry the same command, tell the user the file must be split, or read the data with a script instead; (7) an internal '.NET' assembly error (e.g. FileNotFoundException: System.Private.Xml) means the officecli installation is mid-update: retry the same command once, and if it fails again tell the user to re-run the officecli installer instead of looping. " +
+        "KNOWN ERRORS (avoid loops): (a) 'Style Normal not found' means the style is absent — add it first via 'add <file> /styles --type style --prop id=Normal --prop name=Normal --prop type=paragraph'; (b) table paths only support '/body/tbl[1]' — never 'tbl[*]' or '//p'; iterate rows/cells one by one; (c) table elements do not accept 'size' — set font size on paragraphs inside cells. " +
+        "ADVANCED COMMANDS (use when needed): 'batch' (atomic multi-op with rollback), 'dump' (replayable script), 'raw'/'raw-set'/'add-part' (XML escape hatch), 'validate' (OpenXML schema), 'refresh' (TOC/page fields; Word+Windows), 'merge <template> <output> --data <json>' ({{key}} placeholders), 'import' (CSV→xlsx), 'watch mark'/'get-marks'/'goto' (human-in-loop). Use --json for structured output. " +
         "File names are relative to the current workspace folder (may include subfolder paths). The user's CURRENT WORKING FILE is noted in the context file — when the user asks to modify a document, operate on that file unless they say otherwise. If the operating system reports access denied, is denied, EPERM, or EACCES, explain that the service process lacks write access (sandbox, mount, or directory permissions); only report a file lock for a sharing violation or another-process lock error; for a sharing violation tell the user to close WPS/Word/Excel and do not retry more than twice. Use --json for structured output. Prefer this tool over bash for all document operations.",
       parameters: Type.Object({
         args: Type.String({ description: "officecli command arguments (single string)" }),
       }),
 execute: async (_toolCallId, params) => {
         const { runOfficecli, validateOfficecliArgs } = await import("./office.mjs");
-        const args = parseArgs(String(params.args || ""));
+        // 计划 008：写作路由下，管线产出前禁止 create/add/set/batch 与 markdown 转换
+        const officeGate = enforceOfficeGate("officecli", { args: String(params.args || "") });
+        let args = parseArgs(String(params.args || ""));
+        if (officeGate.sanitizedInput?.args) args = parseArgs(officeGate.sanitizedInput.args);
         const ctx = activeWriteContext("officecli");
         let parsed;
         try {
@@ -1410,9 +1646,10 @@ execute: async (_toolCallId, params) => {
         });
         let officeLock = null;
         if (mutating) {
+          // 按目标文件加锁（而不是整个工作区）：Word 与 PPT 两个任务写不同文件时可以并行。
           officeLock = await acquireWriteLockWithRetry({
             workspace: ctx.workspace,
-            targetPath: ctx.workspace,
+            targetPath: parsed.path || ctx.workspace,
             runId: ctx.runId,
             threadId: ctx.threadId,
             kind: "officecli",
@@ -1661,6 +1898,9 @@ execute: async (_toolCallId, params) => {
       if (error?.code === "BROWSER_USER_TAKEOVER") {
         return `浏览器暂时由用户操作中：${message}。\n请等待用户点击「交还 Agent」，或在回复里说明你需要接手的原因并请用户交还；期间仍可做只读观察（browser_snapshot / browser_screenshot / browser_tabs list）。`;
       }
+      if (error?.code === "FLAG_DISABLED") {
+        return `浏览器能力未开启：${message}。请在启动服务前设置对应环境变量后重试。`;
+      }
       return `浏览器操作失败：${message}`;
     };
 
@@ -1674,7 +1914,7 @@ execute: async (_toolCallId, params) => {
       }),
       execute: async (_toolCallId, params) => {
         try {
-          const state = await browserOpen(browserKeyOf(), params.url);
+          const state = await browserOpen(browserKeyOf(), params.url, { agent: true });
           return browserToolResult(`已打开：${state.url}\n标题：${state.title || "（加载中）"}\n下一步用 browser_snapshot 查看页面元素。`, state);
         } catch (error) {
           return browserToolResult(browserErrorText(error));
@@ -1758,15 +1998,123 @@ execute: async (_toolCallId, params) => {
     const browserScrollTool = defineTool({
       name: "browser_scroll",
       label: "网页滚动",
-      description: "滚动页面（down / up），用于加载更多内容或浏览长页面。滚动后建议重新 browser_snapshot。",
+      description:
+        "滚动页面（down / up）。无 selector 时滚动整个页面；提供 selector 时滚动该 CSS 选择器对应的内部滚动容器（SPA 信息流常在内层容器滚动，导航键无效），并返回前后 scrollTop/scrollHeight/clientHeight 与 moved。滚动后建议重新 browser_snapshot。",
       parameters: Type.Object({
         direction: Type.Optional(Type.String({ description: "down 或 up，默认 down" })),
         amount: Type.Optional(Type.Number({ description: "滚动像素，默认 600" })),
+        selector: Type.Optional(Type.String({ description: "内部滚动容器的 CSS 选择器（可选；不传则滚动整个页面）" })),
       }),
       execute: async (_toolCallId, params) => {
         try {
-          const result = await browserScroll(browserKeyOf(), params.direction || "down", params.amount);
+          const result = await browserScroll(browserKeyOf(), params.direction || "down", params.amount, { selector: params.selector || "" });
+          if (result && result.selector) {
+            const after = result.after || {};
+            return browserToolResult(`已滚动容器 ${result.selector}（moved=${result.moved ? "true" : "false"}，scrollTop ${result.before?.scrollTop ?? "-"}→${after.scrollTop ?? "-"}，内容高 ${after.scrollHeight ?? "-"}px）。`, result);
+          }
           return browserToolResult(`已滚动到 y=${result.y ?? "-"}（页面高 ${result.height ?? "-"}px）。`, result);
+        } catch (error) {
+          return browserToolResult(browserErrorText(error));
+        }
+      },
+    });
+
+    const browserWaitForTool = defineTool({
+      name: "browser_wait_for",
+      label: "等待页面状态",
+      description:
+        "等待页面出现某个状态：URL 片段（urlFragment）、可见文本（text）或 CSS 选择器（selector）之一，按 selector > text > urlFragment 优先。适合点击/跳转后等待加载完成。超时返回 matched=false（不报错），可用更短超时快速探测；不执行任意 JavaScript。",
+      parameters: Type.Object({
+        urlFragment: Type.Optional(Type.String({ description: "等待 URL 包含该片段" })),
+        text: Type.Optional(Type.String({ description: "等待页面出现该可见文本" })),
+        selector: Type.Optional(Type.String({ description: "等待该 CSS 选择器出现" })),
+        timeoutMs: Type.Optional(Type.Number({ description: "超时毫秒，默认 15000" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        try {
+          const result = await browserWaitFor(
+            browserKeyOf(),
+            { urlFragment: params.urlFragment, text: params.text, selector: params.selector },
+            { timeoutMs: params.timeoutMs },
+          );
+          const cond =
+            result.kind === "selector" ? `选择器 ${params.selector}` : result.kind === "text" ? `文本「${params.text}」` : `URL 片段「${params.urlFragment}」`;
+          return browserToolResult(`等待 ${cond}：${result.matched ? "已满足" : "超时未满足"}（${result.elapsedMs}ms）。当前 ${result.url}`, result);
+        } catch (error) {
+          return browserToolResult(browserErrorText(error));
+        }
+      },
+    });
+
+    const browserActTool = defineTool({
+      name: "browser_act",
+      label: "点击并等待",
+      description:
+        "点击指定编号的元素，并等待一个条件成立（URL 片段 / 可见文本 / CSS 选择器，同 browser_wait_for），把「点击 + 等待」合并为一次调用。已知点击后的预期状态时优先用它，避免先 browser_click 再 browser_wait_for。",
+      parameters: Type.Object({
+        ref: Type.String({ description: "元素编号，如 e12（来自 browser_snapshot）" }),
+        urlFragment: Type.Optional(Type.String({ description: "等待 URL 包含该片段" })),
+        text: Type.Optional(Type.String({ description: "等待页面出现该可见文本" })),
+        selector: Type.Optional(Type.String({ description: "等待该 CSS 选择器出现" })),
+        timeoutMs: Type.Optional(Type.Number({ description: "等待超时毫秒，默认 15000" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        try {
+          const result = await browserAct(
+            browserKeyOf(),
+            params.ref,
+            { urlFragment: params.urlFragment, text: params.text, selector: params.selector },
+            { timeoutMs: params.timeoutMs },
+          );
+          return browserToolResult(
+            `已点击 [${result.clicked}]（${result.text || ""}）并等待：${result.matched ? "已满足" : "超时未满足"}（${result.kind}，${result.elapsedMs}ms）。当前 ${result.url}`,
+            result,
+          );
+        } catch (error) {
+          return browserToolResult(browserErrorText(error));
+        }
+      },
+    });
+
+    const browserExtractTool = defineTool({
+      name: "browser_extract",
+      label: "抽取网页正文",
+      description:
+        "抽取页面正文或指定 CSS 选择器区域的文本（或基础 Markdown）。优先传 selector 限定正文/列表/卡片区域，只有需要整页概览时才省略（避免导航/页脚/侧栏噪声）。用于读取内容，替代为读正文而执行页面脚本。",
+      parameters: Type.Object({
+        selector: Type.Optional(Type.String({ description: "要抽取的 CSS 选择器区域（可选；省略则抽取整页 body）" })),
+        format: Type.Optional(Type.String({ description: "text（默认）或 markdown" })),
+        maxChars: Type.Optional(Type.Number({ description: "最大字符数，默认 4000，上限 20000" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        try {
+          const result = await browserExtract(browserKeyOf(), { selector: params.selector, format: params.format, maxChars: params.maxChars });
+          return browserToolResult(
+            `已抽取 ${result.selector}（${result.chars} 字${result.truncated ? "，已截断" : ""}，format=${result.format}）：\n${result.text}`,
+            result,
+          );
+        } catch (error) {
+          return browserToolResult(browserErrorText(error));
+        }
+      },
+    });
+
+    const browserSelectOptionTool = defineTool({
+      name: "browser_select_option",
+      label: "选择下拉选项",
+      description:
+        "对页面中的原生 <select> 下拉框按 value、label（显示文本）或 index（序号，从 0 起）选择一项（三者任选其一）。自定义下拉菜单（非原生 select）请改用 browser_click。",
+      parameters: Type.Object({
+        ref: Type.String({ description: "下拉框元素编号，如 e7（来自 browser_snapshot）" }),
+        value: Type.Optional(Type.String({ description: "选项的 value" })),
+        label: Type.Optional(Type.String({ description: "选项的显示文本" })),
+        index: Type.Optional(Type.Number({ description: "选项序号（从 0 起）" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        try {
+          const result = await browserSelectOption(browserKeyOf(), params.ref, { value: params.value, label: params.label, index: params.index });
+          const sel = result.selected || {};
+          return browserToolResult(`已选择 [${result.ref}] → ${sel.label ?? sel.value ?? ""}（value="${sel.value ?? ""}", index=${sel.index ?? "-"}）。`, result);
         } catch (error) {
           return browserToolResult(browserErrorText(error));
         }
@@ -1936,8 +2284,26 @@ execute: async (_toolCallId, params) => {
         const name = String(params.name || "").trim();
         const skill = localSkillCatalog().find((item) => item.name === name);
         if (!skill) return { content: [{ type: "text", text: `未找到 Skill：${name}` }], details: {} };
-        const content = limitToolText(fs.readFileSync(skill.path, "utf8"));
-        return { content: [{ type: "text", text: `# ${name}\n\n${content}` }], details: { name, source: skill.source } };
+        const raw = fs.readFileSync(skill.path, "utf8");
+        if (RUNTIME_FLAGS.skillInjection) {
+          const injection = buildSkillInjection({ name, raw, maxBytes: RUNTIME_FLAGS.skillInjectionMaxBytes, source: skill.source });
+          try {
+            writeEvent("skill_injected", {
+              name,
+              source: skill.source,
+              bytes: injection.bytes,
+              fullBytes: injection.fullBytes,
+              hash: injection.hash,
+              truncated: injection.truncated,
+              runId: entry?.activeRunId || null,
+            });
+          } catch {}
+          return {
+            content: [{ type: "text", text: injection.text }],
+            details: { name, source: skill.source, hash: injection.hash, truncated: injection.truncated, bytes: injection.bytes },
+          };
+        }
+        return { content: [{ type: "text", text: `# ${name}\n\n${limitToolText(raw)}` }], details: { name, source: skill.source } };
       },
     });
 
@@ -2701,6 +3067,7 @@ execute: async (_toolCallId, params) => {
           source: { type: "agent", label: "当前 Agent 回合" },
         });
         emitChannelSafe(entry, "memory_proposal", { proposal });
+        entry.memoryWrittenThisRun = true;
         return {
           content: [{ type: "text", text: `已生成记忆建议（${proposal.id}），等待用户审核后写入。` }],
           details: { proposal },
@@ -2713,7 +3080,7 @@ execute: async (_toolCallId, params) => {
       name: "complete_task",
       label: "完成任务",
       description:
-        "任务收尾时调用，显式声明本轮的完成状态。status 取值：success（目标已达成并验证）/ partial（部分完成，说明未完成项）/ blocked（受阻，说明阻塞原因）/ failed（失败）。summary 是给用户看的结论：纯问答一句话即可，产生了成果时用简洁的 Markdown 说明做了什么、关键结果、产物与验证。用户可见此状态，未调用时系统只能依据回合结束推断，请勿跳过。",
+        "任务收尾时调用，显式声明本轮的完成状态。status 取值：success（目标已达成并验证）/ partial（部分完成，说明未完成项）/ blocked（受阻，说明阻塞原因）/ failed（失败）。summary 是给用户看的完整结论：说明做了什么、关键结果（含关键数字）、产物路径、如何验证、未完成项或风险；纯问答也要把结论与依据说清，不要只写“已完成”。与最终答复保持一致，不要另写更短的版本；不要复述工具调用流水，也不要重复进度播报。用户可见此状态，未调用时系统只能依据回合结束推断，请勿跳过。",
       parameters: Type.Object({
         status: Type.Union([
           Type.Literal("success"),
@@ -2721,7 +3088,7 @@ execute: async (_toolCallId, params) => {
           Type.Literal("blocked"),
           Type.Literal("failed"),
         ]),
-        summary: Type.String({ description: "面向用户的结论，建议 ≤800 字。纯问答用一两句；有成果时可用 Markdown（小标题、要点列表）说明做了什么、关键结果、产物路径与如何验证；不要逐条复述工具调用流水。" }),
+        summary: Type.String({ description: "面向用户的完整结论，可用 Markdown。按内容需要写，不设字数上限（服务端上限 4000 字符）。建议覆盖：结果 / 关键数据 / 产物路径 / 验证方式 / 未完成项或风险；同一事实只写一次，不复述工具流水，不与进度句重复。" }),
         incomplete: Type.Optional(Type.Array(Type.String({ description: "未完成事项" }))),
         blockers: Type.Optional(Type.Array(Type.String({ description: "阻塞原因" }))),
         verification: Type.Optional(Type.String({ description: "如何验证结果（读取回文件/校验命令等）" })),
@@ -2740,7 +3107,7 @@ execute: async (_toolCallId, params) => {
         emitChannelSafe(entry, "task_completed", { ...completion, runId: entry.activeRunId || null });
         const label = completionStatusLabel(completion.status);
         return {
-          content: [{ type: "text", text: `已记录任务完成状态：${label}。${completion.summary}` }],
+          content: [{ type: "text", text: `已记录完成状态：${label}。请直接给用户最终答复。` }],
           details: { completion },
         };
       },
@@ -2759,10 +3126,61 @@ execute: async (_toolCallId, params) => {
           Type.String({ description: "快捷选项文本" }),
           Type.Object({ label: Type.String(), description: Type.Optional(Type.String()) }),
         ]))),
+        previewFile: Type.Optional(Type.String({ description: "可选：工作区相对路径，指向已生成的 Markdown/草稿；提问时前端自动打开供用户确认" })),
+        // v0.13.5：结构化表单字段。与 options 兼容：有 fields 时前端渲染表单。
+        fields: Type.Optional(Type.Array(Type.Object({
+          id: Type.String({ description: "字段 id（回答里用于回传）" }),
+          label: Type.String({ description: "字段标签" }),
+          type: Type.Union([
+            Type.Literal("text"),
+            Type.Literal("select"),
+            Type.Literal("radio"),
+            Type.Literal("checkbox"),
+            Type.Literal("file"),
+          ]),
+          required: Type.Optional(Type.Boolean({ description: "是否必填" })),
+          options: Type.Optional(Type.Array(Type.String({ description: "选项文本" }))),
+          placeholder: Type.Optional(Type.String({ description: "输入提示" })),
+          accept: Type.Optional(Type.String({ description: "file 字段的 accept 过滤" })),
+        }), { description: "最多 12 个字段" })),
       }),
       execute: async (_toolCallId, params) => {
+        // 单槽位保护（O-26）：同一会话同时只允许一个待回答问题。
+        // 直接拒绝第二个，而不是覆盖第一个的 resolve（否则前者要挂满 5 分钟）。
+        if (this.pendingAsks.has(clientId)) {
+          return {
+            content: [{ type: "text", text: "已有一个待回答的问题：请等待用户回答后再提问（同一会话同时只能有一个问题）。" }],
+            isError: true,
+          };
+        }
         // 归一化 options（对象 → 字符串）
         const opts = (params.options || []).map((o) => (typeof o === "string" ? o : o.label || JSON.stringify(o)));
+        // 计划 008：提问时自动打开已生成的草稿，让用户先确认内容。
+        const previewFile = String(params.previewFile || entry.clarificationPreview || "").trim() || null;
+        if (previewFile) {
+          entry.clarificationPreview = null;
+          // 预览前把暂存文件物化到磁盘，确保前端打开的是最新内容。
+          try {
+            const materialized = materializeStagedReferences({ runId: entry.activeRunId, workspace: entry.workspace, paths: [previewFile] });
+            if (materialized.length) {
+              emitChannelSafe(entry, "artifact_materialized", { runId: entry.activeRunId, workspace: entry.workspace, paths: materialized, reason: "ask_preview" });
+            }
+          } catch {}
+        }
+        // 计划 008：提问一旦发出，解除写操作前的澄清闸门（超时也按专业判断继续）。
+        entry.clarificationPending = null;
+        const fields = (Array.isArray(params.fields) ? params.fields : [])
+          .filter((field) => field && field.id && field.label)
+          .slice(0, 12)
+          .map((field) => ({
+            id: String(field.id),
+            label: String(field.label),
+            type: ["text", "select", "radio", "checkbox", "file"].includes(field.type) ? field.type : "text",
+            required: Boolean(field.required),
+            options: Array.isArray(field.options) ? field.options.map(String).slice(0, 30) : [],
+            placeholder: String(field.placeholder || ""),
+            ...(field.accept ? { accept: String(field.accept) } : {}),
+          }));
         // 阻塞等待用户回答（窗口 = ASK_TIMEOUT_MS，默认 60 分钟），期间 SSE 推送 ask_user 事件
         return await new Promise((resolve) => {
           const pendingAskId = `ask_${crypto.randomUUID()}`;
@@ -2773,6 +3191,8 @@ execute: async (_toolCallId, params) => {
             runId: entry.activeRunId || null,
             question: String(params.question || ""),
             options: opts,
+            previewFile: previewFile || null,
+            ...(fields.length ? { fields } : {}),
             status: "pending",
             createdAt: new Date().toISOString(),
             expiresAt,
@@ -2818,8 +3238,10 @@ execute: async (_toolCallId, params) => {
             askId: pendingAskId,
             question: params.question,
             options: opts,
+            ...(fields.length ? { fields } : {}),
             // 前端据此显示/收起"待回答"卡片：到期后服务端不再接受回答，卡片必须同步失效。
             expiresAt,
+            ...(previewFile ? { previewFile } : {}),
           };
           // Qoder P1-4（开关 qoderInteractionOwner，默认关）：标记提问归属。
           // ask_user 目前只对父会话开放（子代理角色工具集不含它），因此归属是「本轮」；
@@ -2853,6 +3275,7 @@ execute: async (_toolCallId, params) => {
         const effTextLimit = Number(textLimit) > 0 ? Number(textLimit) : 12000;
         const childId = ctxChildId || `subagent_${String(toolKey || crypto.randomUUID()).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 48)}${multiple ? `_${index + 1}` : ""}`;
         let childSession = null;
+        let childUsage = null;
         let liveText = "";
         let liveThinking = "";
         let lastProgressAt = 0;
@@ -2950,10 +3373,18 @@ execute: async (_toolCallId, params) => {
               writeFile: async (absolutePath, content) => {
                 const target = resolveSubagentWritablePath(absolutePath);
                 const ctx = activeWriteContext("write");
-                await requireToolApproval({ entry, tool: "write", input: String(target || ""), runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
-                  // Qoder P1-4（开关 qoderInteractionOwner，默认关）：这条写回审批由该子代理发起，
-                  // 前端据此把审批卡片归到子代理节点，而不是与父会话的审批混在一起。
-                  owner: RUNTIME_FLAGS.qoderInteractionOwner ? { kind: "subagent", id: childId } : null });
+                // 阻塞事件冒泡（开关 subagentBlockedBubble，默认关）：仅当写审批确实会阻塞（ask）时，
+                // 向父事件流冒泡 blocked/unblocked，供父会话与前端看到「子代理在等你确认」。
+                const bubbleBlocked = RUNTIME_FLAGS.subagentBlockedBubble && matchToolAction("write", String(target || "")) === "ask";
+                if (bubbleBlocked) emitChild("subagent_blocked", { status: "blocked", kind: "approval", tool: "write", target: String(target || "").slice(0, 300) });
+                try {
+                  await requireToolApproval({ entry, tool: "write", input: String(target || ""), runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+                    // Qoder P1-4（开关 qoderInteractionOwner，默认关）：这条写回审批由该子代理发起，
+                    // 前端据此把审批卡片归到子代理节点，而不是与父会话的审批混在一起。
+                    owner: RUNTIME_FLAGS.qoderInteractionOwner ? { kind: "subagent", id: childId } : null });
+                } finally {
+                  if (bubbleBlocked) emitChild("subagent_unblocked", { status: "running", kind: "approval", tool: "write", target: String(target || "").slice(0, 300) });
+                }
                 return stageWrite({ ...ctx, targetPath: target, content, onEvent: writeEvent });
               },
             },
@@ -2994,6 +3425,10 @@ execute: async (_toolCallId, params) => {
             return String(text).slice(0, 4000);
           };
           childSession.subscribe((event) => {
+            if (event.type === "message_end" || event.type === "usage" || event.type === "agent_end") {
+              const usage = normalizeUsage(event.message?.usage || event.usage || event.tokens);
+              if (usage) childUsage = usage;
+            }
             if (event.type === "tool_execution_start") {
               activity = `正在读取资料：${event.toolName || "文件"}`;
               const args = trimToolText(event.args);
@@ -3062,6 +3497,20 @@ execute: async (_toolCallId, params) => {
         } finally {
           if (timeoutTimer) clearTimeout(timeoutTimer);
           parentSignal?.removeEventListener("abort", parentAbort);
+          if (RUNTIME_FLAGS.usageLedger) {
+            try {
+              recordUsage({
+                runId: entry?.activeRunId || null,
+                actorKind: "subagent",
+                actorId: childId,
+                provider: entry?.session?.model?.provider || null,
+                model: entry?.session?.model?.id || null,
+                querySource: "agent_step",
+                usage: childUsage,
+                finishReason: childUsage ? "stop" : "usage_unavailable",
+              });
+            } catch {}
+          }
           try { childSession?.dispose?.(); } catch {}
         }
         };
@@ -3075,6 +3524,7 @@ execute: async (_toolCallId, params) => {
         task: Type.Optional(Type.String({ minLength: 1, maxLength: 2400, description: "单个子任务目标、必要背景和期望输出；与 tasks 二选一" })),
         tasks: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 2400 }), { maxItems: 4, description: "并发派发多个子任务（最多 4 个，并发 2），用于并行准备结论；与 task 二选一" })),
         role: Type.Optional(Type.Union([Type.Literal("scout"), Type.Literal("reviewer"), Type.Literal("planner"), Type.Literal("verifier"), Type.Literal("worker")], { description: "scout=资料探索，reviewer=审阅，planner=方案拆解，verifier=独立核验，worker=可写执行（仅 Work 模式，写操作需审批）" })),
+        background: Type.Optional(Type.Boolean({ description: "后台派发：立即返回，子任务结果通过事件/任务中心查看（受 OAW_SUBAGENT_PROFILE 控制）" })),
       }),
       execute: async (toolCallId, params, signal) => {
         const parentToolCallId = toolCallId ? String(toolCallId) : null;
@@ -3095,17 +3545,77 @@ execute: async (_toolCallId, params) => {
         // worker 结果做对抗式核验（verifier 子代理，revise 回环最多 1 轮）→ 关账（closed）。
         // 编排逻辑全部在子代理编排器.mjs（代码驱动，不靠模型自治）；OAW_SUBAGENT_VERIFY=0 可关闭核验。
         const verifyEnabled = role === "worker" && String(process.env.OAW_SUBAGENT_VERIFY || "1") !== "0";
-        const orchestration = await orchestrateSubagents({
+        const emitOrchestration = (type, data) => {
+          let payload = data;
+          if (type === "subagent_planned" && RUNTIME_FLAGS.subagentProfile) {
+            const profile = buildSubagentProfile({
+              childId: data?.childId || null,
+              role,
+              roleSpec,
+              model: entry?.session?.model
+                ? `${entry.session.model.provider || ""}/${entry.session.model.id || ""}` || null
+                : null,
+              budget: data?.budget || { timeoutMs: roleSpec.timeoutMs },
+            });
+            payload = { ...data, profile, frozen: true };
+            try { writeEvent("subagent_profile_frozen", { childId: data?.childId || null, parentToolCallId, role, profile, runId: entry?.activeRunId || null }); } catch {}
+          }
+          writeEvent(type, payload);
+        };
+        const runOrchestration = (orchestrationSignal = signal) => orchestrateSubagents({
           tasks: taskList,
           role,
           roleSpec,
           toolKey,
           parentToolCallId,
           verify: verifyEnabled,
-          emit: (type, data) => writeEvent(type, data),
+          emit: emitOrchestration,
           runTask: runOneTask,
-          signal,
+          signal: orchestrationSignal,
         });
+        if (params.background === true && RUNTIME_FLAGS.subagentProfile) {
+          try { writeEvent("subagent_background_started", { parentToolCallId, role, count: taskList.length, runId: entry?.activeRunId || null }); } catch {}
+          void runOrchestration(null)
+            .then((value) => {
+              try {
+                writeEvent("subagent_background_finished", {
+                  parentToolCallId,
+                  role,
+                  count: taskList.length,
+                  isError: value?.isError === true,
+                  summary: String(value?.text || "").slice(0, 2000),
+                  runId: entry?.activeRunId || null,
+                });
+              } catch {}
+            })
+            .catch((error) => {
+              try {
+                writeEvent("subagent_background_finished", {
+                  parentToolCallId,
+                  role,
+                  count: taskList.length,
+                  isError: true,
+                  error: String(error?.message || error).slice(0, 600),
+                  runId: entry?.activeRunId || null,
+                });
+              } catch {}
+            });
+          return {
+            content: [{ type: "text", text: `已后台派发 ${taskList.length} 个子任务（角色：${roleSpec.label}）。结果会通过子代理事件/任务中心展示，不阻塞本轮。` }],
+            details: { role, count: taskList.length, background: true, isolated: true, readOnly: roleSpec.readOnly },
+          };
+        }
+        // 委派幂等（开关 subagentIdempotent，默认关）：Pi 重放同一 tool call 时复用同一次编排，
+        // 避免通道重放导致重复派发；关闭时直接 await runOrchestration()，行为与基线逐字一致。
+        // 后台派发已在上方提前返回，不入缓存（无同步结果可复用）。
+        if (RUNTIME_FLAGS.subagentIdempotent && parentToolCallId) {
+          const dedupKey = `${entry?.threadId || ""}::${parentToolCallId}`;
+          const { deduped, promise } = subagentDelegationCache.run(dedupKey, () => runOrchestration());
+          const result = await promise;
+          if (!deduped) return result;
+          return { ...result, details: { ...(result.details || {}), deduped: true } };
+        }
+        const orchestration = await runOrchestration();
         return {
           content: [{ type: "text", text: orchestration.text }],
           isError: orchestration.isError,
@@ -3134,6 +3644,9 @@ execute: async (_toolCallId, params) => {
         format: Type.Union([Type.Literal("docx"), Type.Literal("pptx")], { description: "产物格式：docx=Word 文档，pptx=演示文稿" }),
         outputPath: Type.Optional(Type.String({ maxLength: 200, description: "工作区相对输出路径（如 报告/初稿.docx）；缺省按目标命名" })),
         requirements: Type.Optional(Type.String({ maxLength: 1000, description: "额外要求：受众、字数、风格、必含章节等" })),
+        scene: Type.Optional(Type.String({ maxLength: 40, description: "场景 ID（academic/report/contract/official-doc/resume/exam/copywriting）；缺省自动选择" })),
+        clarificationAnswers: Type.Optional(Type.Array(Type.String({ maxLength: 500 }), { description: "用户对澄清问题的回答；有值则跳过澄清闸门" })),
+        sourceMarkdown: Type.Optional(Type.String({ maxLength: 200000, description: "已有 Markdown 正文；提供时跳过 Planner/Writer，直接排版并验收" })),
       }),
       execute: async (_toolCallId, params, signal) => {
         const ctx = activeWriteContext("editorial_pipeline");
@@ -3142,12 +3655,17 @@ execute: async (_toolCallId, params) => {
           entry, tool: "editorial_pipeline", input: `${format} ${String(params.goal || "").slice(0, 160)}`,
           runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
         });
-        // 与 officecli 写入同一治理：工作区级写锁 + write_started/locked 事件
+        // 按交付文件加锁（而不是整个工作区）：不同产物的 Word/PPT 任务可以并行。
+        const lockTarget = path.resolve(
+          ctx.workspace,
+          params.outputPath ? String(params.outputPath) : `${safePipelineName(String(params.goal || ""))}.${format}`,
+        );
         const lock = await acquireWriteLockWithRetry({
-          workspace: ctx.workspace, targetPath: ctx.workspace,
+          workspace: ctx.workspace, targetPath: lockTarget,
           runId: ctx.runId, threadId: ctx.threadId, kind: "editorial_pipeline",
         });
-        writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "editorial_pipeline", command: `${format} ${String(params.goal || "").slice(0, 200)}` });
+        const lockRel = path.relative(ctx.workspace, lockTarget).replace(/\\/g, "/") || ".";
+        writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: lockRel, kind: "editorial_pipeline", command: `${format} ${String(params.goal || "").slice(0, 200)}` });
         writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "editorial_pipeline" });
         try {
           // Planner/Writer/Evaluator 是只读模型会话：复用 SubagentProvider seam（planner 只读角色）
@@ -3171,6 +3689,10 @@ execute: async (_toolCallId, params) => {
             }
             return outcome?.text || "";
           };
+          const writingText = `${String(params.goal || "")} ${String(params.requirements || "")}`;
+          const writingIntent = RUNTIME_FLAGS.officeFormat
+            ? routeTaskIntent({ text: writingText, task: { mode: "agent" } })
+            : null;
           const result = await runEditorialPipeline({
             format,
             goal: String(params.goal || ""),
@@ -3179,8 +3701,49 @@ execute: async (_toolCallId, params) => {
             requirements: params.requirements ? String(params.requirements) : "",
             emit: (type, data) => writeEvent(type, { ...data, parentToolCallId: _toolCallId ? String(_toolCallId) : null }),
             runModelTask: runPipelineModelTask,
+            autoClarify: RUNTIME_FLAGS.officeFormat,
+            clarificationAnswers: Array.isArray(params.clarificationAnswers) ? params.clarificationAnswers.map(String) : [],
+            sourceMarkdown: params.sourceMarkdown ? String(params.sourceMarkdown) : "",
+            scene: params.scene ? String(params.scene) : (writingIntent?.scene?.scene || ""),
+            template: writingIntent?.template || null,
+            cover: RUNTIME_FLAGS.officeFormat && format === "docx"
+              ? { docType: writingIntent?.scene?.scene || "report" }
+              : null,
+            toc: RUNTIME_FLAGS.officeFormat && format === "docx",
+            pageNumbers: RUNTIME_FLAGS.officeFormat && format === "docx",
+            qa: RUNTIME_FLAGS.officeFormat && format === "docx",
             signal,
           });
+          if (result.status === "needs_clarification") {
+            entry.clarificationPending = result.clarification || entry.clarificationPending;
+            entry.clarificationPreview = result.clarification?.previewPath || entry.clarificationPreview;
+            const question = result.clarification?.question;
+            const text = question
+              ? `需要先向用户确认：${question.text}\n可选：${(question.options || []).join(" / ")}\n请调用 ask_user 提问；用户回答后再次调用本工具，并在 clarificationAnswers 里带上回答。`
+              : `需要先补充关键信息：${(result.clarification?.missing || []).join("、")}`;
+            return { content: [{ type: "text", text }], details: { pipeline: true, status: "needs_clarification", clarification: result.clarification } };
+          }
+          if (result.deliverable && result.status === "completed") entry.pipelineProduced = true;
+          if (RUNTIME_FLAGS.officeFormat && (result.scene || result.template)) {
+            writeEvent("office_format_applied", {
+              runId: ctx.runId,
+              workspace: ctx.workspace,
+              scene: result.scene?.id || "report",
+              template: result.template?.relPath || "",
+              recipe: "",
+              route: result.template ? "template" : "generate",
+            });
+          }
+          if (RUNTIME_FLAGS.officeFormat && format === "docx" && result.deliverable) {
+            writeEvent("office_qa_finished", {
+              runId: ctx.runId,
+              workspace: ctx.workspace,
+              file: result.deliverable,
+              passed: !(result.issues || []).length,
+              issues: (result.issues || []).slice(0, 20),
+              checks: (result.checks || []).slice(0, 20),
+            });
+          }
           writeEvent("file_changed", { runId: ctx.runId, workspace: ctx.workspace, files: [result.deliverable].filter(Boolean) });
           const lines = [
             result.status === "completed" ? `流水线完成，产物：${result.deliverable}` : `流水线未完全通过验收（产物：${result.deliverable || "无"}）`,
@@ -3210,8 +3773,8 @@ execute: async (_toolCallId, params) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, cadReadTool, cadEditTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions],
-        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_datasets", "map_edit", "map_import", "map_analyze", "map_template", "map_save_analysis", "map_clear_analysis", "cad_read", "cad_edit", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames],
+        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, cadReadTool, cadEditTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, browserWaitForTool, browserActTool, browserExtractTool, browserSelectOptionTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
+        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_datasets", "map_edit", "map_import", "map_analyze", "map_template", "map_save_analysis", "map_clear_analysis", "cad_read", "cad_edit", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "browser_wait_for", "browser_act", "browser_extract", "browser_select_option", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames],
       }));
     } catch (error) {
       piRuntimeManager.markFailure(runtimeRecord.runtimeId, error, { recovering: true, reason: "session_create_failed" });
@@ -3220,18 +3783,34 @@ execute: async (_toolCallId, params) => {
     // 显式激活全部自定义工具（pi SDK 仅激活 tools 白名单中的工具，customTools 需手动激活，
     // 否则 kb_search/map_read/ask_user 等对模型不可见）
     try {
-      piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), "ask_user", "officecli", "review_copy", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "cad_read", "cad_edit", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames]);
+      piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), "ask_user", "officecli", "review_copy", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "cad_read", "cad_edit", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "browser_wait_for", "browser_act", "browser_extract", "browser_select_option", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames]);
     } catch {}
 
     // event channel with history for SSE replay
     // streamId 是通道代际：Runtime/会话重建后序号从 1 重新开始，前端据此重置游标。
     const channel = { streamId: createStreamId(), history: [], seq: 0, historyLimit: CHANNEL_HISTORY_LIMIT, emitter: new EventEmitter() };
+    // 回合级 Run 归属：Pi 回调里的事件属于“当前回合”。排队任务接管时会先切换
+    // entry.activeRunId，如果收尾事件（turn_ended/message_end）此时才到达，就会被
+    // 记到新 Run 名下，造成两个 Run 的 start/end 配对断裂。这里按回合记录归属：
+    // 只在 Pi 回调内生效，工作台自身的事件（model_request_started/steer 等）仍用 activeRunId。
+    let piEventDepth = 0;
+    const runPiEvent = (handler) => (ev) => {
+      piEventDepth += 1;
+      try { return handler(ev); } finally { piEventDepth -= 1; }
+    };
     const emit = (type, data) => {
       const id = ++channel.seq;
       const at = new Date().toISOString();
+      const scopedRunId = piEventDepth > 0 ? (entry?.turnRunId || entry?.activeRunId) : entry?.activeRunId;
+      // 终态围栏：恢复/看门狗可能先收尾 Run，而 Pi 仍会继续发出 assistant_final/agent_end。
+      // 这些迟到事件只能进审计，不能再推给前端，否则会复活已结束的运行。
+      if (scopedRunId && isRunTerminal(scopedRunId)) {
+        try { recordRunEvent(scopedRunId, type, data || {}); } catch {}
+        return;
+      }
       const eventData = data && typeof data === "object" && !Array.isArray(data)
-        ? { ...data, runId: data.runId ?? entry?.activeRunId ?? null }
-        : { value: data, runId: entry?.activeRunId ?? null };
+        ? { ...data, runId: data.runId ?? scopedRunId ?? null }
+        : { value: data, runId: scopedRunId ?? null };
       const ev = { id, type, at, streamId: channel.streamId, protocolVersion: PROTOCOL_VERSION, data: eventData };
       // U8：flag 开启时信封额外携带规范化视图（内存态，不落盘、不改 SSE 契约形状）。
       if (RUNTIME_FLAGS.eventNormalize) {
@@ -3239,8 +3818,8 @@ execute: async (_toolCallId, params) => {
       }
       pushChannelEvent(channel, ev);
       channel.emitter.emit("event", ev);
-      if (entry?.activeRunId && ["agent_started", "turn_started", "turn_ended", "message_start", "message_end", "tool_start", "tool_end", "tool_repeat_warning", "run_budget_notice", "run_budget_blocked", "tool_gate_denied", "context_compacting", "context_compacted", "ask_user", "agent_error", "agent_retry", "assistant_final", "agent_end", "stats"].includes(type)) {
-        try { recordRunEvent(entry.activeRunId, type, data || {}); } catch {}
+      if (scopedRunId && ["agent_started", "turn_started", "turn_ended", "message_start", "message_end", "tool_start", "tool_end", "tool_repeat_warning", "run_budget_notice", "run_budget_blocked", "tool_gate_denied", "context_compacting", "context_compacted", "ask_user", "agent_error", "agent_retry", "assistant_final", "agent_end", "stats"].includes(type)) {
+        try { recordRunEvent(scopedRunId, type, data || {}); } catch {}
       }
     };
     const emitUsage = (usage, cost = 0) => {
@@ -3265,9 +3844,28 @@ execute: async (_toolCallId, params) => {
         contextUsage: contextUsage || null,
         contextTokens: contextTokens ?? null,
       });
+      if (RUNTIME_FLAGS.usageLedger) {
+        try {
+          recordUsage({
+            runId: entry?.activeRunId || null,
+            turnId: entry?.turnCount ?? null,
+            actorKind: "main",
+            actorId: "main",
+            provider: entry?.session?.model?.provider || null,
+            model: entry?.session?.model?.id || null,
+            querySource: "agent_step",
+            usage: normalized,
+            cost: cost ?? null,
+            durationMs: entry?.runStartedAt ? Math.max(0, Date.now() - entry.runStartedAt) : null,
+            ttftMs: null,
+            toolCallCount: entry?.runToolCount ?? null,
+            finishReason: null,
+          });
+        } catch {}
+      }
       return true;
     };
-    session.subscribe((ev) => {
+    session.subscribe(runPiEvent((ev) => {
       if (entry) entry.lastPiEventAt = Date.now();
       // 首个 provider 事件：每个 Run 只记一次。订阅是会话级的、跨回合常驻——
       // 上一轮收尾时迟到的 provider 事件（或 SDK 回放）会带着"新 Run 的 activeRunId"
@@ -3284,7 +3882,11 @@ execute: async (_toolCallId, params) => {
           emit("agent_started", {});
           break;
         case "turn_start":
-          if (entry) entry.turnCount = Number(entry.turnCount || 0) + 1;
+          if (entry) {
+            entry.turnCount = Number(entry.turnCount || 0) + 1;
+            // 记录“本回合属于哪个 Run”：回合收尾事件可能在新任务接管后才到达
+            entry.turnRunId = entry.activeRunId || null;
+          }
           emit("turn_started", { turnIndex: ev.turnIndex ?? null });
           // 轮次提醒：周期进度小结（每 N 轮）+ 25/45 轮关键点，
           // 判定与文案统一来自 server/轮次预算.mjs。
@@ -3303,6 +3905,16 @@ execute: async (_toolCallId, params) => {
               Promise.resolve(deliverPromise).catch(() => {});
             }
           }
+          // 计划 008：写作路由下 10 回合仍未走管线时，提醒一次（不阻断，靠执行闸门兜底）
+          if (entry.officeGateOn && !entry.pipelineProduced && !entry.pipelineReminderSent && entry.turnCount >= 10) {
+            const route = entry.task?.capabilityPlan?.route;
+            if (route === "template" || route === "generate") {
+              entry.pipelineReminderSent = true;
+              const message = "本轮尚未使用 editorial_pipeline。请立即改用编辑流水线生成文档；不要用 bash 写生成脚本，也不要用 officecli add --type markdown 后再手工调样式。";
+              emitChannelSafe(entry, "steer", { source: "office-pipeline", message, turnCount: entry.turnCount });
+              Promise.resolve(entry.session?.steer?.(message)).catch(() => {});
+            }
+          }
           // E02：运行预算回合评估——软预算发可见提醒，硬预算发阻断事件（hard 模式下停止本 Run）
           if (entry) {
             const budget = ensureRunBudget(entry);
@@ -3316,6 +3928,8 @@ execute: async (_toolCallId, params) => {
           break;
         case "turn_end":
           emit("turn_ended", { turnIndex: ev.turnIndex ?? null, toolCount: Array.isArray(ev.toolResults) ? ev.toolResults.length : 0 });
+          // 回合已收尾，后续 Pi 事件不再属于本回合
+          if (entry) entry.turnRunId = null;
           break;
         case "message_update":
           if (entry) entry.turnStarted = true;
@@ -3367,6 +3981,8 @@ execute: async (_toolCallId, params) => {
             entry.firstResponseReceived = true;
             entry.activeToolCount = Number(entry.activeToolCount || 0) + 1;
             entry.runToolCount = Number(entry.runToolCount || 0) + 1;
+            // 记录在飞的工具，异常结束时用于补齐 tool_end
+            entry.activeTools.set(String(ev.toolCallId || ""), ev.toolName || "");
           }
           // 工具调用开始：传递工具名 + 输入参数（pi SDK 字段是 args）
           emit("tool_start", {
@@ -3404,6 +4020,7 @@ execute: async (_toolCallId, params) => {
         case "tool_execution_end":
           if (entry) {
             entry.activeToolCount = Math.max(0, Number(entry.activeToolCount || 0) - 1);
+            entry.activeTools.delete(String(ev.toolCallId || ""));
             entry.lastPiEventAt = Date.now();
           }
           {
@@ -3514,6 +4131,9 @@ execute: async (_toolCallId, params) => {
             runId: entry?.compactionRunId || entry?.activeRunId || null,
             tokensBefore: ev.tokensBefore || 0,
             estimatedTokensAfter: ev.estimatedTokensAfter || 0,
+            // v0.12.3：不同 Pi 版本的 compaction_end 可能用 messagesBefore 或
+            // messageCount 表示被折叠的消息条数；都没有时保持 0，前端回退旧文案。
+            messageCount: Number(ev.messagesBefore ?? ev.messageCount ?? 0) || 0,
           });
           break;
         case "bash_execution_update":
@@ -3609,9 +4229,19 @@ execute: async (_toolCallId, params) => {
         default:
           break;
       }
-    });
+    }));
 
-    entry = { session, sessionManager: sessionManager || null, channel, busy: false, compacting: false, compactionKind: null, compactionPromise: null, compactionRunId: null, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, modePolicyKey: "", mcpToolNames: mcpToolRegistrations.map((item) => item.name), mcpReadOnlyToolNames: mcpToolRegistrations.filter((item) => item.tool.annotations?.readOnlyHint === true && item.tool.annotations?.destructiveHint !== true).map((item) => item.name), piExtensionToolNames, hasSubagent: true, reviewConfirmed: false, reviewAwaitingConfirmation: false, reviewProtectedPaths: new Set(), reviewSources: [], lastAgentError: null, lastSettledError: null, lastAssistantText: "", lastFinalText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, activeToolCount: 0, lastPiEventAt: Date.now(), pendingAbortPromise: null, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, promptChars: estimateRestoredContextChars(session), lastUsage: null, lastCompactionAt: 0, autoCompacting: false };
+    entry = { session, sessionManager: sessionManager || null, channel, busy: false, compacting: false, compactionKind: null, compactionPromise: null, compactionRunId: null, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, turnRunId: null, activeTools: new Map(), task: null, mode: "agent", modePolicy: null, modePolicyKey: "", mcpToolNames: mcpToolRegistrations.map((item) => item.name), mcpReadOnlyToolNames: mcpToolRegistrations.filter((item) => item.tool.annotations?.readOnlyHint === true && item.tool.annotations?.destructiveHint !== true).map((item) => item.name), piExtensionToolNames, hasSubagent: true, reviewConfirmed: false, reviewAwaitingConfirmation: false, reviewProtectedPaths: new Set(), reviewSources: [], lastAgentError: null, lastSettledError: null, lastAssistantText: "", lastFinalText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, activeToolCount: 0, lastPiEventAt: Date.now(), pendingAbortPromise: null, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, promptChars: estimateRestoredContextChars(session), lastUsage: null, lastCompactionAt: 0, autoCompacting: false };
+    if (metadataReport && !metadataReport.ok) {
+      try {
+        emitChannelSafe(entry, "tool_metadata_missing", {
+          missing: metadataReport.missing,
+          errors: metadataReport.errors,
+          total: metadataReport.total,
+          covered: metadataReport.covered,
+        });
+      } catch {}
+    }
     piRuntimeManager.bindSession(runtimeRecord.runtimeId, { session, profile: options.profile, toolPolicy: null });
     this.sessions.set(clientId, entry);
     return entry;
@@ -3649,6 +4279,18 @@ execute: async (_toolCallId, params) => {
       summarize,
       label: options.label || "工作台分支",
     });
+    // v0.12.8：navigateTree 只改内存 leaf，不落盘；追加一个不进入模型上下文的
+    // custom 标记，把活跃分支固化到 JSONL，重开/刷新后 Chat 视图仍沿该 leaf 还原。
+    try {
+      entry.sessionManager?.appendCustomEntry?.("oaw_branch_point", {
+        targetId: String(entryId),
+        at: new Date().toISOString(),
+        source: "session-branch",
+        summarize,
+      });
+    } catch (error) {
+      console.warn("[agent] 分支标记写入失败：", error?.message || error);
+    }
     return {
       sessionId: entry.session?.sessionId || null,
       navigatedTo: String(entryId),
@@ -3855,6 +4497,11 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       entry.compactionPromise = compactPromise;
       await compactPromise;
       compacted = true;
+      if (RUNTIME_FLAGS.usageLedger) {
+        try {
+          recordUsage({ runId, actorKind: "compaction", actorId: "compaction", querySource: "compact", usage: null, finishReason: "compacted" });
+        } catch {}
+      }
       // 不依赖某个 Pi 版本是否发出 compaction_end；成功的 Promise 本身就是
       // 本地计数器的权威边界，防止下一轮再次按旧预算触发压缩。
       entry.promptChars = 0;
@@ -3883,6 +4530,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.activeRunId = runContext?.runId || null;
     // 每轮独立计数：上一轮的完成声明、轮次预算与提醒标记都不能串到本轮
     entry.pendingCompletion = null;
+    entry.memoryWrittenThisRun = false;
     // 终稿缓存按 Run 隔离：新 Run 开始即清空，旧 Run 迟到文本不会串入本轮。
     entry.lastFinalText = "";
     entry.suppressFinalText = false;
@@ -3899,6 +4547,21 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.officeLockFailures = new Map();
     entry.task = runContext?.task || null;
     entry.mode = normalizeTaskMode(runContext?.task?.mode || entry.mode || "agent");
+    // 计划 008：执行闸门状态按 Run 重置。只在开关开启时生效；关闭时完全放行。
+    entry.officeGateOn = Boolean(RUNTIME_FLAGS.officeFormat);
+    entry.pipelineProduced = false;
+    entry.pipelineReminderSent = false;
+    entry.manualOfficeAllowed = /(脚本|代码|手工生成|自己生成|allow-manual)/i.test(String(entry.task?.goal || ""));
+    {
+      const plan = entry.task?.capabilityPlan;
+      entry.clarificationPending = entry.officeGateOn
+        && plan?.clarification?.shouldAsk
+        && entry.mode !== "chat"
+        && entry.mode !== "review"
+        ? { missing: plan.clarification.missing || [], question: plan.clarification.question || null }
+        : null;
+      entry.clarificationPreview = null;
+    }
     if (!isStreaming) {
       entry.reviewConfirmed = false;
       entry.reviewAwaitingConfirmation = false;
@@ -3968,8 +4631,11 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       try {
         const modePolicyKey = `${modePolicy.mode}:${entry.task?.agentProfile || "通用 Agent"}:${modeDynamicTools.join(",")}`;
         if (entry.modePolicyKey !== modePolicyKey) {
+          // 扩展工具只在 Agent 模式放行：Chat/Office 保持最小权限，
+          // 避免扩展（如 subagent）绕过只读或仅-Office 编辑的约束。
+          const extensionToolsForMode = modePolicy.mode === "agent" ? extensionToolNamesFromLoader(entry.loader) : [];
+          piRuntimeManager.setActiveTools(entry.runtimeId, entry.session, [...modePolicy.tools, ...extensionToolsForMode]);
           modePolicyApplied = 1;
-          piRuntimeManager.setActiveTools(entry.runtimeId, entry.session, modePolicy.tools);
           entry.modePolicy = modePolicy;
           entry.modePolicyKey = modePolicyKey;
           piRuntimeManager.update(entry.runtimeId, {
@@ -4002,9 +4668,13 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       const contextFileMs = Date.now() - contextFileStartedAt;
       // 按 Pi 模型目录归一化推理档位；不支持的 medium 优先降到 low，避免
       // UI 显示标准但 SDK 实际沿用高延迟默认档位。
-      const requestedThinkingLevel = effort || "low";
-      const effectiveThinkingLevel = resolveThinkingLevel(entry.session?.model, requestedThinkingLevel);
-      const thinkingChanged = entry.requestedThinkingLevel !== requestedThinkingLevel || entry.effectiveThinkingLevel !== effectiveThinkingLevel;
+      // “default”表示跟随模型/运行时默认：不主动改档，只记录用户选择。
+      const requestedThinkingLevel = effort || "default";
+      const effectiveThinkingLevel = requestedThinkingLevel === "default"
+        ? (entry.effectiveThinkingLevel || null)
+        : resolveThinkingLevel(entry.session?.model, requestedThinkingLevel);
+      const thinkingChanged = requestedThinkingLevel !== "default"
+        && (entry.requestedThinkingLevel !== requestedThinkingLevel || entry.effectiveThinkingLevel !== effectiveThinkingLevel);
       if (thinkingChanged) {
         try {
           piRuntimeManager.setThinkingLevel(entry.runtimeId, entry.session, effectiveThinkingLevel);
@@ -4013,7 +4683,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         } catch {}
       }
       entry.requestedThinkingLevel = requestedThinkingLevel;
-      entry.effectiveThinkingLevel = effectiveThinkingLevel;
+      if (effectiveThinkingLevel) entry.effectiveThinkingLevel = effectiveThinkingLevel;
       // 强制注入当前工作文件声明（兜底，防止 agent 不知道在改哪个文档）
       if (entry.currentFile) {
         const marker = `[当前工作文件: ${entry.currentFile}]\n`;
@@ -4021,23 +4691,62 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
           text = marker + text;
         }
       }
+      if (RUNTIME_FLAGS.hookEvents) {
+        try {
+          const hook = await dispatchHooks({
+            event: "UserPromptSubmit",
+            payload: { prompt: text, runId: entry.activeRunId || null },
+            workspace: entry.workspace,
+            timeoutMs: RUNTIME_FLAGS.hookTimeoutMs,
+          });
+          if (hook.behavior === "deny") {
+            emitChannelSafe(entry, "hook_denied", { event: "UserPromptSubmit", reason: hook.reason, hookId: hook.hookId || null, runId: entry.activeRunId || null });
+            throw Object.assign(new Error(`Hook 拒绝本轮输入：${hook.reason}`), { code: "HOOK_DENIED" });
+          }
+          if (hook.messages?.length) text = `${hook.messages.join("\n")}\n\n${text}`;
+          if (hook.updatedInput?.prompt !== undefined) text = String(hook.updatedInput.prompt);
+        } catch (error) {
+          if (error?.code === "HOOK_DENIED") throw error;
+        }
+      }
+      entry.lastPromptText = text;
       // 每次对话前注入动态上下文（当前工作区绝对路径 + 记忆摘要）——直接进 prompt 文本，
       // 不依赖 agent 主动 read .agent-context.md（agentsFiles 注入的是会话创建时的静态快照，会过时）
       const dynamicContextStartedAt = Date.now();
       let dynamicContextMs = 0;
+      let dynamicText = "";
       try {
-        const dyn = this.buildDynamicContext(entry, entry.currentFile, sharedMemCtx);
+        dynamicText = this.buildDynamicContext(entry, entry.currentFile, sharedMemCtx);
         dynamicContextMs = Date.now() - dynamicContextStartedAt;
-        if (dyn) text = dyn + "\n\n" + text;
       } catch { dynamicContextMs = Date.now() - dynamicContextStartedAt; }
       const recoveredAnswers = consumeRecoveredAnswers(entry.clientId || "");
-      if (recoveredAnswers.length) {
-        text = `## 恢复的用户回答\n${recoveredAnswers.map((a) => `- ${a.question}: ${a.answer}`).join("\n")}\n请把这些回答视为对上次中断提问的确认，并继续原任务。\n\n${text}`;
+      const referencesSummary = entry.references.length
+        ? `## 本轮结构化引用\n${contextSummary(entry.references)}\n请使用 context_read(refId) 按需读取引用内容；若状态为 missing/deferred，应明确告诉用户。`
+        : "";
+      const taskBlock = entry.task
+        ? `${taskSummary(entry.task)}\n- 当前对话边界：${modeDescription(entry.mode)}`
+        : "";
+      if (RUNTIME_FLAGS.contextSections) {
+        const sections = buildContextSections({
+          dynamicContext: dynamicText,
+          taskSummary: taskBlock,
+          referencesSummary,
+          recoveredAnswers,
+          userText: text,
+        });
+        text = renderContextSections(sections);
+        emitChannelSafe(entry, "context_sections_assembled", {
+          runId: entry.activeRunId || null,
+          sections: sectionSummary(sections),
+        });
+      } else {
+        if (dynamicText) text = dynamicText + "\n\n" + text;
+        if (recoveredAnswers.length) {
+          text = `## 恢复的用户回答\n${recoveredAnswers.map((a) => `- ${a.question}: ${a.answer}`).join("\n")}\n请把这些回答视为对上次中断提问的确认，并继续原任务。\n\n${text}`;
+        }
+        if (referencesSummary) text = referencesSummary + "\n\n" + text;
+        if (taskBlock) text = taskBlock + "\n\n" + text;
       }
-      if (entry.references.length) {
-        text = `## 本轮结构化引用\n${contextSummary(entry.references)}\n请使用 context_read(refId) 按需读取引用内容；若状态为 missing/deferred，应明确告诉用户。\n\n${text}`;
-      }
-      if (entry.task) text = `${taskSummary(entry.task)}\n- 当前对话边界：${modeDescription(entry.mode)}\n\n${text}`;
       entry.promptChars += text.length;
       // 首字延迟分项（方案 §3.5）：真正把请求交给 SDK 的时刻。
       // 它在 runPrompt 之前，因此到首个 provider 事件之间的等待包含 SDK 准备、
@@ -4157,7 +4866,10 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
               await waitForAgentRetry(300);
               try {
                 await promptWithFirstEventTimeout(entry,
-                  "上一个回合的模型连接中断了。请基于当前会话中已经完成的步骤和工具结果，从中断位置继续原任务；不要重复已经成功的副作用操作，完成后给出完整结果。",
+                  // 内部续跑指令必须以 [系统提醒] 开头：它是写进会话文件的一条 user 消息，
+                  // 前端只按该前缀识别内部提示；否则恢复历史时会把它当成真实用户提问，
+                  // 截断同一 Run 的归约，导致一条回复被拆成多条气泡。
+                  "[系统提醒] 上一个回合的模型连接中断了。请基于当前会话中已经完成的步骤和工具结果，从中断位置继续原任务；不要重复已经成功的副作用操作，完成后给出完整结果。",
                   {},
                 );
                 const continuationError = entry.lastSettledError;
@@ -4272,6 +4984,40 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       if (activeRunId) {
         try { recordRunEvent(activeRunId, "runtime_health", piRuntimeManager.health(entry.runtimeId, entry.session)); } catch {}
       }
+      // 异常结束（模型超时、上游中断、服务停止）时，在飞的回合与工具收不到 Pi 的
+      // 收尾事件；这里补齐，避免运行轨迹里留下“有开始无结束”的孤儿事件。
+      try {
+        const openTools = [...(entry.activeTools || new Map()).entries()];
+        for (const [toolCallId, name] of openTools) {
+          emitChannelSafe(entry, "tool_end", {
+            toolCallId: toolCallId || null,
+            name: name || "",
+            isError: true,
+            recovered: true,
+            message: "任务异常结束，工具调用未正常收尾",
+          });
+        }
+        if (openTools.length) {
+          entry.activeTools.clear();
+          entry.activeToolCount = 0;
+          entry.toolStarted = false;
+        }
+        if (entry.turnRunId) {
+          emitChannelSafe(entry, "turn_ended", { turnIndex: null, toolCount: 0, recovered: true });
+          entry.turnRunId = null;
+          entry.turnStarted = false;
+        }
+      } catch {}
+      if (RUNTIME_FLAGS.hookEvents) {
+        try {
+          await dispatchHooks({
+            event: "Stop",
+            payload: { runId: activeRunId, status: entry.lastAgentError ? "failed" : "completed" },
+            workspace: entry.workspace,
+            timeoutMs: RUNTIME_FLAGS.hookTimeoutMs,
+          });
+        } catch {}
+      }
       entry.busy = false;
       entry.activeRunId = null;
       // 排队中的模型切换在本轮结束后生效：运行中的任务始终用旧模型跑完，
@@ -4367,6 +5113,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         ok: true,
         tokensBefore: result?.tokensBefore || 0,
         estimatedTokensAfter: result?.estimatedTokensAfter || 0,
+        messageCount: Number(result?.messagesBefore ?? result?.messageCount ?? 0) || 0,
       };
     } finally {
       entry.compactionPromise = null;
@@ -4420,7 +5167,30 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
   buildDynamicContext(entry, file, sharedMemCtx = null) {
     try {
       const ws = entry?.workspace || getWorkspace();
-      const memCtx = sharedMemCtx ?? readMemoryContext(ws);
+      let memCtx = sharedMemCtx ?? readMemoryContext(ws);
+      let recall = null;
+      if (RUNTIME_FLAGS.memoryRecall) {
+        try {
+          recall = buildRecallContextSync({
+            workspace: ws,
+            query: entry?.lastPromptText || "",
+            maxBytes: RUNTIME_FLAGS.memoryRecallMaxBytes,
+          });
+          if (recall.text) memCtx = recall.text;
+          entry.lastMemoryRecall = recall;
+          if (recall.selected?.length) {
+            emitChannelSafe(entry, "memory_recall_selected", {
+              runId: entry?.activeRunId || null,
+              selected: recall.selected,
+              injectedBytes: recall.injectedBytes,
+              truncated: recall.truncated,
+              fallback: recall.fallback,
+            });
+          } else {
+            emitChannelSafe(entry, "memory_recall_skipped", { runId: entry?.activeRunId || null, reason: "no_match", manifestCount: recall.manifest?.length || 0 });
+          }
+        } catch {}
+      }
       const mode = normalizeTaskMode(entry?.mode || "agent");
       const ctxFile = entry?.threadId ? `.agent-context.${entry.threadId}.md` : ".agent-context.md";
       const lines = [
@@ -4472,7 +5242,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         "# Open Plan（规聚）Workspace",
         "",
         `- **当前工作区（绝对路径）**: ${ws}`,
-        "- Office files live in the current workspace folder above. ALWAYS operate on office documents through the `officecli` tool — it resolves file names relative to the current workspace. NEVER try to run `officecli` via the bash tool.",
+        "Office files live in the current workspace folder above. " + OFFICE_TOOL_RULE,
         "- Word 批注：先 get/query 找真实 `/body/p[...]` 路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"...\\\" --json`，完成后 query comment 校验。仅在 sharing violation 或明确的进程占用错误时关闭 WPS/Word/OfficeCLI 预览；Access denied/is denied/EPERM/EACCES 应说明服务进程写权限受限。",
         "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text.",
         "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区（绝对路径见上），禁止写入项目目录。否则产物不会被前端检测到。",
@@ -4524,6 +5294,30 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
 
   runtimeHealth(clientId) {
     return this.runtimeSnapshot(clientId) || { status: "missing", health: { status: "unknown", message: "Runtime 尚未创建" } };
+  }
+
+  /**
+   * H2-2 记忆自动抽取：创建一次隔离的只读子会话，返回模型输出文本。
+   * 调用方负责 shouldExtract / 解析 / 入库；本方法只做执行，避免污染主会话上下文。
+   */
+  async extractMemory({ workspace, threadId = null, userText = "", assistantText = "" } = {}) {
+    const root = normalizeWorkspace(workspace) || normalizeWorkspace(getWorkspace());
+    if (!root) throw new Error("记忆抽取需要有效工作区");
+    const clientId = `memory_extract_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    const child = await this._create(clientId, { cwd: root, threadId, profile: "记忆抽取" });
+    try {
+      try { piRuntimeManager.setActiveTools(child.runtimeId, child.session, ["read", "grep", "find", "ls"]); } catch {}
+      const { scanMemoryManifest } = await import("./记忆召回.mjs");
+      const manifest = scanMemoryManifest(root);
+      const prompt = buildExtractionPrompt({ userText, assistantText, workspace: root, manifest });
+      await child.session.prompt(prompt);
+      const assistant = [...(child.session.messages || [])].reverse().find((message) => message?.role === "assistant");
+      return (assistant?.content || []).filter((part) => part?.type === "text").map((part) => part.text).join("\n").trim();
+    } finally {
+      try { await child.session.abort?.(); } catch {}
+      try { piRuntimeManager.dispose(child.runtimeId, child.session); } catch {}
+      this.sessions.delete(clientId);
+    }
   }
 
   /** 当前会话的上下文用量快照：优先真实 usage，服务重启后按恢复字符数估算。 */
@@ -4748,6 +5542,7 @@ async listModelCatalog() {
         vision: !!m.vision,
         available: availableKeys.has(`${m.provider}/${m.id}`) && !authError,
         ...(authError ? { authError: authError.message } : {}),
+        ...(thinkingLevelsFor(m).length ? { thinkingLevels: thinkingLevelsFor(m) } : {}),
         ...(Number(m.contextWindow || m.contextLength || m.limit?.context) > 0
           ? { contextWindow: Math.floor(Number(m.contextWindow || m.contextLength || m.limit.context)) }
           : {}),
@@ -4845,17 +5640,19 @@ function emitChannelSafe(entry, type, data, { persist = true } = {}) {
   try {
     const id = ++entry.channel.seq;
     const at = new Date().toISOString();
+    // 与 emit 一致：回合内的事件优先归属开启该回合的 Run
+    const scopedRunId = entry?.turnRunId || entry?.activeRunId || null;
     const eventData = data && typeof data === "object" && !Array.isArray(data)
-      ? { ...data, runId: data.runId ?? entry?.activeRunId ?? null }
-      : { value: data, runId: entry?.activeRunId ?? null };
+      ? { ...data, runId: data.runId ?? scopedRunId }
+      : { value: data, runId: scopedRunId };
     const ev = { id, type, at, streamId: entry.channel.streamId, protocolVersion: PROTOCOL_VERSION, data: eventData };
     if (!entry.channel.historyLimit) entry.channel.historyLimit = CHANNEL_HISTORY_LIMIT;
     pushChannelEvent(entry.channel, ev);
     // Qoder P0-3：记录通道最近一次事件投递时刻，供中断排空判定「在途消息是否已静默」。
     entry.channel.lastEmitAt = Date.now();
     entry.channel.emitter.emit("event", ev);
-    if (persist && entry.activeRunId) {
-      try { recordRunEvent(entry.activeRunId, type, data || {}); } catch {}
+    if (persist && scopedRunId) {
+      try { recordRunEvent(scopedRunId, type, data || {}); } catch {}
     }
   } catch {}
 }

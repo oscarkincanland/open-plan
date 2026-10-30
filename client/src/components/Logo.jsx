@@ -15,7 +15,7 @@ export default function Logo({ size = 20, withGradient = true, withBackground = 
           <stop offset="1" stopColor="#3f887b" />
         </linearGradient>
       </defs>
-      {withBackground && <rect x="1.5" y="1.5" width="45" height="45" rx="13" fill={withGradient ? `url(#${gradientId})` : "var(--accent, #4f9a88)"} />}
+      {withBackground && <rect x="1.5" y="1.5" width="45" height="45" rx="13" fill={withGradient ? `url(#${gradientId})` : "var(--accent)"} />}
       {/* 四条圆润轨道：保持图二的汇聚结构，但用矢量曲线避免位图背景过宽。 */}
       <g className="open-plan-logo-petals" fill="none" stroke={markColor} strokeWidth="4.6" strokeLinecap="round" strokeLinejoin="round">
         <path className="open-plan-logo-petal petal-nw" d="M22.2 20.6C17.3 11.6 8.3 8.7 5.2 14.1c-3.4 6 3.8 10.4 14.9 9.8" />

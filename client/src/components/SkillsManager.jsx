@@ -26,7 +26,7 @@ const WORKFLOWS = [
   {
     id: "wf-plan-doc",
     name: "规划报告全流程",
-    icon: "doc",
+    icon: "file",
     desc: "从调研到成稿：研究→规划报告撰写→图表生成→排版导出",
     skills: ["huashu-research", "traffic-report-comprehensive", "traffic-charts-template", "huashu-md-to-pdf"],
     prompt: "请按「交通综合规划报告」标准流程：1) 先调研相关资料；2) 用交通规划报告框架撰写；3) 用图表模板生成配图；4) 导出为规范 PDF。",
@@ -165,7 +165,7 @@ export default function SkillsManager({ open, onClose, onAtMention, clientId, wo
     <div className={fullPage ? "module-view module-skills-view" : "modal-overlay"} onClick={onClose} role="presentation">
       <div className="skills-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="技能广场">
         <div className="modal-head">
-          <span className="modal-title"><Icon name="skills" size={14} /> 技能广场 ({skills.length})</span>
+          <span className="modal-title"><Icon name="sparkles" size={14} /> 技能广场 ({skills.length})</span>
           <button className="btn-xs" onClick={onClose} aria-label="关闭技能广场"><Icon name="close" size={12} /> 关闭</button>
         </div>
 

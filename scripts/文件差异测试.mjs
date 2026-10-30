@@ -169,7 +169,9 @@ test("runs.mjs 补全审计字段并剔除无内容差异的疑似变更", () =>
   assert.match(src, /source,/, "应记录检测来源");
   assert.match(src, /confidence,/, "应记录可信度");
   assert.match(src, /blobs: \{ before: beforeReversible, after: afterAvailable \}/, "应记录 blob 可用性");
-  assert.match(src, /run\.artifacts = shouldTrackWorkspace \? finalizeFileChanges\(run, rawChanges, after\) : \[\]/, "应在 blob 复制后补全");
+  // v0.13.3 重构：产物装配改为 recomputedArtifacts 中间量 + 失败/取消/恢复保留既有产物（R1）；
+  // 断言语义不变——finalizeFileChanges 必须仍在 copyAfterBlobs（after blob 复制）之后执行。
+  assert.match(src, /copyAfterBlobs\(run, rawChanges, after\);[\s\S]{0,300}?finalizeFileChanges\(run, rawChanges, after\)/, "应在 blob 复制后补全");
   assert.match(src, /只是被 touch/, "疑似变更应再核对一次内容差异");
 });
 

@@ -5,7 +5,8 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { getWorkspace } from "./workspace.mjs";
 import { appendEvent } from "./事件存储.mjs";
-import { atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
+import { recordRunFinished as recordGoalRunFinished } from "./goal.mjs";
+import { atomicWriteFile, atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
 import { attachRunTimingSpans } from "./首字延迟.mjs";
 import { RUNTIME_FLAGS } from "./运行开关.mjs";
 import {
@@ -20,6 +21,7 @@ import {
 } from "./写入协调.mjs";
 import { validateArtifactFile } from "./产物验证.mjs";
 import { applyObjectiveDowngrade } from "./运行轨迹.mjs";
+import { appendJournal } from "./工作流日志.mjs";
 
 const PROJECT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const RUNS_DIR = process.env.OAW_RUNS_DIR || path.join(PROJECT_DIR, ".oaw", "runs");
@@ -37,6 +39,48 @@ const RECENT_SCAN_TIME_BUDGET_MS = Math.max(500, Number(process.env.OAW_RUN_RECE
 const MAX_BLOB_BYTES = 4 * 1024 * 1024;
 const MAX_BLOB_TOTAL = 80 * 1024 * 1024;
 const ACTIVE_RUN_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
+const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "aborted"]);
+// Run 终态缓存：id → 是否已终态（true/false）。token/thinking 等高频事件需要一个
+// 常数级判断，不能每条都读一次 Run JSON；finishRun 会把状态置 true。
+const runTerminalCache = new Map();
+// 当前进程内仍在执行的 Run：id → cwd。用于并行 Run 的产物归属隔离。
+const activeRunIndex = new Map();
+
+function isTerminalRun(run) {
+  return Boolean(run && run.finishedAt && TERMINAL_RUN_STATUSES.has(String(run.status || "")));
+}
+
+function rememberTerminalRun(id, terminal = true) {
+  const key = String(id || "");
+  if (!key) return;
+  runTerminalCache.set(key, Boolean(terminal));
+  while (runTerminalCache.size > 600) {
+    const first = runTerminalCache.keys().next().value;
+    if (!first) break;
+    runTerminalCache.delete(first);
+  }
+}
+
+/** 供 agent.mjs 的高频 emit 做常数级终态判定；未知 Run 首次读取后缓存。 */
+export function isRunTerminal(id) {
+  const key = String(id || "");
+  if (!key) return false;
+  if (runTerminalCache.has(key)) return runTerminalCache.get(key);
+  const run = loadRun(key);
+  const terminal = isTerminalRun(run);
+  rememberTerminalRun(key, terminal);
+  return terminal;
+}
+
+/** 当前进程内同工作区是否还有其他活跃 Run（用于禁用并行窗口的 mtime 兜底）。 */
+function hasOtherActiveRun(run) {
+  if (!run) return false;
+  const root = path.resolve(run.cwd || getWorkspace());
+  for (const [id, cwd] of activeRunIndex) {
+    if (id !== run.id && path.resolve(cwd || "") === root) return true;
+  }
+  return false;
+}
 // 进入"取消中"但还没终结的 Run：runId → { cancelRequestedAt, lastEventAt }。
 // 中断后 SDK 若因工具卡住等原因迟迟不回来，看门狗据此强制收尾。
 const pendingCancellations = new Map();
@@ -67,7 +111,10 @@ function ensureDir(dir) {
 
 function safeJsonWrite(file, value) {
   ensureDir(path.dirname(file));
-  atomicWriteJson(file, value);
+  // P2：Run 记录每个事件都会全量重写。pretty-print（2 空格缩进）让 1MB 级 Run
+  // 的字符串化与写盘成本额外增加 30%+，而 Run JSON 只被程序读取、不面向人工 diff。
+  // 改为紧凑 JSON（仍是合法 JSON），减少事件级写放大；读路径无需改动。
+  atomicWriteFile(file, JSON.stringify(value), "utf8");
 }
 
 function runFile(id) {
@@ -269,6 +316,48 @@ const runCache = new Map();
 // 全部 Run（含 events/steps/快照）重新 JSON.parse。索引按文件指纹增量维护，
 // 写入时用内存里的最新 Run 直接刷新，外部改动/删除则按指纹自动回退重建。
 const runIndex = new Map();
+/**
+ * P2：recordRunEvent 的合并写队列。
+ *
+ * Run 事件密集时，每条事件都把整份 Run（可达 1MB）重新 JSON 化并原子写盘，
+ * 实测 p95 约 23ms，会持续占用事件循环。这里把事件写盘合并到 200ms：
+ *   - 事件仍立即进入内存与全局事件流；
+ *   - 读取（getRun/listRuns）优先返回待写队列里的最新对象，不读旧盘；
+ *   - 生命周期写（beginRun/finishRun/step/todo/终稿）仍走 saveRun 立即落盘；
+ *   - 进程退出/服务关闭前 flush，最多丢失最后一个 200ms 窗口。
+ */
+const pendingRunSaves = new Map();
+let runSaveFlushTimer = null;
+
+function scheduleRunSave(run, delayMs = 200) {
+  pendingRunSaves.set(run.id, run);
+  if (runSaveFlushTimer) return run;
+  runSaveFlushTimer = setTimeout(() => {
+    runSaveFlushTimer = null;
+    flushPendingRunSaves();
+  }, Math.max(20, Number(delayMs) || 200));
+  runSaveFlushTimer.unref?.();
+  return run;
+}
+
+/** 立即写出所有待合并的 Run（服务关闭、进程退出、测试断言前调用）。 */
+export function flushPendingRunSaves() {
+  if (runSaveFlushTimer) {
+    clearTimeout(runSaveFlushTimer);
+    runSaveFlushTimer = null;
+  }
+  for (const [id, run] of [...pendingRunSaves]) {
+    pendingRunSaves.delete(id);
+    try { saveRun(run); } catch (error) { console.warn(`[runs] 合并写盘失败：${String(error?.message || error).slice(0, 160)}`); }
+  }
+}
+
+let runSaveExitHookInstalled = false;
+function installRunSaveExitHook() {
+  if (runSaveExitHookInstalled) return;
+  runSaveExitHookInstalled = true;
+  process.once("exit", flushPendingRunSaves);
+}
 
 // 与 listRuns 的 query 过滤保持一致的检索文本（小写）。
 function runSearchText(run) {
@@ -297,6 +386,9 @@ function buildRunMeta(run) {
 }
 
 function runIndexEntry(id) {
+  // P2：待合并的 Run 以内存最新状态为准，避免列表读到上一次磁盘快照。
+  const pending = pendingRunSaves.get(id);
+  if (pending) return buildRunMeta(pending);
   const file = runFile(id);
   let stat;
   try {
@@ -314,6 +406,9 @@ function runIndexEntry(id) {
 }
 
 function loadRun(id) {
+  // P2：事件合并窗口内，内存对象比磁盘新；所有读取都优先返回它。
+  const pending = pendingRunSaves.get(id);
+  if (pending) return pending;
   const file = runFile(id);
   let stat;
   try {
@@ -346,6 +441,8 @@ function loadRun(id) {
 function saveRun(run) {
   run.updatedAt = new Date().toISOString();
   safeJsonWrite(runFile(run.id), run);
+  // 立即写已经覆盖内存状态，合并队列里的同一 Run 不再需要延迟写。
+  pendingRunSaves.delete(run.id);
   // 写后失效缓存：下次读取以磁盘为准，避免缓存与持久化状态分叉
   runCache.delete(run.id);
   // 列表索引直接用内存里的最新 Run 刷新，列表无需等到下次全量解析才更新。
@@ -499,6 +596,7 @@ function normalizeTrackedPath(run, value) {
 // 临时/调试类噪音文件：不进入工作产物列表（agent 执行过程中的脚本、日志、缓存等）
 const NOISE_ARTIFACT_PATTERNS = [
   /(^|\/)(node_modules|__pycache__|\.venv|venv|\.git|\.oaw|\.cache|\.pytest_cache|dist-info)(\/|$)/i,
+  /(^|\/)node_modules[^/]*(\/|$)/i,             // node_modules_dir 等同前缀派生目录
   /(^|\/)\./,                                   // 隐藏文件与目录（含 .agent-context.md）
   /(^|\/)~\$/,                                  // Office 锁文件（~$xxx.docx/xlsx/pptx）
   /(^|\/)_agent_write_test\./i,                 // 写入探针测试文件
@@ -509,6 +607,10 @@ const NOISE_ARTIFACT_PATTERNS = [
 ];
 // 根目录/任意目录的前导下划线脚本类临时文件：_head.py、_jscheck.txt、_mapdata_run.txt
 const SCRATCH_SCRIPT_BASENAME = /^_[^/]*\.(py|js|mjs|cjs|ts|sh|bat|ps1|txt|log|json)$/i;
+// 下划线开头的目录整体视为临时区：_gh_search/、_probe/ 下的过程脚本与中间数据
+// （此前只按文件名判断，导致 `_gh_search/sim1.mjs`、`_probe/node_modules_dir/...`
+//  这类"目录是临时的、文件名是正常的"文件全部混进了工作产物）。
+const SCRATCH_DIRECTORY_SEGMENT = /(^|\/)_[^/]*\//;
 
 /** 临时/调试文件判定：用于产物列表过滤，避免糟糕的中间文件混入“工作产物”。 */
 export function isNoiseArtifactPath(relativePath) {
@@ -517,6 +619,7 @@ export function isNoiseArtifactPath(relativePath) {
   for (const pattern of NOISE_ARTIFACT_PATTERNS) {
     if (pattern.test(value)) return true;
   }
+  if (SCRATCH_DIRECTORY_SEGMENT.test(value)) return true;
   const basename = value.split("/").pop() || "";
   return SCRATCH_SCRIPT_BASENAME.test(basename);
 }
@@ -533,19 +636,23 @@ function trackedPathMatches(tracked, candidate) {
  */
 export function filterRunChanges(run, changes = []) {
   if (!run || !Array.isArray(changes)) return [];
-  const tracked = [...new Set((run.touchedPaths || []).map((value) => normalizeTrackedPath(run, value)).filter(Boolean))];
+  const trackedAll = [...new Set((run.touchedPaths || []).map((value) => normalizeTrackedPath(run, value)).filter(Boolean))];
+  // 工作区级写入（"."）只是“不知道写到哪”的兜底：只要本轮还有具体路径，
+  // 就必须按具体路径过滤。否则任一 bash/officecli 调用都会把并行 Run 的文件
+  // 全部吸进本轮产物（实测跨会话产物污染的主因）。
+  const concrete = trackedAll.filter((value) => value !== ".");
+  const effective = concrete.length ? concrete : trackedAll;
   return changes.filter((item) => {
     // 兼容两种输入：字符串路径（waitForFlush/diffWorkspace）与对象（changedFiles）
     const pathValue = typeof item === "string" ? item : item?.path;
     if (isNoiseArtifactPath(pathValue)) return false;
+    if (!effective.length) return true;
     if (typeof item === "string") {
-      if (!tracked.length) return true;
       const candidate = normalizeTrackedPath(run, item);
-      return tracked.some((prefix) => trackedPathMatches(prefix, candidate));
+      return effective.some((prefix) => trackedPathMatches(prefix, candidate));
     }
-    if (!tracked.length) return true;
     const candidates = [item?.path, item?.from].map((value) => normalizeTrackedPath(run, value)).filter(Boolean);
-    return candidates.some((candidate) => tracked.some((prefix) => trackedPathMatches(prefix, candidate)));
+    return candidates.some((candidate) => effective.some((prefix) => trackedPathMatches(prefix, candidate)));
   });
 }
 
@@ -620,6 +727,8 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
   const appendStartedAt = Date.now();
   appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_started", data: { status: run.status, task: run.task, projectId: run.projectId } });
   const appendMs = Date.now() - appendStartedAt;
+  activeRunIndex.set(id, before.root);
+  rememberTerminalRun(id, false);
   try { attachRunTimingSpans(id, { blobs: blobsMs, saveRun: saveMs, appendEvent: appendMs, beforeFiles: Object.keys(before.files || {}).length }); } catch {}
   return saved;
 }
@@ -639,6 +748,21 @@ export function updateRunStep(id, stepId, patch = {}) {
   run.events.push({ seq, type: "step_updated", data: { stepId: step.id, status: step.status }, at: new Date().toISOString() });
   const saved = saveRun(run);
   appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "step_updated", data: { stepId: step.id, status: step.status } });
+  if (RUNTIME_FLAGS.workflowJournal) {
+    const stage = step.id || step.name;
+    const journalStatus = nextStatus === "running" ? "started" : nextStatus;
+    try {
+      appendJournal(run.id, {
+        stage,
+        status: journalStatus,
+        artifacts: Array.isArray(patch.artifacts) ? patch.artifacts : [],
+        error: patch.error || null,
+        idempotent: patch.idempotent !== false,
+        at: step.finishedAt || new Date().toISOString(),
+      });
+      appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "workflow_journal_updated", data: { stage, status: journalStatus, workflowId: run.task?.workflowId || run.workflow?.id || null } });
+    } catch {}
+  }
   return saved;
 }
 
@@ -651,6 +775,16 @@ export function updateRunStep(id, stepId, patch = {}) {
 export function recordRunFinalText(id, text, { source = "agent", messageId = null } = {}) {
   const run = loadRun(id);
   if (!run) return null;
+  // 终态 Run 的最终文本不得再被迟到事件改写：否则前端会看到“任务结束后又冒出一段回答”。
+  if (isTerminalRun(run)) {
+    rememberTerminalRun(id, true);
+    run.lateEvents = Array.isArray(run.lateEvents) ? run.lateEvents : [];
+    if (run.lateEvents.length < 80) {
+      run.lateEvents.push({ type: "assistant_final", data: { text: String(text || "").slice(0, 4000), source, messageId }, at: new Date().toISOString() });
+      saveRun(run);
+    }
+    return { changed: false, event: null, run };
+  }
   const value = String(text || "").trim();
   run.events = Array.isArray(run.events) ? run.events : [];
   const stableMessageId = messageId || run.finalMessageId || `final_${run.id}`;
@@ -683,12 +817,23 @@ export function recordRunFinalText(id, text, { source = "agent", messageId = nul
 }
 
 export function recordRunEvent(id, type, data = {}) {
+  const run = loadRun(id);
+  if (!run) return null;
+  // 终态围栏：Run 收尾后到达的事件只做审计，不再进入 Run 事件流、全局事件流或
+  // 会话通道。否则迟到的 agent_end/assistant_final 会把前端重新拉回运行中。
+  if (isTerminalRun(run)) {
+    rememberTerminalRun(id, true);
+    run.lateEvents = Array.isArray(run.lateEvents) ? run.lateEvents : [];
+    if (run.lateEvents.length < 80) {
+      run.lateEvents.push({ type, data, at: new Date().toISOString() });
+      saveRun(run);
+    }
+    return null;
+  }
   // 终稿有唯一写入点：任何 assistant_final 都走幂等路径，避免同 Run 双终稿。
   if (type === "assistant_final") {
     return recordRunFinalText(id, data?.text, { source: data?.source || "agent", messageId: data?.messageId || null })?.run || null;
   }
-  const run = loadRun(id);
-  if (!run) return null;
   run.events = Array.isArray(run.events) ? run.events : [];
   if (["write_started", "artifact_staged", "artifact_materialized"].includes(type) && data && typeof data === "object" && data.path) {
     run.touchedPaths = Array.isArray(run.touchedPaths) ? run.touchedPaths : [];
@@ -708,9 +853,12 @@ export function recordRunEvent(id, type, data = {}) {
   const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
   run.eventSeq = seq;
   if (run.events.length < 800) run.events.push({ seq, type, data, at: new Date().toISOString() });
-  const saved = saveRun(run);
+  // P2：事件写盘合并到 200ms；getRun/listRuns 读合并队列里的最新对象，
+  // beginRun/finishRun/step/todo/终稿等生命周期仍走 saveRun 立即落盘。
+  installRunSaveExitHook();
+  scheduleRunSave(run);
   appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type, data });
-  return saved;
+  return run;
 }
 
 /** 幂等更新 Run 检查点；相同状态重复上报不会追加重复事件。 */
@@ -729,6 +877,35 @@ export function updateRunCheckpoint(id, patch = {}) {
   const saved = saveRun(run);
   appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_checkpoint_updated", data: next });
   return getRun(saved.id);
+}
+
+/** 真哈希 vs 兜底哈希（`size:mtime`）判定：兜底值含冒号且长度远短于 sha1。 */
+function isRealHash(value) {
+  return typeof value === "string" && value.length >= 32 && !value.includes(":");
+}
+
+/**
+ * 大小相同时的内容复核（避免兜底哈希造成的误报）。
+ * ① before 快照 blob 与当前文件逐字节对比；② before 侧是真哈希时用当前内容回算；
+ * ③ 都拿不到内容时退化为 size+mtime 一致判断（兜底哈希本身就是 `size:mtime`）。
+ */
+function sameContent(runId, before, after, rel, oldItem) {
+  const currentRoot = after?.root || before?.root || "";
+  const current = path.join(currentRoot, rel);
+  const newItem = after?.files?.[rel];
+  if (runId && oldItem?.reversible) {
+    const blob = path.join(RUNS_DIR, String(runId), "before", rel);
+    try {
+      if (fs.existsSync(blob) && fs.existsSync(current)) return hashFile(blob) === hashFile(current);
+    } catch {}
+  }
+  // 只有 before 侧是真哈希时才能回算（用 after 的真哈希回算会永远相等，漏掉真实修改）
+  if (isRealHash(oldItem?.hash)) {
+    try {
+      if (fs.existsSync(current) && hashFile(current) === oldItem.hash) return true;
+    } catch {}
+  }
+  return Boolean(oldItem?.mtime && newItem?.mtime && oldItem.mtime === newItem.mtime);
 }
 
 /** 变更稳定标识：同一 Run 内同一路径恒定，供差异接口按 id 解析（不接受任意路径）。 */
@@ -771,12 +948,15 @@ function finalizeFileChanges(run, changes, after) {
   // 只是不如精确台账可靠（共享工作区里并行 Run 的写入同样落在窗口内）——记为 run-window（待确认）。
   // 完全没有写入证据（纯读取的一轮）时，快照差异只能算“未归属线索”，不自动宣告交付。
   const workspaceWrite = touchedAll.includes(".");
-  const writeEvidence = touched.size > 0 || workspaceWrite;
+  const concrete = [...touched].filter(Boolean);
+  const writeEvidence = concrete.length > 0 || workspaceWrite;
   for (const change of Array.isArray(changes) ? changes : []) {
     const relativePath = String(change?.path || change?.relativePath || "").replace(/\\/g, "/");
     if (!relativePath) continue;
     const changeType = normalizeChangeTypeOf(change);
-    const viaLedger = touched.has(relativePath);
+    // 台账可能给的是目录（例如流水线写入整个目录），按前缀归属；只有真正由台账
+    // 证明的路径才是 write-ledger，"." 只代表“知道写过、不知道写到哪”。
+    const viaLedger = concrete.some((prefix) => trackedPathMatches(prefix, relativePath));
     const source = viaLedger ? "write-ledger" : (writeEvidence ? "run-window" : "unattributed");
     const confidence = viaLedger ? "confirmed" : "suspected";
     // 疑似变更再核对一次：大小与修改时间都一致时视为“只是被 touch”，不算修改
@@ -797,8 +977,9 @@ function finalizeFileChanges(run, changes, after) {
       cwd: run.cwd || null,
       source,
       confidence,
-      // 未归属线索不得自动成为交付物；仍需显式验收/固定才升级为 deliverable。
-      autoDeliverable: source !== "unattributed",
+      // 只有台账确认的写入才能自动成为交付候选；run-window 是并行/窗口推测，
+      // 必须先人工确认，不能直接进入“本轮产物”的交付计数。
+      autoDeliverable: source === "write-ledger",
       toolCallId: toolCallIdByPath.get(relativePath) || change.toolCallId || null,
       detectedBy: viaLedger ? "write-ledger" : (change.detectedBy || (workspaceWrite ? "run-window" : "unattributed")),
       detectable: changeType !== "deleted" || beforeReversible,
@@ -808,7 +989,7 @@ function finalizeFileChanges(run, changes, after) {
   return out;
 }
 
-function changedFiles(before, after) {
+function changedFiles(before, after, { runId = "" } = {}) {
   const a = before?.files || {};
   const b = after?.files || {};
   const deleted = [];
@@ -826,8 +1007,13 @@ function changedFiles(before, after) {
     const newItem = b[rel];
     if (!oldItem && newItem) return [{ path: rel, status: "added", before: null, after: newItem }];
     if (oldItem && !newItem) return [{ path: rel, status: "deleted", before: oldItem, after: null }];
-    if (oldItem.hash !== newItem.hash || oldItem.size !== newItem.size) return [{ path: rel, status: "modified", before: oldItem, after: newItem }];
-    return [];
+    if (oldItem.size !== newItem.size) return [{ path: rel, status: "modified", before: oldItem, after: newItem }];
+    if (oldItem.hash === newItem.hash) return [];
+    // 快照预算耗尽后哈希会退化成 `size:mtime` 兜底值，而 before/after 两次快照的
+    // 遍历顺序可能不同，于是出现"一侧真哈希、一侧兜底哈希"，直接比较必然不等。
+    // 大小相同时必须复核内容，否则只是 mtime 变了的文件会被误报成"修改"。
+    if (sameContent(runId, before, after, rel, oldItem)) return [];
+    return [{ path: rel, status: "modified", before: oldItem, after: newItem }];
   });
   for (const rename of renames) {
     const oldItem = a[rename.from];
@@ -835,6 +1021,19 @@ function changedFiles(before, after) {
     changed.push({ path: rename.to, status: "renamed", from: rename.from, before: oldItem, after: newItem });
   }
   return changed.filter((item) => !renames.some((r) => (item.status === "deleted" && item.path === r.from) || (item.status === "added" && item.path === r.to))).sort((x, y) => x.path.localeCompare(y.path));
+}
+
+/**
+ * 以内容哈希口径计算 Run 当前的真实文件变更（供汇总文案与产物清单共用）。
+ *
+ * 与 waitForFlush/mtime 快照 diff 的区别：只按 mtime 判断会把"只碰了修改时间、
+ * 内容没变"的文件也算成变更（Office/CLI 读取、外部同步、快照哈希预算耗尽都会触发），
+ * 因此这里复用 Run 自己的 before 快照与 run.artifacts 完全相同的比较逻辑。
+ */
+export function listRunArtifacts(run, root = "") {
+  if (!run || run.snapshotMode === "none") return [];
+  const after = snapshotWorkspace(root || run.cwd);
+  return filterRunChanges(run, changedFiles(run.before, after, { runId: run.id }));
 }
 
 /** Run 明确触碰过的具体文件（"." 代表只知道"写过但不知道写到哪"，不参与精确过滤）。 */
@@ -913,7 +1112,11 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
   if (!run) return null;
   // 并发收尾（例如 SSE 重放、后台异常兜底、取消请求同时到达）只能落一次终态。
   // 否则第二次会重复发布/丢失产物并再次追加 run_finished，前端恢复时就会出现两条结论。
-  if (["completed", "failed", "cancelled", "aborted"].includes(run.status) && run.finishedAt) return run;
+  if (isTerminalRun(run)) {
+    rememberTerminalRun(id, true);
+    activeRunIndex.delete(id);
+    return run;
+  }
   const persistWriteEvent = (type, data) => appendEvent({
     clientId: run.clientId,
     threadId: run.threadId,
@@ -984,9 +1187,11 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
     const snapshotChanges = shouldTrackWorkspace ? changedFiles(run.before, after) : [];
     // 变更来源②：运行窗口内的 mtime 扫描。仅当没有明确触碰路径时启用（有明确路径时
     // 快照 diff 已经足够精确），用于补齐快照截断与 bash/officecli 无法回报目标的情况。
+    // 同工作区还有其他活跃 Run 时禁用：此时窗口内的文件无法区分归属，宁可标成
+    // “未归属线索”，也不能把并行任务的产物算到本轮。
     let recentChanges = [];
-    if (shouldTrackWorkspace && !concreteTouchedPaths(run).length) {
-      const sinceMs = new Date(run.startedAt || Date.now()).getTime() - 2000;
+    if (shouldTrackWorkspace && !concreteTouchedPaths(run).length && !hasOtherActiveRun(run)) {
+      const sinceMs = new Date(run.startedAt || Date.now()).getTime();
       recentChanges = detectRecentWorkspaceFiles(run.cwd, sinceMs).map((item) => ({
         path: item.path,
         status: run.before?.files?.[item.path] ? "modified" : "added",
@@ -997,7 +1202,23 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
     if (shouldTrackWorkspace) copyAfterBlobs(run, rawChanges, after);
     run.after = after;
     // C01：补全审计字段 + 剔除“没有内容差异”的疑似变更（必须在 after blob 复制之后判定）
-    run.artifacts = shouldTrackWorkspace ? finalizeFileChanges(run, rawChanges, after) : [];
+    const recomputedArtifacts = shouldTrackWorkspace ? finalizeFileChanges(run, rawChanges, after) : [];
+    // R1：失败/取消收尾不能清空已经落盘并通过校验的产物。
+    // 恢复性完成（source=recovered）同样保留既有产物：重启后工作区可能已被继续修改，
+    // 重算结果未必能覆盖原产物，不能因为“重新扫描”把成果抹掉。
+    const previousArtifacts = Array.isArray(run.artifacts) ? run.artifacts : [];
+    if (finalStatus === "completed" && completion?.source !== "recovered") {
+      run.artifacts = recomputedArtifacts;
+    } else {
+      const seenArtifactPaths = new Set(recomputedArtifacts.map((item) => String(item?.path || "").replace(/\\/g, "/")));
+      run.artifacts = [...recomputedArtifacts];
+      for (const item of previousArtifacts) {
+        const key = String(item?.path || "").replace(/\\/g, "/");
+        if (!key || seenArtifactPaths.has(key)) continue;
+        seenArtifactPaths.add(key);
+        run.artifacts.push({ ...item, preserved: true });
+      }
+    }
     const artifacts = run.artifacts;
     run.snapshotTruncated = Boolean(run.before?.truncated || after.truncated);
     run.status = finalStatus;
@@ -1094,16 +1315,71 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
     run.events.push({ seq, type: "run_finished", data: finishedData, at: run.finishedAt });
     const saved = saveRun(run);
     appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_finished", data: finishedData });
+    // v0.13.0：Goal 统计只消费 Run 终态；失败/取消也计入已消耗，不反向修改 Run。
+    try {
+      recordGoalRunFinished({
+        sessionId: sessionId || run.sessionId || run.threadId || "",
+        threadId: run.threadId || "",
+        runId: run.id,
+        status: finalStatus,
+        completionStatus: run.completion?.status || "",
+        startedAt: run.startedAt,
+        finishedAt: run.finishedAt,
+        events: run.events,
+      });
+    } catch (error) {
+      console.warn("[runs] Goal 统计失败：", error?.message || error);
+    }
     return saved;
   } finally {
     releaseRunLocks(run.id);
+    activeRunIndex.delete(run.id);
+    if (isTerminalRun(run)) rememberTerminalRun(run.id, true);
   }
 }
 
 /**
  * 服务重启后，磁盘上仍为活动态的 Run 不可能继续持有旧进程内存，
  * 先标记为 recovering，交给任务中心显式继续，避免假装仍在执行。
+ *
+ * R1：收尾判定必须以客观完成证据为准。agent 已经产出终稿（finalText /
+ * assistant_final / agent_end）时，重启只是打断了收尾流程，不能把任务判成失败；
+ * 否则用户会看到“活干完了、产物也有，但任务显示失败”。证据判定同时用于
+ * 长期未收口（默认 6 小时）的 Run，避免 11 天悬挂只能等下一次重启清理。
  */
+const RECOVER_MAX_RUNNING_MS = Math.max(
+  30 * 60_000,
+  Number.parseInt(process.env.OAW_RUN_RECOVER_MAX_AGE_MS || String(6 * 60 * 60_000), 10) || 6 * 60 * 60_000,
+);
+
+function runCompletionEvidence(run) {
+  const events = Array.isArray(run.events) ? run.events : [];
+  const finalText = String(run.finalText || "").trim();
+  const hasAssistantFinal = events.some((event) => event?.type === "assistant_final" && String(event?.data?.text || "").trim());
+  const hasAgentEnd = events.some((event) => event?.type === "agent_end");
+  return {
+    finished: Boolean(finalText || hasAssistantFinal || hasAgentEnd),
+    finalText: finalText || String(events.find((event) => event?.type === "assistant_final")?.data?.text || "").trim(),
+    artifacts: Array.isArray(run.artifacts) ? run.artifacts.length : 0,
+  };
+}
+
+function recoveredCompletion(run, evidence) {
+  const summary = evidence.finalText
+    || run.completion?.summary
+    || run.summary
+    || "任务在服务重启前已完成，按已产出终稿收尾";
+  return {
+    status: "success",
+    source: "recovered",
+    summary,
+    incomplete: [],
+    blockers: [],
+    verification: null,
+    at: new Date().toISOString(),
+  };
+}
+
 export function recoverActiveRuns({ onlyIds = null } = {}) {
   ensureDir(RUNS_DIR);
   reclaimStaleWriteLocks();
@@ -1112,9 +1388,19 @@ export function recoverActiveRuns({ onlyIds = null } = {}) {
   for (const name of fs.readdirSync(RUNS_DIR).filter((item) => item.endsWith(".json"))) {
     const run = loadRun(path.basename(name, ".json"));
     if (!run || !ACTIVE_RUN_STATUSES.has(run.status)) continue;
-    // 上次重启已经标记为 recovering、这次重启仍然挂着：说明用户没有再继续它，
-    // 按失败收尾（discard staging + 补 run_finished），避免 run_started 永远没有终态。
+    // 上次重启已经标记为 recovering、这次重启仍然挂着：先看客观完成证据。
+    // 有终稿/agent_end → 按完成收尾；没有 → 才判失败（discard staging + 补 run_finished）。
     if (run.status === "recovering") {
+      const evidence = runCompletionEvidence(run);
+      if (evidence.finished) {
+        const finished = finishRun(run.id, {
+          status: "completed",
+          summary: run.summary || "服务重启后按已产出终稿自动收尾",
+          completion: recoveredCompletion(run, evidence),
+        });
+        if (finished) recovered.push(`${run.id}(按终稿收尾)`);
+        continue;
+      }
       const finished = finishRun(run.id, {
         status: "failed",
         error: run.error || "服务重启两次后未被恢复，任务已终止",
@@ -1124,6 +1410,18 @@ export function recoverActiveRuns({ onlyIds = null } = {}) {
       continue;
     }
     if (allowList && !allowList.has(run.id)) continue;
+    // 长期未收口：重启时已经没有旧进程，超过阈值不可能再继续。
+    // 有终稿按完成收尾，没有才判失败；避免“运行中”永久悬挂。
+    const startedAtMs = Date.parse(run.startedAt || "");
+    if (Number.isFinite(startedAtMs) && Date.now() - startedAtMs > RECOVER_MAX_RUNNING_MS) {
+      const evidence = runCompletionEvidence(run);
+      const hours = Math.round(RECOVER_MAX_RUNNING_MS / 3600_000);
+      const finished = evidence.finished
+        ? finishRun(run.id, { status: "completed", summary: run.summary || "运行超时后按已产出终稿自动收尾", completion: recoveredCompletion(run, evidence) })
+        : finishRun(run.id, { status: "failed", error: run.error || `运行超过 ${hours} 小时未收口，已自动收尾`, summary: "任务长时间未收口，已自动收尾" });
+      if (finished) recovered.push(`${run.id}(${evidence.finished ? "按终稿收尾" : "超时收尾"})`);
+      continue;
+    }
     run.status = "recovering";
     run.recovery = { required: true, reason: "服务重启后需要用户确认继续", detectedAt: new Date().toISOString() };
     run.events = Array.isArray(run.events) ? run.events : [];
@@ -1196,16 +1494,20 @@ export function getRun(id) {
 function withNormalizedAttribution(run) {
   if (!run || !Array.isArray(run.artifacts) || !run.artifacts.length) return run;
   const touchedAll = (run.touchedPaths || []).map((value) => normalizeTrackedPath(run, value)).filter(Boolean);
-  const concrete = new Set(touchedAll.filter((value) => value !== "."));
+  const concrete = [...new Set(touchedAll.filter((value) => value !== "."))];
   const workspaceWrite = touchedAll.includes(".");
-  if (!concrete.size && !workspaceWrite) return run;
+  if (!concrete.length && !workspaceWrite) return run;
   let changed = false;
   const artifacts = run.artifacts.map((item) => {
     const path = String(item?.path || item?.relativePath || "").replace(/\\/g, "/");
-    const source = concrete.has(path) ? "write-ledger" : (item?.source === "unattributed" ? "run-window" : item?.source);
-    if (!source || source === item?.source) return item;
+    // 只补全缺失的 source；绝不把 unattributed 追溯升级为 run-window，
+    // 否则旧的“疑似文件”会在读取时变成可交付产物。
+    const viaLedger = concrete.some((prefix) => trackedPathMatches(prefix, path));
+    const source = item?.source || (viaLedger ? "write-ledger" : "unattributed");
+    const autoDeliverable = source === "write-ledger";
+    if (source === item?.source && item?.autoDeliverable === autoDeliverable) return item;
     changed = true;
-    return { ...item, source, autoDeliverable: source !== "unattributed" };
+    return { ...item, source, autoDeliverable };
   });
   return changed ? { ...run, artifacts } : run;
 }
@@ -1217,6 +1519,12 @@ function withNormalizedAttribution(run) {
 function publicRunView(run, { includeEvents = true, eventByteBudget = 0 } = {}) {
   const normalized = withNormalizedAttribution(run);
   const { before, after, ...publicRun } = normalized;
+  // 工作产物视图：不展示过程脚本/中间数据（touchedPaths 与磁盘记录仍保留原始清单，
+  // 便于审计与回滚定位）。历史上已固化的噪音条目（如 `_gh_search/*`）也因此不再出现在
+  // 产物面板与会话总结里，无需改写 Run 记录。
+  if (Array.isArray(publicRun.artifacts)) {
+    publicRun.artifacts = publicRun.artifacts.filter((item) => !isNoiseArtifactPath(item?.path));
+  }
   if (Array.isArray(publicRun.events) && !includeEvents) {
     publicRun.eventCount = publicRun.events.length;
     delete publicRun.events;
