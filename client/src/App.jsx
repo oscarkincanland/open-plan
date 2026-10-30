@@ -66,8 +66,53 @@ function cleanPersistedMessage(text = "") {
   return source.replace(/^##\s*当前任务[\s\S]*?\n边界：[^\n]+\n\n?/i, "").trim();
 }
 
+/**
+ * 懒加载模块的局部错误边界。
+ *
+ * 全局 AppErrorBoundary 会把任何模块渲染错误变成整页“应用出错”。懒加载模块
+ * （地图、知识库、模板库等）在**前端重建后**最容易因为旧 chunk 失效而抛错，
+ * 这时只应影响当前模块，并给用户“重试/刷新”的出口，而不是整站白屏。
+ *
+ * 分包类错误（isStaleChunkError）沿用一次性自动刷新；普通组件错误则保留在本模块内，
+ * 关闭再打开模块即可重新挂载（错误边界随条件渲染卸载而复位）。
+ */
+class ModuleBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error(`[module:${this.props.label || "模块"}]`, error, info);
+    if (isStaleChunkError(error)) recoverFromStaleChunk(error?.message);
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    const message = this.state.error?.message || "未知错误";
+    return (
+      <div className="module-error" role="alert">
+        <div className="module-error-title">「{this.props.label || "模块"}」加载失败</div>
+        <div className="module-error-text">{message}</div>
+        <div className="module-error-actions">
+          <button type="button" className="btn-sm" onClick={() => this.setState({ error: null })}>重新加载模块</button>
+          <button type="button" className="btn-sm" onClick={() => window.location.reload()}>刷新页面</button>
+        </div>
+      </div>
+    );
+  }
+}
+
 function DeferredModule({ children, label = "模块" }) {
-  return <Suspense fallback={<div className="module-loading">正在加载{label}…</div>}>{children}</Suspense>;
+  return (
+    <Suspense fallback={<div className="module-loading">正在加载{label}…</div>}>
+      <ModuleBoundary label={label}>{children}</ModuleBoundary>
+    </Suspense>
+  );
 }
 
 function RefreshBloom() {

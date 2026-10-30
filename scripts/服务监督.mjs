@@ -23,6 +23,46 @@ const RAPID_RESTART_WINDOW_MS = 30_000;
 const RAPID_RESTART_LIMIT = 5;
 const RESTART_DELAY_MS = 3_000;
 const RESTART_COOLDOWN_MS = 30_000;
+// 监督器单实例锁：重复 `npm start` / 多个终端同时启动时，只允许一个监督器存活。
+// 否则两个监督器会各自拉起子进程，端口竞争导致 EADDRINUSE、服务在重启窗口内不可用。
+const SUPERVISOR_LOCK_FILE = process.env.OAW_SUPERVISOR_LOCK || path.join(ROOT, ".oaw", "服务监督.lock");
+
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+export function readSupervisorLock() {
+  try {
+    const value = JSON.parse(fs.readFileSync(SUPERVISOR_LOCK_FILE, "utf8"));
+    return value && Number(value.pid) ? value : null;
+  } catch { return null; }
+}
+
+export function liveSupervisorLock() {
+  const lock = readSupervisorLock();
+  return lock && lock.pid !== process.pid && pidAlive(Number(lock.pid)) ? lock : null;
+}
+
+export function acquireSupervisorLock() {
+  const live = liveSupervisorLock();
+  if (live) return { ok: false, pid: Number(live.pid) };
+  try {
+    fs.mkdirSync(path.dirname(SUPERVISOR_LOCK_FILE), { recursive: true });
+    fs.writeFileSync(SUPERVISOR_LOCK_FILE, JSON.stringify({ pid: process.pid, port: PORT, startedAt: new Date().toISOString() }), "utf8");
+    process.once("exit", releaseSupervisorLock);
+    return { ok: true, pid: process.pid };
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) };
+  }
+}
+
+export function releaseSupervisorLock() {
+  try {
+    const lock = readSupervisorLock();
+    if (lock && Number(lock.pid) === process.pid) fs.rmSync(SUPERVISOR_LOCK_FILE, { force: true });
+  } catch {}
+}
 
 export function isHealthyPayload(payload, expectedVersion = "") {
   if (!payload || typeof payload !== "object" || payload.ok !== true) return false;
@@ -327,8 +367,22 @@ async function main() {
     return;
   }
   const foreground = process.argv.includes("--foreground");
-  if (foreground) await launchForeground();
-  else await launchBackground();
+  if (foreground) {
+    // 单实例：重复 `npm start` / 多终端同时启动时，不创建第二个监督器。
+    const lock = acquireSupervisorLock();
+    if (!lock.ok) {
+      log(`已有监督器在运行（PID ${lock.pid || "unknown"}），本次不重复启动。`);
+      return;
+    }
+    await launchForeground();
+    return;
+  }
+  const live = liveSupervisorLock();
+  if (live) {
+    log(`已有监督器在运行（PID ${live.pid}），跳过后台启动。`);
+    return;
+  }
+  await launchBackground();
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
