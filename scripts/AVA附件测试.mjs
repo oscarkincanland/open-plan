@@ -51,7 +51,7 @@ test("行为：媒体类型判定与大小格式化", () => {
 test("附件通道：白名单引用媒体工具，超限与不支持类型有提示", () => {
   assert.match(chatPanel, /import \{ ATTACHMENT_SIZE_LIMIT, ATTACHMENT_ALLOWED_EXT, mediaKindFor, formatBytes \} from "\.\/媒体工具\.js";/);
   assert.match(chatPanel, /f\.size > ATTACHMENT_SIZE_LIMIT/, "超限文件跳过");
-  assert.match(chatPanel, /已跳过 \$\{skipped\.length\} 个文件：/, "跳过提示文案");
+  assert.match(chatPanel, /已跳过 \$\{skipped\.length\} 个：/, "跳过提示文案");
   assert.match(chatPanel, /mediaKind: mediaKindFor\(f\.name\)/, "附件记录媒体分类");
 });
 

@@ -35,6 +35,7 @@ import { listAgents, createAgent, updateAgent, deleteAgent } from "./智能体�
 import { writeWorkspaceFile, withWriteLockAsync } from "./写入协调.mjs";
 import { evaluateWorkspaceWrite, runRuntimeEvaluation } from "./运行评测.mjs";
 import { normalizeOfficeFailure, normalizeWorkspaceWriteError, workspaceWriteHttpStatus } from "./文件权限错误.mjs";
+import { codeLanguageFor, isCodeExt, isTextExt, readTextPreview } from "./预览类型.mjs";
 import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, CHANNEL_HISTORY_LIMIT } from "./事件协议.mjs";
 import * as searchModule from "./联网搜索.mjs";
 import { nativeCapabilities, openWithDefaultApp, pickFiles, pickFolder, revealInFileManager, cancelActivePicker, activePickerInfo } from "./原生文件.mjs";
@@ -1153,14 +1154,22 @@ app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
       const wb = await readWorkbook(p);
       res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "xlsx", name: fileName, identity, ...wb });
-    } else if (["md", "markdown", "txt", "csv", "json"].includes(ext)) {
-      const content = fs.readFileSync(p, "utf8");
+    } else if (isTextExt(ext)) {
+      const preview = readTextPreview(p);
+      if (preview.binary) return res.status(415).json({ error: "该文件看起来是二进制内容，无法作为文本预览" });
       res.setHeader("Cache-Control", "no-store, max-age=0");
-      res.json({ kind: "text", name: fileName, content, ext, identity });
+      res.json({ kind: "text", name: fileName, content: preview.text, ext, truncated: preview.truncated, size: preview.size, identity });
     } else if (ext === "html" || ext === "htm") {
-      const content = fs.readFileSync(p, "utf8");
+      const preview = readTextPreview(p);
+      if (preview.binary) return res.status(415).json({ error: "该文件看起来是二进制内容，无法作为网页预览" });
       res.setHeader("Cache-Control", "no-store, max-age=0");
-      res.json({ kind: "htmlfile", name: fileName, content, identity });
+      res.json({ kind: "htmlfile", name: fileName, content: preview.text, ext, truncated: preview.truncated, size: preview.size, identity });
+    } else if (isCodeExt(ext)) {
+      // 源码只读预览：文本 + 语言标识，前端用 CodeViewer 渲染；不执行任何内容。
+      const preview = readTextPreview(p);
+      if (preview.binary) return res.status(415).json({ error: "该文件看起来是二进制内容，无法作为源码预览" });
+      res.setHeader("Cache-Control", "no-store, max-age=0");
+      res.json({ kind: "code", name: fileName, ext, language: codeLanguageFor(ext), content: preview.text, truncated: preview.truncated, size: preview.size, identity });
     } else if (ext === "pdf") {
       res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "pdf", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/raw${cwdQuery}` });

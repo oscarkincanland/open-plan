@@ -6,6 +6,23 @@
  * 图标与文案容易互相漂移，这里集中一份纯函数映射，Node 测试可直接调用。
  */
 
+// 语义类别 → 扁平图标的颜色令牌（styles.css 中按明暗主题定义）。
+// 图标本体由 文件类型图标.jsx 渲染；这里只给纯数据，Node 测试可直接断言。
+const KIND_BY_ICON = Object.freeze({
+  doc: ["doc", "doc"],
+  xls: ["sheet", "sheet"],
+  ppt: ["slides", "slides"],
+  pdf: ["pdf", "pdf"],
+  html: ["html", "html"],
+  md: ["md", "md"],
+  code: ["code", "code"],
+  image: ["image", "image"],
+  map: ["map", "map"],
+  package: ["archive", "archive"],
+  txt: ["text", "other"],
+  file: ["other", "other"],
+});
+
 const EXT_KINDS = Object.freeze({
   docx: { icon: "doc", label: "文档" },
   doc: { icon: "doc", label: "文档" },
@@ -65,11 +82,16 @@ export function artifactExt(path) {
   return index > 0 ? name.slice(index + 1).toLowerCase() : "";
 }
 
-/** 路径 → { icon, label, ext }；未知扩展名回退通用文件图标。 */
+/** 路径 → { icon, label, ext, kind, tone }；未知扩展名回退通用文件图标。
+ *  kind 是语义类别（doc/sheet/slides/pdf/html/md/code/image/map/archive/text/other），
+ *  tone 是颜色令牌名（styles.css 的 --file-<tone>），供扁平图标着色。 */
 export function artifactTypeInfo(path) {
   const ext = artifactExt(path);
   const kind = EXT_KINDS[ext];
-  return kind ? { icon: kind.icon, label: kind.label, ext } : { icon: "file", label: "文件", ext };
+  const [semantic, tone] = KIND_BY_ICON[kind?.icon || "file"] || ["other", "other"];
+  return kind
+    ? { icon: kind.icon, label: kind.label, ext, kind: semantic, tone }
+    : { icon: "file", label: "文件", ext, kind: "other", tone: "other" };
 }
 
 /** 卡片副标题：`表格 · XLSX`（无扩展名时只给类型文案）。 */

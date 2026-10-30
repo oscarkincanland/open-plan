@@ -12,6 +12,8 @@ import CommentMarker from "./CommentMarker.jsx";
 import Icon from "./Icon.jsx";
 import { previewCapability } from "../预览能力.js";
 
+// 源码查看器按需加载：CodeMirror 与语言包只在打开代码文件时才进入页面。
+const CodeViewer = React.lazy(() => import("./CodeViewer.jsx"));
 const ICONS = { docx: "doc", xlsx: "xls", xls: "xls", pptx: "ppt", md: "md", html: "html", htm: "html", txt: "txt", pdf: "pdf", png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", bmp: "image", svg: "image", avif: "image" };
 const ANNO_SAVE_DEBOUNCE = 800;
 
@@ -107,7 +109,9 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
   const iframeReadyRef = useRef(false);
   const saveTimerRef = useRef(null);
   const lastSavedJsonRef = useRef("[]");
-  const capability = previewCapability(doc?.ext);
+  // 预览/源码切换：只对文本类（Markdown/文本/HTML/代码）有意义，切文件时复位。
+  const [sourceMode, setSourceMode] = useState(false);
+  const capability = previewCapability(doc?.ext, { code: doc?.kind === "code" });
 
   // 文件身份：所有预览请求都显式带同一份 { cwd, relativePath, revision }。
   const identity = useMemo(
@@ -115,6 +119,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
     [doc?.identity, doc?.name],
   );
   const docKey = `${identity.workspaceId}::${identity.relativePath}`;
+  useEffect(() => { setSourceMode(false); }, [docKey, doc?.kind]);
   const urls = useMemo(() => buildDocUrls(identity), [identity.workspaceId, identity.relativePath, identity.revision]);
   // 渲染 generation：切文件时递增，旧请求（即使已完成）的结果直接丢弃。
   const generationRef = useRef(0);
@@ -194,7 +199,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
     abortMapRef.current.clear();
     // text / xlsx / htmlfile 的内容已随 open 响应返回并经身份核对，可直接 ready；
     // 其余格式（docx/pptx/pdf/html）还要经过渲染或 iframe 加载，先置 loading。
-    const localReady = doc?.kind === "text" || doc?.kind === "xlsx" || doc?.kind === "htmlfile";
+    const localReady = doc?.kind === "text" || doc?.kind === "code" || doc?.kind === "xlsx" || doc?.kind === "htmlfile";
     setPreviewState(localReady ? PREVIEW_STATE.READY : PREVIEW_STATE.LOADING);
     setPreviewErr("");
     setWatchUrl(null);
@@ -555,6 +560,14 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
         {doc.kind === "htmlfile" && <span className="badge">HTML 页面</span>}
         {doc.kind === "pdf" && <span className="badge">PDF</span>}
         {doc.kind === "text" && <span className="badge">{doc.ext === "md" || doc.ext === "markdown" ? "Markdown" : "文本"}</span>}
+        {doc.kind === "code" && <span className="badge">源码 · {doc.language || doc.ext || "text"}</span>}
+        {(doc.kind === "text" || doc.kind === "htmlfile") && (
+          <div className="doc-viewmode" role="group" aria-label="预览方式">
+            <button type="button" className={`btn-sm ${sourceMode ? "" : "active"}`} onClick={() => setSourceMode(false)}>预览</button>
+            <button type="button" className={`btn-sm ${sourceMode ? "active" : ""}`} onClick={() => setSourceMode(true)}>源码</button>
+          </div>
+        )}
+        {doc.truncated && <span className="badge ws-hint" title="文件超过 2MB，仅显示前 2MB">已截断</span>}
         {isHtmlKind && !isOfficePreview && (
           <button
             className={`btn-sm oa-anno-toggle ${annoMode ? "active" : ""}`}
@@ -603,6 +616,21 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
         </div>
       )}
       <div className="docview-body">
+        {doc.kind === "code" && (
+          <React.Suspense fallback={<div className="code-viewer-loading" role="status">正在加载源码…</div>}>
+            <CodeViewer content={doc.content} language={doc.language} fileName={doc.name} truncated={doc.truncated} />
+          </React.Suspense>
+        )}
+        {sourceMode && (doc.kind === "text" || doc.kind === "htmlfile") && (
+          <React.Suspense fallback={<div className="code-viewer-loading" role="status">正在加载源码…</div>}>
+            <CodeViewer
+              content={doc.content}
+              language={doc.kind === "htmlfile" ? "html" : (doc.ext === "md" || doc.ext === "markdown" ? "markdown" : "text")}
+              fileName={doc.name}
+              truncated={doc.truncated}
+            />
+          </React.Suspense>
+        )}
         {doc.kind === "html" && doc.ext === "docx" && (
           <DocxViewer name={doc.name} revision={doc.previewRevision} identity={identity} onPreviewState={setPreviewState} onPreviewError={setPreviewErr} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} />
         )}
@@ -709,7 +737,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
           </div>
         )}
         {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} officeHtmlUrl={urls.html} />}
-        {doc.kind === "htmlfile" && (
+        {doc.kind === "htmlfile" && !sourceMode && (
           <div className="docframe-container">
             <iframe
               ref={htmlFrameRef}
@@ -795,7 +823,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
             )}
           </div>
         )}
-        {doc.kind === "text" && (
+        {doc.kind === "text" && !sourceMode && (
           <div className="mdview-container">
             <MarkdownToc content={doc.content} targetRef={mdContentRef} />
             <div className="mdview" ref={mdContentRef}>

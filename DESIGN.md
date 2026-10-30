@@ -165,13 +165,15 @@ App.jsx（总编排：会话、工作区、模式、三栏布局、懒加载）
 - 代码/路径/参数/数字：等宽栈：`ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, monospace`。
 - 基准字号 13px，行高 20px；长文可调字号，设置需持久化。
 - 字号令牌：`--font-base 13px`（正文）、`--font-sm 12px`（正文次级/列表）、`--font-xs 11px`（次要信息）、`--font-micro 10px`（仅徽标/元数据，禁止用于正文段落）。
+- **对话内容排版**：助手正文 14px / 1.75，用户气泡 13px / 1.6，代码与源码 12.5px / 1.65；行宽由 `--chat-content-w 760px` 控制（约 50–55 个中文字/行），不靠 `max-width` 散值。
 - 等宽字体只用于代码与技术信息，不用于整站正文。
 
 ### 5.7 间距、圆角、滚动条与图标
 
 - 圆角令牌：`--radius-xs 3px / --radius-sm 4px`（按钮、输入）、`--radius-md 6px / --radius-lg 8px`（卡片、浮层）、`--radius-xl 12px`（大卡片）、`--radius-pill 999px`（胶囊）；不再新增 5/7/9/10/14px 这类散值。
 - 全局滚动条 8px、圆角、hover 高亮，随主题适配。
-- 功能图标统一 `Icon.jsx` 线性 SVG；禁止 emoji 充当功能图标。
+- **对话内容列**：`--chat-content-w 760px`、`--chat-gutter clamp(16px, 4vw, 40px)`；消息、执行过程卡、任务卡、输入区共用同一内容列。`.chat-body` 用 `scrollbar-gutter: stable` 预留 8px 滚动条，输入区用 `translateX(-4px)` 补偿，保证上下左右边缘对齐（≤2px）。
+- 功能图标统一 `Icon.jsx` 线性 SVG；禁止 emoji 充当功能图标。**例外**：文件类型图标使用扁平实色底 + 白色字形（见 §5.8），因为需要按类型着色区分。
 - 头像圆形：用户蓝色系、Agent 青绿色。
 - 分隔线、边框、阴影优先使用令牌；不新增散落魔法值。
 - 层级令牌：`--z-canvas 200 / --z-overlay 260 / --z-drawer 270 / --z-modal 300 / --z-toast 10000 / --z-tooltip 10010 / --z-boot 10100`；组件内不写裸 `z-index` 高层值。
@@ -189,6 +191,16 @@ App.jsx（总编排：会话、工作区、模式、三栏布局、懒加载）
 6. **不做**：不改 Chat/Work/Review 三按钮；不给所有文字按钮强行换图标；不在主操作上只放图标。
 - 状态表达仍需“图标 + 文字 + 颜色”中至少两项，不得只靠颜色或只靠图标。
 - 移除文字时保持点击区域、焦点样式与可访问名称不变；新增纯图标控件必须同时补提示。
+
+### 5.9 文件类型图标（扁平彩色）
+
+- **形态**：扁平实色底（12–14% 不透明度）+ 白色字形，20px（列表）/16px（紧凑列表）；不使用线性描边图标，避免与功能按钮图标混淆。
+- **颜色语义**（明暗主题各一套令牌，禁止硬编码）：
+  - Word `--file-doc` 蓝、Excel `--file-sheet` 绿、PPT `--file-slides` 橙、PDF `--file-pdf` 红；
+  - 网页 `--file-html` 紫、Markdown `--file-md` 青、代码 `--file-code` 靛、图片 `--file-image` 青蓝；
+  - 地图 `--file-map` 绿、压缩包 `--file-archive` 琥珀、其他 `--file-other` 中性；文件夹用 `--accent`。
+- **覆盖范围**：左侧文件树、预览页（画布）文件树、产物卡片、命令面板；统一由 `文件类型图标.jsx` 渲染，类型判断来自 `产物类型.js` 的 `kind/tone`。
+- **可访问性**：图标为装饰（`aria-hidden`），文件名与 `title` 提供完整类型文案；不得只靠颜色传达类型。
 
 ## 6. 组件交互规范
 

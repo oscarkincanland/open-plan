@@ -6,6 +6,7 @@ import 提及菜单 from "./提及菜单.jsx";
 import { detectMentionTrigger, filterAgentsForMention, buildMentionPrefix } from "./提及逻辑.js";
 import 欢迎卡片 from "./欢迎卡片.jsx";
 import { ATTACHMENT_SIZE_LIMIT, ATTACHMENT_ALLOWED_EXT, mediaKindFor, formatBytes } from "./媒体工具.js";
+import { clipboardImageFiles, imageDedupeKey, imageFileName, limitImages, compressImage, compressionSummary } from "../图片处理.js";
 import Icon, { ProviderIcon } from "./Icon.jsx";
 import 提示气泡 from "./提示气泡.jsx";
 import ToolIdentityIcon from "./工具语义图标.jsx";
@@ -727,6 +728,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [histOpen, setHistOpen] = useState(false); // 会话历史抽屉（默认隐藏，点击展开）
   const [images, setImages] = useState([]);
   const [attachments, setAttachments] = useState([]); // 非图片附件
+  // 图片去重/数量上限需要在异步压缩期间拿到最新清单，避免连续粘贴时重复加入。
+  const imagesRef = useRef([]);
+  useEffect(() => { imagesRef.current = images; }, [images]);
   const [busy, setBusy] = useState(false);
   // v0.13.1：Run 收口后刷新 Goal 统计（轮次/Token/预算状态），无需用户重开会话。
   const previousBusyRef = useRef(false);
@@ -3292,6 +3296,11 @@ case "runtime_connecting":
     const sourceImages = source.images || images;
     const sourceAttachments = source.attachments || attachments;
     const sourceReferences = source.references || references;
+    // D4：非视觉模型发送图片前二次确认，避免静默失败或图片被忽略。
+    if (!options.payload && sourceImages.length > 0 && !modelVision) {
+      const proceed = await askConfirm(`当前模型「${model || "未选择"}」不支持图片输入，继续发送可能失败。是否仍然发送？`);
+      if (!proceed) return;
+    }
     const rawText = String(source.rawText ?? overrideText ?? input).trim();
     if (!rawText && sourceImages.length === 0 && sourceAttachments.length === 0) return;
     if (!options.payload && /^\/goal(?:\s|$)/i.test(rawText)) {
@@ -3710,19 +3719,38 @@ case "runtime_connecting":
   };
 
   const handleFiles = async (list) => {
+    const incoming = Array.from(list || []);
     const addedImgs = [];
     const addedAtts = [];
-    // v0.13.8：文档白名单扩展音视频（mp4/webm/mov、mp3/wav/m4a）；
-    // 音视频不作为图片进模型，作为附件暂存，Agent 通过工作区读取；100MB 上限。
     const skipped = [];
-    for (const f of Array.from(list).slice(0, 6)) {
-      if (f.size > ATTACHMENT_SIZE_LIMIT) { skipped.push(`${f.name}（超过 ${formatBytes(ATTACHMENT_SIZE_LIMIT)} 上限）`); continue; }
-      if (f.type.startsWith("image/")) {
+    const imageFiles = incoming.filter((f) => String(f?.type || "").startsWith("image/"));
+    const otherFiles = incoming.filter((f) => !String(f?.type || "").startsWith("image/"));
+
+    // 图片：去重 → 数量上限 → 压缩。已有图片也算进 8 张上限。
+    const existingKeys = new Set((imagesRef.current || []).map((item) => item?.dedupeKey).filter(Boolean));
+    const remaining = Math.max(0, 8 - (imagesRef.current || []).length);
+    const { kept, rejected } = limitImages(imageFiles, remaining);
+    for (const file of kept) {
+      if (file.size > ATTACHMENT_SIZE_LIMIT) { skipped.push(`${imageFileName(file)}（超过 ${formatBytes(ATTACHMENT_SIZE_LIMIT)} 上限）`); continue; }
+      const key = imageDedupeKey(file);
+      if (existingKeys.has(key)) { skipped.push(`${imageFileName(file)}（重复图片）`); continue; }
+      existingKeys.add(key);
+      const compressed = await compressImage(file).catch(() => null);
+      if (compressed) {
+        addedImgs.push({ ...compressed, name: imageFileName(file), dedupeKey: key });
+      } else {
         try {
-          const { mediaType, data } = await fileToBase64(f);
-          addedImgs.push({ mediaType, data, dataUrl: `data:${mediaType};base64,${data}`, name: f.name });
+          const { mediaType, data } = await fileToBase64(file);
+          addedImgs.push({ mediaType, data, dataUrl: `data:${mediaType};base64,${data}`, name: imageFileName(file), dedupeKey: key, originalBytes: file.size, compressedBytes: file.size });
         } catch {}
-      } else if (ATTACHMENT_ALLOWED_EXT.test(f.name)) {
+      }
+    }
+    for (const file of rejected) skipped.push(`${imageFileName(file)}（最多 8 张图片）`);
+
+    // 非图片附件：沿用白名单与 100MB 上限；单次最多 6 个，避免一次拖入过多。
+    for (const f of otherFiles.slice(0, 6)) {
+      if (f.size > ATTACHMENT_SIZE_LIMIT) { skipped.push(`${f.name}（超过 ${formatBytes(ATTACHMENT_SIZE_LIMIT)} 上限）`); continue; }
+      if (ATTACHMENT_ALLOWED_EXT.test(f.name)) {
         try {
           const { mediaType, data } = await fileToBase64(f);
           addedAtts.push({ mediaType, data, dataUrl: `data:${mediaType};base64,${data}`, name: f.name, size: f.size, mediaKind: mediaKindFor(f.name) });
@@ -3734,13 +3762,16 @@ case "runtime_connecting":
     if (addedImgs.length) setImages((im) => [...im, ...addedImgs]);
     if (addedAtts.length) setAttachments((at) => [...at, ...addedAtts]);
     const count = addedImgs.length + addedAtts.length;
+    const savings = compressionSummary(addedImgs);
     if (count) {
-      setModelMsg(`已加入上下文 ${count} 个文件`);
-      setTimeout(() => setModelMsg(""), 2200);
+      setModelMsg(`已加入 ${count} 个${savings ? `（图片${savings}）` : ""}`);
+      setTimeout(() => setModelMsg(""), 2400);
     }
     if (skipped.length) {
-      setModelMsg(`已跳过 ${skipped.length} 个文件：${skipped.slice(0, 3).join("、")}${skipped.length > 3 ? " 等" : ""}`);
-      setTimeout(() => setModelMsg(""), 3200);
+      setTimeout(() => {
+        setModelMsg(`已跳过 ${skipped.length} 个：${skipped.slice(0, 3).join("、")}${skipped.length > 3 ? " 等" : ""}`);
+        setTimeout(() => setModelMsg(""), 3600);
+      }, count ? 1400 : 0);
     }
   };
 
@@ -3749,10 +3780,7 @@ case "runtime_connecting":
   const dragDepthRef = useRef(0);
 
   const handleClipboardPaste = (e) => {
-    const files = Array.from(e.clipboardData?.items || [])
-      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
-      .map((item) => item.getAsFile())
-      .filter(Boolean);
+    const files = clipboardImageFiles(e);
     if (!files.length) return;
     e.preventDefault();
     handleFiles(files);
@@ -4355,9 +4383,17 @@ case "runtime_connecting":
         {images.length > 0 && (
           <div className="img-preview-row">
             {images.map((img, i) => (
-              <div className="img-chip" key={i}>
+              <div
+                className="img-chip"
+                key={img.dedupeKey || i}
+                title={`${img.name}${img.originalBytes ? ` · ${formatBytes(img.originalBytes)}${img.compressedBytes && img.compressedBytes < img.originalBytes ? ` → ${formatBytes(img.compressedBytes)}` : ""}` : ""}`}
+              >
                 <img src={img.dataUrl} alt={img.name} />
-                <button onClick={() => setImages((im) => im.filter((_, j) => j !== i))}>x</button>
+                <span className="img-chip-meta">{img.name}</span>
+                {img.originalBytes && img.compressedBytes && img.compressedBytes < img.originalBytes ? (
+                  <span className="img-chip-size">{formatBytes(img.originalBytes)} → {formatBytes(img.compressedBytes)}</span>
+                ) : null}
+                <button onClick={() => setImages((im) => im.filter((_, j) => j !== i))} aria-label={`移除图片 ${img.name}`}>x</button>
               </div>
             ))}
           </div>
