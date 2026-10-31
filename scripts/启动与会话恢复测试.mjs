@@ -46,10 +46,11 @@ assert.match(app, /const retrySessionResume = useCallback/, "应提供恢复重�
 assert.match(app, /历史已加载为只读/, "应明确说明历史只读");
 assert.match(样式, /\.session-resume-warning \{/, "只读提示应有样式");
 
-// 刷新行为：不自动打开预览、不恢复上次打开的标签（用户反馈的两个默认打开 bug）
-assert.match(app, /const \[previewOpen, setPreviewOpen\] = useState\(false\)/, "预览面板不应默认打开（没有内容时不显示空面板）");
-assert.doesNotMatch(app, /for \(const t of saved\.tabs/, "刷新不应恢复上次打开的标签/搜索预览");
-assert.doesNotMatch(app, /tabs: tabs\.map/, "不应持久化打开的标签");
+// 刷新行为：画布默认关闭；画布标签按工作区恢复；仍不自动恢复上次会话
+assert.match(app, /const \[canvasTabs, setCanvasTabs\] = useState\(\[\]\)/, "画布标签默认不打开（没有内容时不显示空面板）");
+assert.match(app, /const canvasOpen = canvasTabs\.length > 0 && !canvasCollapsed/, "画布只在有标签时显示");
+assert.match(app, /loadCanvasState\(currentWorkspace\)/, "刷新后按工作区恢复画布标签");
+assert.match(app, /saveCanvasState\(currentWorkspace/, "画布标签按工作区持久化");
 assert.match(app, /刷新后必须进入[\s\S]{0,40}空白新会话/, "应有注释说明刷新进入空白新会话");
 // v0.11.42 起浏览器面板不再靠常驻 /api/browser/stream 的「首个状态」自动展开
 //（那条长连接会占满同源连接槽位）。信号只来自对话流里的工具事件，且被

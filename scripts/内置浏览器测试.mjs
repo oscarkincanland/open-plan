@@ -301,8 +301,8 @@ await test("agent / task / index / 前端已接入浏览器能力", () => {
   assert.match(panel, /queueBrowserInput/, "浏览器输入事件必须经过串行队列");
   assert.match(panel, /action: "resize"/, "浏览器面板尺寸变化需要同步给 CDP viewport");
   assert.match(fs.readFileSync(path.join(ROOT, "client", "src", "styles.css"), "utf8"), /object-fit: contain/);
-  assert.match(app, /setBrowserPanelOpen\(true\)/, "浏览器活动应自动打开独立侧栏");
-  assert.match(app, /canvas-tab-browser/, "浏览器应为独立可伸缩侧栏（v0.13 布局重构后挂画布槽位 canvas-tab-browser，宽度由 --browser-w 驱动）");
+  assert.match(app, /openCanvasView\("browser"\)/, "浏览器活动应打开浏览器标签");
+  assert.match(app, /const browserOpen = canvasTabs\.some\(\(tab\) => tab\.kind === "browser"\)/, "浏览器标签存在性由画布标签推导");
   assert.doesNotMatch(app, /setPreviewTab\("browser"\)/, "浏览器不应再作为工作产物页签");
   // 标签页 UI 与文档按 cwd 打开（产物跨工作区）
   assert.match(panel, /action: "tab_switch"/);
