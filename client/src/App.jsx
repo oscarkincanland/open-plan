@@ -1023,10 +1023,10 @@ export default function App() {
     let modelTimer;
     const sessionTimer = window.setInterval(() => {
       if (document.visibilityState === "visible") refreshSessions();
-    }, 15000);
+    }, 30000);
     const projectTimer = window.setInterval(() => {
       if (document.visibilityState === "visible") refreshProjects();
-    }, 30000);
+    }, 60000);
     const syncModels = async () => {
       try {
         await syncModelCatalog();
