@@ -32,6 +32,8 @@ import RunFold from "./会话流/RunFold.jsx";
 import TimelineRow from "./会话流/TimelineRow.jsx";
 import SummaryBlock from "./会话流/SummaryBlock.jsx";
 import ArtifactCard from "./会话流/ArtifactCard.jsx";
+import TypewriterText from "./会话流/useTypewriter.jsx";
+import 跑马灯文本 from "./跑马灯文本.jsx";
 import { buildRunTimeline, splitCompletionSummary, summarizeTimeline } from "../会话流投影.js";
 
 // O-P3：浏览器"写操作类"工具白名单 —— 只有这些会拉起内置浏览器侧栏；
@@ -5386,11 +5388,14 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
   // Review 轮次保留旧渲染（RunSummary 结果卡含审查依据页签）；纯问答消息（无 runId）走旧文本路径。
   const timelinePath = !isUser && Boolean(m.runId)
     && !/^review$/i.test(String(m.runMode || m.task?.mode || ""));
+  // 事件源（精修计划 F7）：anchor 轮优先实时流 executionFlow.events——运行中秒数、
+  // 当前动作与工具 run 状态点才能实时更新；历史/非 anchor 轮回退 runSummary.events。
+  const timelineEventsSource = timelinePath
+    ? (Array.isArray(executionFlow?.events) && executionFlow.events.length ? executionFlow.events : (Array.isArray(runSummary?.events) ? runSummary.events : []))
+    : [];
   const runTraceForTimeline = useMemo(
-    () => (timelinePath && Array.isArray(runSummary?.events) && runSummary.events.length
-      ? reduceRunTrace(runSummary.events, m.runId)
-      : null),
-    [timelinePath, runSummary, m.runId],
+    () => (timelinePath && timelineEventsSource.length ? reduceRunTrace(timelineEventsSource, m.runId) : null),
+    [timelinePath, timelineEventsSource, m.runId],
   );
   const timelineBlocks = useMemo(
     () => (timelinePath ? blocks.filter((block, blockIndex) => blockIndex !== hiddenFinalTextIndex) : []),
@@ -5406,7 +5411,6 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
     () => (timelinePath ? (runCardView?.changes || []).filter((change) => change.role !== "internal").length : 0),
     [timelinePath, runCardView],
   );
-  const timelineRollbackable = timelinePath && (runCardView?.changes || []).some((change) => change.before?.reversible);
   const summaryParts = useMemo(
     () => (timelinePath
       ? splitCompletionSummary(String(timelineCompletion?.summary || ""), !streaming ? authoritativeFinalText : "")
@@ -5431,44 +5435,79 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
   const timelineInteractionItems = timelinePath ? runTimeline.filter((item) => item.kind === "ask" || item.kind === "approval") : [];
   const renderTimelineInteraction = (item) => {
     if (item.kind === "ask") {
+      const question = String(item.block?.question || "").replace(/\s+/g, " ").slice(0, 40);
       return (
-        <AskBlock
-          key={item.id}
-          block={item.block}
-          clientId={clientId}
-          threadId={threadId}
-          onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)}
-          onExpired={(blockId) => onAskExpired?.(m.id, blockId)}
-        />
+        <TimelineRow key={item.id} icon="comment" verb="等待你回答" obj={question} state="run" locked>
+          <AskBlock
+            block={item.block}
+            clientId={clientId}
+            threadId={threadId}
+            onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)}
+            onExpired={(blockId) => onAskExpired?.(m.id, blockId)}
+          />
+        </TimelineRow>
       );
     }
-    if (item.kind === "approval") return <ApprovalBlock key={item.id} block={item.block} />;
+    if (item.kind === "approval") {
+      const toolName = String(item.block?.tool || item.block?.name || "工具");
+      return (
+        <TimelineRow key={item.id} icon="shield" verb="等待审批" obj={toolName} state="run" locked>
+          <ApprovalBlock block={item.block} />
+        </TimelineRow>
+      );
+    }
     return null;
   };
   const renderTimelineItem = (item) => {
+    const lastTextIndex = runTimeline.reduce((last, candidate, candidateIndex) => (candidate.kind === "text" ? candidateIndex : last), -1);
+    const lastThinkingIndex = runTimeline.reduce((last, candidate, candidateIndex) => (candidate.kind === "thinking" ? candidateIndex : last), -1);
     switch (item.kind) {
-      case "thinking":
+      case "thinking": {
+        // F2-b：流式思考——折叠态=单行跑马灯滚动预览（复用既有跑马灯，纳入动效闸门），展开态=打字机。
+        const isLiveThinking = streaming && item === runTimeline[lastThinkingIndex];
+        const tail = String(item.text || "").replace(/\s+/g, " ").trim();
+        const previewText = tail.length > 60 ? `…${tail.slice(-60)}` : tail;
+        const objNode = isLiveThinking
+          ? <span className="tl-think-preview"><跑马灯文本 text={previewText} active title={tail} /></span>
+          : item.obj;
         return (
-          <TimelineRow key={item.id} icon={item.icon} verb={item.verb} obj={item.obj} timeText={item.timeText} state={item.state}>
-            <div className="tl-thinking-text">{item.text}</div>
+          <TimelineRow key={item.id} icon={item.icon} verb={item.verb} obj={objNode} objTitle={item.obj} timeText={item.timeText} state={item.state}>
+            {isLiveThinking
+              ? <TypewriterText text={item.text} enabled className="tl-thinking-text" />
+              : <div className="tl-thinking-text">{item.text}</div>}
           </TimelineRow>
         );
+      }
       case "text": {
-        const lastTextIndex = runTimeline.reduce((last, candidate, candidateIndex) => (candidate.kind === "text" ? candidateIndex : last), -1);
         const isStreamingText = streaming && item === runTimeline[lastTextIndex];
         return (
           <div className="textblock flow-markdown" key={item.id}>
             <div className="tb-cap">{item.cap}</div>
             {isStreamingText
-              ? <div className="flow-stream-text" aria-live="polite">{readableProgressText(item.text)}</div>
+              ? <TypewriterText text={item.text} enabled className="flow-stream-text" />
               : <SafeMarkdown text={item.text} onOpenFile={onOpenFile} artifacts={answerArtifacts} />}
           </div>
         );
       }
       case "tool":
         return <ToolCard key={item.id} tool={item.block} onToggle={() => onToggleTool?.(m.id, item.block.id)} />;
-      case "subagent":
-        return <SubagentCard key={item.id} block={item.block} onOpenDetail={onOpenSubagent} />;
+      case "subagent": {
+        // F3：子代理默认折叠为一行条目，展开才见完整卡。
+        const b = item.block || {};
+        const state = ["completed", "closed"].includes(String(b.status)) ? (b.isError ? "err" : "ok")
+          : ["failed", "cancelled"].includes(String(b.status)) ? "err"
+            : "run";
+        const roleLabel = { scout: "资料探索", reviewer: "审阅", planner: "方案拆解", verifier: "独立核验", worker: "执行" }[b.role] || b.role || "只读任务";
+        const taskLabel = b.task ? String(b.task).replace(/\s+/g, " ").slice(0, 40) : "";
+        const timeText = b.startAt && b.endAt
+          ? (() => { const ms = new Date(b.endAt) - new Date(b.startAt); return Number.isFinite(ms) && ms >= 0 ? `${(ms / 1000).toFixed(1)} 秒` : ""; })()
+          : "";
+        return (
+          <TimelineRow key={item.id} icon={item.icon} verb="子代理" obj={taskLabel ? `${roleLabel} · ${taskLabel}` : roleLabel} timeText={timeText} state={state}>
+            <SubagentCard block={b} onOpenDetail={onOpenSubagent} />
+          </TimelineRow>
+        );
+      }
       case "pipeline":
         return <PipelineCard key={item.id} block={item.block} onOpenFile={onOpenFile} />;
       case "sys":
@@ -5659,12 +5698,12 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
             {m.images?.length > 0 && (
               <div className="msg-images assistant-images">{m.images.map((src, i) => <img key={i} src={src} alt="Agent 附图" />)}</div>
             )}
-            {/* 会话流改版（flag=chatTimelineUi，落地文档 2026-10-31-001）：
+            {/* 会话流改版（落地文档 2026-10-31-001 + 精修计划 2026-10-31-002）：
                 整轮折叠（时间流）→ 交互块（ask/审批，始终展开）→ 框外总结 → 本轮产物 → 需行动提示 */}
             <RunFold
               live={isTaskLive}
               finishing={isTaskFinishing}
-              startedAt={runTraceForTimeline?.startedAt || null}
+              startedAt={runTraceForTimeline?.startedAt || runSummary?.startedAt || m.createdAt || null}
               durationMs={runTraceForTimeline?.durationMs || null}
               toolCount={timelineStats.toolCount}
               fileCount={timelineFileCount}
@@ -5687,8 +5726,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
             <ArtifactCard
               products={answerArtifacts || []}
               onOpenFile={onOpenFile}
-              onLocate={onOpenRunChanges ? () => onOpenRunChanges(runSummary?.runId || m.runId) : undefined}
-              onRollback={timelineRollbackable && onRollbackRun ? () => onRollbackRun(runSummary?.runId || m.runId) : null}
+              onOpenPanel={onOpenRunArtifacts ? () => onOpenRunArtifacts(runSummary?.runId || m.runId) : undefined}
             />
             {timelineActionNeeded && (
               <div className={`run-result-action ${timelineActionNeeded.kind}`}>

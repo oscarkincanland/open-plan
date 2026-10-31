@@ -13,6 +13,22 @@
  */
 import { toolIdentity } from "./事件展示.js";
 import { runToolDetailText } from "./运行轨迹.js";
+import { 计算展示字符数 } from "./components/流式文本队列.js";
+
+/**
+ * 打字机推进一帧（纯函数，Node 可测）：
+ * 返回「本帧结束后应展示的字符数」——只前进不回退；关闭动效直接给全文。
+ * 复用 流式文本队列.js 的计算展示字符数（90 字/秒、积压 0.24s 内自动追赶）。
+ */
+export function advanceTypewriter(fullText, shown, elapsedMs, reducedMotion) {
+  const total = String(fullText || "").length;
+  if (!total) return 0;
+  const current = Math.max(0, Math.min(Number(shown) || 0, total));
+  if (reducedMotion) return total;
+  if (current >= total) return total;
+  const next = 计算展示字符数({ remaining: total - current, elapsedMs, reducedMotion });
+  return Math.min(total, current + Math.max(1, Number(next) || 0));
+}
 
 /** 工具行对象摘要：与 ToolCard 的输入提取同源（args 优先、常用字段次之），超长截断。 */
 export function toolObjectText(name, input) {

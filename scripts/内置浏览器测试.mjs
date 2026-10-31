@@ -339,6 +339,15 @@ await test("Run 轮次走整轮折叠新路径（已转正），组件与样式�
   for (const cls of [".rf-head", ".rf-body", ".tl-row-head", ".tl-detail-wrap", ".sum-block", ".sum-conclusion", ".ac-card"]) {
     assert.ok(styles.includes(cls), `styles.css 缺少会话流样式 ${cls}`);
   }
+  // 精修计划 2026-10-31-002 接线断言
+  const artifact = read("client/src/components/会话流/ArtifactCard.jsx");
+  assert.match(chat, /useTypewriter|TypewriterText/, "正文/思考应接打字机");
+  assert.match(chat, /跑马灯文本/, "思考折叠态应使用既有跑马灯做滚动预览");
+  assert.match(chat, /tl-row-head no-toggle|locked/, "ask/审批应为 locked 一行头");
+  assert.match(artifact, /product-card-main/, "本轮产物应恢复既有 product-card 行格式");
+  assert.match(artifact, /在产物面板查看/, "本轮产物应保留产物面板入口");
+  assert.match(styles, /--msg-content-max: min\(100%, 720px\)/, "内容列宽令牌应存在");
+  assert.match(styles, /font-family: "Segoe UI Variable Text"/, "字体栈应升级（方案 A：系统栈优先）");
   assert.equal(pkg.scripts["test:chat-timeline"], "node scripts/会话流时间线测试.mjs", "应注册 test:chat-timeline 脚本");
 });
 

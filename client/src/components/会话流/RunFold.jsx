@@ -34,9 +34,11 @@ export default function RunFold({ live = false, finishing = false, startedAt = n
 
   const startMs = startedAt ? new Date(startedAt).getTime() : 0;
   const elapsedMs = live && startMs ? Math.max(0, now - startMs) : durationMs;
+  // 极短/未知耗时统一显示「不足 1 秒」，不再出现「0 秒」（精修计划 2026-10-31-002 F7）。
+  const fmt = (ms) => (Number(ms) >= 0 && Number(ms) < 1000 ? "不足 1 秒" : formatDuration(ms));
   const title = live
-    ? (finishing ? `收尾中 · 已运行 ${formatDuration(elapsedMs)}` : `正在运行 · 已 ${formatDuration(elapsedMs)}`)
-    : `已运行 ${formatDuration(elapsedMs)}`;
+    ? (finishing ? `收尾中 · 已运行 ${fmt(elapsedMs)}` : `正在运行 · 已 ${fmt(elapsedMs)}`)
+    : `已运行 ${fmt(elapsedMs)}`;
   const showVerification = verification !== "not_checked" || fileCount > 0;
 
   return (

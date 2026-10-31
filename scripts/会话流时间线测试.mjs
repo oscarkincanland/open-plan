@@ -7,7 +7,7 @@
  * 退出码: 0 = 全部通过, 1 = 有失败
  */
 import assert from "node:assert/strict";
-import { buildRunTimeline, splitCompletionSummary, summarizeTimeline, toolObjectText, toolStateOf } from "../client/src/会话流投影.js";
+import { buildRunTimeline, splitCompletionSummary, summarizeTimeline, toolObjectText, toolStateOf, advanceTypewriter } from "../client/src/会话流投影.js";
 import { reduceRunTrace } from "../client/src/运行轨迹.js";
 
 let failed = 0;
@@ -158,6 +158,29 @@ test("无标题结构的纯文本：首段为结论，其余为详细展开", ()
 test("summary 为空回退 finalText；两者皆空返回空串", () => {
   assert.equal(splitCompletionSummary("", "终稿结论。\n\n终稿细节。").conclusion, "终稿结论。");
   assert.deepEqual(splitCompletionSummary("", ""), { what: "", conclusion: "", detail: "" });
+});
+
+// ---------- 7. 打字机推进（精修计划 2026-10-31-002 F2） ----------
+console.log("\n▶ 打字机推进");
+test("逐帧前进、不回退、到顶即停", () => {
+  const text = "a".repeat(200);
+  const f1 = advanceTypewriter(text, 0, 16, false);
+  assert.ok(f1 > 0 && f1 <= 200, `首帧应推进：${f1}`);
+  const f2 = advanceTypewriter(text, f1, 16, false);
+  assert.ok(f2 >= f1, "不得回退");
+  assert.equal(advanceTypewriter(text, 200, 16, false), 200, "到顶即停");
+});
+test("积压自动追赶：大段文本快速追平（比例收敛 + 每帧保底 1 字）", () => {
+  const text = "b".repeat(5000);
+  let shown = 0;
+  for (let frame = 0; frame < 5 && shown < text.length; frame += 1) shown = advanceTypewriter(text, shown, 16, false);
+  assert.ok(shown >= 1000, `前 5 帧应大幅追赶：${shown}`);
+  for (let frame = 0; frame < 120 && shown < text.length; frame += 1) shown = advanceTypewriter(text, shown, 16, false);
+  assert.equal(shown, 5000, "追赶最终应到达全文");
+});
+test("关闭动效（reducedMotion）直接给全文；空文本为 0", () => {
+  assert.equal(advanceTypewriter("12345", 0, 16, true), 5);
+  assert.equal(advanceTypewriter("", 0, 16, false), 0);
 });
 
 console.log(failed ? "\n✗ 有失败用例" : "\n✓ 全部通过");

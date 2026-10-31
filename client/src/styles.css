@@ -22,6 +22,8 @@
   --sidebar-min: 180px;
   --sidebar-max: 400px;
   --chat-w: 460px;
+  /* 消息内容列统一宽度（精修 F8）：用户气泡与助手时间流/总结/产物卡共用 */
+  --msg-content-max: min(100%, 720px);
   --chat-min: 280px;
   --chat-max: 720px;
   --map-chat-w: 360px;
@@ -121,9 +123,10 @@
 }
 html, body, #root { height: 100%; }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, "Microsoft YaHei UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
   font-size: var(--font-base);
-  line-height: 20px;
+  line-height: 1.7;
+  letter-spacing: 0.01em;
   background: var(--body-bg);
   color: var(--text);
 }
@@ -8754,7 +8757,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   color: var(--user-fg);
   box-shadow: none;
 }
-.center-chat-slot .msg.user .bubble .msg-text { font-size: 13px; font-weight: 500; color: var(--user-fg); }
+.center-chat-slot .msg.user .bubble .msg-text { font-size: 13px; font-weight: 400; color: var(--user-fg); }
 /* 用户气泡内的正文/Markdown/链接/代码统一使用高对比字色：
    避免 accent 链接、继承来的浅色文字落在浅色气泡上不可读。 */
 .center-chat-slot .msg.user .bubble .flow-markdown,
@@ -10623,7 +10626,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .rf-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .rf-chev { display: inline-flex; color: var(--accent); transition: transform var(--dur-base) var(--ease-out); flex: none; }
 .rf-round.open .rf-chev { transform: rotate(90deg); }
-.rf-title { font-size: 15px; font-weight: 700; min-width: 0; }
+.rf-title { font-size: 15px; font-weight: 400; min-width: 0; }
 .rf-meta { display: flex; align-items: center; gap: 10px; margin-left: auto; font-size: 11px; color: var(--muted); flex: none; min-width: 0; }
 .rf-action { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
 .rf-chip { display: inline-flex; align-items: center; gap: 4px; }
@@ -10679,7 +10682,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   color: var(--dim);
 }
 .tl-row-head:hover .tl-icon { color: var(--accent); }
-.tl-verb { font-size: 12px; font-weight: 600; flex: none; }
+.tl-verb { font-size: 12px; font-weight: 400; flex: none; }
 .tl-obj { font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .tl-time { font-size: 11px; color: var(--muted); margin-left: auto; flex: none; }
 .tl-state { flex: none; width: 7px; height: 7px; border-radius: 50%; }
@@ -10700,9 +10703,9 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .sum-block { margin: 12px 0 4px; padding: 0 2px; }
 .sum-cap { font-size: 11px; color: var(--muted); }
 .sum-what { margin-top: 6px; font-size: 13px; color: var(--text); }
-.sum-what b { font-weight: 700; }
-.sum-label { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--accent); margin: 12px 0 4px; }
-.sum-conclusion { font-size: 15px; font-weight: 700; color: var(--text); line-height: 1.55; overflow-wrap: anywhere; }
+.sum-what b { font-weight: 400; color: var(--text); }
+.sum-label { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 400; color: var(--accent); margin: 12px 0 4px; }
+.sum-conclusion { font-size: 15px; font-weight: 400; color: var(--text); line-height: 1.7; letter-spacing: 0.01em; overflow-wrap: anywhere; }
 .sum-detail { margin-top: 2px; min-width: 0; }
 .sum-detail .markdown-body { background: transparent; border: none; padding: 0; font-size: 12.5px; color: var(--dim); }
 .sum-detail .markdown-body table { display: block; max-width: 100%; overflow-x: auto; }
@@ -10716,54 +10719,23 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   overflow: hidden;
 }
 .ac-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--dim); }
-.ac-title { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--text); }
+.ac-title { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; color: var(--text); }
 .ac-meta { margin-left: auto; }
-.ac-files { padding: 3px 6px; }
-.ac-file-row { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 6px; transition: background-color var(--dur-fast) var(--ease-out); }
-.ac-file-row:hover { background: color-mix(in srgb, var(--surface) 45%, transparent); }
-.ac-file-icon { flex: none; display: inline-flex; color: var(--accent); }
-.ac-file-main { min-width: 0; }
-.ac-file-name { font-size: 13px; font-weight: 600; color: var(--text); }
-.ac-badge {
-  margin-left: 8px;
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--accent);
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
-  border-radius: 999px;
-  padding: 0 7px;
-  vertical-align: 1px;
-}
-.ac-badge.warn { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); }
-.ac-file-path { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ac-file-meta { flex: none; font-size: 11px; color: var(--dim); }
-.ac-file-actions { flex: none; display: flex; gap: 5px; }
-.ac-file-actions button {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--accent);
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 3px 8px;
-  cursor: pointer;
-  transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
-}
-.ac-file-actions button:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
-.ac-more {
-  display: block;
-  width: 100%;
-  padding: 6px 8px;
-  font-size: 11px;
-  color: var(--dim);
-  background: none;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-}
-.ac-more:hover { color: var(--accent); }
+.ac-files { padding: 4px 8px 6px; display: flex; flex-direction: column; }
+/* locked 行（ask/审批交互块）：头部无按钮语义，明细常开 */
+.tl-row.locked .tl-detail-wrap { grid-template-rows: 1fr; }
+.tl-row.locked .tl-detail { opacity: 1; transform: none; }
+.tl-row-head.no-toggle { cursor: default; }
+.tl-row-head.no-toggle:hover { background: none; }
+/* 思考折叠态滚动预览（复用跑马灯体系，动效闸门已覆盖） */
+.tl-think-preview { display: block; min-width: 0; max-width: 320px; overflow: hidden; }
+.tl-think-preview .marquee { max-width: 100%; }
+/* F8 内容列宽统一：用户气泡与助手各卡共用同一 max，右缘对齐 */
+.msg.user .msg-main .bubble { max-width: var(--msg-content-max); width: fit-content; margin-left: auto; padding: 12px 16px; border-radius: 12px; }
+.msg.assistant .msg-main .rf-round,
+.msg.assistant .msg-main .sum-block,
+.msg.assistant .msg-main .ac-card,
+.msg.assistant .msg-main .run-result-action { max-width: var(--msg-content-max); }
 
 /* 会话流动效降级：系统减少动效与产品关闭动效时立即落定（信息不丢） */
 :is([data-reduce-motion="1"], [data-motion-level="off"]) :is(
