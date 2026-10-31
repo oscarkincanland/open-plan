@@ -82,7 +82,7 @@ try {
   assert.doesNotMatch(runSummarySource, /run-summary-details/, "文件清单不再另起一层折叠，统一进结果区页签");
   assert.match(runSummarySource, /run-result-fold \$\{embedded \? "embedded" : ""\}/, "嵌入式结果摘要应服从消息级统一折叠");
   assert.doesNotMatch(runSummarySource, /任务轮次 \{m\.runIndex/, "常规对话结果头不显示任务轮次计数");
-  assert.match(runSummarySource, /useEffect\(\(\) => setSummaryOpen\(runIsLive\), \[runIsLive\]\)/, "任务结束时应自动收起结论与工具轨迹");
+  assert.match(runSummarySource, /useEffect\(\(\) => setSummaryOpen\(runIsLive \|\| hasSummaryText\), \[runIsLive, hasSummaryText\]\)/, "运行中/有总结时展开，过程仍单独折叠");
   assert.match(runSummarySource, /!embedded && \(trace\?\.tools\?\.length > 0/, "嵌入式结果卡不重复渲染工具明细");
   assert.match(runSummarySource, /run-trace-step-heading/, "独立结果摘要仍保留有序工具时间线");
   assert.match(runSummarySource, /const summaryText = String\(completion\?\.summary/, "总结优先取 complete_task.summary");
@@ -280,7 +280,7 @@ try {
   assert.match(chatPanelSource, /未被分组消费的提醒消息同样不渲染/, "渲染层应有提醒兜底过滤");
   assert.match(chatPanelSource, /const open = typeof override === "boolean" \? override : isLiveFold;/, "运行中的过程片段默认展开，其余收成一行摘要（用户点过按用户选择）");
   assert.match(chatPanelSource, /else if \(!isTaskLive && processWasLiveRef\.current\)[\s\S]{0,120}setProcessOpenMap\(\{\}\)/, "运行完成后统一收束过程卡");
-  assert.match(chatPanelSource, /const \[summaryOpen, setSummaryOpen\] = useState\(runIsLive\)/, "运行中展开、结束后收起总结");
+  assert.match(chatPanelSource, /const \[summaryOpen, setSummaryOpen\] = useState\(runIsLive \|\| hasSummaryText\)/, "运行中/有总结时默认展开，过程单独折叠");
   assert.match(serverSource, /function officeResults\(response\)/, "Excel 解析应兼容 Office CLI 结果结构");
   assert.match(serverSource, /s\.path \|\| `\/\$\{s\.name\}`/, "Excel 工作表读取应使用 DOM 路径");
   assert.match(serverSource, /ext === "xlsx" \|\| ext === "xls"/, "Excel 预览应同时识别 xlsx/xls");
