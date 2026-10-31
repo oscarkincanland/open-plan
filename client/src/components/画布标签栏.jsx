@@ -26,10 +26,15 @@ export default function 画布标签栏({
   showObjects = false,
   showWorkflows = false,
   browserActivityPing = 0,
+  mapSessions = [],
+  onOpenMapSession,
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [overflowOpen, setOverflowOpen] = useState(false);
   const menuRef = useRef(null);
   const plusRef = useRef(null);
+  const overflowRef = useRef(null);
+  const overflowButtonRef = useRef(null);
 
   useEffect(() => {
     if (!menuOpen) return undefined;
@@ -45,6 +50,20 @@ export default function 画布标签栏({
     };
   }, [menuOpen]);
 
+  useEffect(() => {
+    if (!overflowOpen) return undefined;
+    const onPointerDown = (event) => {
+      if (!overflowRef.current?.contains(event.target) && !overflowButtonRef.current?.contains(event.target)) setOverflowOpen(false);
+    };
+    const onKeyDown = (event) => { if (event.key === "Escape") setOverflowOpen(false); };
+    document.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [overflowOpen]);
+
   const run = (action) => {
     setMenuOpen(false);
     onPlusAction?.(action);
@@ -56,6 +75,13 @@ export default function 画布标签栏({
     if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
       event.preventDefault();
       const delta = event.key === "ArrowRight" ? 1 : -1;
+      const next = tabs[(Math.max(0, index) + delta + tabs.length) % tabs.length];
+      if (next) onActivate?.(next.id);
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key === "Tab") {
+      event.preventDefault();
+      const delta = event.shiftKey ? -1 : 1;
       const next = tabs[(Math.max(0, index) + delta + tabs.length) % tabs.length];
       if (next) onActivate?.(next.id);
       return;
@@ -100,6 +126,7 @@ export default function 画布标签栏({
               >
                 <Icon name={tab.icon || "file"} size={13} />
                 <span className="canvas-tab-title">{tab.title || "未命名"}</span>
+                {tab.dirty && <i className="canvas-tab-dirty" title="有未保存修改" aria-label="有未保存修改" />}
                 {isBrowser && browserActivityPing > 0 && !active && <i className="canvas-tab-dot" aria-hidden="true" />}
               </button>
               {tab.closable !== false && (
@@ -118,6 +145,39 @@ export default function 画布标签栏({
         })}
       </div>
       <div className="canvas-tabbar-actions">
+        {tabs.length > 0 && (
+          <button
+            ref={overflowButtonRef}
+            type="button"
+            className={`canvas-action ${overflowOpen ? "active" : ""}`}
+            onClick={() => setOverflowOpen((value) => !value)}
+            aria-label="已打开标签"
+            aria-expanded={overflowOpen}
+            aria-haspopup="menu"
+            title="已打开标签"
+          >
+            <Icon name="more" size={14} />
+          </button>
+        )}
+        {overflowOpen && (
+          <div className="canvas-plus-menu canvas-overflow-menu" role="menu" ref={overflowRef}>
+            <div className="canvas-overflow-head">已打开标签 · {tabs.length}</div>
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                role="menuitem"
+                className={tab.id === activeId ? "active" : ""}
+                onClick={() => { setOverflowOpen(false); onActivate?.(tab.id); }}
+                title={tab.title}
+              >
+                <Icon name={tab.icon || "file"} size={13} />
+                <span className="canvas-overflow-title">{tab.title || "未命名"}</span>
+                {tab.dirty && <i className="canvas-tab-dirty" aria-label="有未保存修改" />}
+              </button>
+            ))}
+          </div>
+        )}
         <button
           ref={plusRef}
           type="button"
@@ -144,6 +204,24 @@ export default function 画布标签栏({
             <button type="button" role="menuitem" onClick={() => run("changes")}><Icon name="history" size={13} /> 代码变更</button>
             {showObjects && <button type="button" role="menuitem" onClick={() => run("objects")}><Icon name="layers" size={13} /> 对象栏</button>}
             {showWorkflows && <button type="button" role="menuitem" onClick={() => run("workflows")}><Icon name="flow" size={13} /> 领域工作流</button>}
+            {mapSessions.length > 0 && (
+              <>
+                <div className="canvas-plus-sep" role="separator" />
+                <div className="canvas-overflow-head">最近地图会话</div>
+                {mapSessions.map((session) => (
+                  <button
+                    key={session.id || session.threadId}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { setMenuOpen(false); onOpenMapSession?.(session); }}
+                    title={session.title || session.label || "地图会话"}
+                  >
+                    <Icon name="map" size={13} />
+                    <span className="canvas-overflow-title">{session.title || session.label || "地图会话"}</span>
+                  </button>
+                ))}
+              </>
+            )}
             <div className="canvas-plus-sep" role="separator" />
             <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onNewChat?.(); }}><Icon name="chatPlus" size={13} /> 新建对话</button>
           </div>

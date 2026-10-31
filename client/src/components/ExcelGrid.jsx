@@ -6,10 +6,11 @@ import Icon from "./Icon.jsx";
 
 function indexToCol(i) { let s = ""; while (i > 0) { const r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = Math.floor((i - r) / 26); } return s; }
 
-export default function ExcelGrid({ name, sheets, grids, officeHtmlUrl = "" }) {
+export default function ExcelGrid({ name, sheets, grids, officeHtmlUrl = "", onDirtyChange }) {
   const hostRef = useRef(null);
   const [spread, setSpread] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
   const [msg, setMsg] = useState("");
   // 网格只承载“单元格值”；公式/样式/合并单元格由 OfficeCLI HTML 只读预览补足。
   const [officeMode, setOfficeMode] = useState(false);
@@ -17,6 +18,8 @@ export default function ExcelGrid({ name, sheets, grids, officeHtmlUrl = "" }) {
   const hasSheets = sheetNames.length > 0;
   // 保存时记录每个 sheet 的初始数据
   const initialRef = useRef({});
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   useEffect(() => {
     if (!hostRef.current || !hasSheets) return undefined;
@@ -26,6 +29,7 @@ export default function ExcelGrid({ name, sheets, grids, officeHtmlUrl = "" }) {
       view: { height: () => Math.max(200, hostRef.current?.clientHeight - 40) },
     });
     setSpread(s);
+    if (typeof s.change === "function") s.change(() => setDirty(true));
     return () => { if (typeof s.destroy === "function") try { s.destroy(); } catch {} };
   }, [hasSheets]);
 
@@ -41,7 +45,7 @@ export default function ExcelGrid({ name, sheets, grids, officeHtmlUrl = "" }) {
       initialRef.current[s] = JSON.parse(JSON.stringify(grids?.[s]?.rows || grids?.[s] || {}));
     }
     spread.loadData(allSheets);
-    if (typeof spread.change === "function") spread.change(() => {});
+    setDirty(false);
   }, [spread, hasSheets, sheetNames, grids]);
 
   // sheets 为空（文件读取失败）时显示错误。放在 hooks 之后，避免文件从加载中
@@ -90,6 +94,7 @@ export default function ExcelGrid({ name, sheets, grids, officeHtmlUrl = "" }) {
         await saveCells(name, sname, cells);
       }
       setMsg(`saved ${total} cells`);
+      setDirty(false);
       // 更新初始数据
       for (const sd of allData) {
         initialRef.current[sd.name] = JSON.parse(JSON.stringify(sd.rows || {}));

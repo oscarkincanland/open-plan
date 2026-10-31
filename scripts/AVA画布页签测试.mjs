@@ -25,6 +25,8 @@ const drawer = read("client/src/components/文件树抽屉.jsx");
 const tabbar = read("client/src/components/画布标签栏.jsx");
 const panel = read("client/src/components/工作产物面板.jsx");
 const docViewer = read("client/src/components/DocViewer.jsx");
+const docxViewer = read("client/src/components/DocxViewer.jsx");
+const excelGrid = read("client/src/components/ExcelGrid.jsx");
 const styles = read("client/src/styles.css");
 const pkg = JSON.parse(read("package.json"));
 
@@ -74,7 +76,22 @@ test("浏览器式标签栏：关闭、收起、最大化、+ 菜单", () => {
   assert.match(tabbar, /任务摘要/);
   assert.match(tabbar, /代码变更/);
   assert.match(tabbar, /新建对话/);
+  assert.match(tabbar, /最近地图会话/, "保留 GIS 地图会话入口");
   assert.doesNotMatch(tabbar, /终端/, "不提供终端死入口");
+});
+
+test("标签溢出菜单、快捷键与未保存标记", () => {
+  assert.match(tabbar, /canvas-overflow-menu/, "标签溢出菜单存在");
+  assert.match(tabbar, /已打开标签 · \{tabs\.length\}/);
+  assert.match(tabbar, /event\.key === "Tab"/, "Ctrl+Tab 切换");
+  assert.match(tabbar, /canvas-tab-dirty/);
+  assert.match(app, /onDirtyChange=\{handleDocDirtyChange\}/);
+  assert.match(app, /askConfirm\(`「\$\{tab\.title \|\| "文档"\}」有未保存修改/, "关闭未保存文档需确认");
+  assert.match(docViewer, /onDirtyChange/);
+  assert.match(docxViewer, /onDirtyChange/);
+  assert.match(excelGrid, /onDirtyChange/);
+  assert.match(excelGrid, /setDirty\(true\)/, "Excel 编辑标记 dirty");
+  assert.match(excelGrid, /setDirty\(false\)/, "Excel 保存/刷新清除 dirty");
 });
 
 test("文档标签提升到画布顶部，DocViewer 不再渲染内部标签栏", () => {
@@ -126,5 +143,5 @@ test("新建对话是菜单动作，不是画布标签", () => {
   assert.equal(pkg.scripts["test:ava-dualpane"], undefined, "双面板测试脚本应移除");
 });
 
-console.log(failed ? "\n工作区画布测试：存在失败项" : "\n工作区画布测试：全部通过（8 例）");
+console.log(failed ? "\n工作区画布测试：存在失败项" : "\n工作区画布测试：全部通过（9 例）");
 process.exit(failed ? 1 : 0);

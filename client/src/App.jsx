@@ -25,6 +25,7 @@ import MemoryTab from "./components/MemoryTab.jsx";
 import 对象栏 from "./components/对象栏.jsx";
 import 工作流启动器 from "./components/工作流启动器.jsx";
 import 子代理详情面板 from "./components/子代理详情面板.jsx";
+import MiniMapPreview from "./components/MiniMapPreview.jsx";
 import { createDocTab, createViewTab, createSubagentTab, openCanvasTab, closeCanvasTab, reorderCanvasTabs, loadCanvasState, saveCanvasState, saveCanvasWidth, docTabId } from "./画布状态.js";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
@@ -33,7 +34,7 @@ import { createGlobalEventsLease } from "./跨标签页流租约.js";
 import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, getTabId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun, updateSessionMapContext } from "./api.js";
 import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
 import { mergeMapContext, normalizeMapView } from "./地图/地图上下文.js";
-import FeedbackHost, { notifyError } from "./components/Feedback.jsx";
+import FeedbackHost, { notifyError, askConfirm } from "./components/Feedback.jsx";
 import 提示气泡 from "./components/提示气泡.jsx";
 import { initRuntimeFlags, flag, flagsReady } from "./运行开关.js";
 
@@ -336,12 +337,14 @@ export default function App() {
   const pendingDocRestoreRef = useRef([]);
   const pendingActiveCanvasIdRef = useRef("");
   const openDocRef = useRef(null);
+  const canvasTabsRef = useRef([]);
   const canvasOpen = canvasTabs.length > 0 && !canvasCollapsed;
   const activeCanvasTab = canvasTabs.find((tab) => tab.id === canvasActiveId) || canvasTabs[canvasTabs.length - 1] || null;
   const workspaceTab = activeCanvasTab?.kind || "";
   const browserOpen = canvasTabs.some((tab) => tab.kind === "browser");
   const objectsOpen = canvasTabs.some((tab) => tab.kind === "objects");
   const workflowsOpen = canvasTabs.some((tab) => tab.kind === "workflows");
+  const mapPreviewTab = canvasTabs.find((tab) => tab.kind === "mapPreview") || null;
   // 用户手动关掉浏览器侧栏后，本轮不再自动弹开（否则每个 browser_* 工具都会把它重新拉起来）。
   const browserAutoOpenBlockedRef = useRef(false);
   // 运行开关快照到达后的重渲染触发器（值本身不参与渲染，只用来让 flag() 派生的状态重算）。
@@ -364,6 +367,10 @@ export default function App() {
       setFlagsTick((value) => value + 1);
     });
   }, []);
+
+  useEffect(() => {
+    canvasTabsRef.current = canvasTabs;
+  }, [canvasTabs]);
 
   useEffect(() => {
     if (!browserOpen) setBrowserFullscreen(false);
@@ -415,8 +422,12 @@ export default function App() {
     setCanvasCollapsed(false);
   }, []);
 
-  const closeCanvasTabById = useCallback((id) => {
+  const closeCanvasTabById = useCallback(async (id) => {
     const tab = canvasTabs.find((item) => item.id === id);
+    if (tab?.kind === "doc" && tab.dirty) {
+      const ok = await askConfirm(`「${tab.title || "文档"}」有未保存修改，仍要关闭吗？`);
+      if (!ok) return;
+    }
     const result = closeCanvasTab(canvasTabs, canvasActiveId, id);
     setCanvasTabs(result.tabs);
     setCanvasActiveId(result.activeId);
@@ -432,6 +443,14 @@ export default function App() {
       setBrowserFullscreen(false);
     }
   }, [activeTab, canvasActiveId, canvasTabs]);
+
+  const handleDocDirtyChange = useCallback((dirty) => {
+    const docId = activeTab;
+    if (!docId) return;
+    setCanvasTabs((prev) => prev.map((tab) => (
+      tab.kind === "doc" && tab.docId === docId ? { ...tab, dirty: Boolean(dirty) } : tab
+    )));
+  }, [activeTab]);
 
   const clearDocumentTabs = useCallback(() => {
     setTabs([]);
@@ -1176,6 +1195,7 @@ export default function App() {
   const visibleSessions = currentWorkspace
     ? sessions.filter((session) => !session.cwd || sameWorkspacePath(session.cwd, currentWorkspace))
     : sessions;
+  const recentMapSessions = visibleSessions.filter((session) => Boolean(session.mapProject)).slice(0, 3);
   // 启动加载失败提示：按分区列出，提供统一重试；失败期间保留上一次可用数据。
   const loadFailures = Object.entries(loadErrors).filter(([, message]) => Boolean(message));
   const loadFailureText = loadFailures.length
@@ -1384,6 +1404,19 @@ export default function App() {
           ...(session.mapView || {}),
         }),
       }));
+      // 初始页点击地图会话：画布为空时自动打开只读“地图预览”标签；
+      // 已有预览标签时同步到当前会话；其他标签保持不动，不抢用户正在看的文档。
+      const sessionMapProject = String(session.mapProject || "").trim();
+      if (sessionMapProject) {
+        const openTabs = canvasTabsRef.current;
+        if (!openTabs.length || openTabs.some((tab) => tab.kind === "mapPreview")) {
+          openCanvasView("mapPreview", {
+            project: sessionMapProject,
+            view: session.mapView || null,
+            sessionId: session.id,
+          });
+        }
+      }
       setChatLinks([]);
       localStorage.setItem("oaw_thread_id", conversationId);
       // 按原始 JSONL 顺序重建消息。toolResult 是工具输出，不能渲染成 You 的用户气泡；
@@ -1474,7 +1507,7 @@ export default function App() {
     } catch (e) {
       if (loadSeq === sessionLoadSeqRef.current) notifyError("加载会话失败: " + e.message);
     }
-  }, [clientId, currentWorkspace, open, refreshProjects]);
+  }, [clientId, currentWorkspace, open, refreshProjects, openCanvasView]);
 
   // v0.12.5：按游标续拉更早的历史（50 条/页），返回可直接前插的规范化消息。
   const loadOlderSessionHistory = useCallback(async () => {
@@ -2339,6 +2372,8 @@ export default function App() {
               onToggleFiles={() => setCanvasSideOpen((value) => !value)}
               filesOpen={canvasSideOpen}
               onNewChat={async () => { await handleNewSession(currentWorkspaceRef.current || currentWorkspace); chatInputRef.current?.focusInput?.(); }}
+              mapSessions={recentMapSessions}
+              onOpenMapSession={async (session) => { await handleSelectSession(session); setActiveModule("map"); }}
               showObjects={flag("qoderObjectBar")}
               showWorkflows={flag("domainWorkflows")}
               browserActivityPing={browserActivityPing}
@@ -2356,6 +2391,7 @@ export default function App() {
                         loading={docLoading}
                         onSendToAgent={insertChatText}
                         onInsertContext={(t) => chatInputRef.current?.insertContext(t)}
+                        onDirtyChange={handleDocDirtyChange}
                       />
                     </Suspense>
                   </div>
@@ -2388,6 +2424,18 @@ export default function App() {
                       refreshToken={artifactVersion}
                       onOpenFile={open}
                     />
+                  </div>
+                )}
+                {mapPreviewTab && (
+                  <div className={`app-canvas-body canvas-body-map ${activeCanvasTab?.kind === "mapPreview" ? "" : "canvas-hidden"}`}>
+                    <div className="canvas-map-preview">
+                      <MiniMapPreview
+                        project={mapPreviewTab.payload?.project || currentMapProject}
+                        view={mapPreviewTab.payload?.view || null}
+                        height="100%"
+                        onOpen={() => setActiveModule("map")}
+                      />
+                    </div>
                   </div>
                 )}
                 {browserOpen && (

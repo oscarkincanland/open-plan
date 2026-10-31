@@ -87,7 +87,7 @@ function selectionToContainerCoords(iframe, range) {
 }
 
 // 单文件内容渲染
-function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext }) {
+function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext, onDirtyChange }) {
   const [watchUrl, setWatchUrl] = useState(null);
   const [watchLoading, setWatchLoading] = useState(false);
   const [watchErr, setWatchErr] = useState("");
@@ -638,7 +638,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
           </CodeViewerBoundary>
         )}
         {doc.kind === "html" && doc.ext === "docx" && (
-          <DocxViewer name={doc.name} revision={doc.previewRevision} identity={identity} onPreviewState={setPreviewState} onPreviewError={setPreviewErr} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} />
+          <DocxViewer name={doc.name} revision={doc.previewRevision} identity={identity} onPreviewState={setPreviewState} onPreviewError={setPreviewErr} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} onDirtyChange={onDirtyChange} />
         )}
         {doc.kind === "html" && doc.ext === "pptx" && (
           <PptxViewer name={doc.name} revision={doc.previewRevision} identity={identity} onPreviewState={setPreviewState} onPreviewError={setPreviewErr} />
@@ -742,7 +742,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
             />
           </div>
         )}
-        {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} officeHtmlUrl={urls.html} />}
+        {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} officeHtmlUrl={urls.html} onDirtyChange={onDirtyChange} />}
         {doc.kind === "htmlfile" && !sourceMode && (
           <div className="docframe-container">
             <iframe
@@ -852,9 +852,10 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
   );
 }
 
-export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTab, onOpenFile, loading, onSendToAgent, onInsertContext, hideTabBar = false }) {
+export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTab, onOpenFile, loading, onSendToAgent, onInsertContext, hideTabBar = false, onDirtyChange }) {
   // activeTab 是标签 id（工作区 + 相对路径），兼容旧数据仍可能传文件名。
   const doc = tabs.find((t) => (t.id || t.name) === activeTab) || null;
+  useEffect(() => { onDirtyChange?.(false); }, [doc?.id, onDirtyChange]);
   const tabId = (t) => t.id || t.name;
   // 标签副标题：不同工作区的同名文件用工作区末段提示，便于区分。
   const workspaceHint = (t) => {
@@ -926,7 +927,7 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
           </div>
         </div>
       ) : (
-        <DocContent doc={doc} loading={loading} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} />
+        <DocContent doc={doc} loading={loading} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} onDirtyChange={onDirtyChange} />
       )}
     </div>
   );
