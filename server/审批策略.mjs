@@ -45,6 +45,9 @@ const DEFAULT_RULES = [
   // 地图样式/数据修改默认先问
   { tool: "map_edit", pattern: "*", action: "ask" },
   { tool: "map_import", pattern: "*", action: "ask" },
+  // 工程级写操作（重置 / 新建项目）会改变整个图层树，同样逐次确认
+  { tool: "map_reset", pattern: "*", action: "ask" },
+  { tool: "map_project_create", pattern: "*", action: "ask" },
   // 地图图层按归属细分（最后匹配生效，故置于上面的 catch-all 之后）：
   //   shared/*    —— 共享数据集（高速公路、国省道等公共图层）只读，改样式需逐次授权，
   //                  不允许往里新增文件（避免污染所有人共用的数据）。

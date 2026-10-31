@@ -29,6 +29,7 @@ import { validateArtifacts } from "./产物验证.mjs";
 import { listPublishedArtifacts, publishArtifact, inspectRunAcceptance, confirmArtifactAcceptance, rollbackPublishedArtifact } from "./成果管理.mjs";
 import { atomicWriteFile, atomicWriteJson, ensureDirectory, flushPendingFsync } from "./持久化工具.mjs";
 import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs";
+import { buildMapContextPatch } from "./会话地图上下文.mjs";
 import { listConnectors, getConnector, beginConnectorAuth, setConnectorStatus } from "./connectors.mjs";
 import * as projectManager from "./项目管理.mjs";
 import { listAgents, createAgent, updateAgent, deleteAgent } from "./智能体管理.mjs";
@@ -690,12 +691,86 @@ app.post("/api/map/projects", (req, res) => {
       project: req.body?.project,
       name: req.body?.name,
       baseProject: req.body?.baseProject || map.DEFAULT_PROJECT,
+      kind: req.body?.kind === "blank" ? "blank" : "copy",
+      description: req.body?.description,
     });
     res.status(201).json({ ok: true, project: created.config?.project, config: created.config, style: created.style, files: created.files || [] });
   } catch (e) {
     const status = ["MAP_PROJECT_INVALID", "MAP_PROJECT_EXISTS", "MAP_BASE_PROJECT_NOT_FOUND"].includes(e?.code) ? 409 : 500;
     res.status(status).json({ ok: false, error: e.message, code: e.code || "MAP_PROJECT_CREATE_FAILED" });
   }
+});
+
+// GIS 工程化：图层注册表 / 元数据 / 单层导出 / 基线 / 三级重置 / 操作日志
+app.get("/api/map/project/:name/layers", (req, res) => {
+  const registry = map.listLayerRegistry(req.params.name);
+  if (!registry) return res.status(404).json({ error: "project not found" });
+  res.json(registry);
+});
+
+// 项目文件树（地图面板文件树入口）：按文件夹搜索，跳过 tiles/.trash。
+app.get("/api/map/project/:name/tree", (req, res) => {
+  const tree = map.listProjectFiles(req.params.name, {
+    q: String(req.query.q || ""),
+    maxDepth: Number(req.query.maxDepth) || 4,
+    maxFiles: Number(req.query.maxFiles) || 500,
+  });
+  if (!tree) return res.status(404).json({ error: "project not found", code: "MAP_PROJECT_NOT_FOUND" });
+  res.json(tree);
+});
+
+app.patch("/api/map/project/:name/layer/:layerId", (req, res) => {
+  const result = map.updateLayerMeta(req.params.name, req.params.layerId, req.body || {});
+  if (!result) return res.status(404).json({ error: "layer not found" });
+  res.json(result);
+});
+
+app.post("/api/map/project/:name/layer/:layerId/export", (req, res) => {
+  const geojson = map.getLayer(req.params.name, req.params.layerId);
+  if (!geojson) return res.status(404).json({ error: "layer not found" });
+  const safeId = String(req.params.layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+  res.setHeader("Content-Type", "application/geo+json; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(safeId)}.geojson"`);
+  res.send(JSON.stringify(geojson));
+});
+
+app.post("/api/map/project/:name/layer/:layerId/replace", async (req, res) => {
+  try {
+    const result = await map.replaceLayer(req.params.name, req.params.layerId, req.body?.geojson, {
+      format: String(req.body?.format || "geojson"),
+    });
+    if (!result?.ok) return res.status(result?.error === "layer not found" ? 404 : 400).json(result || { error: "replace failed" });
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message, code: e.code || "MAP_LAYER_REPLACE_FAILED" });
+  }
+});
+
+app.get("/api/map/project/:name/baseline", (req, res) => {
+  const baseline = map.getBaseline(req.params.name);
+  if (!baseline) return res.status(404).json({ error: "baseline not found", code: "MAP_BASELINE_MISSING" });
+  res.json({ ok: true, baseline });
+});
+
+app.post("/api/map/project/:name/baseline", (req, res) => {
+  const baseline = map.setBaseline(req.params.name, { actor: "user" });
+  if (!baseline) return res.status(404).json({ error: "project not found" });
+  res.json({ ok: true, baseline });
+});
+
+app.post("/api/map/project/:name/reset", (req, res) => {
+  const level = String(req.body?.level || "tree");
+  const result = map.resetProject(req.params.name, level, { actor: "user" });
+  if (!result?.ok) return res.status(400).json(result || { error: "reset failed" });
+  res.json(result);
+});
+
+app.get("/api/map/project/:name/operations", (req, res) => {
+  const list = map.listOperations(req.params.name, {
+    layerId: String(req.query.layerId || ""),
+    limit: Number(req.query.limit) || 200,
+  });
+  res.json({ ok: true, operations: list });
 });
 
 app.get("/api/map/project", async (req, res) => {
@@ -3059,6 +3134,9 @@ function buildSessionMeta(f, h, text, { truncated = false } = {}) {
     branchPurpose: h.branchPurpose || "",
     // v0.13.7 Agent 继承：会话 header 记录的智能体 id，供新建沿用与界面展示
     agentId: typeof h.agentId === "string" ? h.agentId : "",
+    // 地图会话绑定：项目名 + 视口（只存白名单字段，供初始页小地图与切回恢复）
+    mapProject: typeof h.mapProject === "string" ? h.mapProject : "",
+    mapView: h.mapView && typeof h.mapView === "object" ? h.mapView : null,
     created: h.created || "",
     title,
     hasUserMessage,
@@ -3823,6 +3901,8 @@ app.get("/api/sessions", (req, res) => {
           parentSessionId: meta.parentSessionId,
           branchSourceMessageId: meta.branchSourceMessageId,
           branchPurpose: meta.branchPurpose,
+          mapProject: meta.mapProject || "",
+          mapView: meta.mapView || null,
           fileName: f.fileName,
           title,
           runStatus: latestRun?.status || "idle",
@@ -4089,6 +4169,8 @@ app.get("/api/sessions/:id", (req, res) => {
         label: header.label || "",
         pinned: Boolean(header.pinned),
         frozen: Boolean(header.frozen),
+        mapProject: typeof header.mapProject === "string" ? header.mapProject : "",
+        mapView: header.mapView && typeof header.mapView === "object" ? header.mapView : null,
         freezeReason: header.freezeReason || "",
         contextSnapshot: header.contextSnapshot || null,
         parentSessionId: header.parentSessionId || null,
@@ -4238,6 +4320,20 @@ app.post("/api/sessions/:id/pin", (req, res) => {
   const result = updateSessionHeader(req.params.id, { pinned: req.body?.pinned !== false });
   if (!result.ok) return res.status(result.status || 400).json(result);
   res.json({ ok: true, sessionId: req.params.id, pinned: Boolean(result.header.pinned) });
+});
+
+// 地图会话绑定：持久化当前地图项目与视口（初始页小地图、重启后切回恢复）。
+app.post("/api/sessions/:id/map-context", (req, res) => {
+  const patch = buildMapContextPatch(req.body || {});
+  if (patch.mapProject) {
+    const dir = map.projectDir(patch.mapProject);
+    if (!dir || !fs.existsSync(path.join(dir, "map.config.json"))) {
+      return res.status(400).json({ ok: false, error: "地图项目不存在", code: "MAP_PROJECT_NOT_FOUND" });
+    }
+  }
+  const result = updateSessionHeader(req.params.id, patch);
+  if (!result.ok) return res.status(result.status || 400).json({ ok: false, error: result.error || "not found" });
+  res.json({ ok: true, mapProject: result.header.mapProject || "", mapView: result.header.mapView || {} });
 });
 
 app.post("/api/sessions/:id/freeze", (req, res) => {

@@ -28,9 +28,9 @@ import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
 import { acquireStream } from "./长连接预算.js";
 import { createGlobalEventsLease } from "./跨标签页流租约.js";
-import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, getTabId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun } from "./api.js";
+import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, getTabId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun, updateSessionMapContext } from "./api.js";
 import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
-import { mergeMapContext } from "./地图/地图上下文.js";
+import { mergeMapContext, normalizeMapView } from "./地图/地图上下文.js";
 import FeedbackHost, { notifyError } from "./components/Feedback.jsx";
 import 提示气泡 from "./components/提示气泡.jsx";
 import { initRuntimeFlags, flag, flagsReady } from "./运行开关.js";
@@ -384,6 +384,8 @@ export default function App() {
   const [mapContexts, setMapContexts] = useState({});
   const currentMapContext = mapContexts[threadId] || null;
   const currentMapProject = currentMapContext?.mapProject || "zhejiang-map";
+  // 地图会话持久化：记录上次成功写入的 payload，避免每 30s 刷新重复写 header。
+  const mapPersistRef = useRef({ last: "" });
 
   // Agent 调用 browser_* 时自动打开浏览器侧栏。信号来自对话流里的工具事件
   // （ChatPanel 的 tool_start），不再为此常驻一条 /api/browser/stream：
@@ -1016,6 +1018,40 @@ export default function App() {
     if (!failed.length || failed.includes("workspaces")) refreshWorkspaces();
   }, [loadErrors, refreshFiles, refreshSessions, refreshProjects, refreshWorkspaces]);
 
+  // 地图会话恢复：会话列表带回 header.mapProject/mapView；当前线程尚未绑定项目时回填。
+  useEffect(() => {
+    if (!Array.isArray(sessions) || !sessions.length) return;
+    const matched = sessions.find((item) => (item.threadId || item.id) === threadId || item.id === currentSessionId);
+    if (!matched || (!matched.mapProject && !matched.mapView)) return;
+    setMapContexts((prev) => {
+      const existing = prev[threadId];
+      if (existing?.mapProject) return prev;
+      return {
+        ...prev,
+        [threadId]: mergeMapContext(existing || {}, {
+          mapProject: matched.mapProject || "",
+          ...(matched.mapView || {}),
+        }),
+      };
+    });
+  }, [sessions, threadId, currentSessionId]);
+
+  // 地图会话持久化：项目/视口变化 1.5s 后写入 session header；内容相同跳过。
+  useEffect(() => {
+    if (!currentSessionId || !currentMapContext) return undefined;
+    const mapProject = String(currentMapContext.mapProject || "");
+    const mapView = normalizeMapView(currentMapContext);
+    if (!mapProject && !Object.keys(mapView).length) return undefined;
+    const serialized = JSON.stringify({ mapProject, mapView });
+    if (mapPersistRef.current.last === serialized) return undefined;
+    const timer = window.setTimeout(() => {
+      updateSessionMapContext(currentSessionId, mapProject, mapView)
+        .then(() => { mapPersistRef.current.last = serialized; })
+        .catch(() => {});
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [currentSessionId, currentMapContext]);
+
   useEffect(() => {
     refreshFiles();
     refreshSessions();
@@ -1309,6 +1345,14 @@ export default function App() {
       setAgentReady(false);
       setCurrentSessionId(session.id);
       setThreadId(conversationId);
+      // 恢复该会话记录的地图项目与视口（header 由 /api/sessions 列表或详情带回）。
+      setMapContexts((prev) => ({
+        ...prev,
+        [conversationId]: mergeMapContext(prev[conversationId] || {}, {
+          mapProject: session.mapProject || "",
+          ...(session.mapView || {}),
+        }),
+      }));
       setChatLinks([]);
       localStorage.setItem("oaw_thread_id", conversationId);
       // 按原始 JSONL 顺序重建消息。toolResult 是工具输出，不能渲染成 You 的用户气泡；
@@ -2448,6 +2492,7 @@ export default function App() {
                   busyCreating={creatingSession}
                   onNewSession={async () => { await handleNewSession(currentWorkspaceRef.current || currentWorkspace); chatInputRef.current?.focusInput?.(); }}
                   onSelectSession={handleSelectSession}
+                  onOpenMap={async (session) => { await handleSelectSession(session); setActiveModule("map"); }}
                 />
               </div>
             )}

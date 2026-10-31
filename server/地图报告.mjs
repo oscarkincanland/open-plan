@@ -9,6 +9,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { buildDocxFromBlocks } from "./文档引擎.mjs";
+import { projectDir } from "./map.mjs";
 
 /** 零依赖图片尺寸探测：PNG 读 IHDR，JPEG 逐段扫 SOF0/1/2。失败返回 null（引擎用默认 480x320）。 */
 export function probeImageSize(file) {
@@ -116,7 +117,24 @@ export async function buildMapReport(options = {}) {
   }
 
   const fileName = `${options.fileName ? sanitizeFileName(options.fileName) : title}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "")}.docx`;
-  const target = path.join(workspace, fileName);
+  // 项目内 agent 生成内容归档：报告优先落 maps/{project}/agent/reports/；
+  // 项目不存在时保持既有行为（工作区根目录）。
+  const projectRoot = project ? projectDir(project) : null;
+  const projectExists = projectRoot && fs.existsSync(path.join(projectRoot, "map.config.json"));
+  const reportsDir = projectExists ? path.join(projectRoot, "agent", "reports") : null;
+  if (reportsDir) fs.mkdirSync(reportsDir, { recursive: true });
+  const target = path.join(reportsDir || workspace, fileName);
   const result = await buildDocxFromBlocks(target, blocks);
+  if (projectExists) {
+    try {
+      const { appendAgentManifest } = await import("./map.mjs");
+      appendAgentManifest(project, {
+        action: "report",
+        title,
+        paths: [`maps/${project}/agent/reports/${fileName}`],
+        bytes: Number(result.bytes) || 0,
+      });
+    } catch { /* 清单失败不影响报告 */ }
+  }
   return { ...result, images: imageEntries.length };
 }

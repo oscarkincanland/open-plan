@@ -307,6 +307,9 @@ export const renameSession = (id, label) =>
   api(`/api/sessions/${encodeURIComponent(id)}/rename`, { method: "POST", body: JSON.stringify({ label }) });
 export const pinSession = (id, pinned = true) =>
   api(`/api/sessions/${encodeURIComponent(id)}/pin`, { method: "POST", body: JSON.stringify({ pinned }) });
+// 地图会话绑定：项目名 + 视口（初始页小地图 / 重启后切回恢复）
+export const updateSessionMapContext = (id, mapProject, mapView) =>
+  api(`/api/sessions/${encodeURIComponent(id)}/map-context`, { method: "POST", body: JSON.stringify({ mapProject, mapView }) });
 export const freezeSession = (id, frozen = true, reason = "") =>
   api(`/api/sessions/${encodeURIComponent(id)}/freeze`, { method: "POST", body: JSON.stringify({ frozen, reason }) });
 export const forkSession = (id, label, options = {}) =>

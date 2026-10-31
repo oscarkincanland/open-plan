@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
-import { mapVisual, mapVisualSources, mapDemoAnalysis, mapReport } from "../api.js";
+import { mapVisual, mapVisualSources, mapDemoAnalysis, mapReport, mapExchangeSankey, mapRoadStructure } from "../api.js";
 import { flag } from "../运行开关.js";
 import { notifySuccess, notifyError } from "./Feedback.jsx";
 
@@ -26,6 +26,8 @@ const DATASETS = [
   { id: "m2-od-lines", label: "M2 · 市—县 OD", kinds: [["flow", "OD 期望线"]] },
   { id: "bundled-xinchang", label: "新昌公交（内置）", kinds: [["stations", "站点客流"], ["routes", "公交线路"], ["od", "公交 OD"], ["stats", "线网统计"]] },
   { id: "cambodia-od", label: "暹粒 OD 演示", kinds: [["flow", "OD 流向"]], needThreshold: true },
+  { id: "m2-exchange", label: "M2 · 区域交换量（桑基）", kinds: [["stats", "交换量统计"]], direct: "exchange" },
+  { id: "m2-road-structure", label: "M2 · 路网结构", kinds: [["stats", "按等级统计"]], direct: "roadStructure" },
   { id: "local-file", label: "工作区数据文件（CSV / GeoJSON）", kinds: [], needPath: true, auto: true },
 ];
 
@@ -116,6 +118,43 @@ export default function 可视面板({
     setLoading(true);
     setError("");
     try {
+      // M2 统计类数据集：产出表格而非地图图层（区域交换量 / 路网结构）。
+      if (current.direct === "exchange") {
+        const r = await mapExchangeSankey();
+        if (!r?.data || r.error) throw new Error(r?.error || "区域交换量数据不存在，请先运行 生成M2数据.mjs");
+        const nameOf = new Map((r.data.nodes || []).map((n) => [String(n.id ?? n.name ?? ""), String(n.name ?? n.id ?? "")]));
+        const rows = (r.data.links || []).map((l) => ({
+          from: nameOf.get(String(l.source ?? l.from ?? "")) || String(l.source ?? l.from ?? ""),
+          to: nameOf.get(String(l.target ?? l.to ?? "")) || String(l.target ?? l.to ?? ""),
+          value: Number(l.value || l.flow || 0),
+        })).sort((a, b) => b.value - a.value).slice(0, 30);
+        setDescriptor({
+          id: "m2-exchange",
+          title: `区域交换量（${project}）`,
+          kind: "stats",
+          stats: { count: r.stats?.links ?? rows.length },
+          table: { columns: ["起点", "终点", "交换量"], rows },
+        });
+        return;
+      }
+      if (current.direct === "roadStructure") {
+        const r = await mapRoadStructure();
+        if (!r?.stats || r.error) throw new Error(r?.error || "路网结构统计不可用");
+        const rows = Object.entries(r.stats).map(([id, item]) => ({
+          id,
+          name: item?.name || id,
+          group: item?.group || "",
+          features: Number(item?.count || 0),
+        }));
+        setDescriptor({
+          id: "m2-road-structure",
+          title: `路网结构（${project}）`,
+          kind: "stats",
+          stats: { count: rows.reduce((sum, row) => sum + row.features, 0) },
+          table: { columns: ["图层", "分组", "要素数"], rows },
+        });
+        return;
+      }
       const descriptorResult = await mapVisual({
         dataset,
         kind,
@@ -151,7 +190,7 @@ export default function 可视面板({
       setError(e.message);
     }
     setLoading(false);
-  }, [dataset, kind, project, workspace, region, threshold, filePath, current, mapRef, onResultChange]);
+  }, [dataset, kind, project, workspace, region, threshold, filePath, current, current.direct, mapRef, onResultChange]);
 
   /** 演示数据走统一描述符（与其它数据集同一条路径，保证卡片与统计一致） */
   const runDemo = useCallback(async () => {
@@ -401,28 +440,48 @@ export default function 可视面板({
               {descriptor.lines?.features?.length ? <span>{descriptor.lines.features.length} 条流向</span> : null}
               {descriptor.styleHint?.field ? <span>指标列 {descriptor.styleHint.field}</span> : null}
             </div>
+            {descriptor.table?.rows?.length > 0 && (
+              <div className="vp-card-table" role="table" aria-label={descriptor.title}>
+                <div className="vp-card-table-head" role="row">
+                  {(descriptor.table.columns || []).map((c) => <span key={c} role="columnheader">{c}</span>)}
+                </div>
+                <div className="vp-card-table-body">
+                  {descriptor.table.rows.map((row, i) => (
+                    <div className="vp-card-table-row" role="row" key={`${row.id || row.from || i}-${i}`}>
+                      {(descriptor.table.columns || []).map((c, ci) => (
+                        <span key={c} role="cell">{c === "起点" ? row.from : c === "终点" ? row.to : c === "交换量" ? row.value : ci === 0 ? (row.name || row.id) : ci === 1 ? row.group : row.features}</span>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {descriptor.provenance?.demo && <div className="vp-card-demo">演示数据，请勿当作生产数据</div>}
             <div className="vp-card-actions">
-              <button
-                className="btn-sm"
-                type="button"
-                onClick={toggleVisible}
-                title={visible ? "隐藏该临时层（对照底图时常用）" : "显示该临时层"}
-              >
-                <Icon name={visible ? "eye" : "eyeOff"} size={12} /> {visible ? "隐藏" : "显示"}
-              </button>
+              {canSave && (
+                <button
+                  className="btn-sm"
+                  type="button"
+                  onClick={toggleVisible}
+                  title={visible ? "隐藏该临时层（对照底图时常用）" : "显示该临时层"}
+                >
+                  <Icon name={visible ? "eye" : "eyeOff"} size={12} /> {visible ? "隐藏" : "显示"}
+                </button>
+              )}
               <button className="btn-sm" type="button" onClick={clear}><Icon name="trash" size={12} /> 清除</button>
-              <button className="btn-sm" type="button" onClick={undo} title="撤销当前结果（回到上一次临时分析）"><Icon name="back" size={12} /> 撤销</button>
-              <button
-                className="btn-sm"
-                type="button"
-                onClick={save}
-                disabled={!canSave || conversationMode === "chat"}
-                title={conversationMode === "chat" ? "保存正式图层需要切换到 Work 模式" : "保存为正式图层（会写入项目）"}
-              >
-                <Icon name="download" size={12} /> 保存为图层
-              </button>
-              {flag("mapReport") && (
+              {canSave && <button className="btn-sm" type="button" onClick={undo} title="撤销当前结果（回到上一次临时分析）"><Icon name="back" size={12} /> 撤销</button>}
+              {canSave && (
+                <button
+                  className="btn-sm"
+                  type="button"
+                  onClick={save}
+                  disabled={!canSave || conversationMode === "chat"}
+                  title={conversationMode === "chat" ? "保存正式图层需要切换到 Work 模式" : "保存为正式图层（会写入项目）"}
+                >
+                  <Icon name="download" size={12} /> 保存为图层
+                </button>
+              )}
+              {canSave && flag("mapReport") && (
                 <button
                   className="btn-sm"
                   type="button"

@@ -48,22 +48,22 @@ function toolArray(name) {
   return m[1].split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
 }
 
-test("READ_ONLY_TOOLS 含只读四件套", () => {
+test("READ_ONLY_TOOLS 含只读五件套", () => {
   const tools = toolArray("READ_ONLY_TOOLS");
   assert.ok(tools, "READ_ONLY_TOOLS 应可解析");
-  for (const name of ["map_read", "map_analyze", "map_clear_analysis", "map_datasets"]) {
+  for (const name of ["map_read", "map_analyze", "map_clear_analysis", "map_datasets", "map_layer_info"]) {
     assert.ok(tools.includes(name), `只读工具应含 ${name}`);
   }
 });
 
 test("READ_ONLY_TOOLS 不得含写工具", () => {
   const tools = toolArray("READ_ONLY_TOOLS");
-  for (const name of ["map_edit", "map_import", "map_save_analysis"]) {
+  for (const name of ["map_edit", "map_import", "map_save_analysis", "map_reset", "map_project_create"]) {
     assert.ok(!tools.includes(name), `Chat 模式不应开放写工具 ${name}`);
   }
 });
 
-test("AGENT_TOOLS 含全部 7 个地图工具", () => {
+test("AGENT_TOOLS 含全部地图工具", () => {
   // AGENT_TOOLS 定义在 task.mjs（不是 agent.mjs）；它用 ...OFFICE_TOOLS 展开，
   // 所以断言"数组字面量里显式写出的地图工具"——写工具必须显式列出。
   const start = taskSrc.indexOf("const AGENT_TOOLS");
@@ -71,7 +71,7 @@ test("AGENT_TOOLS 含全部 7 个地图工具", () => {
   const rest = taskSrc.slice(start);
   const end = rest.indexOf("\nexport ");
   const body = end > 0 ? rest.slice(0, end) : rest.slice(0, 4000);
-  for (const name of ["map_read", "map_datasets", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis"]) {
+  for (const name of ["map_read", "map_datasets", "map_layer_info", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "map_reset", "map_project_create"]) {
     assert.ok(body.includes(`"${name}"`), `Work 模式应显式列出 ${name}`);
   }
 });
