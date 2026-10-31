@@ -489,18 +489,30 @@ export default function MapPanel({
   useEffect(() => {
     mapProjects().then((r) => setProjects(r.projects || [])).catch(() => {});
     loadProject(project);
-    onProjectChange?.(project);
+    // 注意：这里不能回写 onProjectChange。项目有两个来源——用户切换（本地状态 →
+    // 会话上下文）和会话恢复（initialProject → 本地状态）；若两者都双向同步，
+    // 工作区切换/恢复会话时会因异步回填在 123 与 zhejiang-map 之间来回覆盖，
+    // 表现为项目选择器跳动、style.json 交替请求、地图一直“加载中”。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project]);
 
   // 会话项目跟随：App 恢复/切换会话后把 mapProject 传进来，地图面板同步到该项目。
-  // 仅在项目列表已包含该值且与当前不同时切换，避免与 onProjectChange 回写形成循环。
+  // 这是“上层 → 本地”的单向回填，只更新本地状态，不再反向通知，避免双写循环。
   useEffect(() => {
     const target = String(initialProject || "").trim();
     if (!target || target === project) return;
     if (!projects.some((item) => String(item.project || item.name || "") === target)) return;
     setProject(target);
   }, [initialProject, projects, project]);
+
+  // 用户切换项目（菜单/新建/重命名/删除回退）的唯一入口：先更新本地，
+  // 再通知上层写入当前会话的 mapProject；与上面的单向回填分开。
+  const changeProject = useCallback((name) => {
+    const next = String(name || "").trim();
+    if (!next || next === project) return;
+    setProject(next);
+    onProjectChange?.(next);
+  }, [project, onProjectChange]);
 
   // 工作区切换时"我的图层"跟随（阶段 1 · 修 X6）：
   // 共享数据集不变，工作区自有图层随 owner 过滤重新拉取。
@@ -1582,12 +1594,12 @@ export default function MapPanel({
       const created = await mapCreateProject(id.trim(), name.trim(), "zhejiang-map");
       const listed = await mapProjects();
       setProjects(listed.projects || []);
-      setProject(created.project || id.trim());
+      changeProject(created.project || id.trim());
       flash(`已创建地图项目「${name.trim()}」，基础路网沿用浙江统一底图，业务图层独立保存`);
     } catch (e) {
       flash(`创建地图项目失败：${e.message}`);
     }
-  }, [flash]);
+  }, [changeProject, flash]);
 
   // 当前项目是否已归档（决定菜单显示“归档/取消归档”）
   const currentProjectArchived = useMemo(() => {
@@ -1607,7 +1619,7 @@ export default function MapPanel({
         const created = await mapDuplicateProject(project, name.trim());
         const listed = await mapProjects();
         setProjects(listed.projects || []);
-        setProject(created.project || name.trim());
+        changeProject(created.project || name.trim());
         flash(`已复制为「${created.project || name.trim()}」，可在其上继续分析而不影响原项目`);
       } else if (action === "rename") {
         const name = await askText("新的项目标识（仅英文、数字、下划线或短横线）", project);
@@ -1616,7 +1628,7 @@ export default function MapPanel({
         const renamed = await mapRenameProject(project, name.trim());
         const listed = await mapProjects();
         setProjects(listed.projects || []);
-        setProject(renamed.project || name.trim());
+        changeProject(renamed.project || name.trim());
         flash(`项目已重命名为「${renamed.project || name.trim()}」`);
       } else if (action === "archive") {
         if (!(await askConfirm(`归档地图项目「${project}」？归档后仍可通过再次操作恢复，不影响已有图层与瓦片。`))) return;
@@ -1635,13 +1647,13 @@ export default function MapPanel({
         const listed = await mapProjects();
         const next = listed.projects || [];
         setProjects(next);
-        if (next[0]?.project) setProject(next[0].project);
+        if (next[0]?.project) changeProject(next[0].project);
         flash(`项目「${project}」已移入回收目录`);
       }
     } catch (e) {
       flash(`项目操作失败：${e.message}`);
     }
-  }, [project, flash]);
+  }, [project, changeProject, flash]);
 
   const refreshMap = useCallback(async () => {
     setMsg("刷新地图与图层中…");
@@ -1847,7 +1859,7 @@ export default function MapPanel({
       const created = await mapCreateProject(id, name, "zhejiang-map", { kind: "blank", description });
       const listed = await mapProjects();
       setProjects(listed.projects || []);
-      setProject(created.project || id);
+      changeProject(created.project || id);
       setAiCanvasOpen(false);
       // 起步提示交给对话栏（复用全局单实例，消息与 SSE 连续）。
       insertChatText?.(prompt);
@@ -1855,7 +1867,7 @@ export default function MapPanel({
     } catch (e) {
       throw new Error(e.message);
     }
-  }, [insertChatText, flash]);
+  }, [changeProject, insertChatText, flash]);
 
   const handleAgentEnd = useCallback(() => {
     setTimeout(() => {
@@ -1943,7 +1955,7 @@ export default function MapPanel({
                   {projects.map((p) => {
                     const id = p.project || p.name;
                     return (
-                      <button key={id} type="button" role="menuitem" className={id === project ? "active" : ""} onClick={() => { setProject(id); setProjectMenuOpen(false); }}>
+                      <button key={id} type="button" role="menuitem" className={id === project ? "active" : ""} onClick={() => { changeProject(id); setProjectMenuOpen(false); }}>
                         {p.name}{id === project ? " ✓" : ""}
                       </button>
                     );
@@ -2768,7 +2780,15 @@ export default function MapPanel({
           project={project}
           workspace={workspace}
           insertChatText={insertChatText}
-          onOpenFile={onOpenFile}
+          onOpenFile={(path) => {
+            // 地图数据文件没有通用预览：不打开错误页，提示可在地图中查看或 @ 给 Agent。
+            const ext = String(path).split(".").pop()?.toLowerCase() || "";
+            if (["geojson", "shp", "dbf", "prj", "cpg", "pbf", "zip"].includes(ext)) {
+              flash("地图数据文件：可在地图中查看，或用 @ 交给 Agent");
+              return;
+            }
+            onOpenFile?.(path);
+          }}
           onClose={() => setFileTreeOpen(false)}
         />
       )}

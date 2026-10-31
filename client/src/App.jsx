@@ -763,6 +763,12 @@ export default function App() {
     void refreshFiles("");
     setCurrentSessionId(created?.sessionId || null);
     setMapContexts((prev) => ({ ...prev, [next]: null }));
+    // 新会话没有地图绑定：关闭上一条会话留下的地图预览，避免预览项目与当前会话不一致。
+    setCanvasTabs((prev) => {
+      if (!prev.some((tab) => tab.kind === "mapPreview")) return prev;
+      return prev.filter((tab) => tab.kind !== "mapPreview");
+    });
+    setCanvasActiveId((prev) => (prev === "view:mapPreview" ? "" : prev));
     lastSessionIdRef.current = created?.sessionId || null;
     newSessionInFlightRef.current = false;
     setCreatingSession(false);
@@ -1449,6 +1455,13 @@ export default function App() {
             sessionId: session.id,
           });
         }
+      } else {
+        // 切到无地图绑定的会话：关闭上一条会话的地图预览，避免预览项目与当前会话不一致。
+        setCanvasTabs((prev) => {
+          if (!prev.some((tab) => tab.kind === "mapPreview")) return prev;
+          return prev.filter((tab) => tab.kind !== "mapPreview");
+        });
+        setCanvasActiveId((prev) => (prev === "view:mapPreview" ? "" : prev));
       }
       setChatLinks([]);
       localStorage.setItem("oaw_thread_id", conversationId);

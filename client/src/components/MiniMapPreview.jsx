@@ -5,7 +5,7 @@ import { mapProject } from "../api.js";
 const MapViewer = lazy(() => import("./MapViewer.jsx"));
 
 /**
- * 初始页会话卡片内嵌的只读小地图。
+ * 初始页会话地图预览（画布“地图预览”标签）的只读小地图。
  *
  * 数据：/api/map/project?name= 返回的 config（center/zoom/可见图层），
  * 样式由 MapViewer 自身请求 /api/map/data/{project}/style.json。

@@ -223,16 +223,26 @@ test("地图面板接入文件树", () => {
   assert.match(read("client/src/api.js"), /mapProjectTree/, "应封装项目树接口");
 });
 
-test("初始页地图会话内嵌只读小地图", () => {
-  const tab = read("client/src/components/新会话页签.jsx");
-  assert.match(tab, /MiniMapPreview/, "会话卡片应内嵌小地图");
-  assert.match(tab, /onOpenMap/, "应提供继续编辑入口");
+test("项目切换为单向同步，避免双写循环", () => {
+  const panel = read("client/src/components/MapPanel.jsx");
+  assert.match(panel, /const changeProject = useCallback/, "应有用户切换项目的唯一入口");
+  assert.match(panel, /onProjectChange\?\.\(next\)/, "用户切换项目应通知会话");
+  assert.doesNotMatch(panel, /onProjectChange\?\.\(project\)/, "会话回填不应反向通知");
+  assert.match(panel, /changeProject\(id\)/, "项目菜单应走统一入口");
+});
+
+test("初始页选择地图会话打开只读地图预览", () => {
   const mini = read("client/src/components/MiniMapPreview.jsx");
   assert.match(mini, /readOnly/, "小地图应只读");
   assert.match(mini, /initialView/, "小地图应恢复上次视口");
   const app = read("client/src/App.jsx");
   assert.match(app, /updateSessionMapContext/, "应持久化会话地图上下文");
-  assert.match(app, /onOpenMap=\{async \(session\)/, "应把继续编辑接到地图模块");
+  assert.match(app, /openCanvasView\("mapPreview"/, "选择地图会话时应打开地图预览标签");
+  assert.match(app, /<MiniMapPreview/, "地图预览标签应渲染只读小地图");
+  assert.match(app, /onOpen=\{\(\) => setActiveModule\("map"\)\}/, "继续编辑应进入地图模块");
+  const state = read("client/src/画布状态.js");
+  assert.match(state, /mapPreview/, "画布状态应登记地图预览单例标签");
+  assert.match(app, /tab\.kind !== "mapPreview"/, "无地图绑定的会话应关闭过期预览");
 });
 
 test("服务端登记 tree 与 map-context 路由", () => {

@@ -1473,7 +1473,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       setRunState((state) => ({ ...state, mode: nextMode }));
       return true;
     },
-    // v0.13.9：画布新会话页签创建会话后聚焦输入框
+    // 画布 + 菜单「新建对话」创建会话后聚焦输入框
     focusInput() {
       requestAnimationFrame(() => textareaRef.current?.focus());
     },

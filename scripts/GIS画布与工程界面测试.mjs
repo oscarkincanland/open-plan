@@ -111,7 +111,9 @@ test("AI 画布向导创建 blank 工程并注入起步提示", () => {
 });
 test("项目仍绑定当前会话（单活动画布）", () => {
   const panel = read("client/src/components/MapPanel.jsx");
-  assert.match(panel, /onProjectChange\?\.\(project\)/, "切换项目应通知会话");
+  assert.match(panel, /const changeProject = useCallback/, "应有用户切换项目的唯一入口");
+  assert.match(panel, /onProjectChange\?\.\(next\)/, "用户切换项目应通知会话");
+  assert.doesNotMatch(panel, /onProjectChange\?\.\(project\)/, "会话回填不应反向通知，避免双写循环");
   assert.match(panel, /initialProject/, "应接受会话记录的地图项目");
   assert.match(panel, /setProject\(target\)/, "会话项目变化应同步画布");
   const app = read("client/src/App.jsx");
@@ -141,9 +143,9 @@ test("地图面板接入文件树与初始页只读小地图", () => {
   const panel = read("client/src/components/MapPanel.jsx");
   assert.match(panel, /fileTreeOpen/, "应提供文件树开关");
   assert.match(panel, /地图文件树/, "应渲染文件树浮层");
-  const tab = read("client/src/components/新会话页签.jsx");
-  assert.match(tab, /MiniMapPreview/, "地图会话卡片应内嵌小地图");
-  assert.match(tab, /onOpenMap/, "应提供继续编辑入口");
+  const app = read("client/src/App.jsx");
+  assert.match(app, /openCanvasView\("mapPreview"/, "选择地图会话应打开地图预览标签");
+  assert.match(app, /<MiniMapPreview/, "地图预览应复用只读小地图");
   const mini = read("client/src/components/MiniMapPreview.jsx");
   assert.match(mini, /readOnly/, "小地图应只读");
   assert.match(mini, /initialView/, "小地图应恢复上次视口");

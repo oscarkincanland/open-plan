@@ -317,7 +317,7 @@ console.log("\n▶ 最小点击目标与窄屏");
   assert.match(样式, /\.map-toolbar \{ flex-wrap: wrap;/, "地图工具栏应可换行");
   // App 层自动折叠：窄屏或打开浏览器栏时收起预览
   assert.match(App, /const enforceNarrowLayout = \(\) => \{/, "应有窄屏自动折叠逻辑");
-  assert.match(App, /if \(window\.innerWidth > 1024\) return;/, "窄屏阈值应为 1024");
+  assert.match(App, /if \(window\.innerWidth <= 768\) setSidebarOpen\(false\)/, "窄屏应自动收起侧栏抽屉");
   assert.match(App, /window\.addEventListener\("resize", enforceNarrowLayout\)/, "窗口变化时应重新收口");
 });
 
@@ -337,7 +337,7 @@ console.log("\n▶ 启动稳定骨架与焦点归还");
 检查("弹层/面板关闭后焦点归还触发控件", () => {
   assert.match(App, /const previewToggleRef = useRef\(null\)/, "右预览应记录触发按钮");
   assert.match(App, /ref=\{previewToggleRef\}/, "预览开关应绑定引用");
-  assert.match(App, /const closePreview = useCallback/, "应有统一关闭预览逻辑");
+  assert.match(App, /const collapseCanvas = useCallback/, "应有统一收起画布逻辑");
   assert.match(App, /requestAnimationFrame\(\(\) => previewToggleRef\.current\?\.focus\(\)\)/, "关闭预览后应把焦点还给开关");
   assert.match(TaskCenter, /const triggerRef = useRef\(null\)/, "任务中心应记录触发按钮");
   assert.match(TaskCenter, /const closePanel = useCallback/, "应有统一关闭弹层逻辑");

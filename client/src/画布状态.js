@@ -14,7 +14,8 @@ export const CANVAS_STORAGE_KEY = "oaw_canvas_v2";
 export const CANVAS_WIDTH_KEY = "oaw_canvas_w";
 export const CANVAS_SIDE_WIDTH_KEY = "oaw_canvas_side_w";
 
-export const SINGLETON_TAB_KINDS = new Set(["artifacts", "changes", "browser", "objects", "workflows"]);
+export const SINGLETON_TAB_KINDS = new Set(["artifacts", "changes", "browser", "objects", "workflows", "mapPreview"]);
+
 
 const VIEW_META = Object.freeze({
   artifacts: { title: "工作产物", icon: "package" },
@@ -22,6 +23,7 @@ const VIEW_META = Object.freeze({
   browser: { title: "浏览器", icon: "globe" },
   objects: { title: "对象", icon: "layers" },
   workflows: { title: "工作流", icon: "flow" },
+  mapPreview: { title: "地图预览", icon: "map" },
   subagent: { title: "子代理", icon: "robot" },
 });
 
@@ -151,6 +153,7 @@ function sanitizeTab(tab) {
     };
   }
   if (kind === "subagent") return null; // 临时标签不恢复
+  if (kind === "mapPreview") return null; // 会话地图预览跟随当前会话，不跨会话恢复
   if (!VIEW_META[kind]) return null;
   return {
     ...createViewTab(kind, tab.payload || {}),
