@@ -17,6 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createDocTab, createViewTab, openCanvasTab, closeCanvasTab, reorderCanvasTabs, MAX_CANVAS_TABS } from "../client/src/画布状态.js";
+import { sideDrawerAllowed } from "../client/src/画布抽屉.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (file) => fs.readFileSync(path.join(ROOT, file), "utf8").replace(/\r\n/g, "\n");
@@ -74,6 +75,8 @@ test("浏览器式标签栏：关闭、收起、最大化、+ 菜单", () => {
   assert.match(tabbar, /onClose\?\.\(tab\.id\)/, "标签可关闭");
   assert.match(tabbar, /onCollapse/, "有收起画布动作");
   assert.match(tabbar, /onToggleMaximize/, "有最大化动作");
+  assert.match(tabbar, /浏览器铺满工作区/, "浏览器标签有全屏动作");
+  assert.match(app, /onToggleBrowserFullscreen=\{\(\) => setBrowserFullscreen/);
   assert.match(tabbar, /任务摘要/);
   assert.match(tabbar, /代码变更/);
   assert.match(tabbar, /新建对话/);
@@ -114,6 +117,26 @@ test("文件树抽屉：识别目录、进入子目录、面包屑返回", () =>
   assert.match(drawer, /onOpenFile\?\.\(relPath\)/, "点击文件应打开预览");
 });
 
+test("文件树抽屉跟随标签显隐：浏览器自动收起，文档/产物/改动恢复", () => {
+  assert.equal(sideDrawerAllowed("doc"), true);
+  assert.equal(sideDrawerAllowed("artifacts"), true);
+  assert.equal(sideDrawerAllowed("changes"), true);
+  assert.equal(sideDrawerAllowed("browser"), false);
+  assert.equal(sideDrawerAllowed("objects"), false);
+  assert.equal(sideDrawerAllowed("mapPreview"), false);
+  assert.match(app, /canvasSideVisible = canvasSideOpen && sideDrawerAllowed\(activeCanvasTab\?\.kind\)/);
+  assert.match(app, /previousCanvasKindRef/);
+  assert.match(app, /sideOpenBeforeHideRef/);
+  assert.match(app, /filesOpen=\{canvasSideVisible\}/);
+  assert.match(app, /\{canvasSideVisible && \(/);
+  assert.doesNotMatch(app, /\{canvasSideOpen && \(/, "抽屉渲染必须使用派生可见状态");
+});
+
+test("关闭标签后焦点归位", () => {
+  assert.match(app, /\.canvas-tab\.active \.canvas-tab-main/, "优先聚焦相邻标签");
+  assert.match(app, /previewToggleRef\.current\)\?\.focus/, "没有标签时回到顶栏入口");
+});
+
 test("工作产物：任务摘要 + 产物/链接分段", () => {
   assert.match(panel, /export function ArtifactPanel/);
   assert.match(panel, /export function RunChangesPanel/);
@@ -144,5 +167,5 @@ test("新建对话是菜单动作，不是画布标签", () => {
   assert.equal(pkg.scripts["test:ava-dualpane"], undefined, "双面板测试脚本应移除");
 });
 
-console.log(failed ? "\n工作区画布测试：存在失败项" : "\n工作区画布测试：全部通过（9 例）");
+console.log(failed ? "\n工作区画布测试：存在失败项" : "\n工作区画布测试：全部通过（11 例）");
 process.exit(failed ? 1 : 0);

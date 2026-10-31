@@ -26,11 +26,14 @@ export default function 画布标签栏({
   showObjects = false,
   showWorkflows = false,
   browserActivityPing = 0,
+  browserFullscreen = false,
+  onToggleBrowserFullscreen,
   mapSessions = [],
   onOpenMapSession,
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
+  const activeTab = tabs.find((tab) => tab.id === activeId) || null;
   const menuRef = useRef(null);
   const plusRef = useRef(null);
   const overflowRef = useRef(null);
@@ -225,6 +228,18 @@ export default function 画布标签栏({
             <div className="canvas-plus-sep" role="separator" />
             <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onNewChat?.(); }}><Icon name="chatPlus" size={13} /> 新建对话</button>
           </div>
+        )}
+        {activeTab?.kind === "browser" && (
+          <button
+            type="button"
+            className={`canvas-action ${browserFullscreen ? "active" : ""}`}
+            onClick={onToggleBrowserFullscreen}
+            aria-pressed={browserFullscreen}
+            aria-label={browserFullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
+            title={browserFullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
+          >
+            <Icon name={browserFullscreen ? "minimize" : "maximize"} size={14} />
+          </button>
         )}
         <button
           type="button"

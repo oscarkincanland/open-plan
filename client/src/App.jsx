@@ -27,6 +27,7 @@ import 工作流启动器 from "./components/工作流启动器.jsx";
 import 子代理详情面板 from "./components/子代理详情面板.jsx";
 import MiniMapPreview from "./components/MiniMapPreview.jsx";
 import { createDocTab, createViewTab, createSubagentTab, openCanvasTab, closeCanvasTab, reorderCanvasTabs, loadCanvasState, saveCanvasState, saveCanvasWidth, docTabId } from "./画布状态.js";
+import { sideDrawerAllowed } from "./画布抽屉.js";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
 import { acquireStream } from "./长连接预算.js";
@@ -345,6 +346,29 @@ export default function App() {
   const objectsOpen = canvasTabs.some((tab) => tab.kind === "objects");
   const workflowsOpen = canvasTabs.some((tab) => tab.kind === "workflows");
   const mapPreviewTab = canvasTabs.find((tab) => tab.kind === "mapPreview") || null;
+  // 文件树抽屉只服务文档/产物/改动；切到浏览器/对象/工作流/地图预览时自动收起，切回允许的标签再恢复。
+  const canvasSideVisible = canvasSideOpen && sideDrawerAllowed(activeCanvasTab?.kind);
+  const canvasSideOpenRef = useRef(canvasSideOpen);
+  canvasSideOpenRef.current = canvasSideOpen;
+  const previousCanvasKindRef = useRef(activeCanvasTab?.kind || "");
+  const sideOpenBeforeHideRef = useRef(false);
+  useEffect(() => {
+    const kind = activeCanvasTab?.kind || "";
+    const previous = previousCanvasKindRef.current;
+    if (kind === previous) return;
+    previousCanvasKindRef.current = kind;
+    if (!sideDrawerAllowed(kind)) {
+      if (canvasSideOpenRef.current) {
+        sideOpenBeforeHideRef.current = true;
+        setCanvasSideOpen(false);
+      }
+      return;
+    }
+    if (sideOpenBeforeHideRef.current) {
+      sideOpenBeforeHideRef.current = false;
+      setCanvasSideOpen(true);
+    }
+  }, [activeCanvasTab?.kind]);
   // 用户手动关掉浏览器侧栏后，本轮不再自动弹开（否则每个 browser_* 工具都会把它重新拉起来）。
   const browserAutoOpenBlockedRef = useRef(false);
   // 运行开关快照到达后的重渲染触发器（值本身不参与渲染，只用来让 flag() 派生的状态重算）。
@@ -404,6 +428,7 @@ export default function App() {
   const mapPersistRef = useRef({ last: "" });
 
   const canvasTabManualAtRef = useRef(0); // 用户最近一次手动切换画布标签的时间
+  const focusCanvasAfterCloseRef = useRef(false);
   const [browserActivityPing, setBrowserActivityPing] = useState(0); // 手关浏览器后的活动徽标
   const [canvasWidth, setCanvasWidth] = useState(420);
   const [canvasSideWidth, setCanvasSideWidth] = useState(260);
@@ -442,7 +467,15 @@ export default function App() {
       browserAutoOpenBlockedRef.current = true;
       setBrowserFullscreen(false);
     }
+    focusCanvasAfterCloseRef.current = true;
   }, [activeTab, canvasActiveId, canvasTabs]);
+
+  useEffect(() => {
+    if (!focusCanvasAfterCloseRef.current) return;
+    focusCanvasAfterCloseRef.current = false;
+    const nextTab = canvasActiveId ? document.querySelector(".canvas-tab.active .canvas-tab-main") : null;
+    (nextTab || previewToggleRef.current)?.focus?.();
+  }, [canvasActiveId, canvasTabs]);
 
   const handleDocDirtyChange = useCallback((dirty) => {
     const docId = activeTab;
@@ -2255,7 +2288,7 @@ export default function App() {
                   <button role="menuitemcheckbox" aria-checked={browserOpen} className={browserOpen ? "on" : ""} onClick={() => { if (browserOpen) closeBrowserPanel(); else { browserAutoOpenBlockedRef.current = false; setBrowserActivityPing(0); openCanvasView("browser"); } }} title={browserOpen ? "关闭内置浏览器标签" : "打开内置浏览器标签"}>
                     <Icon name="globe" size={14} /><span>内置浏览器</span>{browserActivityPing > 0 && !browserOpen && <i className="browser-activity-dot" aria-hidden="true" />}
                   </button>
-                  <button role="menuitemcheckbox" aria-checked={canvasSideOpen} className={canvasSideOpen ? "on" : ""} onClick={() => { if (!canvasOpen) openCanvasView("artifacts"); setCanvasSideOpen((value) => !value); }} title="展开/收起文件树抽屉">
+                  <button role="menuitemcheckbox" aria-checked={canvasSideVisible} className={canvasSideVisible ? "on" : ""} onClick={() => { if (!canvasOpen || !sideDrawerAllowed(activeCanvasTab?.kind)) { openCanvasView("artifacts"); setCanvasSideOpen(true); return; } setCanvasSideOpen((value) => !value); }} title="展开/收起文件树抽屉">
                     <Icon name="folder" size={14} /><span>文件树</span>
                   </button>
                   {flag("qoderObjectBar") && (
@@ -2371,15 +2404,17 @@ export default function App() {
               }}
               onSearch={() => setPaletteOpen(true)}
               onToggleFiles={() => setCanvasSideOpen((value) => !value)}
-              filesOpen={canvasSideOpen}
+              filesOpen={canvasSideVisible}
               onNewChat={async () => { await handleNewSession(currentWorkspaceRef.current || currentWorkspace); chatInputRef.current?.focusInput?.(); }}
               mapSessions={recentMapSessions}
               onOpenMapSession={async (session) => { await handleSelectSession(session); setActiveModule("map"); }}
               showObjects={flag("qoderObjectBar")}
               showWorkflows={flag("domainWorkflows")}
               browserActivityPing={browserActivityPing}
+              browserFullscreen={browserFullscreen}
+              onToggleBrowserFullscreen={() => setBrowserFullscreen((value) => !value)}
             />
-            <div className={`canvas-workarea ${canvasSideOpen ? "with-side" : ""}`}>
+            <div className={`canvas-workarea ${canvasSideVisible ? "with-side" : ""}`}>
               <div className="canvas-main">
                 {tabs.length > 0 && (
                   <div className={`app-canvas-body canvas-body-doc ${activeCanvasTab?.kind === "doc" ? "" : "canvas-hidden"}`}>
@@ -2469,7 +2504,7 @@ export default function App() {
                 ))}
               </div>
 
-              {canvasSideOpen && (
+              {canvasSideVisible && (
                 <>
                   <Resizer
                     side="right"
