@@ -5387,8 +5387,10 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
   const timelinePath = !isUser && Boolean(m.runId)
     && !/^review$/i.test(String(m.runMode || m.task?.mode || ""));
   const runTraceForTimeline = useMemo(
-    () => (timelinePath && summaryEvents.length ? reduceRunTrace(summaryEvents, m.runId) : null),
-    [timelinePath, summaryEvents, m.runId],
+    () => (timelinePath && Array.isArray(runSummary?.events) && runSummary.events.length
+      ? reduceRunTrace(runSummary.events, m.runId)
+      : null),
+    [timelinePath, runSummary, m.runId],
   );
   const timelineBlocks = useMemo(
     () => (timelinePath ? blocks.filter((block, blockIndex) => blockIndex !== hiddenFinalTextIndex) : []),
