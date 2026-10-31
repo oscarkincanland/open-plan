@@ -43,6 +43,7 @@ test("租约包含心跳、过期与 leader 冲突处理", () => {
   assert.match(lease, /BroadcastChannel/);
   assert.match(lease, /resign/);
   assert.match(lease, /maybePromote/);
+  assert.match(lease, /assertLeaseOwnership/);
   assert.match(lease, /String\(message\.tabId\) < TAB_ID/);
 });
 
