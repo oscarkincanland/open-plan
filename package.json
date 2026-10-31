@@ -141,6 +141,8 @@
     "setup": "node scripts/install-officecli.mjs",
     "map:glyphs": "node scripts/生成地图字形.mjs",
     "test:write-lock": "node scripts/写入锁并发测试.mjs",
+    "test:recovery-isolation": "node scripts/恢复隔离测试.mjs",
+    "test:multi-task-load": "node scripts/多任务并发回归测试.mjs",
     "test:repeat-guard": "node scripts/重复调用抑制测试.mjs",
     "test:event-registry": "node scripts/事件注册表测试.mjs",
     "test:event-archive": "node scripts/事件流归档测试.mjs",
