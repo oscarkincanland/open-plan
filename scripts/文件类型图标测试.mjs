@@ -58,6 +58,15 @@ test("左栏文件树与预览页文件树共用文件类型图标", () => {
   assert.doesNotMatch(canvasTree, /<Icon name=\{CODE_EXT\.test/);
 });
 
+test("产物卡与命令面板共用扁平文件图标", () => {
+  const chat = read("client/src/components/ChatPanel.jsx");
+  const palette = read("client/src/components/CommandPalette.jsx");
+  assert.match(chat, /import 文件类型图标 from "\.\/文件类型图标\.jsx"/);
+  assert.match(chat, /<文件类型图标 file=\{item\.path\} size=\{15\} \/>/);
+  assert.match(palette, /import 文件类型图标 from "\.\/文件类型图标\.jsx"/);
+  assert.match(palette, /<文件类型图标 file=\{it\.file\} size=\{14\} \/>/);
+});
+
 test("明暗主题都有 --file-* 颜色令牌", () => {
   const css = read("client/src/styles.css");
   assert.match(css, /--file-doc:\s*#3b77e0;/);
