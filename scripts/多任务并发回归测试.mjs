@@ -20,9 +20,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "..");
+// 用 fileURLToPath 解码：仓库路径含空格/中文时 URL.pathname 仍是 %20 编码，动态 import 会找不到模块。
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const LIVE = process.argv.includes("--live");
 const BASE = process.env.OAW_BASE_URL || "http://127.0.0.1:3002";
 
