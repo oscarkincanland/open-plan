@@ -886,6 +886,9 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .message-process-fold[open] > summary::before { transform: rotate(90deg); }
 .message-process-fold > summary .icon { color: var(--accent); }
 .message-process-fold > summary span { margin-left: auto; color: var(--dim); }
+/* 折叠行主信息：运行了多久 / 多少步；实时徽标紧随其后，不再各自抢占留白。 */
+.message-process-fold > summary .process-fold-meta { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.message-process-fold > summary .process-fold-meta + span { margin-left: 6px; }
 .message-process-fold-body { min-width: 0; border-top: 1px solid var(--border); }
 .message-process-scroll { display: grid; gap: 8px; max-height: 300px; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 8px 10px; }
 .message-process-scroll .thinking-text { max-height: none; overflow: visible; }
@@ -11858,4 +11861,5 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .code-viewer-host .cm-editor { height: 100%; }
 .code-viewer-host .cm-scroller { scrollbar-gutter: stable; }
 .code-viewer-loading, .code-viewer-error { padding: 14px 16px; color: var(--muted); font-size: 12px; }
-.code-viewer-error { color: var(--error); }
+.code-viewer-error { display: flex; flex-direction: column; gap: 8px; color: var(--error); }
+.code-viewer-error-actions { display: flex; gap: 6px; }

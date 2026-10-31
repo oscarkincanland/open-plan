@@ -295,7 +295,9 @@ export const getSession = (id, options = {}) => {
     if (options[key] !== undefined && options[key] !== null && options[key] !== "") query.set(key, String(options[key]));
   }
   const suffix = query.toString() ? `?${query.toString()}` : "";
-  return api(`/api/sessions/${encodeURIComponent(id)}${suffix}`);
+  // 会话详情是用户直接等待的控制面请求：超时后回收到可放弃流并重试，
+  // 避免连接池被 SSE 占满时“点会话永远转圈”。
+  return apiControl(`/api/sessions/${encodeURIComponent(id)}${suffix}`);
 };
 export const deleteSession = (id) =>
   apiControl(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
@@ -430,8 +432,8 @@ export const kbImaDoc = (mediaId) => api(`/api/kb/ima/doc?media_id=${encodeURICo
 
 // ---------- 地图（GIS 项目） ----------
 export const mapProjects = () => api("/api/map/projects");
-export const mapCreateProject = (project, name, baseProject = "zhejiang-map") =>
-  api("/api/map/projects", { method: "POST", body: JSON.stringify({ project, name, baseProject }) });
+export const mapCreateProject = (project, name, baseProject = "zhejiang-map", extra = {}) =>
+  api("/api/map/projects", { method: "POST", body: JSON.stringify({ project, name, baseProject, ...extra }) });
 export const mapDuplicateProject = (project, name) =>
   api("/api/map/projects/duplicate", { method: "POST", body: JSON.stringify({ project, name }) });
 export const mapRenameProject = (project, name) =>
@@ -450,6 +452,31 @@ export const mapProject = (name, workspace = "") => {
 };
 export const mapSaveStyle = (name, style) =>
   api("/api/map/style", { method: "POST", body: JSON.stringify({ name, style }) });
+// GIS 工程化（阶段 1）：图层注册表 / 元数据 / 基线 / 三级重置 / 操作日志 / 单层替换与导出
+export const mapLayerRegistry = (name) => api(`/api/map/project/${encodeURIComponent(name)}/layers`);
+export const mapProjectTree = (name, q = "") => {
+  const query = new URLSearchParams();
+  if (q) query.set("q", q);
+  const qs = query.toString();
+  return api(`/api/map/project/${encodeURIComponent(name)}/tree${qs ? `?${qs}` : ""}`);
+};
+export const mapUpdateLayerMeta = (name, layerId, patch) =>
+  api(`/api/map/project/${encodeURIComponent(name)}/layer/${encodeURIComponent(layerId)}`, { method: "PATCH", body: JSON.stringify(patch || {}) });
+export const mapLayerExport = (name, layerId) =>
+  api(`/api/map/project/${encodeURIComponent(name)}/layer/${encodeURIComponent(layerId)}/export`);
+export const mapLayerReplace = (name, layerId, geojson, format = "geojson") =>
+  api(`/api/map/project/${encodeURIComponent(name)}/layer/${encodeURIComponent(layerId)}/replace`, { method: "POST", body: JSON.stringify({ geojson, format }) });
+export const mapBaseline = (name) => api(`/api/map/project/${encodeURIComponent(name)}/baseline`);
+export const mapSetBaseline = (name) => api(`/api/map/project/${encodeURIComponent(name)}/baseline`, { method: "POST", body: "{}" });
+export const mapReset = (name, level = "tree") =>
+  api(`/api/map/project/${encodeURIComponent(name)}/reset`, { method: "POST", body: JSON.stringify({ level }) });
+export const mapOperations = (name, { layerId = "", limit = 200 } = {}) => {
+  const query = new URLSearchParams();
+  if (layerId) query.set("layerId", layerId);
+  if (limit) query.set("limit", String(limit));
+  const qs = query.toString();
+  return api(`/api/map/project/${encodeURIComponent(name)}/operations${qs ? `?${qs}` : ""}`);
+};
 export const mapSaveConfig = (name, config) =>
   api("/api/map/config", { method: "POST", body: JSON.stringify({ name, config }) });
 export const mapImportLayer = (name, layerId, geojson) =>
@@ -476,6 +503,9 @@ export const mapDemoAnalysis = (params = {}) => {
   return api(`/api/map/demo-analysis?${query.toString()}`);
 };
 export const mapCambodiaOD = (minFlow = 0) => api(`/api/demo/cambodia-od?minFlow=${encodeURIComponent(minFlow)}`);
+// M2 两张统计表（区域交换量桑基 / 路网结构）：不落图，只返回可展示的统计。
+export const mapExchangeSankey = (project = "") => api(`/api/map/exchange-sankey${project ? `?project=${encodeURIComponent(project)}` : ""}`);
+export const mapRoadStructure = (project = "") => api(`/api/map/road-structure${project ? `?project=${encodeURIComponent(project)}` : ""}`);
 export const mapM3Routes = () => api("/api/m3/bus-routes");
 export const mapM3Stations = () => api("/api/m3/station-heatmap");
 export const mapM3OD = () => api("/api/m3/od-lines");

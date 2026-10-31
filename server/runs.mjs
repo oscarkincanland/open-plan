@@ -1582,12 +1582,18 @@ function publicRunView(run, { includeEvents = true, eventByteBudget = 0 } = {}) 
 // 单条可达数十 KB，列表一次 50 条就是 1MB 级响应，而明细点击时另有单条加载。
 export function runSummaryView(view) {
   if (!view) return null;
+  const startedAt = Date.parse(String(view.startedAt || "")) || 0;
+  const endedAt = Date.parse(String(view.finishedAt || view.updatedAt || "")) || 0;
+  const durationMs = startedAt && endedAt && endedAt >= startedAt ? endedAt - startedAt : 0;
+  const artifacts = Array.isArray(view.artifacts) ? view.artifacts : [];
   return {
     id: view.id,
     status: view.status,
     mode: view.mode || "",
     task: view.task ? { goal: view.task.goal || "", title: view.task.title || "" } : null,
     summary: view.summary || "",
+    finalText: view.finalText || "",
+    summarySource: view.completion?.summary ? "completion" : view.summary ? "run" : view.finalText ? "final" : "none",
     completion: view.completion || null,
     sessionId: view.sessionId || null,
     threadId: view.threadId || null,
@@ -1595,6 +1601,26 @@ export function runSummaryView(view) {
     cwd: view.cwd || "",
     startedAt: view.startedAt || null,
     finishedAt: view.finishedAt || null,
+    durationMs,
+    stepCount: Array.isArray(view.steps) ? view.steps.length : 0,
+    toolCount: Number(view.progress?.toolTotal) || 0,
+    artifactCount: artifacts.length,
+    // 历史首屏只带紧凑产物；完整 artifact 快照按需 getRun 加载。
+    artifacts: artifacts.slice(0, 50).map((item) => ({
+      path: item?.path || item?.relativePath || "",
+      relativePath: item?.relativePath || item?.path || "",
+      size: item?.after?.size ?? item?.size ?? null,
+      changeType: item?.changeType || item?.status || "",
+      status: item?.status || item?.changeType || "",
+      source: item?.source || "artifact",
+      confidence: item?.confidence || (item?.confirmed === true ? "confirmed" : "run-window"),
+      deliverable: Boolean(item?.deliverable ?? item?.autoDeliverable),
+      confirmed: item?.confirmed === true || item?.confidence === "confirmed",
+      attributed: item?.attributed !== false,
+      acceptanceStatus: item?.acceptanceStatus || null,
+      publicationStatus: item?.publicationStatus || null,
+      after: { size: item?.after?.size ?? item?.size ?? null },
+    })),
     acceptanceStatus: view.acceptanceStatus || null,
     verificationStatus: view.verificationStatus || null,
     progress: view.progress || null,

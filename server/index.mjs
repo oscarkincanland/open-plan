@@ -35,7 +35,7 @@ import { listAgents, createAgent, updateAgent, deleteAgent } from "./智能体�
 import { writeWorkspaceFile, withWriteLockAsync } from "./写入协调.mjs";
 import { evaluateWorkspaceWrite, runRuntimeEvaluation } from "./运行评测.mjs";
 import { normalizeOfficeFailure, normalizeWorkspaceWriteError, workspaceWriteHttpStatus } from "./文件权限错误.mjs";
-import { codeLanguageFor, isCodeExt, isTextExt, readTextPreview } from "./预览类型.mjs";
+import { PREVIEW_PREVIEW_MAX_BYTES, codeLanguageFor, isCodeExt, isTextExt, readTextPreview } from "./预览类型.mjs";
 import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, CHANNEL_HISTORY_LIMIT } from "./事件协议.mjs";
 import * as searchModule from "./联网搜索.mjs";
 import { nativeCapabilities, openWithDefaultApp, pickFiles, pickFolder, revealInFileManager, cancelActivePicker, activePickerInfo } from "./原生文件.mjs";
@@ -911,17 +911,48 @@ app.get("/api/files", (req, res) => {
   }
   const { workspace, explicit, invalid } = resolveRequestWorkspace(req);
   if (explicit && !workspace) return res.status(409).json({ error: "unknown workspace", workspace: invalid });
-  const target = dir ? resolvePath(dir, workspace) : workspace;
-  if (dir && (!target || !fs.existsSync(target) || !fs.statSync(target).isDirectory())) return res.status(404).json({ error: "directory not found", workspace });
-  const files = listWorkspace(target).map((item) => {
-    if (item.isDir) return item;
-    const p = path.join(target, item.name);
-    try {
-      const st = fs.statSync(p);
-      return { ...item, mime: mimeForExt(item.ext), mtime: st.mtimeMs, version: `${st.size}:${st.mtimeMs}` };
-    } catch { return item; }
-  });
-  res.json({ files, dir, workspace });
+  try {
+    const target = dir ? resolvePath(dir, workspace) : workspace;
+    if (dir && !target) return res.status(404).json({ error: "directory not found", code: "FILES_NOT_FOUND", workspace });
+    if (dir) {
+      let isDir = false;
+      try {
+        isDir = fs.statSync(target).isDirectory();
+      } catch {}
+      if (!isDir) return res.status(404).json({ error: "directory not found", code: "FILES_NOT_FOUND", workspace });
+    }
+    // 目录本身瞬时不可读（外部盘/权限/文件抖动）时短重试一次；条目级消失由
+    // listWorkspace 直接跳过，不应该让整页列表失败。
+    let raw = null;
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        raw = listWorkspace(target);
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        const code = String(error?.code || "");
+        if (!["EPERM", "EACCES", "EBUSY", "EIO"].includes(code)) break;
+      }
+    }
+    if (lastError) throw lastError;
+    const files = raw.map((item) => {
+      if (item.isDir) return item;
+      // 使用 listWorkspace 已经拿到的 stat 结果，避免第二次 stat 再撞上同一竞态窗口。
+      return { ...item, mime: mimeForExt(item.ext), version: `${item.size}:${item.mtime}` };
+    });
+    res.json({ files, dir, workspace });
+  } catch (error) {
+    const code = String(error?.code || "");
+    const notFound = code === "ENOENT" || code === "ENOTDIR";
+    // 不能落到 Express 的 HTML 500：前端必须拿到可读错误码才能决定重试/回根目录。
+    return res.status(notFound ? 404 : 503).json({
+      error: notFound ? "directory not found" : "文件列表暂时不可用，请重试",
+      code: notFound ? "FILES_NOT_FOUND" : "FILES_TRANSIENT",
+      workspace,
+    });
+  }
 });
 
 app.get("/api/files/search", (req, res) => {
@@ -1155,21 +1186,21 @@ app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
       res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "xlsx", name: fileName, identity, ...wb });
     } else if (isTextExt(ext)) {
-      const preview = readTextPreview(p);
+      const preview = readTextPreview(p, PREVIEW_PREVIEW_MAX_BYTES);
       if (preview.binary) return res.status(415).json({ error: "该文件看起来是二进制内容，无法作为文本预览" });
       res.setHeader("Cache-Control", "no-store, max-age=0");
-      res.json({ kind: "text", name: fileName, content: preview.text, ext, truncated: preview.truncated, size: preview.size, identity });
+      res.json({ kind: "text", name: fileName, content: preview.text, ext, truncated: preview.truncated, size: preview.size, encoding: preview.encoding, identity });
     } else if (ext === "html" || ext === "htm") {
-      const preview = readTextPreview(p);
+      const preview = readTextPreview(p, PREVIEW_PREVIEW_MAX_BYTES);
       if (preview.binary) return res.status(415).json({ error: "该文件看起来是二进制内容，无法作为网页预览" });
       res.setHeader("Cache-Control", "no-store, max-age=0");
-      res.json({ kind: "htmlfile", name: fileName, content: preview.text, ext, truncated: preview.truncated, size: preview.size, identity });
+      res.json({ kind: "htmlfile", name: fileName, content: preview.text, ext, truncated: preview.truncated, size: preview.size, encoding: preview.encoding, identity });
     } else if (isCodeExt(ext)) {
       // 源码只读预览：文本 + 语言标识，前端用 CodeViewer 渲染；不执行任何内容。
       const preview = readTextPreview(p);
       if (preview.binary) return res.status(415).json({ error: "该文件看起来是二进制内容，无法作为源码预览" });
       res.setHeader("Cache-Control", "no-store, max-age=0");
-      res.json({ kind: "code", name: fileName, ext, language: codeLanguageFor(ext), content: preview.text, truncated: preview.truncated, size: preview.size, identity });
+      res.json({ kind: "code", name: fileName, ext, language: codeLanguageFor(ext), content: preview.text, truncated: preview.truncated, size: preview.size, encoding: preview.encoding, identity });
     } else if (ext === "pdf") {
       res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "pdf", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/raw${cwdQuery}` });

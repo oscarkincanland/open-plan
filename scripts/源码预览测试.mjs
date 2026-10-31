@@ -73,11 +73,28 @@ test("含 NUL 的文件判为二进制", () => {
   assert.equal(preview.readTextPreview(file).binary, true);
 });
 
+test("UTF-16 LE/BE 与 GBK 中文可读", () => {
+  const le = path.join(tmp, "le.txt");
+  fs.writeFileSync(le, Buffer.from([0xff, 0xfe, 0x2d, 0x4e, 0x87, 0x65]));
+  assert.equal(preview.readTextPreview(le).text, "中文");
+  assert.equal(preview.readTextPreview(le).encoding, "utf-16le");
+  const gbk = path.join(tmp, "gbk.txt");
+  fs.writeFileSync(gbk, Buffer.from([0xd6, 0xd0, 0xce, 0xc4]));
+  const gbkResult = preview.readTextPreview(gbk);
+  assert.equal(gbkResult.text, "中文");
+  assert.equal(gbkResult.encoding, "gb18030");
+});
+
+test("Markdown/HTML 预览上限高于源码视图", () => {
+  assert.equal(preview.PREVIEW_TEXT_MAX_BYTES, 2 * 1024 * 1024);
+  assert.equal(preview.PREVIEW_PREVIEW_MAX_BYTES, 10 * 1024 * 1024);
+});
+
 console.log("\n▶ 服务端与前端接线");
 
 test("预览路由返回 kind=code 并带 language", () => {
   const index = read("server/index.mjs");
-  assert.match(index, /import \{ codeLanguageFor, isCodeExt, isTextExt, readTextPreview \} from "\.\/预览类型\.mjs"/);
+  assert.match(index, /import \{ PREVIEW_PREVIEW_MAX_BYTES, codeLanguageFor, isCodeExt, isTextExt, readTextPreview \} from "\.\/预览类型\.mjs"/);
   assert.match(index, /else if \(isCodeExt\(ext\)\)/);
   assert.match(index, /kind: "code", name: fileName, ext, language: codeLanguageFor\(ext\)/);
   assert.match(index, /else if \(isTextExt\(ext\)\)/);

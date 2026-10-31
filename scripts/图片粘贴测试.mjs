@@ -71,10 +71,13 @@ console.log("\n▶ ChatPanel 接线");
 
 test("粘贴/拖入走压缩、去重与上限，不再静默截断", () => {
   const panel = read("client/src/components/ChatPanel.jsx");
-  assert.match(panel, /import \{ clipboardImageFiles, imageDedupeKey, imageFileName, limitImages, compressImage, compressionSummary \} from "\.\.\/图片处理\.js"/);
+  assert.match(panel, /import \{ clipboardImageFiles, imageDedupeKey, imageContentKey, imageFileName, limitImages, compressImage, compressionSummary \} from "\.\.\/图片处理\.js"/);
   assert.match(panel, /const \{ kept, rejected \} = limitImages\(imageFiles, remaining\)/);
+  assert.match(panel, /await imageContentKey\(file\)/);
   assert.match(panel, /await compressImage\(file\)/);
   assert.match(panel, /最多 8 张图片/);
+  assert.match(panel, /单次最多 6 个附件/);
+  assert.match(panel, /imageQueueRef/);
   assert.doesNotMatch(panel, /for \(const f of Array\.from\(list\)\.slice\(0, 6\)\)/);
   assert.match(panel, /const files = clipboardImageFiles\(e\);/);
 });

@@ -37,6 +37,19 @@ export function imageDedupeKey(file) {
   return [file?.name || "", file?.size || 0, file?.lastModified || 0, file?.type || ""].join("|");
 }
 
+/** 内容哈希去重：剪贴板 getAsFile() 的 lastModified 每次可能不同，不能只靠元数据。 */
+export async function imageContentKey(file) {
+  const fallback = imageDedupeKey(file);
+  if (!file || typeof file.arrayBuffer !== "function" || typeof crypto === "undefined" || !crypto.subtle) return fallback;
+  try {
+    const buffer = await file.arrayBuffer();
+    const digest = await crypto.subtle.digest("SHA-256", buffer);
+    return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return fallback;
+  }
+}
+
 /** 粘贴图片没有可用文件名时生成稳定名称（便于 chip 展示与排查）。 */
 export function imageFileName(file, now = Date.now()) {
   const raw = String(file?.name || "").trim();
@@ -103,6 +116,8 @@ function resultFrom(mediaType, dataUrl, originalBytes, compressedBytes, width, h
  */
 export async function compressImage(file, options = {}) {
   if (!isImageFile(file) || typeof document === "undefined") return null;
+  // 动图/矢量图重编码会丢帧或栅格化，保留原文件交给模型。
+  if (/image\/(gif|svg\+xml)/i.test(String(file.type || ""))) return null;
   const maxSide = Math.max(320, Number(options.maxSide) || IMAGE_MAX_SIDE);
   const quality = Math.min(0.95, Math.max(0.5, Number(options.quality) || IMAGE_JPEG_QUALITY));
   const skipBelow = Math.max(0, Number(options.skipBelow) || IMAGE_SKIP_COMPRESS_BYTES);

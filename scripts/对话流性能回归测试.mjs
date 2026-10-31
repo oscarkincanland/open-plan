@@ -67,7 +67,7 @@ try {
   assert.match(runSummarySource, /className=\{`product-card\$\{item\.deliverable \? " deliverable" : ""\}\$\{item\.confirmed \? "" : " provisional"\}`\}/, "本轮产物应渲染为文件卡片（图标 + 名称 + 类型，未确认的带待确认标记）");
   assert.match(runSummarySource, /className="product-card-badge">交付/, "产物卡片应标记交付项");
   assert.match(runSummarySource, /className="product-card-open"[\s\S]{0,200}?>打开</, "产物卡片应有“打开”按钮");
-  assert.match(runSummarySource, /productCards\.map/, "产物卡片应来自统一去重集合（不再截断成 6 项）");
+  assert.match(runSummarySource, /productCards\.slice\(0, 6\)\.map/, "产物卡片首屏最多 6 个，其余走产物面板");
   // 归属分层：write-ledger/已验收 = 已确认；"本轮写过 + 窗口内变更" = 待确认（可见但标注）；
   // 完全没有写入证据的差异才是"未归属线索"，不参与产物计数。
   assert.match(runSummarySource, /const attributedProducts = useMemo\(\(\) => products\.filter\(\(item\) => item\.attributed\)/, "产物应按归属过滤（未归属线索不计数）");
@@ -85,7 +85,8 @@ try {
   assert.match(runSummarySource, /useEffect\(\(\) => setSummaryOpen\(runIsLive\), \[runIsLive\]\)/, "任务结束时应自动收起结论与工具轨迹");
   assert.match(runSummarySource, /!embedded && \(trace\?\.tools\?\.length > 0/, "嵌入式结果卡不重复渲染工具明细");
   assert.match(runSummarySource, /run-trace-step-heading/, "独立结果摘要仍保留有序工具时间线");
-  assert.match(runSummarySource, /const fallbackSummary = finalAnswer \? ""/, "已有最终答案时结果卡不再重复展示结论");
+  assert.match(runSummarySource, /const summaryText = String\(completion\?\.summary/, "总结优先取 complete_task.summary");
+  assert.match(runSummarySource, /const fallbackSummary = summaryText \|\|/, "总结不再因存在最终答复而隐藏");
   assert.match(chatPanelSource, /foldedProcessBlocks/, "思考、工具及运行中的进度播报应并入消息级过程卡");
   assert.match(chatPanelSource, /message-process-scroll/, "过程内容应在一个有界滚动容器中回看");
   assert.match(chatPanelSource, /<ExecutionFlow \{\.\.\.messageExecutionFlow\} embedded \/>/, "去重后的 SSE 轨迹应嵌入消息过程卡");

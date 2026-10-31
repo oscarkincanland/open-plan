@@ -93,7 +93,7 @@ export function normalizeFileChange(input = {}, { runId = null } = {}) {
   const accepted = ["passed", "warning", "manual_review"].includes(String(acceptance?.status || input.acceptanceStatus || ""));
   const published = Boolean(input.publication) || String(input.publicationStatus || "") === "published";
   const role = internal ? "internal"
-    : (accepted || published) ? "deliverable"
+    : (input.deliverable === true || accepted || published) ? "deliverable"
       : "unclassified";
   return {
     runId: input.runId || runId || null,

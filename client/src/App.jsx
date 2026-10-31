@@ -27,8 +27,10 @@ import 新会话页签 from "./components/新会话页签.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
 import { acquireStream } from "./长连接预算.js";
+import { createGlobalEventsLease } from "./跨标签页流租约.js";
 import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, getTabId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun } from "./api.js";
 import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
+import { mergeMapContext } from "./地图/地图上下文.js";
 import FeedbackHost, { notifyError } from "./components/Feedback.jsx";
 import 提示气泡 from "./components/提示气泡.jsx";
 import { initRuntimeFlags, flag, flagsReady } from "./运行开关.js";
@@ -285,6 +287,22 @@ const GLOBAL_EVENT_NOTICES = new Set(["run_finished", "run_recovered", "run_canc
 // 启动加载分区文案：失败提示与重试按钮按分区说明，避免只报一句笼统错误。
 const LOAD_SCOPE_LABELS = { files: "文件列表", sessions: "会话列表", projects: "项目列表", workspaces: "工作区列表" };
 
+// 文件列表的瞬时错误：服务端已能区分 503/timeout/权限；这类错误先重试一次，
+// 不直接弹“读取失败”。404 单独处理为“目录已不存在”，回到工作区根目录。
+function isTransientFilesError(error) {
+  const code = String(error?.code || "");
+  const message = String(error?.message || "");
+  return code === "FILES_TRANSIENT"
+    || /HTTP 5\d\d/.test(message)
+    || /未响应|连接被后台长连接占满|Failed to fetch|network/i.test(message);
+}
+
+function isNotFoundFilesError(error) {
+  return String(error?.code || "") === "FILES_NOT_FOUND" || /HTTP 404/.test(String(error?.message || ""));
+}
+
+const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
 export default function App() {
   const [files, setFiles] = useState([]);
   const [sessions, setSessions] = useState([]);
@@ -475,6 +493,9 @@ export default function App() {
   // v0.13.2：当前会话已加载助手消息里的外部链接（ChatPanel 提取，Links 页签展示）。
   const [chatLinks, setChatLinks] = useState([]);
   const [sessionResumeError, setSessionResumeError] = useState(null); // { sessionId, message } Agent 恢复失败时历史只读
+  // 历史可以先展示，但只有 Agent 恢复成功后才允许发送/连接对话流；
+  // 否则 SSE 可能在恢复完成前创建一个新的空 runtime。
+  const [agentReady, setAgentReady] = useState(true);
   // 新建会话的进行中/失败状态（交互 2）：失败必须可见，且不得清空旧会话。
   const [creatingSession, setCreatingSession] = useState(false);
   const [newSessionError, setNewSessionError] = useState(null); // { message, workspace }
@@ -504,6 +525,11 @@ export default function App() {
   const navGenerationRef = useRef(0);
   const newSessionInFlightRef = useRef(false);
   const filesRequestSeqRef = useRef(0);
+  // 文件列表刷新合并：同一时刻只保留一个在途请求，后续请求记为 pending，
+  // 完成后只补一次；避免 file_changed 风暴把控制面连接池打满。
+  const filesRefreshRef = useRef(null);
+  const filesPendingDirRef = useRef(null);
+  const filesFailureStreakRef = useRef(0);
   const docRequestSeqRef = useRef(0);
   const docAbortRef = useRef(null); // 打开文件请求的中止器：切文件/关标签/切工作区时取消旧请求
   const currentThreadRef = useRef(threadId);
@@ -637,6 +663,8 @@ export default function App() {
     localStorage.setItem("oaw_thread_id", next);
     setHistoryMessages(null);
     setHistoryThreadId(null);
+    setSessionResumeError(null);
+    setAgentReady(true);
     setHistoryWindow(null);
     setSessionResumeError(null);
     // 切会话时丢弃在途的文件打开请求与已打开标签，避免旧结果写入新会话预览。
@@ -674,33 +702,85 @@ export default function App() {
 
   const refreshFiles = useCallback(async (dir) => {
     const requestedDir = typeof dir === "string" ? dir : currentDirRef.current;
-    // 工作区身份必须显式传给服务端并在响应里核对：只传 dir 时，服务端会用
-    // 自己的全局工作区解析相对路径，页面显示 A、列表来自 B（交接文档交互 1）。
     const requestedWorkspace = currentWorkspaceRef.current;
+
+    // 已有在途请求：只记下最新目录，等当前请求结束后补一次。
+    if (filesRefreshRef.current) {
+      filesPendingDirRef.current = requestedDir;
+      return filesRefreshRef.current;
+    }
+
     const requestSeq = ++filesRequestSeqRef.current;
     setScopeStatus("files", "loading");
-    try {
-      const result = await listFiles(requestedDir, requestedWorkspace);
-      // 目录已切换、工作区已切换或本次请求不是最新时，过期响应不得覆盖列表
-      const stale = requestSeq !== filesRequestSeqRef.current
-        || requestedDir !== currentDirRef.current
-        || !sameWorkspacePath(requestedWorkspace, currentWorkspaceRef.current);
-      if (stale) return;
-      // 服务端回显的来源与页面不一致：判定为身份错位，阻止把它当当前目录展示。
-      if (result.workspace && requestedWorkspace && !sameWorkspacePath(result.workspace, requestedWorkspace)) {
+
+    const attempt = async () => {
+      try {
+        return { ok: true, result: await listFiles(requestedDir, requestedWorkspace) };
+      } catch (error) {
+        return { ok: false, error };
+      }
+    };
+    const isStale = () => requestSeq !== filesRequestSeqRef.current
+      || requestedDir !== currentDirRef.current
+      || !sameWorkspacePath(requestedWorkspace, currentWorkspaceRef.current);
+
+    const run = async () => {
+      let outcome = await attempt();
+      // 瞬时错误先重试一次；只对“重试后仍失败”的持续错误提示。
+      if (!outcome.ok && isTransientFilesError(outcome.error) && !isStale()) {
+        await wait(400);
+        if (isStale()) return;
+        outcome = await attempt();
+      }
+      if (isStale()) return;
+
+      if (!outcome.ok) {
+        const error = outcome.error;
+        // 当前目录被删除/改名：回到工作区根目录，避免一直停留在不存在的目录。
+        if (isNotFoundFilesError(error) && requestedDir) {
+          filesFailureStreakRef.current = 0;
+          currentDirRef.current = "";
+          setCurrentDir("");
+          setScopeStatus("files", "loading");
+          setScopeError("files", null);
+          filesPendingDirRef.current = "";
+          return;
+        }
+        filesFailureStreakRef.current += 1;
         setScopeStatus("files", "error");
-        setScopeError("files", new Error(`文件列表来源与当前工作区不一致（${result.workspace}）`));
+        // 第一次瞬时失败保留旧列表、不弹横幅；连续失败才提示。
+        if (filesFailureStreakRef.current >= 2) setScopeError("files", error);
         return;
       }
+
+      const result = outcome.result;
+      // 服务端回显的来源与页面不一致：判定为身份错位，阻止把它当当前目录展示。
+      if (result.workspace && requestedWorkspace && !sameWorkspacePath(result.workspace, requestedWorkspace)) {
+        filesFailureStreakRef.current += 1;
+        setScopeStatus("files", "error");
+        if (filesFailureStreakRef.current >= 2) {
+          setScopeError("files", new Error(`文件列表来源与当前工作区不一致（${result.workspace}）`));
+        }
+        return;
+      }
+      filesFailureStreakRef.current = 0;
       setFiles(result.files || []);
       setScopeStatus("files", "ready");
       setScopeError("files", null);
-    } catch (error) {
-      if (requestSeq === filesRequestSeqRef.current) {
-        setScopeStatus("files", "error");
-        setScopeError("files", error);
+    };
+
+    let promise;
+    promise = run().finally(() => {
+      if (filesRefreshRef.current === promise) filesRefreshRef.current = null;
+      const pendingDir = filesPendingDirRef.current;
+      filesPendingDirRef.current = null;
+      // 同一目录不重复补拉；切换目录/工作区时才补一次。
+      if (pendingDir !== null && pendingDir !== requestedDir) {
+        void refreshFiles(pendingDir);
       }
-    }
+    });
+    filesRefreshRef.current = promise;
+    return promise;
   }, [setScopeError, setScopeStatus]);
 
   // 同步工作区 ref：文件请求由回调发起，若只依赖闭包里的 currentWorkspace，
@@ -740,8 +820,10 @@ export default function App() {
     let reconnectTimer = null;
     let retryDelay = 800;
     let cancelled = false;
-    // 全局事件流是核心长连接（必需）：槽位不足时优先保证它和对话流。
-    const slot = acquireStream("agent-events", { essential: true, priority: 2, label: "全局事件流" });
+    let leaderActive = false;
+    let slot = null;
+    // 全局事件流由跨标签页 leader 持有；follower 通过 BroadcastChannel 接收。
+    // 不支持 BroadcastChannel 的环境会退化为每个标签页各自连接（原行为）。
     const cursorKey = "oaw_event_cursor";
     const flushEventBatch = () => {
       eventBatchTimerRef.current = null;
@@ -756,15 +838,51 @@ export default function App() {
       if (!eventBatchTimerRef.current) eventBatchTimerRef.current = window.setTimeout(flushEventBatch, 100);
     };
     const scheduleReconnect = () => {
-      if (cancelled || reconnectTimer) return;
+      if (cancelled || !leaderActive || reconnectTimer) return;
       try { source?.close(); } catch {}
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null;
-        connect();
+        if (leaderActive) connect();
       }, retryDelay);
       retryDelay = Math.min(5000, retryDelay * 2);
     };
+    // 事件处理与连接解耦：leader 收到 SSE 后本地处理并广播；follower 直接处理广播。
+    const handlePayload = (payload) => {
+      try {
+        const event = payload?.event || payload;
+        const seq = Number(event?.seq || 0);
+        if (!seq || seq <= eventCursorRef.current) return;
+        eventCursorRef.current = seq;
+        localStorage.setItem(cursorKey, String(seq));
+        const isCurrentThread = !event.threadId || event.threadId === currentThreadRef.current;
+        scheduleEventBatch(isCurrentThread && ["run_finished", "file_changed", "artifact_published", ...(flag("stagedVisible") ? ["artifact_staged"] : [])].includes(event.type));
+        const thread = event.threadId || "";
+        const noticeKey = `${thread}:${event.runId || "event"}:${event.type}`;
+        if (thread && thread !== currentThreadRef.current && GLOBAL_EVENT_NOTICES.has(event.type) && !eventNoticeKeysRef.current.has(noticeKey)) {
+          eventNoticeKeysRef.current.add(noticeKey);
+          setUnreadByThread((prev) => ({ ...prev, [thread]: (prev[thread] || 0) + 1 }));
+        }
+        if (["run_finished", "run_recovered", "run_cancel_requested", "agent_error"].includes(event.type)) {
+          // 新一轮开始前恢复"浏览器侧栏可自动展开"：用户上一轮手动关掉的状态不跨轮传递。
+          if (event.type === "run_finished") browserAutoOpenBlockedRef.current = false;
+          // 后台 Run 结束后历史缓存必须失效：否则切回该会话会先显示上一轮旧消息。
+          if (event.type === "run_finished") {
+            const finishedSessionId = String(event.sessionId || event.data?.sessionId || "");
+            if (finishedSessionId) sessionHistoryCacheRef.current.delete(finishedSessionId);
+            else sessionHistoryCacheRef.current.clear();
+          }
+          if (!eventRefreshTimerRef.current) {
+            eventRefreshTimerRef.current = window.setTimeout(() => {
+              eventRefreshTimerRef.current = null;
+              if (document.visibilityState === "visible") refreshSessions();
+            }, 180);
+          }
+        }
+      } catch {}
+    };
     const connect = async () => {
+      if (cancelled || !leaderActive) return;
+      if (!slot) slot = acquireStream("agent-events", { essential: true, priority: 2, label: "全局事件流" });
       let cursor = eventCursorRef.current;
       if (!localStorage.getItem(cursorKey)) {
         try {
@@ -774,36 +892,15 @@ export default function App() {
           localStorage.setItem(cursorKey, String(cursor));
         } catch {}
       }
-      if (cancelled) return;
+      if (cancelled || !leaderActive) return;
       source = new EventSource(`/api/agent/events?client=${encodeURIComponent(clientId)}&tab=${encodeURIComponent(getTabId())}&after=${encodeURIComponent(cursor)}`);
       slot?.attach(() => source?.close());
       source.onopen = () => { retryDelay = 800; };
       source.onmessage = (message) => {
         try {
           const payload = JSON.parse(message.data || "{}");
-          const event = payload.event || payload;
-          const seq = Number(event.seq || 0);
-          if (!seq || seq <= eventCursorRef.current) return;
-          eventCursorRef.current = seq;
-          localStorage.setItem(cursorKey, String(seq));
-          const isCurrentThread = !event.threadId || event.threadId === currentThreadRef.current;
-          scheduleEventBatch(isCurrentThread && ["run_finished", "file_changed", "artifact_published", ...(flag("stagedVisible") ? ["artifact_staged"] : [])].includes(event.type));
-          const thread = event.threadId || "";
-          const noticeKey = `${thread}:${event.runId || "event"}:${event.type}`;
-          if (thread && thread !== currentThreadRef.current && GLOBAL_EVENT_NOTICES.has(event.type) && !eventNoticeKeysRef.current.has(noticeKey)) {
-            eventNoticeKeysRef.current.add(noticeKey);
-            setUnreadByThread((prev) => ({ ...prev, [thread]: (prev[thread] || 0) + 1 }));
-          }
-          if (["run_finished", "run_recovered", "run_cancel_requested", "agent_error"].includes(event.type)) {
-            // 新一轮开始前恢复"浏览器侧栏可自动展开"：用户上一轮手动关掉的状态不跨轮传递。
-            if (event.type === "run_finished") browserAutoOpenBlockedRef.current = false;
-            if (!eventRefreshTimerRef.current) {
-              eventRefreshTimerRef.current = window.setTimeout(() => {
-                eventRefreshTimerRef.current = null;
-                if (document.visibilityState === "visible") refreshSessions();
-              }, 180);
-            }
-          }
+          handlePayload(payload);
+          lease.publish(payload);
         } catch {}
       };
       // 服务端在回放结束后会下发具名 open 事件（cursor/latest/earliest/truncated）。
@@ -828,9 +925,29 @@ export default function App() {
       });
       source.onerror = scheduleReconnect;
     };
-    connect();
+    let lease = null;
+    const startLeaderStream = () => {
+      if (leaderActive || cancelled) return;
+      leaderActive = true;
+      void connect();
+    };
+    const stopLeaderStream = () => {
+      leaderActive = false;
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      try { source?.close(); } catch {}
+      source = null;
+      slot?.release();
+      slot = null;
+    };
+    lease = createGlobalEventsLease({
+      onStart: startLeaderStream,
+      onStop: stopLeaderStream,
+      onEvent: handlePayload,
+    });
     return () => {
       cancelled = true;
+      lease?.stop();
+      leaderActive = false;
       source?.close();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (eventBatchTimerRef.current) {
@@ -1159,12 +1276,17 @@ export default function App() {
       setHistoryMessages(null);
       setHistoryWindow(null);
     }
-    // 恢复 Agent 与读取历史互不依赖；并行执行可明显缩短点击历史后的空白等待。
-    // 但在 resume 完成前不切换 thread，避免 SSE 先创建一个新的空会话并与恢复竞态。
-    const historyPromise = Promise.all([
-      getSession(session.id, { view: "chat", limit: 50 }),
-      listRuns("", 50, { sessionId: session.id }).catch(() => ({ runs: [] })),
-    ]);
+    // 历史与 Agent 恢复互不依赖：历史先展示，恢复在后台继续；只有恢复成功
+    // 才把 agentReady 置真，避免 SSE 在恢复完成前创建新的空 runtime。
+    const historyPromise = (async () => {
+      try {
+        const d = await getSession(session.id, { view: "chat", limit: 50 });
+        const runData = await listRuns("", 50, { sessionId: session.id, fields: "summary" }).catch(() => ({ runs: [] }));
+        return { ok: true, d, runData };
+      } catch (error) {
+        return { ok: false, error };
+      }
+    })();
     const resumePromise = resumeAgentThread(clientId, conversationId, session.id, resumedWorkspace)
       .then(() => ({ ok: true }))
       .catch((e) => { console.warn("恢复 Agent 会话失败，历史按只读展示:", e.message); return { ok: false, error: e.message || "恢复失败" }; });
@@ -1176,10 +1298,15 @@ export default function App() {
     });
     markAgentEventsRead(clientId, eventCursorRef.current).catch(() => {});
     try {
-      const [[d, runData], resumeResult] = await Promise.all([historyPromise, resumePromise]);
+      const historyResult = await historyPromise;
       if (loadSeq !== sessionLoadSeqRef.current) return;
-      // 恢复失败时仍展示历史，但明确标注为只读并提供重试，避免用户误以为可以继续对话。
-      setSessionResumeError(resumeResult?.ok ? null : { sessionId: session.id, message: resumeResult?.error || "Agent 会话恢复失败" });
+      if (!historyResult.ok) {
+        notifyError("加载会话历史失败: " + (historyResult.error?.message || "未知错误"));
+        return;
+      }
+      const { d, runData } = historyResult;
+      // 历史已到：立即切换并显示，不再等 resume；输入/SSE 等 agentReady。
+      setAgentReady(false);
       setCurrentSessionId(session.id);
       setThreadId(conversationId);
       setChatLinks([]);
@@ -1194,7 +1321,7 @@ export default function App() {
         .map((run, index, list) => ({
           id: `run-summary-${run.id}`,
           role: "system",
-          text: run.summary || (run.status === "running" ? "本轮任务仍在执行中" : `本轮任务${run.status === "failed" ? "失败" : run.status === "cancelled" ? "已取消" : "完成"}，处理 ${run.artifacts?.length || 0} 个文件`),
+          text: run.summary || run.finalText || (run.status === "running" ? "本轮任务仍在执行中" : `本轮任务${run.status === "failed" ? "失败" : run.status === "cancelled" ? "已取消" : "完成"}，处理 ${run.artifactCount ?? run.artifacts?.length ?? 0} 个文件`),
           products: (run.artifacts || []).map((a) => a.path).filter(Boolean),
           artifacts: run.artifacts || [],
           runId: run.id,
@@ -1208,12 +1335,16 @@ export default function App() {
           runMode: run.task?.mode || "agent",
           // 完成语义：显式 complete_task 或服务端推断结果
           completion: run.completion || null,
-          eventCount: Array.isArray(run.events) ? run.events.length : 0,
-          events: Array.isArray(run.events) ? run.events.map((event, eventIndex) => ({
-            ...event,
-            key: `history:${run.id}:${event.seq || eventIndex}`,
-          })) : [],
-          expanded: true,
+          finalText: run.finalText || "",
+          summarySource: run.summarySource || "",
+          durationMs: Number(run.durationMs) || 0,
+          stepCount: Number(run.stepCount) || 0,
+          toolCount: Number(run.toolCount) || 0,
+          artifactCount: Number(run.artifactCount) || (run.artifacts?.length || 0),
+          eventCount: Number(run.eventCount) || 0,
+          // 历史首屏不加载完整事件：展开过程时再按 runId 拉取，避免一次 2–3MB。
+          events: [],
+          expanded: false,
           createdAt: run.finishedAt || run.startedAt || null,
         }));
       // Run 总结按完成/开始时间插回原始消息流。之前把所有 Run 总结直接
@@ -1249,6 +1380,11 @@ export default function App() {
       setHistoryMessages(loadedHistory);
       setHistoryWindow(sessionHistoryMetaRef.current.get(session.id) || null);
       setHistoryThreadId(conversationId);
+      // 历史已经在屏幕上：现在等恢复结果，只影响“能否继续发送”，不再阻塞阅读。
+      const resumeResult = await resumePromise;
+      if (loadSeq !== sessionLoadSeqRef.current) return;
+      setSessionResumeError(resumeResult?.ok ? null : { sessionId: session.id, message: resumeResult?.error || "Agent 会话恢复失败" });
+      setAgentReady(Boolean(resumeResult?.ok));
       // 从消息里解析会话关联的文件，尝试打开
       const fileMatch = msgs.find((m) => m.role === "user" && m.text && m.text.includes("当前打开文件"));
       if (fileMatch) {
@@ -1314,6 +1450,7 @@ export default function App() {
     try {
       await resumeAgentThread(clientId, conversationId, targetId, currentWorkspace);
       setSessionResumeError(null);
+      setAgentReady(true);
     } catch (error) {
       setSessionResumeError({
         sessionId: targetId,
@@ -1321,6 +1458,7 @@ export default function App() {
         code: error.code || "",
         detail: error.detail || null,
       });
+      setAgentReady(false);
     }
     if (!silent) setSessionResumeRetrying(false);
   }, [clientId, currentSessionId, currentWorkspace, sessionResumeError, threadId]);
@@ -1721,6 +1859,7 @@ export default function App() {
       historyThreadId={historyThreadId}
       historyWindow={historyWindow}
       sessionId={currentSessionId || ""}
+      agentReady={agentReady}
       onLoadOlderHistory={loadOlderSessionHistory}
       onReloadHistory={reloadCurrentSessionHistory}
       onLinksChange={setChatLinks}
@@ -1814,7 +1953,7 @@ export default function App() {
             onSessionChange={handleSessionChange}
             onRefreshSessions={refreshSessions}
             onFocusRun={(run) => chatInputRef.current?.focusRun?.(run?.id)}
-            onProjectChange={(name) => setMapContexts((prev) => ({ ...prev, [threadId]: { ...(prev[threadId] || {}), mapProject: name } }))}
+            onProjectChange={(name) => setMapContexts((prev) => ({ ...prev, [threadId]: mergeMapContext(prev[threadId], { mapProject: name }) }))}
             conversationMode={conversationMode}
             onModeChange={(next) => {
               // 与主对话的模式切换同源：先让 ChatPanel 真正切模式，成功后再更新状态，
@@ -1826,7 +1965,8 @@ export default function App() {
             chatVisible={mapChatVisible}
             onToggleChat={() => setMapChatVisible((value) => !value)}
             bridgeRef={mapBridgeRef}
-            onViewportChange={(context) => setMapContexts((prev) => ({ ...prev, [threadId]: context }))}
+            initialProject={currentMapProject}
+            onViewportChange={(context) => setMapContexts((prev) => ({ ...prev, [threadId]: mergeMapContext(prev[threadId], context) }))}
             // 阶段 2：可视面板的"交给 Agent"把意图填进全局对话栏输入框（复用同一实例，消息流连续）
             insertChatText={insertChatText}
           />

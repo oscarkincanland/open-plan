@@ -10,6 +10,7 @@ import PptxViewer from "./PptxViewer.jsx";
 import ImageViewer from "./ImageViewer.jsx";
 import CommentMarker from "./CommentMarker.jsx";
 import Icon from "./Icon.jsx";
+import CodeViewerBoundary from "./CodeViewerBoundary.jsx";
 import { previewCapability } from "../预览能力.js";
 
 // 源码查看器按需加载：CodeMirror 与语言包只在打开代码文件时才进入页面。
@@ -111,6 +112,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
   const lastSavedJsonRef = useRef("[]");
   // 预览/源码切换：只对文本类（Markdown/文本/HTML/代码）有意义，切文件时复位。
   const [sourceMode, setSourceMode] = useState(false);
+  const [codeRetry, setCodeRetry] = useState(0);
   const capability = previewCapability(doc?.ext, { code: doc?.kind === "code" });
 
   // 文件身份：所有预览请求都显式带同一份 { cwd, relativePath, revision }。
@@ -119,7 +121,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
     [doc?.identity, doc?.name],
   );
   const docKey = `${identity.workspaceId}::${identity.relativePath}`;
-  useEffect(() => { setSourceMode(false); }, [docKey, doc?.kind]);
+  useEffect(() => { setSourceMode(false); setCodeRetry(0); }, [docKey, doc?.kind]);
   const urls = useMemo(() => buildDocUrls(identity), [identity.workspaceId, identity.relativePath, identity.revision]);
   // 渲染 generation：切文件时递增，旧请求（即使已完成）的结果直接丢弃。
   const generationRef = useRef(0);
@@ -567,7 +569,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
             <button type="button" className={`btn-sm ${sourceMode ? "active" : ""}`} onClick={() => setSourceMode(true)}>源码</button>
           </div>
         )}
-        {doc.truncated && <span className="badge ws-hint" title="文件超过 2MB，仅显示前 2MB">已截断</span>}
+        {doc.truncated && <span className="badge ws-hint" title="文件超过预览上限，仅显示前一部分；可用系统应用打开完整文件">已截断</span>}
         {isHtmlKind && !isOfficePreview && (
           <button
             className={`btn-sm oa-anno-toggle ${annoMode ? "active" : ""}`}
@@ -617,19 +619,23 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
       )}
       <div className="docview-body">
         {doc.kind === "code" && (
-          <React.Suspense fallback={<div className="code-viewer-loading" role="status">正在加载源码…</div>}>
-            <CodeViewer content={doc.content} language={doc.language} fileName={doc.name} truncated={doc.truncated} />
-          </React.Suspense>
+          <CodeViewerBoundary key={`${docKey}:code:${codeRetry}`} onRetry={() => setCodeRetry((value) => value + 1)}>
+            <React.Suspense fallback={<div className="code-viewer-loading" role="status">正在加载源码…</div>}>
+              <CodeViewer content={doc.content} language={doc.language} fileName={doc.name} truncated={doc.truncated} />
+            </React.Suspense>
+          </CodeViewerBoundary>
         )}
         {sourceMode && (doc.kind === "text" || doc.kind === "htmlfile") && (
-          <React.Suspense fallback={<div className="code-viewer-loading" role="status">正在加载源码…</div>}>
-            <CodeViewer
-              content={doc.content}
-              language={doc.kind === "htmlfile" ? "html" : (doc.ext === "md" || doc.ext === "markdown" ? "markdown" : "text")}
-              fileName={doc.name}
-              truncated={doc.truncated}
-            />
-          </React.Suspense>
+          <CodeViewerBoundary key={`${docKey}:source:${codeRetry}`} onRetry={() => setCodeRetry((value) => value + 1)}>
+            <React.Suspense fallback={<div className="code-viewer-loading" role="status">正在加载源码…</div>}>
+              <CodeViewer
+                content={doc.content}
+                language={doc.kind === "htmlfile" ? "html" : (doc.ext === "md" || doc.ext === "markdown" ? "markdown" : "text")}
+                fileName={doc.name}
+                truncated={doc.truncated}
+              />
+            </React.Suspense>
+          </CodeViewerBoundary>
         )}
         {doc.kind === "html" && doc.ext === "docx" && (
           <DocxViewer name={doc.name} revision={doc.previewRevision} identity={identity} onPreviewState={setPreviewState} onPreviewError={setPreviewErr} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} />

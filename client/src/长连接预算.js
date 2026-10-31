@@ -215,17 +215,21 @@ export function closeEventSourceQuietly(es, meta = {}) {
     if (typeof EventSource === "undefined") { finish(); return; }
     if (es.readyState === EventSource.CLOSED) { finish(); return; }
     if (es.readyState === EventSource.OPEN && (meta.client || meta.thread)) {
-      // 服务端 end 响应后 EventSource 会收到 error（此时请求已"完成"），
-      // 那一刻关最干净；fetch 返回或兜底计时器是双保险。
-      es.addEventListener("error", finish, { once: true });
-      fetch("/api/agent/stream/close", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client: meta.client || "", thread: meta.thread || "" }),
-      })
-        .catch(() => {})
-        .finally(() => { setTimeout(finish, 150); });
-      setTimeout(finish, 2000);
+      // 先关本地连接释放同源 socket，再尽力通知服务端收尾。
+      // 反过来会在连接池已满时，让 close 请求排在自己要关闭的流后面。
+      finish();
+      try {
+        const options = {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ client: meta.client || "", thread: meta.thread || "" }),
+          keepalive: true,
+        };
+        if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+          options.signal = AbortSignal.timeout(1500);
+        }
+        fetch("/api/agent/stream/close", options).catch(() => {});
+      } catch {}
       return;
     }
     if (es.readyState === EventSource.CONNECTING) {
