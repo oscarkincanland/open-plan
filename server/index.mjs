@@ -334,6 +334,24 @@ async function readWorkbook(file) {
 }
 
 // ---------- REST ----------
+// 请求诊断（只读计数）：多窗口轮询问题排查用，不改变任何响应内容。
+const requestStats = new Map();
+app.use((req, res, next) => {
+  const raw = String(req.path || "");
+  if (!raw.startsWith("/api/")) return next();
+  const route = raw.replace(/\/[0-9a-f]{8}-[0-9a-f-]{16,}/gi, "/:id").replace(/\/run_[^/]+/g, "/:runId");
+  if (requestStats.size > 500 && !requestStats.has(route)) requestStats.clear();
+  const started = process.hrtime.bigint();
+  const entry = requestStats.get(route) || { path: route, count: 0, totalMs: 0, maxMs: 0 };
+  requestStats.set(route, entry);
+  res.on("finish", () => {
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    entry.count += 1;
+    entry.totalMs += ms;
+    entry.maxMs = Math.max(entry.maxMs, ms);
+  });
+  next();
+});
 app.get("/api/status", (req, res) => {
   if (API_TOKEN && tokenMatches(req.query?.token)) setAuthCookie(res);
   res.json({
@@ -416,6 +434,13 @@ app.get("/api/diagnostics/streams", (_req, res) => {
   // 顺手清扫一次：诊断数据只反映真正存活的流。
   const swept = sweepServerStreams();
   res.json({ stats: serverStreamStats(), streams: listServerStreams(), swept });
+});
+
+app.get("/api/diagnostics/traffic", (_req, res) => {
+  const routes = [...requestStats.values()]
+    .map((entry) => ({ ...entry, avgMs: entry.count ? Math.round((entry.totalMs / entry.count) * 10) / 10 : 0 }))
+    .sort((a, b) => b.totalMs - a.totalMs);
+  res.json({ since: SERVICE_STARTED_AT, routes, uptimeSec: Math.round(process.uptime()) });
 });
 
 app.post("/api/diagnostics/streams/close", (req, res) => {
@@ -1696,6 +1721,7 @@ app.post("/api/agent/model-configs", async (req, res) => {
     if (input.apiKey) await setApiKey(input.provider, input.apiKey);
     else if (input.clearApiKey) await removeApiKey(input.provider);
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({ ok: true, config: publicModelConfigs().find((item) => item.provider === input.provider) || null });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message, code: "MODEL_CONFIG_INVALID" });
@@ -1711,6 +1737,7 @@ app.delete("/api/agent/model-configs/:provider", async (req, res) => {
   writeModelsConfig({ ...config, providers });
   await removeApiKey(provider);
   piRuntimeManager.resetModelRuntime();
+  agentManager.invalidateModelCatalogCache();
   res.json({ ok: true, provider });
 });
 
@@ -1894,6 +1921,7 @@ app.post("/api/agent/provider-catalog/import", async (req, res) => {
       defaultModel = `${built.provider}/${target}`;
     }
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({
       ok: true,
       provider: built.provider,
@@ -1938,6 +1966,7 @@ app.post("/api/agent/default-model", (req, res) => {
   try {
     const saved = writeDefaultModel({ provider, model });
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({ ok: true, ...saved, defaultModel: `${saved.defaultProvider}/${saved.defaultModel}` });
   } catch (error) {
     res.status(500).json({ ok: false, error: String(error?.message || error), code: "DEFAULT_MODEL_FAILED" });
@@ -2006,6 +2035,7 @@ app.post("/api/agent/custom-provider", (req, res) => {
     delete nextProvider.apiKey;
     writeModelsConfig({ ...config, providers: { ...providers, [provider]: nextProvider } });
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({ ok: true, provider, model: `${provider}/${modelId}`, modelName: model.name, api, baseUrl });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message, code: "CUSTOM_PROVIDER_SAVE_FAILED" });
@@ -2187,6 +2217,16 @@ const SESSION_HEADER_BYTES = 65536;
 const SESSION_HEAD_SCAN_BYTES = 512 * 1024;
 const SESSION_CACHE_LIMIT = 800;
 const SESSION_META_STORE = path.join(PROJECT_DIR, ".oaw", "sessions-meta.json");
+// 会话列表热缓存：多标签/多窗口会同时轮询 /api/sessions，单次构建要扫描全部
+// 会话头与 Run 索引（实测 0.2–3.5s）。统一缓存 5s，避免 N 个窗口把同一份
+// 列表重复计算 N 次、把事件循环拖到健康检查超时。新建/改名/删除/置顶/冻结/
+// 分支会主动失效；地图视口（1.5s 写一次 header）不失效，允许最多 5s 滞后。
+const SESSIONS_LIST_CACHE_MS = Math.max(500, Number.parseInt(process.env.OAW_SESSIONS_LIST_CACHE_MS || "5000", 10) || 5000);
+let sessionsListCache = { at: 0, payload: null };
+function invalidateSessionsListCache() {
+  sessionsListCache = { at: 0, payload: null };
+}
+const SESSION_LIST_FIELDS = new Set(["label", "pinned", "frozen", "freezeReason", "projectId", "cwd", "parentSessionId", "agentId", "threadId"]);
 const sessionHeaderCache = new Map();
 const sessionMetaCache = new Map();
 const persistedSessionMeta = new Map();
@@ -2521,6 +2561,7 @@ app.post("/api/agent/plans/apply", async (req, res) => {
     const result = await planCatalog.applyPlan(req.body || {});
     if (!result.ok) return res.status(400).json(result);
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({ ...result, status: getConfigStatus() });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message, code: "PLAN_APPLY_FAILED" });
@@ -2532,6 +2573,7 @@ app.post("/api/agent/plans/disconnect", (req, res) => {
     const result = planCatalog.disconnectPlan(req.body || {});
     if (!result.ok) return res.status(400).json(result);
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json(result);
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message, code: "PLAN_DISCONNECT_FAILED" });
@@ -2553,6 +2595,7 @@ app.post("/api/agent/import-config", async (req, res) => {
     sessionTextCache.clear();
     sessionIdIndex.clear();
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({ ...result, sessions, status: getConfigStatus() });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message, code: "PI_IMPORT_FAILED" });
@@ -3196,7 +3239,8 @@ function updateSessionHeader(id, patch = {}) {
     lines[0] = JSON.stringify(next);
     atomicWriteFile(writable.fullPath, lines.join("\n"), "utf8");
     sessionTextCache.delete(writable.fullPath);
-    return { ok: true, header: next };
+    if (Object.keys(patch).some((key) => SESSION_LIST_FIELDS.has(key))) invalidateSessionsListCache();
+    return { ok: true, header: next, previous: header };
   } catch (error) {
     return { ok: false, status: 500, error: error.message };
   }
@@ -3625,6 +3669,7 @@ app.post("/api/sessions/:id/fork", (req, res) => {
     };
     const fileName = `${id}.jsonl`;
     atomicWriteFile(path.join(SESSIONS_DIR, fileName), [JSON.stringify(nextHeader), ...kept].join("\n") + "\n", "utf8");
+    invalidateSessionsListCache();
     res.json({ ok: true, id, fileName, parentSessionId: nextHeader.parentSessionId, cwd: nextHeader.cwd, threadId: id, label, projectId: nextHeader.projectId || null, sourceMessageId: sourceMessageId || null, entryCount: kept.length });
   } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
@@ -3845,6 +3890,13 @@ app.get("/api/sessions", (req, res) => {
   const runStatusFilter = String(req.query.runStatus || "").trim();
   const pinnedFilter = req.query.pinned === undefined ? null : req.query.pinned === "true";
   const frozenFilter = req.query.frozen === undefined ? null : req.query.frozen === "true";
+  // 只有“无筛选、无分页”的热轮询走缓存；带 file/project/mode/limit 的查询保持实时。
+  const cacheable = !fileFilter && !projectFilter && !modeFilter && !runStatusFilter
+    && pinnedFilter === null && frozenFilter === null
+    && !req.query.limit && !req.query.cursor && !req.query.groupBy;
+  if (cacheable && sessionsListCache.payload && Date.now() - sessionsListCache.at <= SESSIONS_LIST_CACHE_MS) {
+    return res.json(sessionsListCache.payload);
+  }
   try {
     const files = listSessionFiles();
     const recentRuns = listRunSummaries({ limit: 200 });
@@ -3944,12 +3996,14 @@ app.get("/api/sessions", (req, res) => {
       }
       groups = [...byKey.values()].map((group) => ({ ...group, count: group.sessions.length }));
     }
-    res.json({
+    const payload = {
       sessions: paged,
       total,
       ...(pageLimit > 0 ? { cursor, nextCursor } : {}),
       ...(groups ? { groups } : {}),
-    });
+    };
+    if (cacheable) sessionsListCache = { at: Date.now(), payload };
+    res.json(payload);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -3978,6 +4032,7 @@ app.post("/api/sessions", (req, res) => {
     };
     const fileName = id + ".jsonl";
     atomicWriteFile(path.join(SESSIONS_DIR, fileName), JSON.stringify(header) + "\n", "utf8");
+    invalidateSessionsListCache();
     res.json({ id, fileName, cwd: header.cwd, projectId: header.projectId, created, status: "idle", pinned: false, frozen: header.frozen });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -4293,6 +4348,7 @@ app.post("/api/sessions/batch-delete", (req, res) => {
       skipped.push({ id, reason: error.message || "删除失败" });
     }
   }
+  if (deleted.length) invalidateSessionsListCache();
   res.json({ ok: true, deleted, skipped, missing });
 });
 
@@ -4303,6 +4359,7 @@ app.delete("/api/sessions/:id", (req, res) => {
   try {
     fs.unlinkSync(found.fullPath);
     sessionTextCache.delete(found.fullPath);
+    invalidateSessionsListCache();
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -4333,6 +4390,8 @@ app.post("/api/sessions/:id/map-context", (req, res) => {
   }
   const result = updateSessionHeader(req.params.id, patch);
   if (!result.ok) return res.status(result.status || 400).json({ ok: false, error: result.error || "not found" });
+  // 项目绑定变化要立即反映到列表（初始页小地图）；纯视口更新不失效，避免 1.5s 写一次 header 打穿缓存。
+  if (String(result.previous?.mapProject || "") !== String(result.header.mapProject || "")) invalidateSessionsListCache();
   res.json({ ok: true, mapProject: result.header.mapProject || "", mapView: result.header.mapView || {} });
 });
 

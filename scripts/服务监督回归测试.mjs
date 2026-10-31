@@ -19,6 +19,7 @@ assert.deepEqual(restartDelayFor({ uptimeMs: 5_000, rapidFailures: 0 }), { failu
 assert.deepEqual(restartDelayFor({ uptimeMs: 31_000, rapidFailures: 4 }), { failures: 0, delayMs: 3_000 }, "稳定运行后清空快速崩溃计数");
 assert.deepEqual(restartDelayFor({ uptimeMs: 5_000, rapidFailures: 4 }), { failures: 5, delayMs: 30_000 }, "连续快速崩溃应退避，避免重启风暴");
 assert.match(supervisor, /HEALTH_FAILURE_LIMIT = 3/);
+assert.match(supervisor, /HEALTH_TIMEOUT_MS = 10_000/, "健康检查超时应高于控制面 8s 超时，避免高峰误判卡住");
 assert.match(supervisor, /STARTUP_GRACE_MS = 180_000/);
 assert.match(server, /closeAllConnections/);
 assert.match(server, /process\.on\("uncaughtException"/);

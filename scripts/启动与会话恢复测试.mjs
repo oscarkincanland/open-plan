@@ -18,6 +18,7 @@ const 服务端Agent = read("../server/agent.mjs");
 const 工作产物 = read("../client/src/components/工作产物面板.jsx");
 const docxViewer = read("../client/src/components/DocxViewer.jsx");
 const excelGrid = read("../client/src/components/ExcelGrid.jsx");
+const 服务端入口 = read("../server/index.mjs");
 
 // 1. 失败不伪装空结果，逐分区记录错误
 assert.doesNotMatch(app, /catch\(\(\) => \[\]\)/, "启动加载失败不应伪装成空列表");
@@ -33,6 +34,12 @@ assert.match(app, /const retryStartupLoads = useCallback/, "应提供统一重�
 assert.match(app, /className="load-recovery"/, "应展示可解释的失败提示");
 assert.match(app, /已保留上一次可用数据/, "提示应说明保留上次数据");
 assert.match(app, /LOAD_SCOPE_LABELS/, "失败提示应说明具体分区");
+
+// 2.1 会话列表热轮询：短 TTL 缓存 + 增删改主动失效，避免多标签重复全量扫描
+assert.match(服务端入口, /const SESSIONS_LIST_CACHE_MS/, "会话列表应有短 TTL 缓存");
+assert.match(服务端入口, /invalidateSessionsListCache\(\)/, "会话增删改应主动失效列表缓存");
+assert.match(服务端入口, /sessionsListCache\.payload/, "无筛选的热轮询应命中缓存");
+assert.match(服务端入口, /SESSION_LIST_FIELDS/, "标题/置顶/冻结等列表字段变化应失效缓存");
 
 // 3. 刷新进入空白新会话（已批准规则，交接文档交互 4）：
 // 会话列表就绪与否都不再自动 resume 旧会话；恢复标记仍保留给手动入口。

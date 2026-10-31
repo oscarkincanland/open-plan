@@ -606,6 +606,9 @@ const MODEL_FIRST_EVENT_TIMEOUT_MS = Math.max(10000, Number.parseInt(process.env
 // 首个事件之后仍可能出现供应商流中途静默；工具正在执行时不计入该保护，
 // 避免长时间 Office/脚本任务被误中止。可通过环境变量按供应商特性调整。
 const MODEL_IDLE_TIMEOUT_MS = Math.max(30000, Number.parseInt(process.env.OAW_MODEL_IDLE_TIMEOUT_MS || "120000", 10) || 120000);
+// 模型目录缓存：/api/models 会被每个窗口每 60s 轮询一次；目录/可用性探测
+// 单次可达数百毫秒到数秒，缓存放大多窗口场景并避免把事件循环拖满。
+const MODEL_CATALOG_CACHE_MS = Math.max(5000, Number.parseInt(process.env.OAW_MODEL_CATALOG_CACHE_MS || "30000", 10) || 30000);
 // ask_user 阻塞等待用户回答的时间窗口：到期后按专业判断继续。
 // 前端凭事件里的 expiresAt 把卡片置为"已超时"，避免留下点得动、一发就报 no pending question 的死卡片。
 export const ASK_TIMEOUT_MS = 300_000;
@@ -5520,7 +5523,22 @@ const result = await piRuntimeManager.probeModel(model, options);
     return candidate.id;
   }
 
-async listModelCatalog() {
+async listModelCatalog({ maxAgeMs = MODEL_CATALOG_CACHE_MS } = {}) {
+    // 目录/可用性探测（mr.getAvailable）单次可达数百毫秒到数秒：多窗口每 60s
+    // 轮询 /api/models 会把它重复成事件循环的主要负载。这里做短 TTL 缓存，
+    // 模型刷新/凭据变更时显式失效。
+    const cached = this._modelCatalogCache;
+    if (cached && Date.now() - cached.at < maxAgeMs) return cached.value;
+    const value = await this._buildModelCatalog();
+    this._modelCatalogCache = { at: Date.now(), value };
+    return value;
+  }
+
+  invalidateModelCatalogCache() {
+    this._modelCatalogCache = null;
+  }
+
+  async _buildModelCatalog() {
     const mr = await this.modelRuntime();
     const providers = localModelProviders();
     const stored = localStoredModels(providers);
@@ -5581,6 +5599,7 @@ async listModelCatalog() {
   /** 重新扫描模型：重置 ModelRuntime 缓存并重新构建（模型配置变更后调用） */
   async refreshModels() {
     piRuntimeManager.resetModelRuntime();
+    this.invalidateModelCatalogCache();
     const mr = await this.modelRuntime();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
@@ -5615,6 +5634,7 @@ export async function setApiKey(provider, key) {
   auth[provider] = { type: "api_key", key: String(key).trim() };
   writeCredentials(auth);
   clearInvalidCredential(provider);
+  agentManager.invalidateModelCatalogCache();
   try {
     const mr = await agentManager.modelRuntime();
     await mr.setRuntimeApiKey(provider, String(key).trim(), { allowNetwork: false });
@@ -5629,6 +5649,7 @@ export async function removeApiKey(provider) {
   writeCredentials(auth);
   clearInvalidCredential(provider);
   piRuntimeManager.resetModelRuntime();
+  agentManager.invalidateModelCatalogCache();
   return { ok: true, providers: Object.keys(auth) };
 }
 
