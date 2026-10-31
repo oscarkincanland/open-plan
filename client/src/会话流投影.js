@@ -1,0 +1,213 @@
+/**
+ * 会话流投影：消息块（blocks）+ 运行轨迹（reduceRunTrace 产物）→ 有序时间线。
+ *
+ * 落地文档：docs/plans/2026-10-31-001-会话流改版落地文档.md §5.1。
+ * 归约原则：
+ *   1. 以 blocks 顺序为主轴（保持模型真实输出顺序，避免时钟排序再次引入错位）；
+ *   2. 工具块只透传（ToolCard 自渲染），运行轨迹只用来补「blocks 里缺失的工具调用」
+ *      （start 事件被历史淘汰 / 重连丢失，轨迹里带 startMissing 标记的那批）；
+ *   3. steer 进度播报与 [系统提醒] 归为 sys 行；artifacts/验收类事件不进时间流
+ *      （它们由折叠头 chips 与产物卡承载，与 STAGE_ONLY_EVENTS 口径一致）。
+ * 实时流与历史回放共用同一归约，保证两侧展示一致（与 运行轨迹.js 同一原则）。
+ * 本模块必须保持纯函数、零 React 依赖，Node 测试可直接调用。
+ */
+import { toolIdentity } from "./事件展示.js";
+import { runToolDetailText } from "./运行轨迹.js";
+
+/** 工具行对象摘要：与 ToolCard 的输入提取同源（args 优先、常用字段次之），超长截断。 */
+export function toolObjectText(name, input) {
+  let text = typeof input === "string" ? input : input != null ? JSON.stringify(input) : "";
+  try {
+    if (input && typeof input === "object") {
+      if (input.args != null) {
+        text = typeof input.args === "string" ? input.args : JSON.stringify(input.args);
+      }
+      const preferred = input.path || input.file || input.file_path || input.pattern
+        || input.command || input.query || input.question || input.task || input.url;
+      if (preferred != null && typeof preferred !== "object") text = String(preferred);
+    }
+  } catch { /* 循环引用等异常时退回原始字符串化结果 */ }
+  const flat = String(text).replace(/\s+/g, " ").trim();
+  if (!flat) return "";
+  if (/^(bash|officecli)$/.test(String(name || ""))) {
+    return `$ ${flat.slice(0, 96)}${flat.length > 96 ? "…" : ""}`;
+  }
+  return flat.slice(0, 80) + (flat.length > 80 ? "…" : "");
+}
+
+/** 工具行状态：块未完结 = run；块/轨迹任一报错 = err；其余 ok。 */
+export function toolStateOf(block, traceTool = null) {
+  if (block?.done === false) return "run";
+  if (block?.isError || traceTool?.isError) return "err";
+  if (traceTool && traceTool.status !== "done" && !traceTool.startMissing) return "run";
+  return "ok";
+}
+
+function traceToolIndex(trace) {
+  const byId = new Map();
+  const byName = [];
+  for (const tool of Array.isArray(trace?.tools) ? trace.tools : []) {
+    if (tool.toolCallId) byId.set(String(tool.toolCallId), tool);
+    else byName.push(tool);
+  }
+  return { byId, byName };
+}
+
+function findTraceTool(index, block) {
+  const id = String(block?.toolCallId || block?.id || "");
+  if (id && index.byId.has(id)) return index.byId.get(id);
+  if (!id && block?.name) {
+    for (let i = index.byName.length - 1; i >= 0; i -= 1) {
+      if (index.byName[i].name === block.name) return index.byName[i];
+    }
+  }
+  return null;
+}
+
+function sysTextOf(note) {
+  return String(note || "").replace(/^\s*\[系统提醒\]\s*/, "").trim();
+}
+
+/**
+ * blocks + 运行轨迹 → TimelineItem[]。
+ * @param {object} input
+ * @param {Array} input.blocks 消息块（assistant 消息的 blocks，顺序即模型输出顺序）
+ * @param {object|null} input.trace reduceRunTrace(events) 的产物；缺省时不补缺失工具
+ * @returns {Array<{kind:string, id:string, icon?:string, verb?:string, obj?:string,
+ *   timeText?:string, state?:string, text?:string, cap?:string, block?:object, detail?:string}>}
+ */
+export function buildRunTimeline({ blocks = [], trace = null } = {}) {
+  const items = [];
+  const seenToolKeys = new Set();
+  const index = traceToolIndex(trace);
+  for (const block of Array.isArray(blocks) ? blocks : []) {
+    if (!block || block.type === "message_boundary") continue;
+    const id = String(block.id || block.toolCallId || `${block.type}:${items.length}`);
+    switch (block.type) {
+      case "thinking": {
+        const chars = String(block.text || "").length;
+        items.push({
+          kind: "thinking", id, icon: "brain", verb: "思考", obj: "内部推理",
+          timeText: chars ? `${chars.toLocaleString()} 字` : "", state: "ok", text: String(block.text || ""),
+        });
+        break;
+      }
+      case "text":
+        items.push({ kind: "text", id, cap: "阶段结论", text: String(block.text || "") });
+        break;
+      case "tool": {
+        seenToolKeys.add(String(block.toolCallId || block.id || `byname:${block.name}`));
+        items.push({ kind: "tool", id, icon: toolIdentity(block.name).icon, block });
+        break;
+      }
+      case "subagent":
+        items.push({ kind: "subagent", id, icon: "flow", block });
+        break;
+      case "pipeline":
+        items.push({ kind: "pipeline", id, icon: "flow", block });
+        break;
+      case "ask":
+        items.push({ kind: "ask", id, icon: "comment", block });
+        break;
+      case "approval":
+        items.push({ kind: "approval", id, icon: "shield", block });
+        break;
+      case "process_note": {
+        const text = sysTextOf(block.text);
+        if (text) items.push({ kind: "sys", id, icon: "info", verb: "系统提醒", obj: text.slice(0, 60), state: "ok", text });
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  // 补缺失工具：轨迹里有、blocks 里没有（start 事件被历史淘汰 / 重连丢失）。
+  // 插入锚点 = 最后一个工具项之后，保持「工具都发生在过程流里」的直觉顺序。
+  const missing = [];
+  for (const tool of Array.isArray(trace?.tools) ? trace.tools : []) {
+    const key = String(tool.toolCallId || `byname:${tool.name}`);
+    if (seenToolKeys.has(key)) continue;
+    // 无 id 的轨迹工具按「同名块已存在」去重，避免同一调用出现两行。
+    if (!tool.toolCallId && Array.isArray(blocks) && blocks.some((b) => b?.type === "tool" && b?.name === tool.name)) continue;
+    missing.push(tool);
+  }
+  if (missing.length) {
+    const lastToolIdx = items.reduce((last, item, i) => (item.kind === "tool" ? i : last), -1);
+    const synthesized = missing.map((tool, i) => ({
+      kind: "tool",
+      id: `trace-${tool.toolCallId || `${tool.name}:${i}`}`,
+      icon: toolIdentity(tool.name).icon,
+      block: {
+        id: `trace-${tool.toolCallId || `${tool.name}:${i}`}`,
+        name: tool.name,
+        input: tool.input || "",
+        output: tool.output || tool.result || "",
+        done: tool.status === "done",
+        isError: !!tool.isError,
+        duration: tool.duration ?? null,
+        startMissing: !!tool.startMissing,
+      },
+    }));
+    items.splice(lastToolIdx + 1, 0, ...synthesized);
+  }
+  return items;
+}
+
+/** 时间线统计：工具数（供折叠头 chips），执行中工具行（供运行中动作文案）。 */
+export function summarizeTimeline(items = []) {
+  const list = Array.isArray(items) ? items : [];
+  const tools = list.filter((item) => item.kind === "tool");
+  const runningTool = [...tools].reverse().find((item) => toolStateOf(item.block) === "run");
+  return {
+    toolCount: tools.length,
+    runningLabel: runningTool
+      ? [runningTool.block?.name, toolObjectText(runningTool.block?.name, runningTool.block?.input)].filter(Boolean).join(" ")
+      : "",
+  };
+}
+
+/**
+ * complete_task.summary → { what, conclusion, detail }。
+ *  - conclusion：优先取「结论」分节首段；无标题结构时取全文首段；
+ *  - what：取「做了什么/完成工作/工作内容」分节（R-C 落地前可能缺失，缺失即空串不渲染）；
+ *  - detail：完整 Markdown（结论分节已并入 conclusion 时从 detail 中移除，避免重复）。
+ * 不编造内容：summary 与 finalText 都为空时三个字段均为空串。
+ */
+export function splitCompletionSummary(summary = "", finalText = "") {
+  const source = String(summary || "").trim() || String(finalText || "").trim();
+  if (!source) return { what: "", conclusion: "", detail: "" };
+  const lines = source.split(/\r?\n/);
+  const sections = [{ title: "", lines: [] }];
+  for (const line of lines) {
+    const heading = /^#{1,3}\s+(.*)$/.exec(line);
+    if (heading) sections.push({ title: heading[1].trim(), lines: [] });
+    else sections[sections.length - 1].lines.push(line);
+  }
+  const bodyOf = (section) => section.lines.join("\n").trim();
+  const firstParagraph = (text) => text.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean)[0] || "";
+  const titled = sections.filter((section) => section.title);
+  const conclusionSection = titled.find((section) => /^结论/.test(section.title)) || null;
+  const whatSection = titled.find((section) => /^(做了什么|完成工作|工作内容)/.test(section.title)) || null;
+  let conclusion = "";
+  let detail = source;
+  // 被单独展示的分节（结论 → 大字、做了什么 → what 行）从 detail 中移除，避免同一段文字出现两次。
+  const removeSection = (section) => {
+    if (!section) return;
+    const pattern = new RegExp(`^#{1,3}\\s+${section.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?(?=\\n#{1,3}\\s|$)`);
+    detail = detail.replace(pattern, "").trim();
+  };
+  if (conclusionSection) {
+    conclusion = firstParagraph(bodyOf(conclusionSection)) || bodyOf(conclusionSection).slice(0, 200);
+    removeSection(conclusionSection);
+  } else if (!titled.length) {
+    const paragraphs = source.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
+    conclusion = paragraphs[0] || source.slice(0, 200);
+    detail = paragraphs.slice(1).join("\n\n").trim() || source;
+  } else {
+    // 有分节但没有「结论」：结论取首个分节首段，detail 保留全文。
+    conclusion = firstParagraph(bodyOf(titled[0])) || source.slice(0, 200);
+  }
+  removeSection(whatSection);
+  const what = whatSection ? bodyOf(whatSection) : "";
+  return { what, conclusion, detail };
+}

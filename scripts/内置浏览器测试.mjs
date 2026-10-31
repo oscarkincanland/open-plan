@@ -314,6 +314,34 @@ await test("agent / task / index / 前端已接入浏览器能力", () => {
   assert.match(index, /resolvePath\(fileName, requestedCwd\)/, "文档接口需支持 cwd 解析");
 });
 
+// ---------- 会话流改版接线（落地文档 2026-10-31-001 §7） ----------
+console.log("\n▶ 会话流改版接线");
+await test("整轮折叠新路径已接线且默认关闭（chatTimelineUi 开关）", () => {
+  const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
+  const chat = read("client/src/components/ChatPanel.jsx");
+  const flags = read("server/运行开关.mjs");
+  const projection = read("client/src/会话流投影.js");
+  const styles = read("client/src/styles.css");
+  const pkg = JSON.parse(read("package.json"));
+  assert.match(flags, /chatTimelineUi: readFlag\("OAW_CHAT_TIMELINE"\)/, "服务端应注册 OAW_CHAT_TIMELINE 开关（默认关）");
+  assert.match(flags, /chatTimelineUi: RUNTIME_FLAGS.chatTimelineUi/, "快照应下发 chatTimelineUi");
+  assert.match(chat, /flag\("chatTimelineUi"\) && !isUser && Boolean\(m\.runId\)/, "Message 应按开关走整轮折叠新路径");
+  assert.match(chat, /<RunFold/, "新路径应渲染 RunFold 整轮折叠");
+  assert.match(chat, /<SummaryBlock/, "新路径应渲染框外总结");
+  assert.match(chat, /<ArtifactCard/, "新路径应渲染本轮产物卡");
+  assert.match(chat, /buildRunTimeline/, "新路径应经会话流投影归约时间线");
+  assert.match(chat, /splitCompletionSummary/, "总结应拆分结论与详细展开");
+  assert.match(projection, /export function buildRunTimeline/, "投影模块应导出 buildRunTimeline");
+  assert.match(projection, /export function splitCompletionSummary/, "投影模块应导出 splitCompletionSummary");
+  for (const comp of ["RunFold.jsx", "TimelineRow.jsx", "SummaryBlock.jsx", "ArtifactCard.jsx"]) {
+    assert.ok(fs.existsSync(path.join(ROOT, "client", "src", "components", "会话流", comp)), `缺少组件文件 ${comp}`);
+  }
+  for (const cls of [".rf-head", ".rf-body", ".tl-row-head", ".tl-detail-wrap", ".sum-block", ".sum-conclusion", ".ac-card"]) {
+    assert.ok(styles.includes(cls), `styles.css 缺少会话流样式 ${cls}`);
+  }
+  assert.equal(pkg.scripts["test:chat-timeline"], "node scripts/会话流时间线测试.mjs", "应注册 test:chat-timeline 脚本");
+});
+
 if (LIVE) {
   console.log("\n▶ 真实浏览器链路（Bing 搜索）");
   const key = browserSessionKey("live", "browser-test");

@@ -75,6 +75,7 @@
     "test:perf-budget": "node scripts/性能与流量基线测试.mjs",
     "test:sse-protocol": "node scripts/SSE事件协议回归测试.mjs",
     "test:run-trace": "node scripts/执行轨迹归约测试.mjs",
+    "test:chat-timeline": "node scripts/会话流时间线测试.mjs",
     "test:run-budget": "node scripts/运行预算测试.mjs",
     "test:doc-engine": "node scripts/文档引擎测试.mjs",
     "test:office-route": "node scripts/Office路由与澄清测试.mjs",

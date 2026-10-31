@@ -163,6 +163,8 @@ export const RUNTIME_FLAGS = Object.freeze({
   qoderInteractionOwner: readFlag("OAW_QODER_INTERACTION_OWNER") || QODER_ALIGN,
   /** Office 写作规范层：模板路由 / 场景参数 / 版式令牌 / 规则闸门（默认关 = 旧行为逐字一致） */
   officeFormat: readFlag("OAW_OFFICE_FORMAT"),
+  /** 会话流改版：整轮折叠时间线 + 框外总结与产物卡（默认关 = 旧渲染路径逐字保留；落地文档 2026-10-31-001） */
+  chatTimelineUi: readFlag("OAW_CHAT_TIMELINE"),
 
   /* ===== ZCode Harness 对标开关族（默认全关）===== */
   /** 总开关：一键打开 H 线整族（仅测试/预览；关闭即整体回滚） */
@@ -261,6 +263,7 @@ export function runtimeFlagsSnapshot() {
     qoderToolOutputSplit: RUNTIME_FLAGS.qoderToolOutputSplit,
     qoderInteractionOwner: RUNTIME_FLAGS.qoderInteractionOwner,
     officeFormat: RUNTIME_FLAGS.officeFormat,
+    chatTimelineUi: RUNTIME_FLAGS.chatTimelineUi,
     // ZCode Harness 对标开关族
     harnessAlign: RUNTIME_FLAGS.harnessAlign,
     toolMetadata: RUNTIME_FLAGS.toolMetadata,

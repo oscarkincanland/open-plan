@@ -28,6 +28,11 @@ import { acquireStream, closeEventSourceQuietly, noteCursorGap } from "../长连
 import { notifyError, askConfirm, askText } from "./Feedback.jsx";
 import { flag, flagsReady, numberFlag } from "../运行开关.js";
 import { getBrowserStreamState } from "../浏览器联动.js";
+import RunFold from "./会话流/RunFold.jsx";
+import TimelineRow from "./会话流/TimelineRow.jsx";
+import SummaryBlock from "./会话流/SummaryBlock.jsx";
+import ArtifactCard from "./会话流/ArtifactCard.jsx";
+import { buildRunTimeline, splitCompletionSummary, summarizeTimeline } from "../会话流投影.js";
 
 // O-P3：浏览器"写操作类"工具白名单 —— 只有这些会拉起内置浏览器侧栏；
 // browser_close / browser_tabs / browser_snapshot / browser_screenshot 等查看或收尾动作不拉起。
@@ -5377,6 +5382,103 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
     if (block?.type === "message_boundary" || isProcessBlock(block)) return false;
     return blockIndex !== hiddenFinalTextIndex;
   });
+  // ---- 会话流改版（落地文档 2026-10-31-001）：开关开启且非 Review 轮次走整轮折叠新路径 ----
+  // 关闭时以下全部为空数组/null，旧渲染路径逐字保留（三层可回滚约定）。
+  const timelinePath = flag("chatTimelineUi") && !isUser && Boolean(m.runId)
+    && !/^review$/i.test(String(m.runMode || m.task?.mode || ""));
+  const runTraceForTimeline = useMemo(
+    () => (timelinePath && summaryEvents.length ? reduceRunTrace(summaryEvents, m.runId) : null),
+    [timelinePath, summaryEvents, m.runId],
+  );
+  const timelineBlocks = useMemo(
+    () => (timelinePath ? blocks.filter((block, blockIndex) => blockIndex !== hiddenFinalTextIndex) : []),
+    [timelinePath, blocks, hiddenFinalTextIndex],
+  );
+  const runTimeline = useMemo(
+    () => (timelinePath ? buildRunTimeline({ blocks: timelineBlocks, trace: runTraceForTimeline }) : []),
+    [timelinePath, timelineBlocks, runTraceForTimeline],
+  );
+  const timelineStats = useMemo(() => (timelinePath ? summarizeTimeline(runTimeline) : { toolCount: 0, runningLabel: "" }), [timelinePath, runTimeline]);
+  const timelineCompletion = runCardView?.outcome || runSummary?.completion || null;
+  const timelineFileCount = useMemo(
+    () => (timelinePath ? (runCardView?.changes || []).filter((change) => change.role !== "internal").length : 0),
+    [timelinePath, runCardView],
+  );
+  const timelineRollbackable = timelinePath && (runCardView?.changes || []).some((change) => change.before?.reversible);
+  const summaryParts = useMemo(
+    () => (timelinePath
+      ? splitCompletionSummary(String(timelineCompletion?.summary || ""), !streaming ? authoritativeFinalText : "")
+      : { what: "", conclusion: "", detail: "" }),
+    [timelinePath, timelineCompletion?.summary, authoritativeFinalText, streaming],
+  );
+  // 总结展示条件：有显式 summary（complete_task）→ 渲染；无 summary 但最终答复已从时间流隐藏（finalTextBlockIndex 命中）→ 用终稿兜底渲染；
+  // 旧消息（最终答复仍作为时间流文本块可见）不渲染总结，避免同一段文字出现两遍。
+  const timelineSummaryText = String(timelineCompletion?.summary || "").trim();
+  const showTimelineSummary = timelinePath && !streaming
+    && (Boolean(timelineSummaryText) || Boolean(authoritativeFinalText && finalTextBlockIndex >= 0));
+  const timelineActionNeeded = timelinePath && runCardView ? (() => {
+    if (runCardView.lifecycle === "waiting_approval") return { kind: "approval", text: runCardView.progress?.waitingReason || "等待你审批后继续" };
+    if (runCardView.lifecycle === "waiting_user") return { kind: "ask", text: runCardView.progress?.waitingReason || "等待你回答后继续" };
+    if (timelineCompletion?.status === "blocked") return { kind: "blocked", text: "有受阻项需要你先处理" };
+    if (timelineCompletion?.status === "partial") return { kind: "partial", text: "有未完成项，需要你决定是否继续" };
+    if (runCardView.lifecycle === "failed") return { kind: "failed", text: "本轮失败，可重试或调整要求" };
+    if (runCardView.lifecycle === "cancelled" || timelineCompletion?.status === "cancelled") return { kind: "cancelled", text: "本轮已中断，已保留生成到一半的内容；可以重新发送、补充要求，或直接继续提问。" };
+    return null;
+  })() : null;
+  // ask / 审批是交互块：即使整轮收起也始终展开，浮在折叠头下方（§8.3）。
+  const timelineInteractionItems = timelinePath ? runTimeline.filter((item) => item.kind === "ask" || item.kind === "approval") : [];
+  const renderTimelineInteraction = (item) => {
+    if (item.kind === "ask") {
+      return (
+        <AskBlock
+          key={item.id}
+          block={item.block}
+          clientId={clientId}
+          threadId={threadId}
+          onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)}
+          onExpired={(blockId) => onAskExpired?.(m.id, blockId)}
+        />
+      );
+    }
+    if (item.kind === "approval") return <ApprovalBlock key={item.id} block={item.block} />;
+    return null;
+  };
+  const renderTimelineItem = (item) => {
+    switch (item.kind) {
+      case "thinking":
+        return (
+          <TimelineRow key={item.id} icon={item.icon} verb={item.verb} obj={item.obj} timeText={item.timeText} state={item.state}>
+            <div className="tl-thinking-text">{item.text}</div>
+          </TimelineRow>
+        );
+      case "text": {
+        const lastTextIndex = runTimeline.reduce((last, candidate, candidateIndex) => (candidate.kind === "text" ? candidateIndex : last), -1);
+        const isStreamingText = streaming && item === runTimeline[lastTextIndex];
+        return (
+          <div className="textblock flow-markdown" key={item.id}>
+            <div className="tb-cap">{item.cap}</div>
+            {isStreamingText
+              ? <div className="flow-stream-text" aria-live="polite">{readableProgressText(item.text)}</div>
+              : <SafeMarkdown text={item.text} onOpenFile={onOpenFile} artifacts={answerArtifacts} />}
+          </div>
+        );
+      }
+      case "tool":
+        return <ToolCard key={item.id} tool={item.block} onToggle={() => onToggleTool?.(m.id, item.block.id)} />;
+      case "subagent":
+        return <SubagentCard key={item.id} block={item.block} onOpenDetail={onOpenSubagent} />;
+      case "pipeline":
+        return <PipelineCard key={item.id} block={item.block} onOpenFile={onOpenFile} />;
+      case "sys":
+        return (
+          <TimelineRow key={item.id} icon={item.icon} verb={item.verb} obj={item.obj} state={item.state} showState={false}>
+            <div className="tl-sys-text">{item.text}</div>
+          </TimelineRow>
+        );
+      default:
+        return null;
+    }
+  };
   // 有序片段：连续的过程块合成一个可折叠区，模型发言（小节结论）留在原位置可见。
   // 于是渲染顺序就是模型真实的输出顺序——过程区 → 小节结论 → 新的过程区 → ……
   // 折叠只收起思考与工具，小节结论不会被后面的小节吞掉。
@@ -5550,6 +5652,57 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
             {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
             {m.text && <div className="msg-text">{m.text}</div>}
           </div>
+        ) : timelinePath ? (
+          <>
+            {m.images?.length > 0 && (
+              <div className="msg-images assistant-images">{m.images.map((src, i) => <img key={i} src={src} alt="Agent 附图" />)}</div>
+            )}
+            {/* 会话流改版（flag=chatTimelineUi，落地文档 2026-10-31-001）：
+                整轮折叠（时间流）→ 交互块（ask/审批，始终展开）→ 框外总结 → 本轮产物 → 需行动提示 */}
+            <RunFold
+              live={isTaskLive}
+              finishing={isTaskFinishing}
+              startedAt={runTraceForTimeline?.startedAt || null}
+              durationMs={runTraceForTimeline?.durationMs || null}
+              toolCount={timelineStats.toolCount}
+              fileCount={timelineFileCount}
+              verification={runTraceForTimeline?.verification || "not_checked"}
+              liveAction={timelineStats.runningLabel}
+            >
+              <div className="tl-list">{runTimeline.map(renderTimelineItem)}</div>
+            </RunFold>
+            {timelineInteractionItems.map(renderTimelineInteraction)}
+            {showTimelineSummary && (
+              <SummaryBlock
+                conclusion={summaryParts.conclusion}
+                what={summaryParts.what}
+                detail={summaryParts.detail}
+                durationMs={runTraceForTimeline?.durationMs || null}
+                onOpenFile={onOpenFile}
+                artifacts={answerArtifacts}
+              />
+            )}
+            <ArtifactCard
+              products={answerArtifacts || []}
+              onOpenFile={onOpenFile}
+              onLocate={onOpenRunChanges ? () => onOpenRunChanges(runSummary?.runId || m.runId) : undefined}
+              onRollback={timelineRollbackable && onRollbackRun ? () => onRollbackRun(runSummary?.runId || m.runId) : null}
+            />
+            {timelineActionNeeded && (
+              <div className={`run-result-action ${timelineActionNeeded.kind}`}>
+                <Icon name="arrowRight" size={12} /> {timelineActionNeeded.text}
+              </div>
+            )}
+            {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
+            {streaming && (
+              <div className="msg-streaming-status" role="status" aria-live="off">
+                <StreamingDot />
+                <StreamingActivityLabel />
+                {!hasContent && waitSec > 0 && <span className="msg-streaming-elapsed">{waitSec}s</span>}
+              </div>
+            )}
+            {m.status === "error" && <div className="err-badge" title={m.errorText}>{m.errorText || "处理失败，请重试"}</div>}
+          </>
         ) : (
           <>
             {m.images?.length > 0 && (
