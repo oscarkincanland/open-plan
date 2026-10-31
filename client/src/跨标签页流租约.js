@@ -74,7 +74,21 @@ export function createGlobalEventsLease({ onStart, onStop, onEvent } = {}) {
     writeLease();
     onStart?.();
     announce();
-    heartbeat = setInterval(() => { if (leader) writeLease(); }, HEARTBEAT_MS);
+    // 两个标签页同时 claim 时，广播消息可能晚到；稍后再按租约内容仲裁一次。
+    window.setTimeout(() => assertLeaseOwnership(), 300);
+    heartbeat = setInterval(() => {
+      if (!leader) return;
+      assertLeaseOwnership();
+      if (leader) writeLease();
+    }, HEARTBEAT_MS);
+  };
+  const assertLeaseOwnership = () => {
+    if (!leader || stopped) return;
+    const current = readLease();
+    if (!current || current.tabId === TAB_ID) return;
+    const fresh = Date.now() - Number(current.at || 0) <= LEASE_MS;
+    // 行内更小的 tabId 优先；广播丢失时靠这条规则收敛，不会两个 leader 互相覆盖。
+    if (fresh && String(current.tabId) < TAB_ID) stepDown();
   };
   const stepDown = () => {
     if (!leader) return;
