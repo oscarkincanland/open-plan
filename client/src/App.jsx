@@ -2357,6 +2357,7 @@ export default function App() {
               activeId={canvasActiveId}
               onActivate={activateCanvasTabById}
               onClose={closeCanvasTabById}
+              onReorder={(fromId, toId) => setCanvasTabs((prev) => reorderCanvasTabs(prev, fromId, toId))}
               onCollapse={collapseCanvas}
               onToggleMaximize={() => setCanvasMaximized((value) => !value)}
               maximized={canvasMaximized}

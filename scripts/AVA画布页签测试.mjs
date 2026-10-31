@@ -60,6 +60,7 @@ test("单画布外壳：一个容器、一个宽度、一个主拖拽条，无�
   assert.match(app, /const \[canvasTabs, setCanvasTabs\] = useState\(\[\]\)/);
   assert.match(app, /const canvasOpen = canvasTabs\.length > 0 && !canvasCollapsed/);
   assert.match(app, /<画布标签栏/);
+  assert.match(app, /onReorder=\{\(fromId, toId\) => setCanvasTabs/, "App 必须接上拖拽排序回调");
   assert.match(app, /cssVar="--canvas-w"/, "画布使用统一宽度");
   assert.match(app, /cssVar="--canvas-side-w"/, "文件树抽屉有独立宽度");
   assert.doesNotMatch(app, /dualPanePref|dualPaneActive|dual-pane/, "不应再有双面板状态/类名");
