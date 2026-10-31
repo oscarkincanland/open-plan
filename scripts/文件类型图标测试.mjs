@@ -50,11 +50,11 @@ test("扁平图标组件使用实色底 + 白色字形，不走线性 Icon", () 
 
 test("左栏文件树与预览页文件树共用文件类型图标", () => {
   const sidebar = read("client/src/components/SessionSidebar.jsx");
-  const canvasTree = read("client/src/components/文件树页签.jsx");
+  const canvasTree = read("client/src/components/文件树抽屉.jsx");
   assert.match(sidebar, /import 文件类型图标 from "\.\/文件类型图标\.jsx"/);
   assert.match(sidebar, /<文件类型图标 file=\{file\} size=\{size\} \/>/);
   assert.match(canvasTree, /import 文件类型图标 from "\.\/文件类型图标\.jsx"/);
-  assert.match(canvasTree, /<文件类型图标 file=\{file\} size=\{16\} \/>/);
+  assert.match(canvasTree, /<文件类型图标 file=\{entry\} size=\{15\} \/>/);
   assert.doesNotMatch(canvasTree, /<Icon name=\{CODE_EXT\.test/);
 });
 

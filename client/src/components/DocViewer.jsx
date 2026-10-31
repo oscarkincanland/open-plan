@@ -852,7 +852,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
   );
 }
 
-export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTab, onOpenFile, loading, onSendToAgent, onInsertContext }) {
+export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTab, onOpenFile, loading, onSendToAgent, onInsertContext, hideTabBar = false }) {
   // activeTab 是标签 id（工作区 + 相对路径），兼容旧数据仍可能传文件名。
   const doc = tabs.find((t) => (t.id || t.name) === activeTab) || null;
   const tabId = (t) => t.id || t.name;
@@ -876,8 +876,8 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
 
   return (
     <div className="docview">
-      {/* 文件 tab 栏（类似浏览器标签页） */}
-      {tabs.length > 0 && (
+      {/* 文件 tab 栏（类似浏览器标签页）；画布模式把标签提升到画布顶部时隐藏 */}
+      {!hideTabBar && tabs.length > 0 && (
         <div className="doc-tabs">
           {tabs.map((t) => (
             <div
