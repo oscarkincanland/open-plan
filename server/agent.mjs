@@ -82,6 +82,7 @@ import {
   releaseWriteLock,
   resolveReadablePath,
   stageWrite,
+  stageWriteWithRetry,
   stagedAccess,
   writeWorkspaceFile,
 } from "./写入协调.mjs";
@@ -1436,7 +1437,7 @@ class AgentManager extends EventEmitter {
             entry, tool: "write", input: String(absolutePath || ""),
             runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
           });
-          return stageWrite({ ...ctx, targetPath: absolutePath, content, onEvent: writeEvent });
+          return stageWriteWithRetry({ ...ctx, targetPath: absolutePath, content, onEvent: writeEvent });
         },
       },
     });
@@ -1456,7 +1457,7 @@ class AgentManager extends EventEmitter {
         writeFile: async (absolutePath, content) => {
           assertReviewWriteAllowed(absolutePath, "edit");
           enforceOfficeGate("edit", { path: absolutePath });
-          return stageWrite({ ...activeWriteContext("edit"), targetPath: absolutePath, content, onEvent: writeEvent });
+          return stageWriteWithRetry({ ...activeWriteContext("edit"), targetPath: absolutePath, content, onEvent: writeEvent });
         },
       },
     });
@@ -3384,7 +3385,7 @@ execute: async (_toolCallId, params) => {
                 } finally {
                   if (bubbleBlocked) emitChild("subagent_unblocked", { status: "running", kind: "approval", tool: "write", target: String(target || "").slice(0, 300) });
                 }
-                return stageWrite({ ...ctx, targetPath: target, content, onEvent: writeEvent });
+                return stageWriteWithRetry({ ...ctx, targetPath: target, content, onEvent: writeEvent });
               },
             },
           });
@@ -3396,7 +3397,7 @@ execute: async (_toolCallId, params) => {
                 return fs.promises.access(target, fs.constants.R_OK);
               },
               readFile: async (absolutePath) => fs.promises.readFile(resolveSubagentWritablePath(absolutePath)),
-              writeFile: async (absolutePath, content) => stageWrite({ ...activeWriteContext("edit"), targetPath: resolveSubagentWritablePath(absolutePath), content, onEvent: writeEvent }),
+              writeFile: async (absolutePath, content) => stageWriteWithRetry({ ...activeWriteContext("edit"), targetPath: resolveSubagentWritablePath(absolutePath), content, onEvent: writeEvent }),
             },
           });
           const childCustomTools = [childReadTool, ...[childWriteTool, childEditTool, effRoleSpec.readOnly ? null : officeTool].filter(Boolean)];

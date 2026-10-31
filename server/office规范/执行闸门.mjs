@@ -11,13 +11,112 @@ const SCRIPT_FILE = /\.(?:mjs|cjs|js|py)$/i;
 const READONLY_OFFICECLI = new Set(["view", "get", "query", "validate", "dump", "help", "watch", "unwatch", "save", "close", "refresh"]);
 const MUTATING_OFFICECLI = new Set(["create", "add", "set", "batch", "import", "remove", "move", "swap", "delete"]);
 
-/** bash 只读特征：允许这些命令在写作路由下读取文档。 */
-const READONLY_BASH = [
-  /^\s*(?:ls|dir|cat|type|head|tail|wc|grep|rg|find|where|which|pwd|echo)\b/i,
-  /\bunzip\s+(?:-p|-l)\b/i,
-  /\bnode\s+-e\s+["'][^"']*(?:readFile|JSZip|loadAsync|console\.log)[^"']*["']/i,
-  /\bpython\s+-c\s+["'][^"']*(?:zipfile|print)[^"']*["']/i,
-];
+/** bash 只读命令白名单（逐段判定，见 bashSegmentIsReadonly）。 */
+const READONLY_BASH_COMMANDS = new Set([
+  "ls", "dir", "cat", "type", "head", "tail", "wc", "grep", "rg", "find",
+  "where", "which", "pwd", "echo", "diff", "cmp", "stat", "file",
+  "sha256sum", "md5sum", "uniq", "cut", "tr", "jq",
+  "realpath", "basename", "dirname",
+]);
+
+/** 明确的写命令：出现在命令链里就不能按只读处理。 */
+const MUTATING_BASH_COMMANDS = new Set([
+  "rm", "del", "erase", "rmdir", "rd", "mv", "move", "cp", "copy", "mkdir", "md",
+  "touch", "chmod", "chown", "ln", "dd", "truncate", "tee", "sed", "awk", "tar",
+  "zip", "python", "python3", "node", "npm", "npx", "pnpm", "yarn", "git",
+  "curl", "wget", "powershell", "pwsh", "cmd", "bash", "sh", "zsh", "xargs",
+  "install", "apt", "apt-get", "yum", "choco", "setx", "reg", "attrib", "icacls",
+  "mklink", "rename", "cpio", "rsync", "scp", "sftp", "make",
+]);
+
+/** 透明前缀：本身不改文件，跳过后看真正的命令。 */
+const BASH_COMMAND_PREFIXES = new Set(["sudo", "env", "command", "nohup", "time", "nice", "stdbuf"]);
+
+/**
+ * 把命令链按管道/逻辑连接符拆成若干段，逐段判定首命令。
+ * 目的：避免 `ls; rm -rf x`、`cat a | tee b` 这类"只读命令在前、写命令在后"的组合
+ * 被整体当成只读。无法解析时返回 null（按写处理）。
+ */
+export function bashCommandSegments(command) {
+  const text = String(command || "").trim();
+  if (!text) return [];
+  // 先剥掉引号内的连接符，避免把字符串内容当成命令分隔符。
+  const masked = text
+    .replace(/"(?:[^"\\]|\\.)*"/g, (m) => " ".repeat(m.length))
+    .replace(/'(?:[^'\\]|\\.)*'/g, (m) => " ".repeat(m.length));
+  return masked
+    .split(/\|\||&&|\||;|\n|&/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+/** 取一段命令的首个有效命令名（跳过环境变量赋值与透明前缀）。 */
+export function bashSegmentCommand(segment) {
+  let text = String(segment || "").trim();
+  if (!text) return null;
+  const tokens = text.split(/\s+/);
+  let index = 0;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) { index += 1; continue; }
+    if (BASH_COMMAND_PREFIXES.has(token.toLowerCase())) { index += 1; continue; }
+    break;
+  }
+  const command = tokens[index];
+  if (!command) return null;
+  return command.replace(/^["']|["']$/g, "").toLowerCase();
+}
+
+/**
+ * 命令链里是否出现明确的写命令。
+ * 只看首命令无法覆盖 `ls; rm -rf x` 这类写法，因此逐段检查。
+ */
+export function bashChainHasMutatingCommand(command) {
+  for (const segment of bashCommandSegments(command)) {
+    if (!bashSegmentIsReadonly(segment)) return true;
+  }
+  return false;
+}
+
+/**
+ * 单段命令是否只读。
+ *
+ * 判定口径（保守优先）：
+ *   - 明确只读命令 → 只读；
+ *   - 明确写命令 → 写；
+ *   - 其余（无法确认）→ 按写处理。
+ * 宁可多占一次工作区锁（并发稍慢），不可把写命令当成只读（并发写冲突）。
+ */
+function bashSegmentIsReadonly(segment) {
+  const name = bashSegmentCommand(segment);
+  if (!name) return false; // 解析不了 → 按写处理
+  // 内联只读脚本（node -e 只读 / python -c 只读）沿用既有放行口径。
+  if (isInlineReadonlyScript(segment)) return true;
+  if (MUTATING_BASH_COMMANDS.has(name)) return false;
+  // unzip 只有 -p/-l 是只读（解到标准输出），其余形式会落盘。
+  if (name === "unzip") return /-(?:p|l)\b/.test(segment);
+  if (!READONLY_BASH_COMMANDS.has(name)) return false;
+  // find 的 -delete/-exec 等形式仍可能改文件，这里保守排除。
+  if (name === "find" && /-(?:delete|exec|execdir|ok)\b/.test(segment)) return false;
+  return true;
+}
+
+/**
+ * 命令链是否整条只读：每一段的首命令都在只读白名单里。
+ */
+export function bashChainIsReadonly(command) {
+  const segments = bashCommandSegments(command);
+  if (!segments.length) return false;
+  return segments.every((segment) => bashSegmentIsReadonly(segment));
+}
+
+/** node -e / python -c 的只读内联脚本（Office 闸门既有放行口径）。 */
+function isInlineReadonlyScript(segment) {
+  const text = String(segment || "");
+  if (/\bnode\s+-e\s+["'][^"']*(?:readFile|JSZip|loadAsync|console\.log)[^"']*["']/i.test(text)) return true;
+  if (/\bpython\s+-c\s+["'][^"']*(?:zipfile|print)[^"']*["']/i.test(text)) return true;
+  return false;
+}
 
 /** bash 文档生成特征：命中即视为绕过管线。 */
 const DOCX_GENERATION = [
@@ -63,7 +162,10 @@ export function isReadonlyBash(command) {
   if (!text) return true;
   if (isDocxGenerationCommand(text)) return false;
   if (WRITE_INDICATORS.test(text)) return false;
-  return READONLY_BASH.some((pattern) => pattern.test(text));
+  // 逐段判定整条命令链：任一段不是明确只读 → 整条按写处理。
+  // 修复：`ls; rm -rf x`、`cat a | tee b`、`find . -delete` 这类"只读在前、
+  // 写操作在后"的组合，此前会因为首个命令只读而被判为只读，从而不占工作区写锁。
+  return bashChainIsReadonly(text);
 }
 
 export function isDocxGenerationCommand(command) {

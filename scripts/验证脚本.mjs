@@ -62,9 +62,23 @@ try {
 // ---------- 3. API 冒烟测试 ----------
 section("API 冒烟测试");
 const PORT = 3199;
+// 验证实例必须与生产运行时隔离：它和主服务（3002）共享同一个 .oaw 目录时，
+// 启动时的"中断 Run 恢复"会把主服务正在跑的任务标记成 recovering
+//（实测压力测试中 3 个全新 Run 都带上了 run_recovered 事件）。
+// 这里给验证实例一份临时运行时目录，并关闭恢复，测试结束删除。
+const verifyRuntime = fs.mkdtempSync(path.join(os.tmpdir(), "oaw-verify-"));
 const server = spawn("node", ["server/index.mjs"], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT) },
+  env: {
+    ...process.env,
+    PORT: String(PORT),
+    OAW_RUNS_DIR: path.join(verifyRuntime, "runs"),
+    OAW_WRITE_LOCK_DIR: path.join(verifyRuntime, "locks"),
+    OAW_EVENT_DIR: path.join(verifyRuntime, "events"),
+    OAW_INSTANCE_DIR: path.join(verifyRuntime, "instances"),
+    OAW_GOAL_DIR: path.join(verifyRuntime, "goals"),
+    OAW_DISABLE_RECOVERY: "1",
+  },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let serverOut = "";
@@ -301,7 +315,10 @@ async function smokeTest() {
 
 function cleanup(code = 0) {
   try { server.kill(); } catch {}
-  setTimeout(() => process.exit(failed || code), 500);
+  setTimeout(() => {
+    try { fs.rmSync(verifyRuntime, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }); } catch {}
+    process.exit(failed || code);
+  }, 500);
 }
 
 smokeTest();

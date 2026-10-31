@@ -15,7 +15,7 @@ import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves } from "./runs.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves, startOwnerHeartbeat, stopOwnerHeartbeat } from "./runs.mjs";
 import { attachRunTimingMeta, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
@@ -6216,6 +6216,8 @@ async function shutdownService(reason, exitCode = 0) {
   // 避免“服务正常关闭但最后一批数据未写”。
   try { flushPendingRunSaves(); } catch (error) { recordProcessFault("shutdown_run_flush_failed", error); }
   try { flushPendingFsync(); } catch (error) { recordProcessFault("shutdown_fsync_failed", error); }
+  // 清掉本实例的心跳文件：残留的"存活"记录会让别的实例误以为这些 Run 还在跑。
+  try { stopOwnerHeartbeat(); } catch (error) { recordProcessFault("shutdown_owner_heartbeat_failed", error); }
   if (httpServer) {
     await new Promise((resolve) => {
       let settled = false;
@@ -6263,12 +6265,20 @@ httpServer = app.listen(PORT, HOST, () => {
   });
   // R1：恢复必须在监听成功之后执行。端口被占的重复实例会在 listen 失败后退出，
   // 不能让它改写磁盘上的活跃 Run；同时把这段 IO 从启动关键路径移到可用之后。
-  try {
-    const recoveredRunIds = recoverActiveRuns();
-    if (recoveredRunIds.length) console.warn(`[runs] 已将 ${recoveredRunIds.length} 个中断前活动 Run 标记为 recovering，等待用户继续。`);
-  } catch (error) {
-    console.warn(`[runs] 恢复中断 Run 失败：${String(error?.message || error).slice(0, 200)}`);
+  // OAW_DISABLE_RECOVERY=1：仅测试/验证实例使用——测试实例不应改写任何 Run 的恢复状态。
+  if (process.env.OAW_DISABLE_RECOVERY === "1") {
+    console.warn("[runs] 已按 OAW_DISABLE_RECOVERY=1 跳过中断 Run 恢复。");
+  } else {
+    try {
+      const recoveredRunIds = recoverActiveRuns();
+      if (recoveredRunIds.length) console.warn(`[runs] 已将 ${recoveredRunIds.length} 个中断前活动 Run 标记为 recovering，等待用户继续。`);
+    } catch (error) {
+      console.warn(`[runs] 恢复中断 Run 失败：${String(error?.message || error).slice(0, 200)}`);
+    }
   }
+  // 本实例开始提供服务后才写心跳：只有真正在跑的实例才应被视为 Run 的存活 owner，
+  // 一次性脚本/测试进程即使创建过 Run 也不应阻止后续恢复。
+  startOwnerHeartbeat();
 });
 // SSE 连接由 15 秒 heartbeat 保活；关闭 Node 默认的请求/Socket 空闲超时，
 // 避免长文档任务超过默认时限后断流，而 Agent 实际仍在继续执行。
