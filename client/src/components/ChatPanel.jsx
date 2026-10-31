@@ -5382,9 +5382,9 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
     if (block?.type === "message_boundary" || isProcessBlock(block)) return false;
     return blockIndex !== hiddenFinalTextIndex;
   });
-  // ---- 会话流改版（落地文档 2026-10-31-001）：开关开启且非 Review 轮次走整轮折叠新路径 ----
-  // 关闭时以下全部为空数组/null，旧渲染路径逐字保留（三层可回滚约定）。
-  const timelinePath = flag("chatTimelineUi") && !isUser && Boolean(m.runId)
+  // ---- 会话流改版（落地文档 2026-10-31-001）：Run 轮次走整轮折叠新路径（已转正，无开关）----
+  // Review 轮次保留旧渲染（RunSummary 结果卡含审查依据页签）；纯问答消息（无 runId）走旧文本路径。
+  const timelinePath = !isUser && Boolean(m.runId)
     && !/^review$/i.test(String(m.runMode || m.task?.mode || ""));
   const runTraceForTimeline = useMemo(
     () => (timelinePath && summaryEvents.length ? reduceRunTrace(summaryEvents, m.runId) : null),
@@ -5693,6 +5693,8 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
                 <Icon name="arrowRight" size={12} /> {timelineActionNeeded.text}
               </div>
             )}
+            {/* 系统提示聚合（压缩/文件变更等）：沿用 ExecutionFlow 嵌入态，只渲染 notes */}
+            {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
             {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
             {streaming && (
               <div className="msg-streaming-status" role="status" aria-live="off">

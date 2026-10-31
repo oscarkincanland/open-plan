@@ -316,16 +316,16 @@ await test("agent / task / index / 前端已接入浏览器能力", () => {
 
 // ---------- 会话流改版接线（落地文档 2026-10-31-001 §7） ----------
 console.log("\n▶ 会话流改版接线");
-await test("整轮折叠新路径已接线且默认关闭（chatTimelineUi 开关）", () => {
+await test("Run 轮次走整轮折叠新路径（已转正），组件与样式齐备", () => {
   const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
   const chat = read("client/src/components/ChatPanel.jsx");
-  const flags = read("server/运行开关.mjs");
   const projection = read("client/src/会话流投影.js");
   const styles = read("client/src/styles.css");
   const pkg = JSON.parse(read("package.json"));
-  assert.match(flags, /chatTimelineUi: readFlag\("OAW_CHAT_TIMELINE"\)/, "服务端应注册 OAW_CHAT_TIMELINE 开关（默认关）");
-  assert.match(flags, /chatTimelineUi: RUNTIME_FLAGS.chatTimelineUi/, "快照应下发 chatTimelineUi");
-  assert.match(chat, /flag\("chatTimelineUi"\) && !isUser && Boolean\(m\.runId\)/, "Message 应按开关走整轮折叠新路径");
+  const flags = read("server/运行开关.mjs");
+  assert.match(chat, /!isUser && Boolean\(m\.runId\)/, "Run 轮次应走整轮折叠新路径（Review 保留旧渲染）");
+  assert.doesNotMatch(chat, /flag\("chatTimelineUi"\)/, "新路径已转正，不应再有 chatTimelineUi 开关判断");
+  assert.doesNotMatch(flags, /OAW_CHAT_TIMELINE/, "转正后服务端不应残留 OAW_CHAT_TIMELINE 开关");
   assert.match(chat, /<RunFold/, "新路径应渲染 RunFold 整轮折叠");
   assert.match(chat, /<SummaryBlock/, "新路径应渲染框外总结");
   assert.match(chat, /<ArtifactCard/, "新路径应渲染本轮产物卡");
