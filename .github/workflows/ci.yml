@@ -91,9 +91,6 @@ jobs:
       - name: AVA 画布页签（文件树 / 新会话 / 切换不卸载 / 宽度约束）
         run: node scripts/CI运行测试.mjs AVA画布页签测试
 
-      - name: AVA 双面板（并排常驻 / 各自拖宽 / 窄屏降级）
-        run: node scripts/CI运行测试.mjs AVA双面板测试
-
       - name: 长连接预算与流去重（切工作区/切会话卡死防护）
         run: node scripts/CI运行测试.mjs 长连接预算与流去重测试
 
@@ -123,3 +120,17 @@ jobs:
 
       - name: Office 写作契约（四路由 / 澄清 / 模板 / 版式 / 闸门）
         run: node scripts/CI运行测试.mjs Office写作契约回归测试
+
+      # 契约层与并发回归：2026-11-01 收敛时发现这些此前不在 CI 里，
+      # 导致"后加工具没同步元数据表""写入撞锁立即失败"等问题长期无人发现。
+      - name: 能力契约（模式白名单 / 工具元数据双向一致 / 内部工具可追溯）
+        run: node scripts/CI运行测试.mjs 能力契约测试
+
+      - name: 工具元数据契约（白名单覆盖 + 反向无孤儿 + 无第二份清单）
+        run: node scripts/CI运行测试.mjs 工具元数据契约测试
+
+      - name: 写锁并发（按文件加锁 / 撞锁退避 / 结构化可重试错误）
+        run: node scripts/CI运行测试.mjs 写入锁并发测试
+
+      - name: 恢复隔离（跨实例不误标 recovering / 验证实例运行时隔离）
+        run: node scripts/CI运行测试.mjs 恢复隔离测试

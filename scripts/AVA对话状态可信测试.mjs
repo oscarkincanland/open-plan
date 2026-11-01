@@ -56,10 +56,12 @@ test("send 的压缩守卫位于实际构造消息之前", () => {
 });
 
 test("空闲态发送按钮在压缩中禁用", () => {
+  // 082e7bea 起按钮额外受 agentReady 约束（会话恢复完成前不可发送），
+  // 这里按当前语义断言：frozen / agentReady / compacting / hasDraft 四个条件都在。
   assert.match(
     chatPanel,
-    /disabled=\{frozen \|\| compacting \|\| !hasDraft\}/,
-    "空闲发送按钮应同时受 frozen、compacting、hasDraft 约束",
+    /disabled=\{frozen \|\| !agentReady \|\| compacting \|\| !hasDraft\}/,
+    "空闲发送按钮应同时受 frozen、agentReady、compacting、hasDraft 约束",
   );
   assert.match(chatPanel, /正在压缩上下文，请稍候/, "按钮 title 应说明压缩中不可发送");
 });
@@ -67,8 +69,8 @@ test("空闲态发送按钮在压缩中禁用", () => {
 test("运行中排队/立即/注入按钮在压缩中禁用", () => {
   assert.match(
     chatPanel,
-    /pending-send-btn"[\s\S]{0,160}disabled=\{compacting\}/,
-    "运行中待发送按钮应受 compacting 约束",
+    /pending-send-btn"[\s\S]{0,160}disabled=\{compacting \|\| !agentReady\}/,
+    "运行中待发送按钮应受 compacting 与 agentReady 约束",
   );
 });
 

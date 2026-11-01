@@ -16,6 +16,7 @@ import fs from "node:fs";
 // 而下面若干断言用 `\n` 写多行源码形状，不归一会「本地红、CI 绿」地漂移。
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const 对话面板 = read("../client/src/components/ChatPanel.jsx");
+const 欢迎卡片 = read("../client/src/components/欢迎卡片.jsx");
 const 命令面板 = read("../client/src/components/CommandPalette.jsx");
 const 图标 = read("../client/src/components/Icon.jsx");
 const 样式 = read("../client/src/styles.css");
@@ -52,8 +53,10 @@ assert.match(样式, /\.agent-brief-grid/, "知情信息应有样式");
 assert.match(对话面板, /const EMPTY_EXAMPLES = \{/, "应有按模式划分的空白态示例");
 assert.match(对话面板, /chat: \{[\s\S]*?全程不会修改文件/, "Chat 空白态应说明只读");
 assert.match(对话面板, /const emptyExample = EMPTY_EXAMPLES\[normalizeUiMode\(editMode\)\]/, "空白态应按当前模式取示例");
-assert.match(对话面板, /className=\{`chat-empty mode-\$\{normalizeUiMode\(editMode\)\}`\}/, "空白态应带模式标记");
-assert.match(对话面板, /chat-empty-example/, "示例应可点击填入输入框");
+// 空白态已抽到 欢迎卡片.jsx（v0.13.7 欢迎页卡片），模式标记由 mode 属性传入。
+assert.match(欢迎卡片, /className=\{`chat-empty mode-\$\{mode\}`\}/, "空白态应带模式标记");
+assert.match(对话面板, /<欢迎卡片[\s\S]{0,200}mode=\{normalizeUiMode\(editMode\)\}/, "欢迎卡片应按当前模式渲染");
+assert.match(欢迎卡片, /chat-empty-example/, "示例应可点击填入输入框");
 {
   const chatBlock = 对话面板.slice(对话面板.indexOf("chat: {"), 对话面板.indexOf("agent: {"));
   assert.doesNotMatch(chatBlock, /改成|填入|生成一份/, "Chat 只读模式的示例不得引导改文件/生成产物");
@@ -107,7 +110,9 @@ assert.match(对话面板, /import \{[^}]*projectLegacyRunSummary[^}]*\} from "\
 assert.match(对话面板, /const fileChanges = useMemo\(\(\) => changes\.filter\(\(change\) => change\.role !== "internal"\)/, "文件改动应来自投影的单一份集合");
 // 最终答案只在助手正文显示；结果卡只给状态与文件入口。
 assert.match(对话面板, /const finalAnswer = String\(view\.answer\?\.text \|\| m\.authoritativeFinalText/, "结果卡应识别已显示的权威答案");
-assert.match(对话面板, /const fallbackSummary = finalAnswer \? ""/, "有最终答案时不得再显示 completion 摘要");
+// completion.summary 优先、最终答复只作补充（082e7bea 起的行为）：
+// 有 summary 就显示 summary；没有 summary 时才用最终答复兜底，且有最终答复时不回退到正文。
+assert.match(对话面板, /const fallbackSummary = summaryText \|\| \(finalAnswer \? ""/, "摘要优先，最终答复只作补充");
 assert.doesNotMatch(对话面板, /run-result-conclusion/, "结果卡不能再生成第二份折叠结论");
 assert.match(对话面板, /交付产物 \{deliverables\.length\}/, "交付产物应单独成入口");
 assert.doesNotMatch(对话面板, /m\.products\.map/, "结果卡不应再单独渲染产物标签（与变更重复）");

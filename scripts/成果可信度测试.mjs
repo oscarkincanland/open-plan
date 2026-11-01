@@ -162,23 +162,26 @@ console.log("\n▶ 产物检测：大工作区 / 无明确路径（P0 回归）"
     assert.equal(windowItem.source, "run-window", "只到工作区级的台账应按 run-window 归属");
     assert.equal(windowItem.confidence, "suspected", "run-window 是待确认，不能标成 confirmed");
     assert.notEqual(windowItem.source, "unattributed", "run-window 不应退化成未归属线索");
-    assert.equal(windowItem.autoDeliverable, true, "只有完全没有写入证据的差异才不得自动宣告交付");
+    // run-window 是"本轮确有写入 + 文件在运行窗口内变化"的推测，可能命中并行 Run 的改动，
+    // 必须先人工确认，不能自动计入"本轮产物"的交付计数（见 15d91738 与 server/runs.mjs）。
+    assert.equal(windowItem.autoDeliverable, false, "run-window 是推测归属，不得自动宣告交付");
 
-    // 读取时统一口径：旧 Run 的 artifacts 固化过旧结论（unattributed），
-    // 但它的 touchedPaths 有 "." 证据 —— getRun 应把它重新标注为 run-window。
+    // 读取时统一口径：归属结论只在"证据支持"时补全，且绝不把历史 unattributed
+    // 追溯升级为 run-window——否则旧的"疑似文件"会在读取时变成可交付产物
+    // （见 15d91738 与 server/runs.mjs 的 withNormalizedAttribution）。
     const legacy = getRun(windowRun.id);
     const legacyItem = (legacy?.artifacts || []).find((item) => item.path === "窗口内产物.md");
     assert.ok(legacyItem, "读取 Run 应返回该文件");
-    assert.equal(legacyItem.source, "run-window", "读取时按同一套证据重新标注归属");
-    // 反证：把落盘数据改成旧的 unattributed，读取后仍会被纠正（模拟历史数据）。
+    assert.equal(legacyItem.source, "run-window", "本轮写出的产物读取时保持 run-window 归属");
+    // 反证：把落盘数据改成旧的 unattributed，读取后不得被"纠正"成可交付（模拟历史数据）。
     const legacyFile = path.join(runsDir(), `${windowRun.id}.json`);
     const raw = JSON.parse(fs.readFileSync(legacyFile, "utf8"));
     raw.artifacts = (raw.artifacts || []).map((item) => ({ ...item, source: "unattributed", autoDeliverable: false }));
     fs.writeFileSync(legacyFile, JSON.stringify(raw));
     const reloaded = getRun(windowRun.id);
     const reloadedItem = (reloaded?.artifacts || []).find((item) => item.path === "窗口内产物.md");
-    assert.equal(reloadedItem?.source, "run-window", "历史 Run 的产物归属应在读取时被纠正");
-    assert.equal(reloadedItem?.autoDeliverable, true, "纠正后应恢复可交付判定");
+    assert.equal(reloadedItem?.source, "unattributed", "历史 unattributed 不得在读取时被追溯升级");
+    assert.equal(reloadedItem?.autoDeliverable, false, "历史疑似文件不得自动进入交付计数");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

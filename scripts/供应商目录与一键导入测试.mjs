@@ -45,11 +45,33 @@ async function 接口场景(name, fn) {
 const catalog = loadBuiltinCatalog();
 const list = builtinProviderList();
 
-场景("目录：41 个供应商 / 1142 个模型 / 有生成时间", () => {
-  assert.equal(list.providers.length, 41, `供应商数量应为 41，实际 ${list.providers.length}`);
-  assert.equal(list.totalModels, 1142, `模型总数应为 1142，实际 ${list.totalModels}`);
-  assert.ok(list.generatedAt, "目录应带生成时间，便于判断是否需要重新提取");
+// 计数口径：内置快照 server/Pi内置供应商.json 是入库的确定性数据（41 家 / 1142 模型）；
+// 合并列表 builtinProviderList() 还会叠加本地未入库的 models.dev 拉取缓存
+// （server/models-dev-目录.json），开发者一旦拉过目录就会变成几百家。
+// 因此规模类断言必须落在内置快照上，合并列表只断言结构与能力。
+const builtinList = {
+  providers: catalog.providers,
+  totalModels: catalog.providers.reduce((count, provider) => count + provider.models.length, 0),
+};
+
+场景("内置目录快照：41 个供应商 / 1142 个模型 / 有生成时间", () => {
+  assert.equal(builtinList.providers.length, 41, `内置快照供应商数量应为 41，实际 ${builtinList.providers.length}`);
+  assert.equal(builtinList.totalModels, 1142, `内置快照模型总数应为 1142，实际 ${builtinList.totalModels}`);
+  assert.ok(catalog.generatedAt, "目录应带生成时间，便于判断是否需要重新提取");
+  assert.equal(catalog.error, null);
+});
+
+场景("合并目录：结构完整且覆盖内置快照", () => {
+  assert.ok(list.providers.length >= builtinList.providers.length, "合并列表不应少于内置快照");
+  assert.ok(list.totalModels >= builtinList.totalModels, "合并列表的模型数不应少于内置快照");
+  assert.ok(list.generatedAt, "合并目录应带生成时间");
   assert.equal(list.error, null);
+  for (const provider of list.providers) {
+    assert.ok(provider.id, "合并目录里的每个供应商都应有 id");
+    // 合并列表是摘要形态：模型总数在 modelCount，摘要在 sampleModels。
+    assert.equal(typeof provider.modelCount, "number", `${provider.id} 应带模型数量`);
+    assert.ok(Array.isArray(provider.sampleModels), `${provider.id} 的模型摘要应是数组`);
+  }
 });
 
 场景("上下文窗口按指数解析（1e6 → 1000000，不是 1）", () => {
@@ -302,8 +324,10 @@ try {
   await 接口场景("接口：目录列表带登录方式与已配置状态，且不含任何 Key 明文", async () => {
     const { status, body } = await 请求("/api/agent/provider-catalog");
     assert.equal(status, 200);
-    assert.equal(body.providers.length, 41);
-    assert.equal(body.summary.oauth, 9);
+    // 接口返回的是"内置快照 + 本地 models.dev 缓存"的合并目录，缓存不入库，
+    // 因此规模只能断言下限（内置快照 41 家），不能写死精确数量。
+    assert.ok(body.providers.length >= 41, `供应商数量不应少于内置快照 41，实际 ${body.providers.length}`);
+    assert.ok(body.summary.oauth >= 9, `OAuth 供应商不应少于内置快照的 9 家，实际 ${body.summary.oauth}`);
     assert.ok(body.summary.importable >= 35);
     const text = JSON.stringify(body);
     assert.doesNotMatch(text, /"(key|apiKey|secret|token)"\s*:\s*"[^"]{6,}"/, "目录响应不得出现凭据明文");
@@ -320,8 +344,11 @@ try {
     const { status, body } = await 请求("/api/agent/provider-catalog/deepseek");
     assert.equal(status, 200);
     assert.equal(body.provider.id, "deepseek");
-    assert.equal(body.provider.models.length, 2);
-    assert.equal(body.provider.models[0].contextWindow, 1_000_000);
+    // 详情同样是合并目录，模型条数随本地 models.dev 缓存变化，只断言结构与关键字段。
+    assert.ok(Array.isArray(body.provider.models) && body.provider.models.length >= 2, "详情应返回完整模型清单");
+    const flash = body.provider.models.find((model) => model.id === "deepseek-flash");
+    assert.ok(flash, "应包含 deepseek-flash");
+    assert.equal(flash.contextWindow, 1_000_000);
     const missing = await 请求("/api/agent/provider-catalog/不存在");
     assert.equal(missing.status, 404);
   });

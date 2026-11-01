@@ -147,8 +147,16 @@ assert.match(闸门块, /\.marquee\.is-active::after \{\s*animation: none !impor
 // 滚动与压感反馈立即落定
 assert.match(闸门块, /\.chat-body \{ scroll-behavior: auto; \}/, "闸门应取消平滑滚动");
 assert.match(闸门块, /:active \{\s*transform: none !important;/, "闸门应取消按钮按压缩放");
-// 不误杀地图/浏览器模块的交互过渡
-assert.doesNotMatch(闸门块, /leaflet|maplibregl|\.map-[a-z]/i, "闸门不得包含地图库/地图模块选择器");
+// 不误杀地图/浏览器模块的交互过渡。
+// 判定要按"规则"而不是整块文本：闸门块里允许出现与动效无关的地图布局规则
+// （例如画布小地图的 flex 尺寸），禁止的是对地图模块施加 animation/transition 覆盖。
+const 闸门规则块 = 闸门块.split("}").filter((rule) => /animation|transition/i.test(rule));
+const 误伤地图规则 = 闸门规则块.filter((rule) => /leaflet|maplibregl|\.map-[a-z]/i.test(rule));
+assert.deepEqual(
+  误伤地图规则.map((rule) => rule.trim().split("{")[0].trim()),
+  [],
+  "闸门不得对地图库/地图模块施加动效覆盖",
+);
 
 // 闸门之后不允许再出现未纳管的持续动画
 const 闸门内动画 = [...闸门块.matchAll(/animation\s*:\s*([^;{}]+)/g)].map((m) => m[1].trim());
