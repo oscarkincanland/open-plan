@@ -1140,14 +1140,23 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   border-collapse: collapse;
   width: 100%;
   margin: 8px 0;
-  font-size: 12px;
+  /* 跟随宿主正文（回复 13px / 总结 12.5px）——此前写死 12px，表格字比正文小一档，
+     同一屏里字高来回跳（用户反馈"格式奇怪"）。 */
+  font-size: inherit;
+  line-height: 1.55;
 }
 .markdown-body th, .markdown-body td {
   border: 1px solid var(--border);
   padding: 5px 10px;
   text-align: left;
+  vertical-align: middle;
+  overflow-wrap: anywhere;
 }
+/* 数字列对齐：等宽数字让"1,234"这类数据上下对齐 */
+.markdown-body td { font-variant-numeric: tabular-nums; }
 .markdown-body th { background: var(--panel2-bg); font-family: var(--font-emphasis); font-weight: 600; }
+/* 行内代码在表格内降一档，避免与中文正文抢视觉 */
+.markdown-body th code, .markdown-body td code { font-size: 0.92em; }
 /* markdown 里的加粗：改用系统字体承载真 Semibold。
    MiSans 只有 400，`<strong>` 默认的 bold(700) 会被浏览器合成，中文笔画粘连。 */
 .markdown-body strong,
@@ -10488,7 +10497,11 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .sum-conclusion { font-family: var(--font-emphasis); font-size: 14px; font-weight: 600; color: var(--text); line-height: 1.65; letter-spacing: 0; overflow-wrap: anywhere; }
 .sum-detail { margin-top: 2px; min-width: 0; }
 .sum-detail .markdown-body { background: transparent; border: none; padding: 0; font-size: 12.5px; line-height: 1.7; color: var(--dim); }
-.sum-detail .markdown-body table { display: block; max-width: 100%; overflow-x: auto; }
+/* 总结区表格：保持 display:table（列宽按内容分配），横向滚动交给外层包裹。
+   此前直接给 table 设 display:block + overflow-x，表格脱离表格布局，
+   列宽不再按内容分配，横向滚动条常驻且表头与内容列错位。 */
+.sum-detail .markdown-body { overflow-x: auto; }
+.sum-detail .markdown-body table { display: table; max-width: 100%; }
 
 /* 本轮产物卡 */
 .ac-card {

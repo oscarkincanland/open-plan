@@ -5454,18 +5454,39 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     () => (timelinePath ? buildRunTimeline({ blocks: timelineBlocks, trace: runTraceForTimeline }) : []),
     [timelinePath, timelineBlocks, runTraceForTimeline],
   );
-  // 「已运行 xx」只做一行无框小字：运行中按 startedAt 实时累加，结束后用实测总时长。
+  // 「已运行 xx」：运行中按 startedAt 实时累加，结束后用实测总时长。
   // 不能整轮隐藏——用户需要一眼看到这一轮跑了多久；也不能再包回运行框。
-  const runElapsedText = (() => {
-    if (!timelinePath) return "";
-    const startedMs = Date.parse(runTraceForTimeline?.startedAt || "") || 0;
+  //
+  // 历史轮兜底：服务端 listRuns 的 includeEvents 默认只给"活跃 Run + 列表第一条"带 events，
+  // 切回旧会话时 runTraceForTimeline 为 null，此前会导致整条"已运行"消失。
+  // 这里退回到消息自带的 startedAt/finishedAt（App 已从 run 写入消息）。
+  const runElapsedMs = (() => {
+    if (!timelinePath) return 0;
+    const traceStartedMs = Date.parse(runTraceForTimeline?.startedAt || "") || 0;
     const traceDuration = Number(runTraceForTimeline?.durationMs || 0);
-    const elapsed = isTaskLive
-      ? (startedMs ? Math.max(0, clockNow - startedMs) : 0)
-      : (traceDuration || (startedMs && runTraceForTimeline?.endedAt
-        ? Math.max(0, Date.parse(runTraceForTimeline.endedAt) - startedMs)
-        : 0));
-    return elapsed > 0 ? `已运行 ${formatDuration(elapsed)}` : "";
+    if (isTaskLive) {
+      const startedMs = traceStartedMs || (Date.parse(m.startedAt || "") || 0);
+      return startedMs ? Math.max(0, clockNow - startedMs) : 0;
+    }
+    if (traceDuration > 0) return traceDuration;
+    if (traceStartedMs && runTraceForTimeline?.endedAt) {
+      const ms = Date.parse(runTraceForTimeline.endedAt) - traceStartedMs;
+      if (Number.isFinite(ms) && ms > 0) return ms;
+    }
+    // 兜底：消息自带的起止时间（历史轮 events 为空时仍然可用）
+    const msgStart = Date.parse(m.startedAt || "") || 0;
+    const msgEnd = Date.parse(m.finishedAt || "") || 0;
+    if (msgStart && msgEnd && msgEnd > msgStart) return msgEnd - msgStart;
+    return 0;
+  })();
+  const runElapsedText = (() => {
+    if (!(runElapsedMs > 0)) return "";
+    // 等待时长占比高时标注，避免"跑了 2 小时"里其实 1 小时在等审批。
+    const waitingMs = Number(runTraceForTimeline?.waitingMs || 0);
+    const waitingNote = waitingMs > 0 && waitingMs >= runElapsedMs * 0.3
+      ? `（其中等待 ${formatDuration(waitingMs)}）`
+      : "";
+    return `已运行 ${formatDuration(runElapsedMs)}${waitingNote}`;
   })();
   const timelineCompletion = runCardView?.outcome || runSummary?.completion || null;
   // 本轮结语以模型终稿为准：complete_task.summary 是工具结构化产物，常与真实结语不一致。
@@ -5803,8 +5824,9 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
             )}
             {/* 会话流改版（落地文档 2026-10-31-001 + 规范 docs/规范/会话流前端规范.md）：
                 本轮耗时（无框一行小字）→ 时间流（无运行框，直接按真实顺序排条目）
-                → 交互块（ask/审批）→ 框外总结 → 本轮产物 → 需行动提示 */}
-            {runElapsedText && <div className="tl-elapsed">{runElapsedText}</div>}
+                → 交互块（ask/审批）→ 框外总结 → 本轮产物 → 需行动提示。
+                结束后"已运行 xx"折进总结 cap（见 SummaryBlock elapsedMs），不再单占一行。 */}
+            {runElapsedText && !showTimelineSummary && <div className="tl-elapsed">{runElapsedText}</div>}
             <div className={`tl-list ${isTaskLive ? "is-live" : ""}`}>{runTimeline.map(renderTimelineItem)}</div>
             {timelineInteractionItems.map(renderTimelineInteraction)}
             {showTimelineSummary && (
@@ -5812,6 +5834,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                 conclusion={summaryParts.conclusion}
                 what={summaryParts.what}
                 detail={summaryParts.detail}
+                elapsedMs={runElapsedMs}
                 onOpenFile={onOpenFile}
                 artifacts={answerArtifacts}
               />
