@@ -254,7 +254,8 @@ try {
   assert.doesNotMatch(widthStyles, /\.msg-main > \.message-process-fold \{ order: -1; \}/, "执行过程顺序应由 DOM 表达，不再用 flex order 制造视觉/阅读顺序错位");
   assert.match(chatPanelSource, /\{renderMessageBlocks\(\)\}[\s\S]{0,300}?<div className="msg-blocks">|className="msg-blocks">[\s\S]{0,60}?\{renderMessageBlocks\(\)\}/, "过程折叠与正文按输出顺序同列渲染");
   assert.match(widthStyles, /\.msg-main > \.msg-header \{ margin-bottom: 2px; order: -2; \}/, "标题应保持在最上方");
-  assert.match(widthStyles, /\.msg \.markdown-body \{ line-height: 1\.65; \}/, "对话正文行距应收紧");
+  // 规范 v2.0 §4：对话正文 14px / 行高 1.75（与 ZCode 同口径），不再压到 1.65。
+  assert.match(widthStyles, /\.msg \.markdown-body \{ font-size: 14px; line-height: 1\.75; \}/, "对话正文应为 14px / 1.75");
   assert.match(chatPanelSource, /待审批：\{approvalLabel\}/, "待审批应显示在输入栏");
   assert.match(chatPanelSource, /待回答：\{String\(ask\.question/, "待回答应显示在输入栏");
   assert.match(chatPanelSource, /\/api\/agent\/approval/, "输入栏可直接提交审批");

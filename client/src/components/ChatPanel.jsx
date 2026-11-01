@@ -29,11 +29,12 @@ import { notifyError, askConfirm, askText } from "./Feedback.jsx";
 import { flag, flagsReady, numberFlag } from "../运行开关.js";
 import { getBrowserStreamState } from "../浏览器联动.js";
 import TimelineRow from "./会话流/TimelineRow.jsx";
+import RunFoldBar from "./会话流/RunFoldBar.jsx";
 import SummaryBlock from "./会话流/SummaryBlock.jsx";
 import ArtifactCard from "./会话流/ArtifactCard.jsx";
 import { TypewriterText } from "./会话流/useTypewriter.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
-import { buildRunTimeline, splitCompletionSummary } from "../会话流投影.js";
+import { buildRunTimeline, describeRunFold, splitCompletionSummary } from "../会话流投影.js";
 
 // O-P3：浏览器"写操作类"工具白名单 —— 只有这些会拉起内置浏览器侧栏；
 // browser_close / browser_tabs / browser_snapshot / browser_screenshot 等查看或收尾动作不拉起。
@@ -3005,6 +3006,16 @@ case "runtime_connecting":
         if (source === "turn-progress" || source.startsWith("turn-budget")) {
           // 轮次/预算提示是 harness 内部控制事件，不把原始提示词或轮次计数展示给用户。
           // 模型生成的进度小结仍作为普通过程播报，进入消息级折叠。
+        } else if (source === "office-pipeline") {
+          // 写作路由的"改用编辑流水线"提醒同样是 harness 对模型的内部引导：
+          // 用户不能对它做任何行动，渲染成"⟳ 插入新指令"会被误认为用户操作；
+          // 且 pushSystem 加的是永久气泡（Run 结束后不清理、也不会因模型随后用了
+          // 流水线而撤回），所以只记入可折叠的系统提示，不占消息流。
+          pushSystemNote({
+            key: "office-pipeline",
+            kind: "progress",
+            text: "已提醒模型改用编辑流水线（本轮尚未使用时触发一次）",
+          });
         } else if (message) {
           pushSystem(`⟳ 插入新指令：${message.slice(0, 60)}${message.length > 60 ? "…" : ""}`, `steer:${message.slice(0, 40)}`);
         }
@@ -5555,6 +5566,22 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
       return false;
     })
     : [];
+  // 折叠头终态与文案（规范 §2.1 + ADR 0014）：折叠的是过程，答案与可执行动作留在折叠体外。
+  // 运行中不渲染折叠头（直铺时间流），因此这里只处理终态。
+  const runFold = describeRunFold({
+    interrupted: runInterrupted,
+    failed: runCardView?.lifecycle === "failed",
+    risky: timelineCompletion?.status === "blocked" || timelineCompletion?.status === "partial",
+    elapsedMs: runElapsedMs,
+  });
+  const runFoldPending = timelineInteractionItems.length
+    ? (timelineInteractionItems.some((item) => item.kind === "approval") ? "等待你审批" : "等待你回答")
+    : "";
+  // 总结正文：结论段 + 详细展开合并为一篇连续 Markdown（v2.0 不再分栏、不再加标签）。
+  const summaryBody = useMemo(
+    () => (timelinePath ? [summaryParts.conclusion, summaryParts.detail].filter(Boolean).join("\n\n") : ""),
+    [timelinePath, summaryParts],
+  );
   const renderTimelineInteraction = (item) => {
     if (item.kind === "ask") {
       const question = String(item.block?.question || "").replace(/\s+/g, " ").slice(0, 40);
@@ -5856,19 +5883,25 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
             {m.images?.length > 0 && (
               <div className="msg-images assistant-images">{m.images.map((src, i) => <img key={i} src={src} alt="Agent 附图" />)}</div>
             )}
-            {/* 会话流改版（落地文档 2026-10-31-001 + 规范 docs/规范/会话流前端规范.md）：
-                本轮耗时（无框一行小字）→ 时间流（无运行框，直接按真实顺序排条目）
-                → 交互块（ask/审批）→ 框外总结 → 本轮产物 → 需行动提示。
-                结束后"已运行 xx"折进总结 cap（见 SummaryBlock elapsedMs），不再单占一行。 */}
-            {runElapsedText && !showTimelineSummary && <div className="tl-elapsed">{runElapsedText}</div>}
-            <div className={`tl-list ${isTaskLive ? "is-live" : ""}`}>{runTimeline.map(renderTimelineItem)}</div>
+            {/* 会话流（规范 v2.0 §2 + ADR 0014）：运行中直铺时间流；结束后把过程收进一行折叠头。
+                折叠的只有过程——未决 ask/审批、结论正文、产物卡、需行动提示一律留在折叠体外，
+                失败/取消同样默认折叠，可执行动作靠「需行动提示」在折叠外表达。 */}
+            {isTaskLive ? (
+              <>
+                {runElapsedText && !showTimelineSummary && <div className="tl-elapsed">{runElapsedText}</div>}
+                <div className={`tl-list ${isTaskLive ? "is-live" : ""}`}>{runTimeline.map(renderTimelineItem)}</div>
+                {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
+              </>
+            ) : (
+              <RunFoldBar state={runFold.state} label={runFold.label} steps={runTimeline.length} pendingLabel={runFoldPending}>
+                <div className="tl-list">{runTimeline.map(renderTimelineItem)}</div>
+                {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
+              </RunFoldBar>
+            )}
             {timelineInteractionItems.map(renderTimelineInteraction)}
             {showTimelineSummary && (
               <SummaryBlock
-                conclusion={summaryParts.conclusion}
-                what={summaryParts.what}
-                detail={summaryParts.detail}
-                elapsedMs={runElapsedMs}
+                body={summaryBody}
                 onOpenFile={onOpenFile}
                 artifacts={answerArtifacts}
               />
@@ -5883,8 +5916,6 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                 <Icon name="arrowRight" size={12} /> {timelineActionNeeded.text}
               </div>
             )}
-            {/* 系统提示聚合（压缩/文件变更等）：沿用 ExecutionFlow 嵌入态，只渲染 notes */}
-            {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
             {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
             {streaming && (
               <div className="msg-streaming-status" role="status" aria-live="off">
