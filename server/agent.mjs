@@ -1681,6 +1681,16 @@ execute: async (_toolCallId, params) => {
               hintParts.push("引用的文件不在磁盘上：如果你刚用 write 工具写过它，它可能仍在暂存区（外部进程看不到）——"
                 + "请先物化到工作区真实路径后再调用 officecli。");
             }
+            // N-04：样式不存在时给出可用样式清单与一行修复命令，
+            // 避免模型改用 raw-set 手写 styles.xml（实测连环失败并写坏 OOXML）。
+            {
+              const { parseStyleNotFound } = await import("./office规范/officecli检查.mjs");
+              const styleHint = parseStyleNotFound(detail);
+              if (styleHint) {
+                hintParts.push(styleHint.suggestion);
+                error.code = error.code || "OFFICE_STYLE_NOT_FOUND";
+              }
+            }
             if (hintParts.length) error.message = `${error.message}\n${hintParts.map((line) => `[修复建议] ${line}`).join("\n")}`;
             writeEvent("officecli_failed", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, command: args.slice(0, 8), code: error.code, exitCode: r.code, message: detail });
             throw error;

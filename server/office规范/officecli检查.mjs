@@ -10,8 +10,41 @@
  */
 import { spawn } from "node:child_process";
 import { OFFICECLI } from "../workspace.mjs";
+import { STANDARD_DOCX_STYLE_IDS } from "../文档引擎.mjs";
 
 const DEFAULT_TIMEOUT_MS = 30000;
+
+/**
+ * 样式错误增强（计划 2026-10-31-003 / N-04）。
+ *
+ * 背景：实测 run_05198175 里模型反复撞 "Style 'Normal' not found"，
+ * 因为它不知道哪些样式存在，于是改用 raw-set 手写 styles.xml XPath，
+ * 连环失败 7 次并把 OOXML 写坏。这里把"可用样式 id + 一行修复命令"直接补给模型。
+ */
+const STYLE_NOT_FOUND = /Style\s+'([^']+)'\s+not found/i;
+
+/**
+ * 解析样式缺失错误，给出可用样式 id 与修复建议。
+ * @returns {{style:string, available:string[], suggestion:string}|null}
+ */
+export function parseStyleNotFound(text) {
+  const source = String(text || "");
+  const match = source.match(STYLE_NOT_FOUND);
+  if (!match) return null;
+  const style = String(match[1] || "").trim();
+  const available = [...STANDARD_DOCX_STYLE_IDS];
+  return {
+    style,
+    available,
+    suggestion: [
+      `样式「${style}」不存在。`,
+      `新建文档已预置样式：${available.join(" / ")}。`,
+      `请改用其中之一（例：set <file> /body/p[1] --prop style=Normal）。`,
+      `确需新增时用：add <file> /styles --type style --prop id=${style} --prop name=${style} --prop type=paragraph。`,
+      `不要用 raw-set 直接改 styles.xml。`,
+    ].join(" "),
+  };
+}
 
 function runCli(args, { cwd, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   return new Promise((resolve) => {
