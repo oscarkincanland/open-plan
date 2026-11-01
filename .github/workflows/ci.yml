@@ -135,3 +135,6 @@ jobs:
 
       - name: 预算受限收尾（硬预算后禁止改文件 / 放行收尾交互）
         run: node scripts/CI运行测试.mjs 预算受限收尾测试
+
+      - name: 会话流排版（横向滚动 / 四档缩进 / 加粗字体 / 表格 / 分页 / 切换）
+        run: node scripts/CI运行测试.mjs 会话流排版回归测试
