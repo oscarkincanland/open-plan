@@ -40,6 +40,8 @@ const AGENT_TOOLS = Object.freeze([
   "memory_update", "todo", "complete_task",
   // P2-A：编辑流水线（生成 Word/PPT 初稿的原生流水线，仅 Work 模式）
   "editorial_pipeline",
+  // 场景化分析模板（确定性编排，产出图层统计 + Word 报告；由 OAW_MAP_TEMPLATES 控制启用）
+  "map_template",
   "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close",
   "browser_wait_for", "browser_act", "browser_extract", "browser_select_option",
 ]);
@@ -134,6 +136,23 @@ export function toolPolicyForMode(mode) {
     description: modeDescription(normalized),
     tools: [...tools],
   };
+}
+
+/**
+ * 全部模式的工具并集（会话可激活工具全集）。
+ *
+ * 用途：Pi 会话创建时需要一次性注册所有模式的工具（按轮次再由
+ * toolPolicyForMode 裁剪可见性）。此前这段清单在 server/agent.mjs 里
+ * 硬编码了一份，与本文件的白名单形成两份事实来源，已发生漂移
+ * （map_template 定义了却不在任何白名单，Work 模式调不到）。
+ * 现在统一从这里派生，agent.mjs 只保留 run_subagent 与 MCP/扩展的动态追加。
+ */
+export function allModeToolNames() {
+  const names = new Set();
+  for (const mode of TASK_MODES) {
+    for (const name of toolPolicyForMode(mode).tools) names.add(name);
+  }
+  return [...names];
 }
 
 function containsAny(text, words) {

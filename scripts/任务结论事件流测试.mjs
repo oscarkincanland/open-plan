@@ -44,6 +44,7 @@ const agent源 = read("server/agent.mjs");
 const index源 = read("server/index.mjs");
 // 成功/异常/截断收口已迁到执行句柄；恢复路径仍在 index.mjs。
 const 执行句柄源 = read("server/执行句柄.mjs");
+const { allModeToolNames } = await import("../server/task.mjs");
 
 // ---------- 1. 运行终态（Run 生命周期层） ----------
 console.log("\n▶ 运行终态与语气");
@@ -103,11 +104,8 @@ test("思维 / 搜索 / 读写 / 终端 / 浏览器 / Office / 知识库 / 审�
 });
 
 test("内置工具清单全部映射到确定图标（无遗漏、无异常）", () => {
-  // agent.mjs 里还有子代理等较短的 tools 清单；内置工具清单是最长的那一个，按此取用。
-  const candidates = [...agent源.matchAll(/tools: \[([^\]]+)\]/g)].map((m) => m[1]);
-  const toolsLine = candidates.reduce((longest, item) => (item.length > (longest?.length || 0) ? item : longest), null);
-  assert.ok(toolsLine, "应能从 agent.mjs 解析出内置工具清单");
-  const names = [...toolsLine.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  // 工具清单的唯一来源是 server/task.mjs 的模式白名单并集（agent.mjs 不再维护第二份清单）。
+  const names = allModeToolNames();
   assert.ok(names.length >= 30, `工具清单应完整（实际 ${names.length} 项）`);
   const expected = {
     read: "file", context_read: "file",
@@ -116,6 +114,7 @@ test("内置工具清单全部映射到确定图标（无遗漏、无异常）",
     grep: "search", find: "search", ls: "search", web_search: "search", web_fetch: "search",
     kb_search: "book", kb_read: "book", skills_search: "book", skills_read: "book", memory_update: "book",
     map_read: "map", map_datasets: "map", map_edit: "map", map_import: "map", map_analyze: "map", map_template: "map", map_save_analysis: "map", map_clear_analysis: "map",
+    map_layer_info: "map", map_reset: "map", map_project_create: "map",
     review_copy: "shield", ask_user: "comment", todo: "list", complete_task: "check", run_subagent: "flow",
     // P2-A：编辑流水线与子代理同属编排类
     editorial_pipeline: "flow",

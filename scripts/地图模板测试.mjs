@@ -11,6 +11,7 @@ process.env.OAW_MAP_TEMPLATES = "1";
 
 const { bandOdFlows, runOdCommuterTemplate, OD_TEMPLATE_ID } = await import("../server/地图模板.mjs");
 const { loadSource } = await import("../server/地图可视化.mjs");
+const { toolPolicyForMode } = await import("../server/task.mjs");
 await import("../server/交通数据源.mjs");
 
 const passed = [];
@@ -120,7 +121,9 @@ await check("路由 / Agent 工具 / 运行开关三处口径一致", () => {
   assert.match(read("server/index.mjs"), /RUNTIME_FLAGS\.mapTemplates/);
   assert.match(read("server/agent.mjs"), /name: "map_template"/);
   assert.match(read("server/agent.mjs"), /mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool/);
-  assert.match(read("server/agent.mjs"), /"map_analyze", "map_template", "map_save_analysis"/);
+  // 工具白名单的唯一来源是 server/task.mjs；map_template 必须真的在 Work 白名单里，
+  // 否则工具定义了却调不到（"声明了却调不到"按 AGENTS.md §5 属缺陷）。
+  assert.ok(toolPolicyForMode("agent").tools.includes("map_template"), "map_template 应在 Work 模式白名单内");
   assert.match(read("server/运行开关.mjs"), /mapTemplates: readFlagDefault\("OAW_MAP_TEMPLATES", true\)/);
 });
 

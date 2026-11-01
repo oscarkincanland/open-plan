@@ -47,7 +47,7 @@ import { importLocalPiSessionFile, readCredentials, readModelsConfig, readModels
 import { resolveReferences, readReference, contextSummary } from "./context.mjs";
 import { recordRunEvent, updateRunTodo, getRun, isRunTerminal } from "./runs.mjs";
 import { markRunTiming, attachRunTimingSpans } from "./首字延迟.mjs";
-import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode, routeTaskIntent } from "./task.mjs";
+import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode, routeTaskIntent, allModeToolNames } from "./task.mjs";
 import { classifyToolCall, isReadonlyBash } from "./office规范/执行闸门.mjs";
 
 /** OfficeCLI 工具约束（O-28）：Work/Review 两处 prompt 共用同一常量，避免措辞分叉。 */
@@ -3762,6 +3762,9 @@ execute: async (_toolCallId, params) => {
       },
     });
     const writableSessionPath = materializeSessionPath(options.sessionPath);
+    // 会话可激活工具全集：模式白名单的唯一来源是 server/task.mjs，这里只动态追加
+    // run_subagent（按会话注入）与 MCP / Pi 扩展工具。禁止再在本文件维护第二份工具名清单。
+    const sessionToolNames = [...allModeToolNames(), "run_subagent", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames];
     let session;
     let sessionManager;
     try {
@@ -3774,16 +3777,16 @@ execute: async (_toolCallId, params) => {
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
         customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapLayerInfoTool, mapResetTool, mapProjectCreateTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, browserWaitForTool, browserActTool, browserExtractTool, browserSelectOptionTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
-        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_datasets", "map_layer_info", "map_reset", "map_project_create", "map_edit", "map_import", "map_analyze", "map_template", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "browser_wait_for", "browser_act", "browser_extract", "browser_select_option", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames],
+        tools: sessionToolNames,
       }));
     } catch (error) {
       piRuntimeManager.markFailure(runtimeRecord.runtimeId, error, { recovering: true, reason: "session_create_failed" });
       throw error;
     }
     // 显式激活全部自定义工具（pi SDK 仅激活 tools 白名单中的工具，customTools 需手动激活，
-    // 否则 kb_search/map_read/ask_user 等对模型不可见）
+    // 否则 kb_search/map_read/ask_user 等对模型不可见）。工具全集同 sessionToolNames，不再另列清单。
     try {
-      piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), "ask_user", "officecli", "review_copy", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_layer_info", "map_reset", "map_project_create", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "browser_wait_for", "browser_act", "browser_extract", "browser_select_option", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames]);
+      piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), ...sessionToolNames]);
     } catch {}
 
     // event channel with history for SSE replay
