@@ -745,6 +745,8 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .chat-load-older { align-self: center; border: 1px solid var(--line, #d6ddd2); border-radius: 999px; background: var(--surface, var(--pure-white)); color: var(--muted, #667064); padding: 6px 12px; font-size: 12px; cursor: pointer; }
 .chat-load-older:hover { color: var(--text, #243025); border-color: var(--accent, #7c9b2e); background: var(--accent-soft, #f2f6e9); }
 .chat-history-window-note { align-self: center; max-width: min(720px, 92%); color: var(--muted, #667064); font-size: 11px; line-height: 1.5; text-align: center; padding: 4px 10px; }
+/* 分页状态行：加载成功 / 已到最早 / 不支持时的常驻说明（替代"点了没反应"） */
+.chat-history-status { align-self: center; max-width: min(720px, 92%); color: var(--muted, #667064); font-size: 11px; line-height: 1.5; text-align: center; padding: 2px 10px 4px; font-variant-numeric: tabular-nums; }
 .chat-empty { color: var(--muted); text-align: center; padding: 40px 0; font-size: 13px; }
 .vision-hint { padding: 4px 12px; font-size: 11px; color: var(--warning); background: #2a2410; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 /* messages */
