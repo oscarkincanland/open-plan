@@ -476,6 +476,8 @@ export default function App() {
   const [restoredRunHint, setRestoredRunHint] = useState(null);
   const restoredRunProbedRef = useRef(false);
   const [historyWindow, setHistoryWindow] = useState(null); // 服务端为长会话返回的展示窗口信息
+  // 历史会话切换中的加载态：缓存未命中时用它驱动骨架屏，替代此前的空白等待。
+  const [historyLoading, setHistoryLoading] = useState(false);
   // v0.13.2：当前会话已加载助手消息里的外部链接（ChatPanel 提取，Links 页签展示）。
   const [chatLinks, setChatLinks] = useState([]);
   const [sessionResumeError, setSessionResumeError] = useState(null); // { sessionId, message } Agent 恢复失败时历史只读
@@ -1149,7 +1151,18 @@ export default function App() {
         setTabs([]);
         setActiveTab(null);
       } catch (e) {
-        console.warn("切换到会话工作区失败，仍尝试加载历史:", e.message);
+        // 工作区不可用就不要再加载这份历史：否则会出现"会话 A 的历史 + 会话 B 的文件树"
+        // 的错配（用户无法判断自己看到的是哪个项目的产物）。用已有的恢复失败横幅展示。
+        console.warn("切换到会话工作区失败，已中止本次历史加载:", e.message);
+        if (loadSeq === sessionLoadSeqRef.current) {
+          setSessionResumeError({
+            sessionId: session.id,
+            message: `该会话的工作区不可用：${e.message || targetWorkspace}`,
+            code: "WORKSPACE_UNAVAILABLE",
+            detail: { workspace: targetWorkspace },
+          });
+        }
+        return;
       }
     }
     const conversationId = session.threadId || session.id;
@@ -1158,10 +1171,13 @@ export default function App() {
       setHistoryThreadId(conversationId);
       setHistoryMessages(cachedHistory);
       setHistoryWindow(sessionHistoryMetaRef.current.get(session.id) || null);
+      setHistoryLoading(false);
     } else {
       setHistoryThreadId(null);
       setHistoryMessages(null);
       setHistoryWindow(null);
+      // 缓存未命中：置加载态，让 ChatPanel 渲染骨架屏而不是空白。
+      setHistoryLoading(true);
     }
     // 恢复 Agent 与读取历史互不依赖；并行执行可明显缩短点击历史后的空白等待。
     // 但在 resume 完成前不切换 thread，避免 SSE 先创建一个新的空会话并与恢复竞态。
@@ -1222,15 +1238,17 @@ export default function App() {
         total: Number(d.info?.historyTotal || 0),
       });
       // 只保留最近几条缓存，避免长会话历史常驻内存；再次点击时仍可先显示缓存。
-      while (sessionHistoryCacheRef.current.size > 8) {
+      while (sessionHistoryCacheRef.current.size > 24) {
         const first = sessionHistoryCacheRef.current.keys().next().value;
         if (first === undefined) break;
         sessionHistoryCacheRef.current.delete(first);
         sessionHistoryCursorRef.current.delete(first);
+        sessionHistoryMetaRef.current.delete(first);
       }
       setHistoryMessages(loadedHistory);
       setHistoryWindow(sessionHistoryMetaRef.current.get(session.id) || null);
       setHistoryThreadId(conversationId);
+      setHistoryLoading(false);
       // 从消息里解析会话关联的文件，尝试打开
       const fileMatch = msgs.find((m) => m.role === "user" && m.text && m.text.includes("当前打开文件"));
       if (fileMatch) {
@@ -1244,6 +1262,9 @@ export default function App() {
       }
     } catch (e) {
       if (loadSeq === sessionLoadSeqRef.current) notifyError("加载会话失败: " + e.message);
+    } finally {
+      // 无论成功/失败都结束骨架屏（成功路径已提前置 false，这里兜住提前 return 与异常）。
+      if (loadSeq === sessionLoadSeqRef.current) setHistoryLoading(false);
     }
   }, [clientId, currentWorkspace, open, refreshProjects]);
 
@@ -1731,6 +1752,7 @@ export default function App() {
       historyMessages={historyMessages}
       historyThreadId={historyThreadId}
       historyWindow={historyWindow}
+      historyHydrating={historyLoading}
       sessionId={currentSessionId || ""}
       onLoadOlderHistory={loadOlderSessionHistory}
       onReloadHistory={reloadCurrentSessionHistory}

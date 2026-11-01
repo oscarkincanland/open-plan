@@ -642,7 +642,7 @@ export function extractSessionLinks(messages = []) {
   return [...seen.values()];
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "" }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "" }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   // 草稿按 thread 恢复（交互 3）：模块导航会卸载本组件，重挂载时从缓存取回未发送内容。
@@ -941,6 +941,17 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     scrollAnchorRef.current = null;
     el.scrollTop = el.scrollHeight - anchor.height + anchor.top;
   }, [messages, messageWindowSize]);
+  // 切回历史会话时恢复上次阅读位置（在消息渲染完成后执行一次）。
+  useLayoutEffect(() => {
+    const target = pendingScrollRestoreRef.current;
+    const el = bodyRef.current;
+    if (target == null || !el) return;
+    pendingScrollRestoreRef.current = null;
+    // 内容可能还没撑开（图片/表格），夹到有效范围避免被浏览器截断到 0。
+    el.scrollTop = Math.min(target, Math.max(0, el.scrollHeight - el.clientHeight));
+    // 只更新跟随意图；"回到底部"按钮与未读数由后续 onScroll 自动同步。
+    followLatestRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }, [messages]);
   const assistantIdRef = useRef(null);
   // agent_end 可能先于 run_finished 到达；保留本轮最后一个气泡，
   // 让服务端补发的权威全文继续写入原气泡，避免出现两条结论。
@@ -1439,6 +1450,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     }
     agentErrorRef.current = false;
     systemEventKeysRef.current.clear();
+    // 记录目标会话的阅读位置：等 messages 水合完成后由下面的 layout effect 恢复。
+    // 运行中的会话不恢复（应继续跟随底部）。
+    const savedScroll = scrollPositionsRef.current.get(threadId);
+    pendingScrollRestoreRef.current = (savedScroll != null && !hydratedIsLive) ? savedScroll : null;
     previousThreadRef.current = threadId;
   }, [historyMessages, historyThreadId, threadId]);
 
@@ -3924,11 +3939,17 @@ case "runtime_connecting":
   // 滚动：用户向上滑动查看历史时暂停自动滚动；在底部才自动滚到最新
   const scrollTimerRef = useRef(null);
   const textareaRef = useRef(null);
+  // 按会话记录阅读位置：切回同一会话时恢复到上次停留处（只在用户主动滚离底部时记录，
+  // 停在底部的会话下次仍跟到底部）。
+  const scrollPositionsRef = useRef(new Map());
+  const pendingScrollRestoreRef = useRef(null);
   const updateScrollFollowState = () => {
     const el = bodyRef.current;
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     followLatestRef.current = atBottom;
+    if (atBottom) scrollPositionsRef.current.delete(threadId);
+    else scrollPositionsRef.current.set(threadId, el.scrollTop);
     setShowScrollToBottom(!atBottom && el.scrollHeight > el.clientHeight + 80);
     if (atBottom) setUnreadBelow(0);
   };
@@ -4290,8 +4311,21 @@ case "runtime_connecting":
               <ApprovalModeControl mode={approvalMode} saving={approvalModeSaving} onChange={changeApprovalMode} />
             </div>
           </div>
-          <div className="chat-body" ref={bodyRef} onScroll={updateScrollFollowState}>
-          {messages.length === 0 && (
+          <div className="chat-body" ref={bodyRef} onScroll={updateScrollFollowState} aria-busy={historyHydrating || undefined}>
+          {/* 切换历史会话且缓存未命中：渲染骨架屏，替代此前的空白等待。
+              只在还没有任何消息时出现，避免覆盖正在进行的对话。 */}
+          {historyHydrating && messages.length === 0 && (
+            <div className="chat-history-skeleton" role="status" aria-live="polite">
+              <span className="sr-only">正在载入会话历史</span>
+              {[0, 1, 2, 3].map((index) => (
+                <div className={`chat-history-skeleton-row ${index % 2 ? "is-assistant" : "is-user"}`} key={index}>
+                  <span className="oaw-skeleton-block" style={{ width: `${[58, 76, 46, 68][index]}%` }} />
+                  <span className="oaw-skeleton-block" style={{ width: `${[34, 52, 28, 40][index]}%` }} />
+                </div>
+              ))}
+            </div>
+          )}
+          {messages.length === 0 && !historyHydrating && (
             <欢迎卡片
               mode={normalizeUiMode(editMode)}
               emptyExample={emptyExample}
