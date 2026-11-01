@@ -27,6 +27,9 @@
   --msg-content-max: min(100%, 720px);
   /* 会话列左右留白：消息区与输入框共用，保证两者左右边缘对齐 */
   --chat-gutter: clamp(20px, 5vw, 72px);
+  /* 时间流竖线缩进（唯一来源）：时间流条目、已决 ask 事件行共用。
+     未决 ask 卡片是全宽交互块，与输入框同宽，不参与这个缩进。 */
+  --tl-indent: 12px;
   /* 全局滚动条宽度（见下方 ::-webkit-scrollbar）；输入框宽度用它抵消消息区滚动条占位 */
   --scrollbar-w: 8px;
   --chat-min: 280px;
@@ -7159,7 +7162,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .ask-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
 .ask-title { font-weight: 700; color: var(--warning); }
 .ask-status { margin-left: auto; color: var(--success); font-size: 11px; }
-.ask-question { color: var(--text); line-height: 1.6; margin-bottom: 8px; }
+.ask-question { color: var(--text); line-height: 1.6; margin-bottom: 8px; overflow-wrap: anywhere; }
 .ask-options { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .ask-opt {
   padding: 4px 12px;
@@ -10388,7 +10391,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
    - 入场动画只挂在运行中的时间流（.tl-list.is-live），历史回放不重播。
    ========================================================================== */
 /* 时间流 */
-.tl-list { border-left: 1px solid color-mix(in srgb, var(--border) 70%, transparent); margin: 4px 0 6px 5px; padding-left: 12px; display: flex; flex-direction: column; gap: 2px; }
+.tl-list { border-left: 1px solid color-mix(in srgb, var(--border) 70%, transparent); margin: 4px 0 6px 0; padding-left: var(--tl-indent); display: flex; flex-direction: column; gap: 2px; }
 .tl-list.is-live > * { animation: tl-row-in var(--dur-slow) var(--ease-out) both; }
 .tl-row-head {
   display: flex;
@@ -10435,6 +10438,10 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .tl-row.open .tl-detail-wrap { grid-template-rows: 1fr; }
 .tl-detail { min-height: 0; overflow: hidden; margin-left: 30px; opacity: 0; transform: translateY(-4px); transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out); }
 .tl-row.open .tl-detail { opacity: 1; transform: none; }
+/* 未决 ask / 审批是全宽交互卡片：与输入框同宽，不参与时间流的图标列缩进。
+   此前它继承 .tl-detail 的 30px，比消息列窄一整截（用户反馈"ask 卡片宽度要和会话一致"）。
+   注意 .tl-detail 在 .tl-detail-wrap 内，必须用后代选择器，不能写 > 。 */
+.tl-row.locked .tl-detail { margin-left: 0; }
 /* 展开后的思考正文：独立滚动容器（滚轮在正文内向下滚动，不带着整段对话一起跳）。
    overscroll-behavior: contain 是关键——否则内层到底后滚轮会穿透到会话流。 */
 .tl-thinking-text {
@@ -10456,9 +10463,9 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 @keyframes tl-row-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 /* 框外总结（无框 · 层级：cap 11 / 标签 12 / 结论 14 加粗 / 正文 12.5） */
-.sum-block { margin: 12px 0 4px; padding: 0 2px; }
+.sum-block { margin: 12px 0 4px; padding: 0; }
 .sum-cap { font-size: 11px; color: var(--muted); }
-.sum-what { margin-top: 6px; font-size: 12.5px; color: var(--text); line-height: 1.65; }
+.sum-what { margin-top: 6px; font-size: 12.5px; color: var(--text); line-height: 1.65; overflow-wrap: anywhere; }
 .sum-what b { font-weight: 600; color: var(--text); }
 .sum-label { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 400; color: var(--dim); margin: 12px 0 4px; }
 .sum-conclusion { font-size: 14px; font-weight: 600; color: var(--text); line-height: 1.65; letter-spacing: 0; overflow-wrap: anywhere; }
