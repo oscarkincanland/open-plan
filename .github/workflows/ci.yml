@@ -137,3 +137,6 @@ jobs:
 
       - name: 决策记录索引（无孤儿 ADR / 无空文件 / 头部元信息齐全）
         run: node scripts/CI运行测试.mjs 决策记录索引守护测试
+
+      - name: 长期规范索引（规范层无孤儿 / 头部元信息齐全 / 生效规范有引用）
+        run: node scripts/CI运行测试.mjs 规范索引守护测试
