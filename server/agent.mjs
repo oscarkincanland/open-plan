@@ -51,7 +51,7 @@ import { recordRunEvent, updateRunTodo, getRun, isRunTerminal } from "./runs.mjs
 import { markRunTiming, attachRunTimingSpans } from "./首字延迟.mjs";
 import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode, routeTaskIntent } from "./task.mjs";
 import { classifyToolCall, isReadonlyBash, isMutatingOfficecli } from "./office规范/执行闸门.mjs";
-import { probeBashAvailability, bashUnavailableError, bashEnvironmentHint } from "./环境能力.mjs";
+import { probeBashAvailability, bashUnavailableError, bashWorkspaceRule, resolveBashShell } from "./环境能力.mjs";
 
 /** OfficeCLI 工具约束（O-28）：Work/Review 两处 prompt 共用同一常量，避免措辞分叉。 */
 const OFFICE_TOOL_RULE = "- ALWAYS operate on office documents through the `officecli` tool — it resolves file names relative to the current workspace and runs on Windows natively. NEVER try to run `officecli` via the bash tool.";
@@ -1307,7 +1307,7 @@ class AgentManager extends EventEmitter {
               "- **表达语言（重要）**: 面向用户的正文回复、进度小结、待办标题，以及你的内部推理（thinking / reasoning）一律使用与用户相同的语言（默认中文）。工具名、代码、文件路径和专有名词保持原样；不要为了“显得专业”而把思考过程写成英文。",
               ...buildOutputPolicyLines({ mode: options.task?.mode || options.mode || "work" }),
               OFFICE_TOOL_RULE,
-              "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text." + bashEnvironmentHint(),
+              bashWorkspaceRule(),
               "- **Word 批注**: 先用 `officecli get <file> /body --depth 3 --json` 或 `query <file> paragraph --json` 找到真实段落路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"批注内容\\\" --json` 写入；一次 get 只传一个 DOM 路径，完成后用 `query <file> comment --json` 回读校验。若错误明确为 sharing violation 或另一个进程占用，再提示关闭 WPS/Word/OfficeCLI 预览；若是 Access denied、is denied、EPERM 或 EACCES，应说明服务进程缺少系统写权限，不要尝试绕过沙箱。",
               "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入 `.agent-context.md` 中的「当前工作区」绝对路径，禁止写入项目目录。否则产物不会被前端检测到。",
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
@@ -1561,7 +1561,11 @@ class AgentManager extends EventEmitter {
         };
       },
     });
-    const localBash = createLocalBashOperations();
+    // 显式指定本机 bash：SDK 自带的解析在 PATH 缺 Git 时会命中
+    // C:\Windows\System32\bash.exe（WSL 旧启动器），输出 UTF-16 乱码。
+    // 这里与探测端共用同一个解析结果，保证"探测说可用"与"实际执行"是同一个 shell。
+    const bashShell = resolveBashShell().shell;
+    const localBash = createLocalBashOperations(bashShell ? { shellPath: bashShell } : {});
     // 工作区级写锁只覆盖单次工具调用：长任务整轮持锁会把并发 Run 全部挡在门外
     // （实测 33 次「文件正在被其他任务修改」都来自这种整轮持锁）。
     const withWorkspaceWriteLock = async (ctx, kind, action) => {
@@ -5265,7 +5269,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         `- **当前工作区（绝对路径）**: ${ws}`,
         "Office files live in the current workspace folder above. " + OFFICE_TOOL_RULE,
         "- Word 批注：先 get/query 找真实 `/body/p[...]` 路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"...\\\" --json`，完成后 query comment 校验。仅在 sharing violation 或明确的进程占用错误时关闭 WPS/Word/OfficeCLI 预览；Access denied/is denied/EPERM/EACCES 应说明服务进程写权限受限。",
-        "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text." + bashEnvironmentHint(),
+        bashWorkspaceRule(),
         "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区（绝对路径见上），禁止写入项目目录。否则产物不会被前端检测到。",
         "- **临时文件**: 中间工作文件（脚本、JSON 片段、解包目录、备份等）请集中放在工作区内以点开头的临时目录（如 `.work/`），并在任务收尾时删除；不要把中间文件留在用户的工作区里（用户目录只应留交付产物）。",
         "- **地图（GIS）**: 地图项目位于 `" + ws + "/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图）。用户在地图模式下对话时用 map_read/map_edit/map_import 工具。",
