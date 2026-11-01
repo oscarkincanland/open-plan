@@ -123,3 +123,15 @@ jobs:
 
       - name: Office 写作契约（四路由 / 澄清 / 模板 / 版式 / 闸门）
         run: node scripts/CI运行测试.mjs Office写作契约回归测试
+
+      - name: Office 写作闸门通电（ADR 0012 / 工具书 / 环境预检）
+        run: node scripts/CI运行测试.mjs Office写作闸门通电测试
+
+      - name: Office 样式预置（create 预置样式集 / 样式错误增强）
+        run: node scripts/CI运行测试.mjs Office样式预置测试
+
+      - name: Office 引用预检（引用抽取 / 缺失预检 / 父目录）
+        run: node scripts/CI运行测试.mjs Office引用预检测试
+
+      - name: 预算受限收尾（硬预算后禁止改文件 / 放行收尾交互）
+        run: node scripts/CI运行测试.mjs 预算受限收尾测试
