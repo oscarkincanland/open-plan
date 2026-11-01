@@ -39,6 +39,8 @@ import {
   createRunBudget,
   evaluateToolGate,
   evaluateTurnGate,
+  evaluateRestrictedTool,
+  enterRestrictedMode,
   noteToolResult,
   noteTurn,
   budgetSnapshot,
@@ -558,6 +560,26 @@ function stopRunByBudget(entry) {
   if (!entry || entry.budgetStopped || RUN_BUDGET_ENFORCE !== "hard") return;
   entry.budgetStopped = true;
   try { void entry.session?.abort?.(); } catch {}
+}
+
+/**
+ * 受限收尾拦截（计划 2026-10-31-003 / N-07）。
+ *
+ * 硬预算命中后禁止继续改文件，但放行只读与收尾交互（complete_task / ask_user / todo）。
+ * 与 OAW_RUN_BUDGET_ENFORCE 分层：
+ *   - soft（默认）：进受限模式，不 abort 整个 Run，模型还能汇报结论并收尾；
+ *   - hard：受限模式 + 整 Run abort（原语义保留）；
+ *   - off：完全放行（旧行为）。
+ */
+function enforceBudgetRestriction(entry, toolName, { mutating = false } = {}) {
+  if (!entry) return;
+  const budget = entry.runBudget;
+  if (!budget?.restricted) return;
+  const gate = evaluateRestrictedTool(budget, { toolName, mutating });
+  if (gate.allow) return;
+  const error = new Error(gate.reason);
+  error.code = gate.code;
+  throw error;
 }
 
 // 子代理角色/编排（P1-C/P2-B）：角色定义表、并发 fan-out、对抗式核验与 revise 回环
@@ -1427,6 +1449,7 @@ class AgentManager extends EventEmitter {
         writeFile: async (absolutePath, content) => {
           const ctx = activeWriteContext("write");
           enforceOfficeGate("write", { path: absolutePath });
+          enforceBudgetRestriction(entry, "write", { mutating: true });
           assertReviewWriteAllowed(absolutePath, "write");
           // 敏感文件（.env 等）写入被规则表直接拒绝
           await requireToolApproval({
@@ -1453,6 +1476,7 @@ class AgentManager extends EventEmitter {
         writeFile: async (absolutePath, content) => {
           assertReviewWriteAllowed(absolutePath, "edit");
           enforceOfficeGate("edit", { path: absolutePath });
+          enforceBudgetRestriction(entry, "edit", { mutating: true });
           return stageWrite({ ...activeWriteContext("edit"), targetPath: absolutePath, content, onEvent: writeEvent });
         },
       },
@@ -1517,6 +1541,9 @@ exec: async (command, cwd, options) => {
           // 计划 008：写作路由下拦截 docx 生成脚本/转换命令（--allow-manual 可逃逸）
           const bashGate = enforceOfficeGate("bash", { command: commandText });
           const effectiveCommand = String(bashGate.sanitizedInput?.command || commandText);
+
+          // N-07：受限收尾模式——只读命令放行，改文件的 bash 拦截。
+          enforceBudgetRestriction(entry, "bash", { mutating: !isReadonlyBash(effectiveCommand) });
           // 删除/破坏类命令默认进入用户审批（规则表见 审批策略.mjs）
           await requireToolApproval({
             entry, tool: "bash", input: effectiveCommand,
@@ -1615,6 +1642,8 @@ execute: async (_toolCallId, params) => {
           throw error;
         }
         const mutating = new Set(["set", "batch", "add", "remove", "move", "swap", "delete", "create", "import", "open", "close", "save"]).has(parsed.command);
+        // N-07：受限收尾模式——只读子命令放行，改文档的子命令拦截。
+        enforceBudgetRestriction(entry, "officecli", { mutating: isMutatingOfficecli(String(params.args || "")) });
         if (mutating && parsed.file) assertReviewWriteAllowed(parsed.file, "officecli");
         // 写入/删除类 Office 命令默认进入用户审批（规则表见 审批策略.mjs）
         await requireToolApproval({
@@ -3545,6 +3574,8 @@ execute: async (_toolCallId, params) => {
       execute: async (_toolCallId, params, signal) => {
         const ctx = activeWriteContext("editorial_pipeline");
         const format = params.format === "pptx" ? "pptx" : "docx";
+        // N-07：受限收尾模式——流水线会落盘产物，属变更类操作。
+        enforceBudgetRestriction(entry, "editorial_pipeline", { mutating: true });
         await requireToolApproval({
           entry, tool: "editorial_pipeline", input: `${format} ${String(params.goal || "").slice(0, 160)}`,
           runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
@@ -3815,6 +3846,11 @@ execute: async (_toolCallId, params) => {
             noteTurn(budget);
             const gate = evaluateTurnGate(budget);
             if (gate.level) {
+              // N-07：硬预算 → 受限收尾。soft 模式下不再 abort 整个 Run，
+              // 但禁止继续改文件（只读与收尾交互放行），让模型能汇报结论并收尾。
+              // 必须先切状态再发事件——否则快照里的 restricted 仍是 false，
+              // 事后无法从事件流判断"受限模式到底有没有生效"。
+              if (gate.level === "hard") enterRestrictedMode(budget);
               emitBudgetEvent(entry, emit, gate.level, gate.code, gate.reason);
               if (gate.level === "hard") stopRunByBudget(entry);
             }

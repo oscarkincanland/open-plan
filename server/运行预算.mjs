@@ -79,6 +79,8 @@ export function createRunBudget({ runId = null, limits = {} } = {}) {
     softNoticeTurn: null,
     softNoticeTool: null,
     hardStopped: false,
+    /** 受限收尾模式（N-07）：硬预算后禁止改文件，但允许只读与收尾交互。 */
+    restricted: false,
     budgetBonus: { turns: 0, tools: 0 },
     lastCall: null, // { key, tool, ok, versionToken, count, failCount }
     lastToolError: null,
@@ -110,9 +112,56 @@ export function grantBudget(state, { turns = 0, tools = 0 } = {}) {
   state.budgetBonus.turns += Math.max(0, Number(turns) || 0);
   state.budgetBonus.tools += Math.max(0, Number(tools) || 0);
   state.hardStopped = false;
+  state.restricted = false;
   state.softNoticeTurn = null;
   state.softNoticeTool = null;
   return state.budgetBonus;
+}
+
+/**
+ * 进入"受限收尾"模式（计划 2026-10-31-003 / N-07）。
+ *
+ * 背景：硬预算事件的文案承诺"进入受限收尾（不得再改文件）"，但执行层此前只有
+ * OAW_RUN_BUDGET_ENFORCE=hard 时才整 Run abort；默认 soft 下 45→55 回合继续改文件。
+ * 实测 run_05198175 在硬预算后又跑了 10 个回合、继续写文件试错。
+ *
+ * 受限模式只拦"改文件"，放行只读与收尾交互——让模型还能汇报结论、问用户、收尾。
+ */
+export function enterRestrictedMode(state) {
+  if (!state) return state;
+  state.restricted = true;
+  return state;
+}
+
+/** 受限模式下允许继续使用的工具（只读 + 交互收尾）。 */
+const RESTRICTED_ALLOWED_TOOLS = new Set([
+  "read", "grep", "find", "ls", "glob", "kb_read", "kb_search", "context_read",
+  "officecli", // 只读子命令在 agent.mjs 侧另行判定
+  "todo", "ask_user", "complete_task", "memory_update",
+]);
+
+/**
+ * 受限模式下的工具判定。
+ *
+ * @param {object} state 预算状态
+ * @param {string} toolName 工具名
+ * @param {boolean} mutating 该次调用是否会改文件（由调用方按工具语义判定）
+ * @returns {{allow:boolean, code:string|null, reason:string}}
+ */
+export function evaluateRestrictedTool(state, { toolName = "", mutating = false } = {}) {
+  if (!state?.restricted) return { allow: true, code: null, reason: "" };
+  const name = String(toolName || "");
+  if (!mutating) {
+    // 只读与交互收尾工具放行；officecli 由调用方判定子命令是否只读。
+    if (RESTRICTED_ALLOWED_TOOLS.has(name)) return { allow: true, code: null, reason: "" };
+    return { allow: true, code: null, reason: "" };
+  }
+  return {
+    allow: false,
+    code: "TOOL_RESTRICTED",
+    reason: `本轮已达硬预算，处于受限收尾模式：不再允许「${name}」这类改文件的操作。`
+      + "请立即用 complete_task 汇报当前结果与未完成项（需要用户决策时用 ask_user），不要继续改文件。",
+  };
 }
 
 /**
@@ -220,6 +269,7 @@ export function budgetSnapshot(state) {
     effectiveMs: state.effectiveMs,
     waitingMs: state.waitingMs,
     hardStopped: state.hardStopped,
+    restricted: Boolean(state.restricted),
     bonus: { ...state.budgetBonus },
     lastCall: state.lastCall ? { tool: state.lastCall.tool, count: state.lastCall.count, failCount: state.lastCall.failCount, ok: state.lastCall.ok } : null,
   };
