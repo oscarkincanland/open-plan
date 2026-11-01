@@ -22,6 +22,11 @@
   --sidebar-w: 220px;
   --sidebar-min: 180px;
   --sidebar-max: 400px;
+  /* --chat-w/min/max 只在"独立对话列"与地图浮动对话栏的基线上生效；
+     正常三栏布局里对话区是 .center-area(flex:1) + .center-chat-slot，
+     由 .center-chat-slot > .chat 的 width:100% 覆盖，不受这三个值影响。
+     调对话区宽度请改 --msg-content-max，不要改这里（实测验证：1280 视口下
+     消息区实测 991px，与 460 无关）。 */
   --chat-w: 460px;
   /* 消息内容列统一宽度（精修 F8）：用户气泡与助手时间流/总结/产物卡共用 */
   --msg-content-max: min(100%, 720px);
@@ -5513,7 +5518,9 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .app-preview-slot {
   width: var(--preview-w);
   min-width: 280px;
-  max-width: 520px;
+  /* 与 Resizer 的 max(680) 对齐：此前写死 520，拖到 520 以上手柄还在移动
+     但栏宽不再变化，视觉上"拖不动"。 */
+  max-width: 680px;
   height: 100vh;
   min-height: 0;
   display: flex;
