@@ -1591,6 +1591,21 @@ execute: async (_toolCallId, params) => {
         let args = parseArgs(String(params.args || ""));
         if (officeGate.sanitizedInput?.args) args = parseArgs(officeGate.sanitizedInput.args);
         const ctx = activeWriteContext("officecli");
+        // N-02：剥掉当前子命令不接受的选项（如 get 上的 --compact）。
+        // 这些选项在目标命令上本来就会让整条命令失败（"Unrecognized command or argument"），
+        // 剥掉反而让命令按模型预期执行——真实写作任务里这类误用累计 9 次。
+        {
+          const { stripUnsupportedOptions } = await import("./office参数.mjs");
+          const sanitized = stripUnsupportedOptions(args);
+          if (sanitized.stripped.length) {
+            args = sanitized.args;
+            writeEvent("officecli_failed", {
+              runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace,
+              command: args.slice(0, 8), code: "OFFICECLI_OPTION_IGNORED",
+              message: `已忽略该命令不支持的选项：${sanitized.stripped.join(" ")}`,
+            });
+          }
+        }
         let parsed;
         try {
           parsed = validateOfficecliArgs(args, entry.workspace);
@@ -1631,6 +1646,32 @@ execute: async (_toolCallId, params) => {
             writeEvent("artifact_materialized", { runId: ctx.runId, threadId: ctx.threadId, paths: materialized, reason: "officecli_read" });
           }
         } catch {}
+        // N-06：引用预检——物化之后仍然不存在的引用不发 CLI，直接给结构化错误。
+        // CLI 的 "Image file not found" 无法区分"没写"与"目录不存在"，模型为此盲试多次。
+        if (referenced.length) {
+          const { preflightOfficeReferences } = await import("./office参数.mjs");
+          const pre = preflightOfficeReferences(referenced, entry.workspace);
+          if (pre.createdDirs?.length) {
+            writeEvent("artifact_materialized", { runId: ctx.runId, threadId: ctx.threadId, paths: pre.createdDirs, reason: "officecli_ref_dir" });
+          }
+          if (!pre.ok) {
+            const message = [
+              `引用的文件在磁盘上不存在，已中止本次命令（未调用 officecli）。`,
+              `缺失清单：${pre.missing.join("、")}`,
+              `请先用 write 工具生成这些文件（write 会自动物化到工作区），或从命令里去掉对应引用。`,
+              `不要用相同参数重试。`,
+            ].join("\n");
+            const error = new Error(message);
+            error.code = "OFFICE_REF_MISSING";
+            error.args = args.slice(0, 8);
+            writeEvent("officecli_failed", {
+              runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace,
+              command: args.slice(0, 8), code: "OFFICE_REF_MISSING",
+              message: `缺失引用：${pre.missing.join("、")}`,
+            });
+            throw error;
+          }
+        }
         // officecli 不建目录：-o 指向不存在的目录会直接失败（实测 -o .work/review.html）。
         try {
           const created = ensureOfficeOutputDirs(args, entry.workspace);
