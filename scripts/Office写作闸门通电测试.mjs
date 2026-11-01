@@ -170,6 +170,13 @@ await test("能力计划：写作路由声明 editorial_pipeline 且状态为 pr
   assert.equal(pipeline.provider, "native");
 });
 
+await test("模板路径用绝对路径（模板在项目目录，不在工作区）", () => {
+  const source = fs.readFileSync(path.join(ROOT, "server", "agent.mjs"), "utf8");
+  assert.ok(/PROJECT_DIR\s*\+\s*"\/templates\/traffic-material\//.test(source), "模板路径应拼接 PROJECT_DIR 绝对路径");
+  assert.equal(source.includes("read 读取 `templates/traffic-material/`"), false, "不应再让模型用相对路径去工作区找模板");
+  assert.ok(fs.existsSync(path.join(path.resolve(ROOT), "templates", "traffic-material")), "模板目录应存在");
+});
+
 await test("能力计划：Chat 模式不声明 editorial_pipeline（只读边界）", () => {
   const plan = planTaskCapabilities({ text: "帮我写一份规划文本", task: { mode: "chat" } });
   assert.equal(plan.route, "read", "Chat 不应进入写作路由");
