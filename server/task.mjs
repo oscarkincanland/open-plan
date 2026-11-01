@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { RUNTIME_FLAGS } from "./运行开关.mjs";
+import { RUNTIME_FLAGS, officeGateActiveFor } from "./运行开关.mjs";
 import { matchTemplate } from "./office规范/模板匹配.mjs";
 import { selectScene, sceneLabels, defaultScene } from "./office规范/场景选择.mjs";
 
@@ -332,8 +332,8 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
           ? "lazy"
           : "not_needed",
       template: intent.route === "template" ? "preferred" : "not_needed",
-      // 规范层开关：默认关；只有模板/生成路由且开关打开时才生效。
-      officeFormat: RUNTIME_FLAGS.officeFormat && (intent.route === "template" || intent.route === "generate") ? "auto" : "off",
+      // 规范层开关（ADR 0012）：写作路由（模板/生成）自动生效；OAW_OFFICE_FORMAT=off 退出。
+      officeFormat: officeGateActiveFor(intent.route, mode) ? "auto" : "off",
       documentRead: document ? "enabled" : "not_needed",
       knowledge: knowledge ? "enabled" : "not_needed",
       // read_only / read_write：让前端与提示词都能区分"能不能落盘"。
