@@ -48,7 +48,7 @@ export default function RunFoldBar({
       >
         <span className={`run-fold-dot ${state}`} aria-hidden="true" />
         <span className="run-fold-label">{label}</span>
-        {steps > 0 && <span className="run-fold-steps">{steps} 步</span>}
+        {steps > 0 && <span className="run-fold-steps">· {steps} 步</span>}
         {pendingLabel && <span className="run-fold-pending">{pendingLabel}</span>}
         <span className="run-fold-chev" aria-hidden="true"><Icon name="chevronRight" size={12} /></span>
       </button>

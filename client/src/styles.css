@@ -10532,7 +10532,9 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .run-fold-label { flex: none; }
 .run-fold-steps { flex: none; color: var(--dim); }
 .run-fold-pending { flex: none; margin-left: 2px; color: var(--warning); }
-.run-fold-chev { display: inline-flex; margin-left: auto; color: var(--dim); transition: transform var(--dur-base) var(--ease-out); }
+/* chevron 紧跟文字（对齐 ZCode 的「已工作 9 分 8 秒 ›」），不推到列宽最右端——
+   推右会让 720px 的一行中间出现一大段空白，指示符和内容脱节。 */
+.run-fold-chev { display: inline-flex; margin-left: 4px; color: var(--dim); transition: transform var(--dur-base) var(--ease-out); }
 .run-fold.open .run-fold-chev { transform: rotate(90deg); }
 /* 0fr 只是视觉收起：内部的 timeline 按钮仍会被 Tab 到，所以收起态必须 visibility: hidden，
    并把隐藏延迟到过渡结束，避免收起动画被立刻截断。 */
