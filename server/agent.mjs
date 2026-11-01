@@ -20,7 +20,7 @@ import {
 } from "./Pi运行时管理.mjs";
 import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { RUNTIME_FLAGS } from "./运行开关.mjs";
+import { RUNTIME_FLAGS, officeGateActiveFor } from "./运行开关.mjs";
 // Qoder P0-2：单帧体积护栏（纯函数；开关关闭时不参与任何逻辑）
 import { 工具输出分片, 工具输出帧上限 } from "./流连接.mjs";
 import { canonicalFromEnvelope } from "./事件规范化.mjs";
@@ -635,6 +635,12 @@ export const ASK_TIMEOUT_MS = 300_000;
 // 编辑流水线的 Writer 要输出整篇正文 JSON，远超 planner 只读角色的 60s 预算与
 // 子代理默认 12000 字符文本上限，因此这两个限制在流水线侧单独放宽。
 const PIPELINE_WRITER_TIMEOUT_MS = Math.max(60_000, Number.parseInt(process.env.OAW_PIPELINE_WRITER_TIMEOUT_MS || "240000", 10) || 240_000);
+/**
+ * 流水线 Planner 的超时：planner 角色默认只有 60 秒，但流水线要它规划整篇文档的
+ * 章节骨架，实测常在 60 秒内没跑完就被停掉（"planner 阶段子会话未完成"）。
+ * 这里给它独立预算（默认与 reviewer/verifier 同档 120 秒）。
+ */
+const PIPELINE_PLANNER_TIMEOUT_MS = Math.max(60_000, Number.parseInt(process.env.OAW_PIPELINE_PLANNER_TIMEOUT_MS || "120000", 10) || 120_000);
 const PIPELINE_TEXT_LIMIT = 60_000;
 const TERMINAL_AGENT_ERROR_PATTERN = /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied|model not found|no model selected|insufficient(?:[_\s-]?user)?[_\s-]?quota|quota exceeded|available balance|credit\s+insufficient|balance\s*=\s*0|out of budget|billing|usage limit|monthly usage|invalid request|bad request|context length|content policy|abort(?:ed|ing)?|cancel(?:led|ed)?)/i;
 const TRANSIENT_AGENT_ERROR_PATTERN = /(?:429|408|425|500|501|502|503|504|529|rate.?limit|overloaded|service.?unavailable|internal.?error|provider.?returned.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|timed?.?out|timeout|terminated|websocket.?closed|temporar(?:y|ily)|try again|模型连接超过|模型流式输出超过|没有响应|已自动中止)/i;
@@ -1310,7 +1316,7 @@ class AgentManager extends EventEmitter {
     /** Office 执行闸门上下文（计划 008）：路由、管线产出、澄清待回答。 */
     const officeGateContext = () => ({
       route: entry?.task?.capabilityPlan?.route,
-      officeFormat: Boolean(entry?.officeGateOn ?? RUNTIME_FLAGS.officeFormat),
+      officeFormat: Boolean(entry?.officeGateOn ?? officeGateActiveFor(entry?.task?.capabilityPlan?.route, entry?.mode)),
       pipelineProduced: Boolean(entry?.pipelineProduced),
       clarificationPending: entry?.clarificationPending || null,
       mode: entry?.mode || "agent",
@@ -1677,8 +1683,9 @@ execute: async (_toolCallId, params) => {
         }
         // officecli 是独立进程、只认真实磁盘：Agent 用 write 工具写的文件可能还在暂存覆盖层里。
         // 调用前把参数里引用到的暂存文件按需物化，否则会出现"文件明明写了，officecli 说找不到"。
+        let referenced = [];
         try {
-          const referenced = collectReferencedPaths(args);
+          referenced = collectReferencedPaths(args);
           const materialized = materializeStagedReferences({ runId: ctx.runId, workspace: ctx.workspace, paths: referenced });
           if (materialized.length) {
             writeEvent("artifact_materialized", { runId: ctx.runId, threadId: ctx.threadId, paths: materialized, reason: "officecli_read" });
@@ -3600,7 +3607,7 @@ execute: async (_toolCallId, params) => {
         });
         const lockRel = path.relative(ctx.workspace, lockTarget).replace(/\\/g, "/") || ".";
         writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: lockRel, kind: "editorial_pipeline", command: `${format} ${String(params.goal || "").slice(0, 200)}` });
-        writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "editorial_pipeline" });
+        writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: lockRel, kind: "editorial_pipeline" });
         try {
           // Planner/Writer/Evaluator 是只读模型会话：复用 SubagentProvider seam（planner 只读角色）
           const runPipelineModelTask = async (prompt, { stage } = {}) => {
@@ -3612,7 +3619,8 @@ execute: async (_toolCallId, params) => {
               signal,
               // Writer 要一次性产出整篇正文 JSON：planner 角色的 60s 只读预算与 12000 字符
               // 文本上限都会把正常输出掐断，进而被误报成"未返回可解析的内容 JSON"。
-              timeoutMs: writer ? PIPELINE_WRITER_TIMEOUT_MS : 0,
+              // Planner 同理：它要规划整篇文档的章节骨架，60 秒不够（实测常被停掉）。
+              timeoutMs: writer ? PIPELINE_WRITER_TIMEOUT_MS : PIPELINE_PLANNER_TIMEOUT_MS,
               textLimit: writer ? PIPELINE_TEXT_LIMIT : 0,
             });
             const outcome = await runner(prompt, { index: 0 });
@@ -3679,6 +3687,18 @@ execute: async (_toolCallId, params) => {
             });
           }
           writeEvent("file_changed", { runId: ctx.runId, workspace: ctx.workspace, files: [result.deliverable].filter(Boolean) });
+          // 产物登记：artifact_materialized 会被 runs.mjs 记入 touchedPaths，
+          // 流水线直接落盘、不过暂存区，只能靠这个事件进入产物面板。
+          if (result.deliverable) {
+            writeEvent("artifact_materialized", {
+              runId: ctx.runId,
+              threadId: ctx.threadId,
+              workspace: ctx.workspace,
+              path: String(result.deliverable).replace(/\\/g, "/"),
+              kind: "editorial_pipeline",
+              reason: "pipeline_deliverable",
+            });
+          }
           const lines = [
             result.status === "completed" ? `流水线完成，产物：${result.deliverable}` : `流水线未完全通过验收（产物：${result.deliverable || "无"}）`,
             result.checks?.length ? `检查：${result.checks.join("；")}` : "",
@@ -4486,8 +4506,9 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.officeLockFailures = new Map();
     entry.task = runContext?.task || null;
     entry.mode = normalizeTaskMode(runContext?.task?.mode || entry.mode || "agent");
-    // 计划 008：执行闸门状态按 Run 重置。只在开关开启时生效；关闭时完全放行。
-    entry.officeGateOn = Boolean(RUNTIME_FLAGS.officeFormat);
+    // 计划 008：执行闸门状态按 Run 重置。ADR 0012：写作路由（template/generate）
+    // 自动通电，OAW_OFFICE_FORMAT=off 显式退出；非写作路由与基线逐字一致。
+    entry.officeGateOn = officeGateActiveFor(entry.task?.capabilityPlan?.route, entry.mode);
     entry.pipelineProduced = false;
     entry.pipelineReminderSent = false;
     entry.manualOfficeAllowed = /(脚本|代码|手工生成|自己生成|allow-manual)/i.test(String(entry.task?.goal || ""));
