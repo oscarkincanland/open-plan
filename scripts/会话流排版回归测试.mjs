@@ -187,6 +187,24 @@ await test("分页追加不重置可见窗口 / 不跳底部", () => {
   assert.match(chatPanel, /if \(appendOnly\) \{\n\s*setMessages\(normalizeHistoryMessages\(historyMessages\)\);\n\s*return;/);
 });
 
+console.log("\n▶ 系统引导提示");
+
+await test("office-pipeline 提醒不进消息流（只记系统提示）", () => {
+  // 它是 harness 对模型的内部引导，用户不能响应；渲染成"⟳ 插入新指令"会被
+  // 误认为用户操作，且 pushSystem 是永久气泡（Run 结束不清理）。
+  assert.match(chatPanel, /else if \(source === "office-pipeline"\) \{/);
+  assert.match(chatPanel, /key: "office-pipeline",[\s\S]{0,120}?kind: "progress"/);
+  // 该分支内不得再调用 pushSystem
+  const block = chatPanel.match(/else if \(source === "office-pipeline"\) \{([\s\S]{0,400}?)\n        \} else if/)?.[1] || "";
+  assert.ok(block, "未找到 office-pipeline 分支");
+  assert.doesNotMatch(block, /pushSystem\(/, "office-pipeline 不得再走永久气泡");
+});
+
+await test("用户主动插话仍保留确认提示", () => {
+  const block = chatPanel.match(/else if \(message\) \{([\s\S]{0,200}?)\n        \}/)?.[1] || "";
+  assert.match(block, /pushSystem\(`⟳ 插入新指令/, "用户插话的即时反馈应保留");
+});
+
 console.log("\n▶ 会话切换");
 
 await test("缓存未命中置加载态并渲染骨架屏", () => {
