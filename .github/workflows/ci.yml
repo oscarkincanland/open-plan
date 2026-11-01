@@ -134,3 +134,6 @@ jobs:
 
       - name: 恢复隔离（跨实例不误标 recovering / 验证实例运行时隔离）
         run: node scripts/CI运行测试.mjs 恢复隔离测试
+
+      - name: 决策记录索引（无孤儿 ADR / 无空文件 / 头部元信息齐全）
+        run: node scripts/CI运行测试.mjs 决策记录索引守护测试
