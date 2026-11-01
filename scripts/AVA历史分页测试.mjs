@@ -57,7 +57,10 @@ test("前端保存每会话游标并按 before 续拉", () => {
 test("加载更早先展开本地窗口，再续拉服务端一页", () => {
   assert.match(chatPanel, /const handleLoadOlder = useCallback\(async \(\) => \{/);
   assert.match(chatPanel, /if \(visibleStart > 0\) \{[\s\S]{0,120}setMessageWindowSize\(\(size\) => size \+ MESSAGE_PAGE_SIZE\)/);
-  assert.match(chatPanel, /if \(!historyWindow\?\.hasMore \|\| typeof onLoadOlderHistory !== "function"\) return/);
+  // 守卫拆成两条并各带可见提示（"没有更早的历史了" / "当前视图不支持"），
+  // 不再静默 return——那样用户点了没有任何反馈。
+  assert.match(chatPanel, /if \(!historyWindow\?\.hasMore\) \{[\s\S]{0,160}没有更早的历史了/);
+  assert.match(chatPanel, /if \(typeof onLoadOlderHistory !== "function"\) \{[\s\S]{0,120}不支持加载更早历史/);
   assert.match(chatPanel, /setMessages\(\(previous\) => \[\.\.\.older, \.\.\.previous\]\)/);
 });
 

@@ -27,7 +27,8 @@ const test = (name, fn) => {
 };
 
 test("空会话首屏渲染欢迎卡片并接线发送", () => {
-  assert.match(chatPanel, /messages\.length === 0 && \(\n\s*<欢迎卡片/);
+  // 历史会话切换中优先渲染骨架屏（不闪欢迎页），其余空态才渲染欢迎卡片。
+  assert.match(chatPanel, /messages\.length === 0 && !historyHydrating && \(\n\s*<欢迎卡片/);
   assert.match(chatPanel, /emptyExample=\{emptyExample\}/);
   assert.match(chatPanel, /agents=\{agents\}/);
   assert.match(chatPanel, /onSend=\{\(text\) => send\(text\)\}/);

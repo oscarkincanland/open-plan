@@ -52,8 +52,10 @@ assert.match(样式, /\.agent-brief-grid/, "知情信息应有样式");
 assert.match(对话面板, /const EMPTY_EXAMPLES = \{/, "应有按模式划分的空白态示例");
 assert.match(对话面板, /chat: \{[\s\S]*?全程不会修改文件/, "Chat 空白态应说明只读");
 assert.match(对话面板, /const emptyExample = EMPTY_EXAMPLES\[normalizeUiMode\(editMode\)\]/, "空白态应按当前模式取示例");
-assert.match(对话面板, /className=\{`chat-empty mode-\$\{normalizeUiMode\(editMode\)\}`\}/, "空白态应带模式标记");
-assert.match(对话面板, /chat-empty-example/, "示例应可点击填入输入框");
+// 会话流改版后空白态由「欢迎卡片」组件承担（原 chat-empty 容器与 chat-empty-example 已下线），
+// 断言改为校验"按模式渲染欢迎卡片并传入示例"。
+assert.match(对话面板, /<欢迎卡片[\s\S]{0,200}?mode=\{normalizeUiMode\(editMode\)\}/, "空白态应按模式渲染欢迎卡片");
+assert.match(对话面板, /<欢迎卡片[\s\S]{0,300}?emptyExample=\{emptyExample\}/, "欢迎卡片应取当前模式的示例");
 {
   const chatBlock = 对话面板.slice(对话面板.indexOf("chat: {"), 对话面板.indexOf("agent: {"));
   assert.doesNotMatch(chatBlock, /改成|填入|生成一份/, "Chat 只读模式的示例不得引导改文件/生成产物");

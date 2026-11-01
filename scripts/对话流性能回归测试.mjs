@@ -95,7 +95,8 @@ try {
   assert.match(chatPanelSource, /const isProcessBlock = \(block\) => Boolean\(block\) && processBlockTypes\.has\(block\.type\)/, "过程折叠只收思考与工具，模型发言留在正文");
   assert.match(chatPanelSource, /const renderSegments = \[\];/, "渲染片段应按模型真实输出顺序拼装");
   assert.match(chatPanelSource, /process_note/, "内部系统提醒应收进过程区，不作为独立用户消息显示");
-  assert.match(chatPanelSource, /streaming=\{streaming && processOrder === lastThinkingBlockIndex\} embedded/, "只有最新思考块在流式阶段显示实时打字状态");
+  // 会话流改版后"最新思考块实时打字"改为先算 live 再作为属性传入（原内联表达式已重构）。
+  assert.match(chatPanelSource, /const live = streaming && processOrder === lastThinkingBlockIndex/, "只有最新思考块在流式阶段显示实时打字状态");
   assert.match(chatPanelSource, /useLayoutEffect\(\(\) => \{[\s\S]{0,220}list\.scrollTop = list\.scrollHeight/, "流式内容 DOM 更新后应在布局阶段贴底，避免滚动慢一帧");
   assert.match(chatPanelSource, /followProcessTailRef\.current = list\.scrollHeight - list\.scrollTop - list\.clientHeight <= 28/, "用户上滚阅读时暂停自动贴底，回到底部后恢复跟随");
   assert.match(chatPanelSource, /thinking-process-inline \$\{streaming \? "is-streaming" : ""\}/, "实时思考应显示轻量打字光标");
@@ -246,7 +247,10 @@ try {
   assert.match(widthStyles, /--chat-max: 720px/, "对话面板最大宽度应放宽");
   assert.match(widthStyles, /\.center-chat-slot \.msg\.user \.msg-main \{ width: auto; max-width: min\(78%, 540px\); \}/, "用户气泡应随内容收缩（不再固定宽度）");
   assert.match(widthStyles, /\.center-chat-slot \.msg\.user \.bubble \{ width: fit-content/, "用户气泡应为内容宽度");
-  assert.match(widthStyles, /\.center-chat-slot \.msg-main \{ width: min\(100%, 880px\); max-width: 880px; \}/, "agent 回答区应加宽到 880px");
+  // 会话流改版（2026-10-31）把硬编码 880px 改为统一的内容列令牌：
+  // .chat-body > .msg 由 --msg-content-max（min(100%, 720px)）限宽并居中。
+  assert.match(widthStyles, /--msg-content-max: min\(100%, 720px\)/, "消息内容列宽度应由 --msg-content-max 统一");
+  assert.match(widthStyles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,240}?max-width: var\(--msg-content-max\)/, "消息列应改用统一内容宽度令牌并按令牌居中");
   assert.doesNotMatch(widthStyles, /\.msg-main > \.message-process-fold \{ order: -1; \}/, "执行过程顺序应由 DOM 表达，不再用 flex order 制造视觉/阅读顺序错位");
   assert.match(chatPanelSource, /\{renderMessageBlocks\(\)\}[\s\S]{0,300}?<div className="msg-blocks">|className="msg-blocks">[\s\S]{0,60}?\{renderMessageBlocks\(\)\}/, "过程折叠与正文按输出顺序同列渲染");
   assert.match(widthStyles, /\.msg-main > \.msg-header \{ margin-bottom: 2px; order: -2; \}/, "标题应保持在最上方");
