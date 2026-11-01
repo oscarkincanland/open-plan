@@ -15,7 +15,7 @@ import QueueDock from "./QueueDock.jsx";
 import GoalBar from "./GoalBar.jsx";
 import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
-import { completionLabel, formatDuration, formatTokenCount, reduceRunTrace, reduceTurnMetrics, runToolDetailText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, summarizeTurnMetrics, turnMetricsText, verificationLabel } from "../运行轨迹.js";
+import { completionLabel, formatDuration, formatTokenCount, reduceRunTrace, reduceTurnMetrics, resolveRunElapsedMs, runToolDetailText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, summarizeTurnMetrics, turnMetricsText, verificationLabel } from "../运行轨迹.js";
 import { associateRunMessages, findAssistantEntryByText, isInternalHarnessMessage, projectLegacyRunSummary, upsertRunSummaryMessage } from "../运行展示投影.js";
 import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, toolIdentity } from "../事件展示.js";
 import { buildArtifactIndex } from "../产物类型.js";
@@ -5504,26 +5504,10 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   //
   // 历史轮兜底：服务端 listRuns 的 includeEvents 默认只给"活跃 Run + 列表第一条"带 events，
   // 切回旧会话时 runTraceForTimeline 为 null，此前会导致整条"已运行"消失。
-  // 这里退回到消息自带的 startedAt/finishedAt（App 已从 run 写入消息）。
-  const runElapsedMs = (() => {
-    if (!timelinePath) return 0;
-    const traceStartedMs = Date.parse(runTraceForTimeline?.startedAt || "") || 0;
-    const traceDuration = Number(runTraceForTimeline?.durationMs || 0);
-    if (isTaskLive) {
-      const startedMs = traceStartedMs || (Date.parse(m.startedAt || "") || 0);
-      return startedMs ? Math.max(0, clockNow - startedMs) : 0;
-    }
-    if (traceDuration > 0) return traceDuration;
-    if (traceStartedMs && runTraceForTimeline?.endedAt) {
-      const ms = Date.parse(runTraceForTimeline.endedAt) - traceStartedMs;
-      if (Number.isFinite(ms) && ms > 0) return ms;
-    }
-    // 兜底：消息自带的起止时间（历史轮 events 为空时仍然可用）
-    const msgStart = Date.parse(m.startedAt || "") || 0;
-    const msgEnd = Date.parse(m.finishedAt || "") || 0;
-    if (msgStart && msgEnd && msgEnd > msgStart) return msgEnd - msgStart;
-    return 0;
-  })();
+  // 回退链：trace → runSummary（含 durationMs/起止）→ 消息自带的 startedAt/finishedAt。
+  const runElapsedMs = timelinePath
+    ? resolveRunElapsedMs({ live: isTaskLive, now: clockNow, trace: runTraceForTimeline, runSummary, message: m })
+    : 0;
   const runElapsedText = (() => {
     if (!(runElapsedMs > 0)) return "";
     // 等待时长占比高时标注，避免"跑了 2 小时"里其实 1 小时在等审批。

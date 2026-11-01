@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { buildRunTimeline, describeRunFold, splitCompletionSummary, summarizeTimeline, toolObjectText, toolStateOf, advanceTypewriter } from "../client/src/会话流投影.js";
 import { associateRunMessages, mergeRunSummaries } from "../client/src/运行展示投影.js";
-import { reduceRunTrace } from "../client/src/运行轨迹.js";
+import { reduceRunTrace, resolveRunElapsedMs } from "../client/src/运行轨迹.js";
 
 let failed = 0;
 function ok(msg) { console.log(`  ✓ ${msg}`); }
@@ -430,6 +430,42 @@ test("没有可用时长时只写终态，不写「用时 0 秒」", () => {
 
 test("步数不进 label（由 RunFoldBar 单独渲染）", () => {
   assert.doesNotMatch(describeRunFold({ elapsedMs: 61000 }).label, /步/);
+});
+
+console.log("\n▶ 展示时长回退链（历史轮 events 为空）");
+
+test("runSummary 的 durationMs 优先于消息时间", () => {
+  const ms = resolveRunElapsedMs({
+    runSummary: { durationMs: 61_000 },
+    message: { startedAt: at(0), finishedAt: at(90) },
+  });
+  assert.equal(ms, 61_000);
+});
+
+test("runSummary 没有 durationMs 时用它的 startedAt/finishedAt", () => {
+  const ms = resolveRunElapsedMs({
+    runSummary: { startedAt: at(0), finishedAt: at(90) },
+    message: {},
+  });
+  assert.equal(ms, 90_000);
+});
+
+test("消息自带的 startedAt/finishedAt 作为最后兜底", () => {
+  const ms = resolveRunElapsedMs({ message: { startedAt: at(0), finishedAt: at(45) } });
+  assert.equal(ms, 45_000);
+});
+
+test("trace 的起止时间优先于 runSummary", () => {
+  const ms = resolveRunElapsedMs({
+    trace: { startedAt: at(0), endedAt: at(30) },
+    runSummary: { durationMs: 90_000 },
+  });
+  assert.equal(ms, 30_000);
+});
+
+test("实时模式用 now - startedAt；无任何来源返回 0", () => {
+  assert.equal(resolveRunElapsedMs({ live: true, now: Date.parse(at(60)), message: { startedAt: at(0) } }), 60_000);
+  assert.equal(resolveRunElapsedMs({}), 0);
 });
 
 console.log(failed ? "\n✗ 有失败用例" : "\n✓ 全部通过");

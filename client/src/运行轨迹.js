@@ -624,6 +624,34 @@ export function formatDuration(ms) {
   return `${hours} 小时 ${minutes % 60} 分`;
 }
 
+/**
+ * 一轮 Run 的展示时长（毫秒）。优先级：实时计时 → trace 时长/起止 → runSummary
+ * 的 durationMs/起止 → 消息自带的 startedAt/finishedAt。所有来源都缺失时返回 0，
+ * 不编造数字（历史轮缺 events 时仍能显示真实用时）。
+ */
+export function resolveRunElapsedMs({ live = false, now = Date.now(), trace = null, runSummary = null, message = null } = {}) {
+  const traceStart = Date.parse(trace?.startedAt || "") || 0;
+  if (live) {
+    const start = traceStart || Date.parse(message?.startedAt || "") || 0;
+    return start ? Math.max(0, now - start) : 0;
+  }
+  const traceDuration = Number(trace?.durationMs || 0);
+  if (traceDuration > 0) return traceDuration;
+  if (traceStart && trace?.endedAt) {
+    const ms = Date.parse(trace.endedAt) - traceStart;
+    if (Number.isFinite(ms) && ms > 0) return ms;
+  }
+  const summaryDuration = Number(runSummary?.durationMs || 0);
+  if (summaryDuration > 0) return summaryDuration;
+  const summaryStart = Date.parse(runSummary?.startedAt || "") || 0;
+  const summaryEnd = Date.parse(runSummary?.finishedAt || "") || 0;
+  if (summaryStart && summaryEnd && summaryEnd > summaryStart) return summaryEnd - summaryStart;
+  const msgStart = Date.parse(message?.startedAt || "") || 0;
+  const msgEnd = Date.parse(message?.finishedAt || "") || 0;
+  if (msgStart && msgEnd && msgEnd > msgStart) return msgEnd - msgStart;
+  return 0;
+}
+
 /** 运行中进度行只保留用户可行动的工具、待办与耗时，不暴露 harness 轮次计数。 */
 export function runTraceProgressText(trace, { now = Date.now(), running = false } = {}) {
   const stats = summarizeRunTrace(trace);

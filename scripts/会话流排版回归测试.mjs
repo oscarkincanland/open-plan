@@ -36,6 +36,7 @@ const app = read("client/src/App.jsx");
 const summaryBlock = read("client/src/components/会话流/SummaryBlock.jsx");
 const runFoldBar = read("client/src/components/会话流/RunFoldBar.jsx");
 const projection = read("client/src/会话流投影.js");
+const traceSource = read("client/src/运行轨迹.js");
 
 console.log("\n▶ 总结正文（连续 Markdown）");
 
@@ -147,9 +148,10 @@ await test("表格数字列使用等宽数字", () => {
 
 console.log("\n▶ 已运行时长");
 
-await test("历史轮用消息自带起止时间兜底", () => {
-  assert.match(chatPanel, /const msgStart = Date\.parse\(m\.startedAt \|\| ""\) \|\| 0;/);
-  assert.match(chatPanel, /const msgEnd = Date\.parse\(m\.finishedAt \|\| ""\) \|\| 0;/);
+await test("历史轮用 runSummary / 消息起止时间兜底", () => {
+  assert.match(chatPanel, /resolveRunElapsedMs\(\{[\s\S]*?runSummary[\s\S]*?message: m[\s\S]*?\}\)/);
+  assert.match(traceSource, /Date\.parse\(runSummary\?\.startedAt/);
+  assert.match(traceSource, /Date\.parse\(message\?\.startedAt/);
 });
 
 await test("结束后用时进折叠头，不再单占一行、也不再进总结 cap", () => {
@@ -302,6 +304,16 @@ await test("折叠头不新增无限动画", () => {
 
 await test("折叠头与其它块共用消息列宽", () => {
   assert.match(styles, /\.msg\.assistant \.msg-main \.run-fold,/);
+});
+
+await test("chevron 紧跟文字，不推到列宽最右端", () => {
+  const rule = styles.match(/^\.run-fold-chev \{[^}]*\}/m)?.[0] || "";
+  assert.ok(rule, "未找到 .run-fold-chev 规则");
+  assert.doesNotMatch(rule, /margin-left: auto/, "推右会让指示符在 720px 列里与内容脱节");
+});
+
+await test("步数带分隔符，读屏不会把「43 秒48 步」连读", () => {
+  assert.match(runFoldBar, /<span className="run-fold-steps">· \{steps\} 步<\/span>/);
 });
 
 console.log("\n▶ 字号档位（规范 v2.0 §4）");
