@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { confirmArtifactAcceptance, getRun, getRunAcceptance, listPublishedArtifacts, listRuns, publishArtifact, rollbackPublishedArtifact } from "../api.js";
 import Icon from "./Icon.jsx";
+import 文件类型图标 from "./文件类型图标.jsx";
 import { notifyError, askText, askConfirm } from "./Feedback.jsx";
 import { artifactStatusInfo } from "./验收状态.js";
 import FileChangesPanel from "./FileChangesPanel.jsx";
@@ -182,12 +183,12 @@ export function ArtifactPanel({ workspace, projectId, currentSessionId, selected
       <div className="preview-artifact" key={`${artifact.artifactId || artifact.path}-${index}`}>
         {isStaged ? (
           <span className="preview-artifact-main" title={`${artifact.path}（任务结束后可预览）`}>
-            <Icon name="file" size={14} />
+            <文件类型图标 file={artifact.path} size={14} />
             <span><strong>{name}</strong><small>任务执行中 · 暂存未落盘</small></span>
           </span>
         ) : (
           <button className="preview-artifact-main" onClick={() => onOpenFile?.(artifact.path, undefined, run.cwd)} title={artifact.path}>
-            <Icon name="file" size={14} />
+            <文件类型图标 file={artifact.path} size={14} />
             <span><strong>{name}</strong><small>{statusText[run.status] || run.status || "已完成"} · {String(artifact.path || "").replace(name, "").replace(/[\\/]$/, "") || "工作区根目录"}</small></span>
           </button>
         )}

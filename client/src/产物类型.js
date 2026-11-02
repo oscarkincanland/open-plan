@@ -23,7 +23,7 @@ const KIND_BY_ICON = Object.freeze({
   file: ["other", "other"],
 });
 
-const EXT_KINDS = Object.freeze({
+export const EXT_KINDS = Object.freeze({
   docx: { icon: "doc", label: "文档" },
   doc: { icon: "doc", label: "文档" },
   md: { icon: "md", label: "Markdown" },

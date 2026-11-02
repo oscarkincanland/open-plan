@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import { RUNTIME_FLAGS, officeGateActiveFor } from "./运行开关.mjs";
+// complete_task 是否启用（用户偏好，默认关闭）：提示词必须与工具暴露保持一致。
+import { completeTaskEnabled } from "./运行偏好.mjs";
 import { matchTemplate } from "./office规范/模板匹配.mjs";
 import { selectScene, sceneLabels, defaultScene } from "./office规范/场景选择.mjs";
 
@@ -454,25 +456,29 @@ function mapCapabilityHint(task = {}) {
  * 57 次调用中 15 次在读 help、约 15 次在探针文件上试错，20 次失败。这段提示把
  * "预设流程"直接讲清楚，让模型走既定主链而不是自由发挥。
  */
-const OFFICE_WRITING_PLAYBOOK = [
-  "写作流程（按序执行）:",
-  "1) 先 read 模板与配套规范，确认章节骨架、必备图表清单和格式规则；",
-  "2) 成文优先用 editorial_pipeline 工具（Planner→Writer→Formatter 原生直写→Evaluator 确定性验收）；",
-  "   已有成稿 Markdown 时用它的 sourceMarkdown 直通，跳过 Planner/Writer；",
-  "3) 需要逐章增量写入时，用 write 写一章、紧接 add <file> / --type markdown --prop src=<章节.md>（write→add 成对出现，不要攒批）；",
-  "4) 样式：create 新建文档已预置 Normal/Heading1-4/Title/TOC/页眉页脚，直接用，不要用 raw-set 改 styles.xml；",
-  "5) 自检：validate <file> 与 view <file> issues；",
-  "6) 收尾：complete_task 报告产物路径与未完成项。",
-  "禁止：不要用 bash 写生成脚本；不要手写 styles.xml；不要把 JSON 塞进命令行参数。",
-  "常用命令速查（覆盖绝大多数文档操作，不要再跑 help / --help 去探索）：",
-  "  create <f>.docx            新建文档（已预置样式）；create <f>.docx --force 覆盖已有文件",
-  "  add <f> / --type markdown --prop src=<章节.md>   导入写好的章节",
-  "  set <f> /body/p[N] --prop style=Heading2         给段落套标题样式",
-  "  add <f> /body/p[N] --type table                  插入表格",
-  "  add <f> /body/p[N] --type image --prop image=<路径> 插入图片",
-  "  view <f> text|outline|stats|issues               回读校验",
-  "命令失败时：读错误信息、改同一命令再试一次——不要用 help 代替调整（这最浪费回合）。",
-].join("\n");
+function officeWritingPlaybook() {
+  return [
+    "写作流程（按序执行）:",
+    "1) 先 read 模板与配套规范，确认章节骨架、必备图表清单和格式规则；",
+    "2) 成文优先用 editorial_pipeline 工具（Planner→Writer→Formatter 原生直写→Evaluator 确定性验收）；",
+    "   已有成稿 Markdown 时用它的 sourceMarkdown 直通，跳过 Planner/Writer；",
+    "3) 需要逐章增量写入时，用 write 写一章、紧接 add <file> / --type markdown --prop src=<章节.md>（write→add 成对出现，不要攒批）；",
+    "4) 样式：create 新建文档已预置 Normal/Heading1-4/Title/TOC/页眉页脚，直接用，不要用 raw-set 改 styles.xml；",
+    "5) 自检：validate <file> 与 view <file> issues；",
+    // complete_task 默认关闭（server/运行偏好.mjs）：关闭时模型看不到这个工具，
+    // 提示词就不能要求它调用——否则会出现"要求调用不存在的工具"。
+    ...(completeTaskEnabled() ? ["6) 收尾：complete_task 报告产物路径与未完成项。"] : []),
+    "禁止：不要用 bash 写生成脚本；不要手写 styles.xml；不要把 JSON 塞进命令行参数。",
+    "常用命令速查（覆盖绝大多数文档操作，不要再跑 help / --help 去探索）：",
+    "  create <f>.docx            新建文档（已预置样式）；create <f>.docx --force 覆盖已有文件",
+    "  add <f> / --type markdown --prop src=<章节.md>   导入写好的章节",
+    "  set <f> /body/p[N] --prop style=Heading2         给段落套标题样式",
+    "  add <f> /body/p[N] --type table                  插入表格",
+    "  add <f> /body/p[N] --type image --prop image=<路径> 插入图片",
+    "  view <f> text|outline|stats|issues               回读校验",
+    "命令失败时：读错误信息、改同一命令再试一次——不要用 help 代替调整（这最浪费回合）。",
+  ].join("\n");
+}
 
 /**
  * 写作路由提示（O-05）：只从能力计划读取，避免提示词另写一份路由事实。
@@ -485,13 +491,13 @@ function officeWritingHint(task = {}) {
   const scene = plan?.scene?.label || plan?.scene?.id || "";
   const template = plan?.template?.relPath || "";
   if (route === "template") {
-    return `写作路由：模板优先（${template}${scene ? `；场景：${scene}` : ""}）。先读取模板，按其章节骨架、必备图表与格式规则写作。\n` + OFFICE_WRITING_PLAYBOOK;
+    return `写作路由：模板优先（${template}${scene ? `；场景：${scene}` : ""}）。先读取模板，按其章节骨架、必备图表与格式规则写作。\n` + officeWritingPlaybook();
   }
   if (route === "edit") {
     return "写作路由：编辑既有文档。先 view 确认内容，再 get 取真实路径，最后 set/add；保留未触及的格式。";
   }
   if (route === "generate") {
-    return `写作路由：生成新文档（场景：${scene || "report"}）。按场景参数生成，完成后走规则闸门。\n` + OFFICE_WRITING_PLAYBOOK;
+    return `写作路由：生成新文档（场景：${scene || "report"}）。按场景参数生成，完成后走规则闸门。\n` + officeWritingPlaybook();
   }
   return "";
 }

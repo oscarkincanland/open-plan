@@ -144,6 +144,17 @@ jobs:
       - name: 事件发射点（注册表里的事件必须有真实发射点）
         run: node scripts/CI运行测试.mjs 事件发射点守护测试
 
+      - name: complete_task 运行偏好（默认关闭 / 设置可开 / 提示词与工具暴露一致）
+        run: node scripts/CI运行测试.mjs 完成偏好测试
+
+      - name: 产物文件类型图标（docx 等按类型出图，不回退通用图标）
+        run: node scripts/CI运行测试.mjs 产物图标测试
+
+      - name: 跨标签页长连接配额（全局满额时面板流让位，必需流不拒）
+        run: node scripts/CI运行测试.mjs 跨标签页流配额测试
+
+
+
       - name: Office 写作闸门通电（ADR 0012 / 工具书 / 环境预检）
         run: node scripts/CI运行测试.mjs Office写作闸门通电测试
 

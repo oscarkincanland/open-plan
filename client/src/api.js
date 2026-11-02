@@ -126,6 +126,11 @@ export const agentNetworkSettingsSave = (settings = {}) =>
   api("/api/agent/network-settings", { method: "PATCH", body: JSON.stringify(settings) });
 
 // ---------- 联网搜索配置 ----------
+// 运行偏好（设置面板可切换的产品行为；服务端落盘，下一轮任务生效）。
+export const getRuntimePreferences = () => api("/api/runtime-preferences");
+export const saveRuntimePreferences = (patch = {}) =>
+  api("/api/runtime-preferences", { method: "PATCH", body: JSON.stringify(patch) });
+
 export const searchSettings = () => api("/api/search/settings");
 export const searchSettingsSave = (settings = {}) =>
   api("/api/search/settings", { method: "POST", body: JSON.stringify(settings) });
@@ -401,19 +406,11 @@ export function getClientId() {
  * 结果多标签页各开一组 SSE 把浏览器 6 个连接槽占满。
  * 这里用 sessionStorage 生成每标签页独立、刷新后仍稳定的 tabId，仅用于长连接键，
  * 不参与会话/游标身份，避免影响既有数据。
+ *
+ * 实现已迁到 标签页标识.js（跨标签页流配额.js 需要同一套标签页 id），
+ * 这里保留导出以免既有调用方改动。
  */
-export function getTabId() {
-  try {
-    let id = sessionStorage.getItem("oaw_tab_id");
-    if (!id) {
-      id = "tab-" + Math.random().toString(36).slice(2, 10);
-      sessionStorage.setItem("oaw_tab_id", id);
-    }
-    return id;
-  } catch {
-    return "tab-default";
-  }
-}
+export { getTabId } from "./标签页标识.js";
 
 // ---------- 知识库（本地索引 + IMA） ----------
 export const kbStatus = () => api("/api/kb/status");
