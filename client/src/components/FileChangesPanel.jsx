@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useState } from "react";
 import Icon from "./Icon.jsx";
+import 文件类型图标 from "./文件类型图标.jsx";
 import { getRunChangeDiff } from "../api.js";
 import { openInSystem, revealInSystem } from "../api.js";
 import { notifyError } from "./Feedback.jsx";
@@ -151,7 +152,9 @@ export default function FileChangesPanel({ runId, changes = [], detection = null
                   aria-expanded={open}
                   title={`${change.relativePath}（点击查看内容差异）`}
                 >
-                  <Icon name={change.changeType === "deleted" ? "trash" : "file"} size={12} />
+                  {change.changeType === "deleted"
+                    ? <Icon name="trash" size={12} />
+                    : <文件类型图标 file={change.relativePath} size={12} />}
                   <span className="file-change-path">{change.relativePath}</span>
                   <span className={`file-change-type ${change.changeType}`}>{CHANGE_LABEL[change.changeType] || change.changeType}</span>
                   {change.role === "deliverable" && <span className="file-change-role">交付</span>}
