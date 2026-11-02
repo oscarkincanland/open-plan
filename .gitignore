@@ -32,6 +32,9 @@ od-pipeline.cjs
 *.local
 *.bak-*
 *.bak
+# 带后缀的备份（如 map.config.json.bak.2026-09-22T01-53-21-167Z、style.json.bak.od-fix）
+*.bak.*
+*.bak_*
 office-workspace/maps/settings.local.json
 _temp/
 _tmp/

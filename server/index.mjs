@@ -405,6 +405,16 @@ app.get("/api/harness/plans", (_req, res) => {
 app.post("/api/harness/plans", express.json({ limit: "2mb" }), (req, res) => {
   const { title = "任务计划", content = "", runId = null, name = null } = req.body || {};
   const result = writePlan({ workspace: getWorkspace(), title, content, runId, name });
+  if (result.ok) {
+    // 计划落盘可回溯：登记为已持久化事件，便于跨会话回放确认"计划确实写下来了"。
+    appendEvent({
+      clientId: String(req.body?.clientId || ""),
+      threadId: String(req.body?.threadId || ""),
+      runId: runId || null,
+      type: "plan_persisted",
+      data: { name: result.name || name || null, title, bytes: Buffer.byteLength(String(content), "utf8"), path: result.relativePath || null },
+    });
+  }
   res.status(result.ok ? 200 : 400).json(result);
 });
 
@@ -2265,9 +2275,18 @@ function scheduleSessionMetaFlush() {
 }
 
 // ---------- 规聚独立 Pi 配置 ----------
-app.get("/api/agent/config-status", (_req, res) => {
+app.get("/api/agent/config-status", (req, res) => {
   try {
-    res.json(getConfigStatus());
+    const status = getConfigStatus();
+    // 配置来源解析结果登记为诊断事件：多实例/多环境排查时能回溯"当时用的是哪份配置"。
+    appendEvent({
+      clientId: String(req.query?.client || "") || null,
+      threadId: String(req.query?.thread || "") || null,
+      runId: null,
+      type: "config_source_resolved",
+      data: { source: status?.source || null, dataDir: status?.dataDir || null, configured: Boolean(status?.configured) },
+    });
+    res.json(status);
   } catch (error) {
     res.status(500).json({ error: error.message, code: "CONFIG_STATUS_FAILED" });
   }
@@ -2901,6 +2920,17 @@ app.patch("/api/integrations/pi/extensions/:id", (req, res) => {
 app.post("/api/integrations/pi/extensions/:id/check", (req, res) => {
   const extension = checkPiExtension(req.params.id);
   if (!extension) return res.status(404).json({ error: "Pi 扩展不存在" });
+  // 清单缺失或哈希不匹配：登记为可回溯事件，便于事后审计扩展为何未被信任。
+  const manifest = extension?.lastCheck?.manifest;
+  if (manifest && manifest.ok === false) {
+    appendEvent({
+      clientId: String(req.body?.clientId || "") || null,
+      threadId: String(req.body?.threadId || "") || null,
+      runId: null,
+      type: "plugin_manifest_invalid",
+      data: { extensionId: req.params.id, path: extension?.path || null, errors: Array.isArray(manifest.errors) ? manifest.errors.slice(0, 10) : [] },
+    });
+  }
   res.json({ extension });
 });
 app.delete("/api/integrations/pi/extensions/:id", (req, res) => {

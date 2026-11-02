@@ -178,12 +178,15 @@ function wrapCustomTool(tool, { getEntry, emit } = {}) {
       let effectiveParams = params;
       if (RUNTIME_FLAGS.hookEvents) {
         try {
+          const hookStartedAt = Date.now();
+          try { emit?.("hook_started", { event: "PreToolUse", tool: tool.name, runId }); } catch {}
           const pre = await dispatchHooks({
             event: "PreToolUse",
             payload: { tool: tool.name, input: params, inputText: safeToolJson(params), runId },
             workspace,
             timeoutMs: RUNTIME_FLAGS.hookTimeoutMs,
           });
+          try { emit?.("hook_finished", { event: "PreToolUse", tool: tool.name, behavior: pre.behavior, hookId: pre.hookId || null, durationMs: Date.now() - hookStartedAt, runId }); } catch {}
           if (pre.behavior === "deny") {
             try { emit?.("hook_denied", { event: "PreToolUse", tool: tool.name, reason: pre.reason, hookId: pre.hookId || null, runId }); } catch {}
             return {
@@ -229,6 +232,8 @@ function wrapCustomTool(tool, { getEntry, emit } = {}) {
       }
       if (RUNTIME_FLAGS.hookEvents) {
         try {
+          const hookStartedAt = Date.now();
+          try { emit?.("hook_started", { event: "PostToolUse", tool: tool.name, runId }); } catch {}
           const post = await dispatchHooks({
             event: "PostToolUse",
             payload: {
@@ -242,6 +247,7 @@ function wrapCustomTool(tool, { getEntry, emit } = {}) {
             workspace,
             timeoutMs: RUNTIME_FLAGS.hookTimeoutMs,
           });
+          try { emit?.("hook_finished", { event: "PostToolUse", tool: tool.name, behavior: post.behavior, hookId: post.hookId || null, durationMs: Date.now() - hookStartedAt, runId }); } catch {}
           if (post.behavior === "deny" && post.reason) {
             result = {
               ...(result && typeof result === "object" ? result : {}),
@@ -3509,6 +3515,14 @@ execute: async (_toolCallId, params) => {
                 usage: childUsage,
                 finishReason: childUsage ? "stop" : "usage_unavailable",
               });
+              emitChannelSafe(entry, "usage_recorded", {
+                runId: entry?.activeRunId || null,
+                actorKind: "subagent",
+                actorId: childId,
+                querySource: "agent_step",
+                totalTokens: childUsage?.totalTokens ?? null,
+                finishReason: childUsage ? "stop" : "usage_unavailable",
+              }, { persist: false });
             } catch {}
           }
           try { childSession?.dispose?.(); } catch {}
@@ -3864,6 +3878,19 @@ execute: async (_toolCallId, params) => {
             toolCallCount: entry?.runToolCount ?? null,
             finishReason: null,
           });
+          emitChannelSafe(entry, "usage_recorded", {
+            runId: entry?.activeRunId || null,
+            turnId: entry?.turnCount ?? null,
+            actorKind: "main",
+            actorId: "main",
+            querySource: "agent_step",
+            totalTokens: normalized?.totalTokens ?? null,
+            inputTokens: normalized?.inputTokens ?? null,
+            outputTokens: normalized?.outputTokens ?? null,
+            cost: cost ?? null,
+            durationMs: entry?.runStartedAt ? Math.max(0, Date.now() - entry.runStartedAt) : null,
+            toolCallCount: entry?.runToolCount ?? null,
+          }, { persist: false });
         } catch {}
       }
       return true;
@@ -4503,6 +4530,14 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       if (RUNTIME_FLAGS.usageLedger) {
         try {
           recordUsage({ runId, actorKind: "compaction", actorId: "compaction", querySource: "compact", usage: null, finishReason: "compacted" });
+          emitChannelSafe(entry, "usage_recorded", {
+            runId,
+            actorKind: "compaction",
+            actorId: "compaction",
+            querySource: "compact",
+            totalTokens: null,
+            finishReason: "compacted",
+          }, { persist: false });
         } catch {}
       }
       // 不依赖某个 Pi 版本是否发出 compaction_end；成功的 Promise 本身就是
@@ -4696,12 +4731,15 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       }
       if (RUNTIME_FLAGS.hookEvents) {
         try {
+          const hookStartedAt = Date.now();
+          emitChannelSafe(entry, "hook_started", { event: "UserPromptSubmit", runId: entry.activeRunId || null }, { persist: false });
           const hook = await dispatchHooks({
             event: "UserPromptSubmit",
             payload: { prompt: text, runId: entry.activeRunId || null },
             workspace: entry.workspace,
             timeoutMs: RUNTIME_FLAGS.hookTimeoutMs,
           });
+          emitChannelSafe(entry, "hook_finished", { event: "UserPromptSubmit", behavior: hook.behavior, hookId: hook.hookId || null, durationMs: Date.now() - hookStartedAt, runId: entry.activeRunId || null }, { persist: false });
           if (hook.behavior === "deny") {
             emitChannelSafe(entry, "hook_denied", { event: "UserPromptSubmit", reason: hook.reason, hookId: hook.hookId || null, runId: entry.activeRunId || null });
             throw Object.assign(new Error(`Hook 拒绝本轮输入：${hook.reason}`), { code: "HOOK_DENIED" });
@@ -5013,12 +5051,15 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       } catch {}
       if (RUNTIME_FLAGS.hookEvents) {
         try {
-          await dispatchHooks({
+          const hookStartedAt = Date.now();
+          emitChannelSafe(entry, "hook_started", { event: "Stop", runId: activeRunId }, { persist: false });
+          const stopHook = await dispatchHooks({
             event: "Stop",
             payload: { runId: activeRunId, status: entry.lastAgentError ? "failed" : "completed" },
             workspace: entry.workspace,
             timeoutMs: RUNTIME_FLAGS.hookTimeoutMs,
           });
+          emitChannelSafe(entry, "hook_finished", { event: "Stop", behavior: stopHook.behavior, hookId: stopHook.hookId || null, durationMs: Date.now() - hookStartedAt, runId: activeRunId }, { persist: false });
         } catch {}
       }
       entry.busy = false;
@@ -5174,6 +5215,11 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       let recall = null;
       if (RUNTIME_FLAGS.memoryRecall) {
         try {
+          emitChannelSafe(entry, "memory_recall_started", {
+            runId: entry?.activeRunId || null,
+            queryChars: String(entry?.lastPromptText || "").length,
+            maxBytes: RUNTIME_FLAGS.memoryRecallMaxBytes,
+          });
           recall = buildRecallContextSync({
             workspace: ws,
             query: entry?.lastPromptText || "",

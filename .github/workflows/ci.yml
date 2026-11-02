@@ -140,3 +140,6 @@ jobs:
 
       - name: 长期规范索引（规范层无孤儿 / 头部元信息齐全 / 生效规范有引用）
         run: node scripts/CI运行测试.mjs 规范索引守护测试
+
+      - name: 事件发射点（注册表里的事件必须有真实发射点）
+        run: node scripts/CI运行测试.mjs 事件发射点守护测试
