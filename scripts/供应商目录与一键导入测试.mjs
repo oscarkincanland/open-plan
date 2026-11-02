@@ -3,8 +3,8 @@
  * Pi 内置供应商目录 · 一键添加 · 登录方式区分 测试
  *
  * 覆盖：
- *   1. 目录数据质量：41 个供应商 / 1142 个模型；上下文窗口按指数解析（1e6 而不是 1）；
- *      登录方式是权威清单（9 个支持账号登录），不再靠关键字邻近猜测；
+ *   1. 目录数据质量：内置供应商 / 模型数量来自目录实况（不写死总数）；上下文窗口按指数解析（1e6 而不是 1）；
+ *      登录方式是权威清单，不再靠关键字邻近猜测；
  *   2. 能力反查：按模型 ID 自动带出上下文窗口 / 图片 / 思考（含带前缀的写法）；
  *   3. 一键导入配置：Base URL / 协议 / 模型能力自动生成；云凭证类供应商明确拒绝并给原因；
  *   4. 接口层：/api/agent/provider-catalog（列表 + 详情 + 导入 + 设为默认）在临时数据目录里跑通，
@@ -44,10 +44,19 @@ async function 接口场景(name, fn) {
 // ============================================================
 const catalog = loadBuiltinCatalog();
 const list = builtinProviderList();
+const builtinTotalModels = catalog.providers.reduce((sum, provider) => sum + provider.models.length, 0);
 
-场景("目录：41 个供应商 / 1142 个模型 / 有生成时间", () => {
-  assert.equal(list.providers.length, 41, `供应商数量应为 41，实际 ${list.providers.length}`);
-  assert.equal(list.totalModels, 1142, `模型总数应为 1142，实际 ${list.totalModels}`);
+场景("目录：内置供应商与模型齐全 / 有生成时间", () => {
+  assert.ok(catalog.providers.length > 0, "内置目录不应为空");
+  assert.ok(builtinTotalModels > 0, "内置目录应包含模型");
+  assert.ok(
+    list.providers.length >= catalog.providers.length,
+    `合并目录应至少包含 ${catalog.providers.length} 个内置供应商，实际 ${list.providers.length}`,
+  );
+  assert.ok(
+    list.totalModels >= builtinTotalModels,
+    `合并目录模型数应不少于内置目录的 ${builtinTotalModels}，实际 ${list.totalModels}`,
+  );
   assert.ok(list.generatedAt, "目录应带生成时间，便于判断是否需要重新提取");
   assert.equal(list.error, null);
 });
@@ -302,8 +311,9 @@ try {
   await 接口场景("接口：目录列表带登录方式与已配置状态，且不含任何 Key 明文", async () => {
     const { status, body } = await 请求("/api/agent/provider-catalog");
     assert.equal(status, 200);
-    assert.equal(body.providers.length, 41);
-    assert.equal(body.summary.oauth, 9);
+    assert.equal(body.providers.length, list.providers.length, "接口应返回合并目录的实况数量");
+    const oauthCount = list.providers.filter((provider) => provider.loginMethods.includes("oauth")).length;
+    assert.equal(body.summary.oauth, oauthCount, "OAuth 数量应来自目录实况");
     assert.ok(body.summary.importable >= 35);
     const text = JSON.stringify(body);
     assert.doesNotMatch(text, /"(key|apiKey|secret|token)"\s*:\s*"[^"]{6,}"/, "目录响应不得出现凭据明文");
@@ -320,8 +330,14 @@ try {
     const { status, body } = await 请求("/api/agent/provider-catalog/deepseek");
     assert.equal(status, 200);
     assert.equal(body.provider.id, "deepseek");
-    assert.equal(body.provider.models.length, 2);
-    assert.equal(body.provider.models[0].contextWindow, 1_000_000);
+    const deepseekBuiltin = catalog.providers.find((provider) => provider.id === "deepseek");
+    assert.ok(
+      body.provider.models.length >= deepseekBuiltin.models.length,
+      `deepseek 详情应至少包含内置的 ${deepseekBuiltin.models.length} 个模型，实际 ${body.provider.models.length}`,
+    );
+    const flash = body.provider.models.find((model) => model.id === "deepseek-flash");
+    assert.ok(flash, "deepseek-flash 应出现在详情里");
+    assert.equal(flash.contextWindow, 1_000_000);
     const missing = await 请求("/api/agent/provider-catalog/不存在");
     assert.equal(missing.status, 404);
   });

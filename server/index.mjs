@@ -8,6 +8,7 @@ import { listWorkspace, searchWorkspace, filePath, safeName, WORKSPACE_DIR, CLIE
 import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, queryComments, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
 import { getApprovalMode, listPendingApprovals, listPermissionRules, removeUserRule, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
 import { agentManager, classifyAgentError, getCredentialErrors, isAbortLikeError, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
+import { bashEnvironmentInfo } from "./environment-capabilities.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
@@ -2215,6 +2216,9 @@ app.get("/api/agent/diagnostics", async (req, res) => {
     authProviders,
     authErrors: getCredentialErrors(),
     network: piRuntimeManager.networkDiagnostics(),
+    // bash 能力快照：可用性、实际使用的 shell 与来源（自动探测 / Pi settings.json / 环境变量）。
+    // 这台机器的 bash 曾经被误判为不可用，诊断接口能一眼看出当前用的是哪个 shell。
+    environment: { bash: bashEnvironmentInfo() },
   });
 });
 

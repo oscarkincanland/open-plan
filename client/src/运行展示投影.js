@@ -465,39 +465,6 @@ export function upsertRunSummaryMessage(messages = [], data = {}, {
 }
 
 /**
- * 把 Run 摘要消息插回历史消息流（首屏与"加载更早"共用）。
- *
- * 背景：远程会话流改版新增该调用，但实现未随仓库提交（干净克隆会直接构建失败）。
- * 规则：按 Run 收尾时间插到第一条晚于它的消息之前；无时间戳时追加到末尾；
- * 同一 runId 已存在摘要时不重复插入（避免分页重载产生双份总结卡）。
- * 插入后统一走 associateRunMessages，把本轮过程消息挂到该 runId。
- */
-export function mergeRunSummaries(messages = [], runMessages = []) {
-  const base = Array.isArray(messages) ? messages : [];
-  const summaries = Array.isArray(runMessages)
-    ? runMessages.filter((item) => item && item.summary === true && item.runId)
-    : [];
-  if (!summaries.length) return associateRunMessages(base);
-  const existing = new Set(base.filter((item) => item?.summary && item.runId).map((item) => String(item.runId)));
-  const pending = summaries.filter((item) => !existing.has(String(item.runId)));
-  if (!pending.length) return associateRunMessages(base);
-  const list = [...base];
-  for (const summary of pending) {
-    const at = Number(new Date(summary.finishedAt || summary.createdAt || summary.startedAt || 0)) || 0;
-    let index = list.length;
-    if (at > 0) {
-      const nextIndex = list.findIndex((item) => {
-        const time = Number(new Date(item?.createdAt || 0)) || 0;
-        return time > 0 && time > at;
-      });
-      if (nextIndex >= 0) index = nextIndex;
-    }
-    list.splice(index, 0, summary);
-  }
-  return associateRunMessages(list);
-}
-
-/**
  * 内部 harness 提示：写进会话文件时仍是 user 消息，但不属于用户输入，
  * 既不能在恢复后显示为“You”，也不能截断同一 Run 的过程归约。
  * 旧版本把“模型连接中断后自动续跑”的提示直接以普通 user 消息写入，
@@ -512,16 +479,28 @@ export function isInternalHarnessMessage(message) {
 /**
  * 把同一轮里的 assistant 过程消息及系统进度提醒关联到 runId，
  * 让界面能将它们和 SSE/结论合并到同一个过程面板；真实用户消息仍是分组边界。
+ *
+ * 两遍扫描：
+ *   1) 向前扫描（总结卡之前）：从总结卡往回找最近的真实 user 消息 / 上一张总结卡，
+ *      区间内的 assistant 归到本轮。这是正常布局（总结卡落在本轮消息之后）。
+ *   2) 向后扫描（总结卡之后）：从总结卡往后找下一条真实 user 消息 / 下一张总结卡，
+ *      区间内尚未归属的 assistant 也归到本轮。
+ *      这是自愈分支：历史缓存被写坏、或时间戳漂移时，总结卡可能落在本轮消息之前，
+ *      只靠第 1 遍会让这一轮「没有 assistant 分组」；第 2 遍把它找回来。
  */
 export function associateRunMessages(messages = []) {
   const list = Array.isArray(messages) ? messages : [];
   if (!list.length) return list;
   let next = list;
   let changed = false;
+  const at = (index) => (changed ? next : list)[index];
+
   for (let summaryIndex = 0; summaryIndex < list.length; summaryIndex += 1) {
     const summary = list[summaryIndex];
     const runId = String(summary?.role === "system" && summary.summary ? summary.runId || "" : "");
     if (!runId) continue;
+
+    // 第 1 遍：向前（较早）区间——总结卡与上一条边界消息之间。
     let start = summaryIndex - 1;
     for (; start >= 0; start -= 1) {
       const item = list[start];
@@ -529,15 +508,63 @@ export function associateRunMessages(messages = []) {
       if (item?.role === "user" && !isInternalHarnessMessage(item)) break;
     }
     for (let index = start + 1; index < summaryIndex; index += 1) {
-      const item = (changed ? next : list)[index];
+      const item = at(index);
       const internalProcess = isInternalHarnessMessage(item);
       if ((!internalProcess && item?.role !== "assistant") || (item.runId && item.runId !== runId)) continue;
       if (item.runId === runId && Boolean(item.internalProcess) === internalProcess) continue;
       if (!changed) { next = [...list]; changed = true; }
       next[index] = { ...item, runId, ...(internalProcess ? { internalProcess: true } : {}) };
     }
+
+    // 第 2 遍：向后（较晚）区间——只补尚未归属的 assistant，不覆盖已有归属。
+    for (let index = summaryIndex + 1; index < list.length; index += 1) {
+      const item = at(index);
+      if (item?.role === "system" && item.summary) break;
+      if (item?.role === "user" && !isInternalHarnessMessage(item)) break;
+      if (item?.role !== "assistant") continue;
+      if (item.runId) continue;
+      if (!changed) { next = [...list]; changed = true; }
+      next[index] = { ...item, runId };
+    }
   }
   return changed ? next : list;
+}
+
+/**
+ * 历史恢复：把 Run 总结卡插回消息流（锚点插入）。
+ *
+ * 不能按 createdAt 全局排序——运行中的 Run 只有 startedAt，早于本轮所有消息，
+ * 会让总结卡跑到本轮消息之前；associateRunMessages 只向前扫描，于是整轮 assistant
+ * 消息拿不到 runId，timelinePath 失效、退回旧渲染（切换会话后「格式丢失」）。
+ *
+ * 定位规则（每张总结卡独立定位，消息自身保持 JSONL 原序，不参与排序）：
+ *   - 有 finishedAt → 插到最后一条 createdAt <= finishedAt 的消息之后（本轮收尾锚点）；
+ *   - 无 finishedAt（运行中 / 时间缺失）→ 插到本轮消息之后，而不是按自己的 startedAt
+ *     往前插（往前插会让总结卡落到本轮消息之前，整轮 assistant 失去归属）。
+ *     本轮边界取「下一张卡的 startedAt」；没有下一张卡时就是本列表末尾。
+ */
+export function mergeRunSummaries(messages = [], summaries = []) {
+  const list = Array.isArray(messages) ? messages.slice() : [];
+  const timeOf = (value) => Date.parse(value || "") || 0;
+  const cards = (Array.isArray(summaries) ? summaries : [])
+    .filter((card) => card?.role === "system" && card.summary)
+    .sort((a, b) => timeOf(a?.startedAt || a?.createdAt) - timeOf(b?.startedAt || b?.createdAt));
+  cards.forEach((card, cardIndex) => {
+    // 收尾锚点：优先 finishedAt；运行中的卡用下一轮的 startedAt 作为「本轮到此为止」的上界。
+    const end = timeOf(card?.finishedAt) || timeOf(cards[cardIndex + 1]?.startedAt);
+    let insertAt = list.length;
+    if (end) {
+      // 锚点 = 最后一条不晚于该时刻的消息之后；找不到锚点就追加到末尾。
+      insertAt = 0;
+      for (let index = list.length - 1; index >= 0; index -= 1) {
+        const time = timeOf(list[index]?.createdAt);
+        if (time && time <= end) { insertAt = index + 1; break; }
+      }
+      if (!insertAt) insertAt = list.length;
+    }
+    list.splice(insertAt, 0, card);
+  });
+  return list;
 }
 
 function assistantEntryText(entry = {}) {

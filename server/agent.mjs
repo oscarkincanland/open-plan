@@ -51,7 +51,7 @@ import { recordRunEvent, updateRunTodo, getRun, isRunTerminal } from "./runs.mjs
 import { markRunTiming, attachRunTimingSpans } from "./首字延迟.mjs";
 import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode, routeTaskIntent } from "./task.mjs";
 import { classifyToolCall, isReadonlyBash, isMutatingOfficecli } from "./office规范/执行闸门.mjs";
-import { probeBashAvailability, bashUnavailableError, bashEnvironmentHint } from "./environment-capabilities.mjs";
+import { probeBashAvailability, bashUnavailableError, bashWorkspaceRule, resolveBashShell } from "./environment-capabilities.mjs";
 
 /** OfficeCLI 工具约束（O-28）：Work/Review 两处 prompt 共用同一常量，避免措辞分叉。 */
 const OFFICE_TOOL_RULE = "- ALWAYS operate on office documents through the `officecli` tool — it resolves file names relative to the current workspace and runs on Windows natively. NEVER try to run `officecli` via the bash tool.";
@@ -1348,13 +1348,13 @@ class AgentManager extends EventEmitter {
               "- **表达语言（重要）**: 面向用户的正文回复、进度小结、待办标题，以及你的内部推理（thinking / reasoning）一律使用与用户相同的语言（默认中文）。工具名、代码、文件路径和专有名词保持原样；不要为了“显得专业”而把思考过程写成英文。",
               ...buildOutputPolicyLines({ mode: options.task?.mode || options.mode || "work" }),
               OFFICE_TOOL_RULE,
-              "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text." + bashEnvironmentHint(),
+              bashWorkspaceRule(),
               "- **Word 批注**: 先用 `officecli get <file> /body --depth 3 --json` 或 `query <file> paragraph --json` 找到真实段落路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"批注内容\\\" --json` 写入；一次 get 只传一个 DOM 路径，完成后用 `query <file> comment --json` 回读校验。若错误明确为 sharing violation 或另一个进程占用，再提示关闭 WPS/Word/OfficeCLI 预览；若是 Access denied、is denied、EPERM 或 EACCES，应说明服务进程缺少系统写权限，不要尝试绕过沙箱。",
               "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入 `.agent-context.md` 中的「当前工作区」绝对路径，禁止写入项目目录。否则产物不会被前端检测到。",
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
               "- **地图（GIS）**: 地图项目位于 `当前工作区/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。若改了 layers/*.geojson 数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
               "- **地图分析**: 用户说“在义乌生成热力图/等时圈”、要求 OD 期望线或公交分析时，优先使用 map_analyze 生成并显示临时结果；结果明确标记演示数据，用户确认后再保存为正式图层。",
-              "- **主动询问（克制但必要）**: 当用户要求撰写/生成/修改文字内容，且关键信息缺失 ≥2 项（文档类型、篇幅、受众、数据来源、风格、范围；修改类还包括改哪一段、改成什么、是否保留原格式）时，必须调用 ask_user 主动提问，等待回答后再继续。只缺 1 项时按默认值继续，并在结果中注明假设。整轮默认最多问 1 次，确有必要至多 2 次；相关问题合并到同一题（用 options 列组合选项让用户一次确认）。**禁止请示式提问**（「需要我继续吗」「下一步怎么走」）——直接继续，或在结论里给出可选项。用户已回答过的信息不得再问。",
+              "- **主动询问（默认不问）**: 默认按专业判断直接执行；信息缺失时采用合理默认值（修改类默认判断改哪一段、改成什么、是否保留原格式），并在结论中写明假设。**不要**为了“信息完整”调用 ask_user，任务收尾阶段更不得询问。只有遇到无法继续的硬阻塞（文件被占用、原文受保护、权限缺失），或用户明确要求先确认时，才调用 ask_user，并把相关问题合并到一次。**禁止请示式提问**（「需要我继续吗」「下一步怎么走」）——直接继续，或在结论里给出可选项。用户已回答过的信息不得再问。",
               "- **模板优先（重要）**: 用户要求写工可/可研/规划/汇报/交评/预可/选址/物流园区/年度报告等交通规划文体时，先用 read 读取 `" + PROJECT_DIR + "/templates/traffic-material/` 下对应模板（14 个），按其章节骨架、必备图表与格式规则写作；不要凭记忆自造结构。注意模板在项目目录而不在当前工作区，必须用这个绝对路径。",
               "- **改文档先读后改**: 修改既有 Office 文档时，先 `officecli view <file> text|outline` 确认内容，再 `get` 取真实路径，最后 `set/add`；禁止直接 set 未知路径。",
               "- **草稿确认**: 如果已经生成 Markdown 草稿，调用 ask_user 时用 `previewFile` 指向该草稿（工作区相对路径），让用户先看内容再继续写入。",
@@ -1602,7 +1602,11 @@ class AgentManager extends EventEmitter {
         };
       },
     });
-    const localBash = createLocalBashOperations();
+    // 显式指定本机 bash：SDK 自带的解析在 PATH 缺 Git 时会命中
+    // C:\Windows\System32\bash.exe（WSL 旧启动器），输出 UTF-16 乱码。
+    // 这里与探测端共用同一个解析结果，保证"探测说可用"与"实际执行"是同一个 shell。
+    const bashShell = resolveBashShell().shell;
+    const localBash = createLocalBashOperations(bashShell ? { shellPath: bashShell } : {});
     // 工作区级写锁只覆盖单次工具调用：长任务整轮持锁会把并发 Run 全部挡在门外
     // （实测 33 次「文件正在被其他任务修改」都来自这种整轮持锁）。
     const withWorkspaceWriteLock = async (ctx, kind, action) => {
@@ -5446,7 +5450,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
           "- 当前为 Review：先识别材料类型，再用 kb_search 查找候选规范；只有实际调用 kb_read 并成功返回全文的规范才能作为依据。",
           "- 必须维护规范依据台账：读取规范后使用系统分配的 R-* 编号；每条问题使用 F-* 编号，并在报告中写明 R-* 依据。搜索命中但未 kb_read 的文件只能标记为候选/未采用。",
           "- 审查默认生成审查报告和批注副本。优先用 review_copy 复制原文件，再对副本使用 officecli 添加批注；不得在用户明确确认前修改当前工作文件。",
-          "- 报告生成并回读验证后，必须调用 ask_user 询问是否写回原文件；只有用户明确确认后系统才会解除原文保护。拒绝或超时就保留报告/副本并说明未写回。",
+          "- 报告生成并回读验证后，默认不写回原文件：保留报告与批注副本，并在结论中说明。只有用户在本轮任务中明确要求写回原文时，才调用 ask_user 做一次确认；未明确要求时不得询问。",
           "- 聊天收尾先用 1-3 句直接给审查结论（通过/有风险/受阻、关键影响、是否已写回），不要输出固定 Markdown 五段总结或重复过程；详细依据与审查问题写入报告/台账，用户需要时再展开。最后调用 complete_task。",
           "- Review 禁止使用 bash、地图编辑、浏览器自动化和 memory_update；Office 文档一律用 officecli，文本报告用 write/edit。",
         );
@@ -5484,7 +5488,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         `- **当前工作区（绝对路径）**: ${ws}`,
         "Office files live in the current workspace folder above. " + OFFICE_TOOL_RULE,
         "- Word 批注：先 get/query 找真实 `/body/p[...]` 路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"...\\\" --json`，完成后 query comment 校验。仅在 sharing violation 或明确的进程占用错误时关闭 WPS/Word/OfficeCLI 预览；Access denied/is denied/EPERM/EACCES 应说明服务进程写权限受限。",
-        "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text." + bashEnvironmentHint(),
+        bashWorkspaceRule(),
         "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区（绝对路径见上），禁止写入项目目录。否则产物不会被前端检测到。",
         "- **临时文件**: 中间工作文件（脚本、JSON 片段、解包目录、备份等）请集中放在工作区内以点开头的临时目录（如 `.work/`），并在任务收尾时删除；不要把中间文件留在用户的工作区里（用户目录只应留交付产物）。",
         "- **地图（GIS）**: 地图项目位于 `" + ws + "/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图）。用户在地图模式下对话时用 map_read/map_edit/map_import 工具。",

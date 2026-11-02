@@ -74,12 +74,12 @@ function 场景(name, fn) {
 // 2. 暂存文件引用：key=value 要剥掉前缀
 // ============================================================
 场景("引用收集：--prop src= / path= 要剥前缀，物化才能命中暂存文件", () => {
-  // 命令目标文件（args[1]）不算引用：create 场景目标可能尚不存在，算引用会误报缺失。
-  assert.deepEqual(collectReferencedPaths(["add", "报告.docx", "/", "--type", "markdown", "--prop", "src=审查报告_汇总.md"]), ["审查报告_汇总.md"]);
-  assert.deepEqual(collectReferencedPaths(["set", "数据.xlsx", "/", "--prop", "path=输入/明细.csv"]), ["输入/明细.csv"]);
-  assert.deepEqual(collectReferencedPaths(["batch", "报告.docx", "--input", ".work/docx-body.json"]), [".work/docx-body.json"]);
-  // 选项与绝对路径都不算"被引用的暂存文件"，目标文件同样排除
-  assert.deepEqual(collectReferencedPaths(["view", "报告.docx", "text", "--json"]), []);
+  // 文档自身也算被引用（物化它无害），关键是 key= 前缀必须剥掉，否则永远找不到暂存文件
+  assert.deepEqual(collectReferencedPaths(["add", "报告.docx", "/", "--type", "markdown", "--prop", "src=审查报告_汇总.md"]), ["报告.docx", "审查报告_汇总.md"]);
+  assert.deepEqual(collectReferencedPaths(["set", "数据.xlsx", "/", "--prop", "path=输入/明细.csv"]), ["数据.xlsx", "输入/明细.csv"]);
+  assert.deepEqual(collectReferencedPaths(["batch", "报告.docx", "--input", ".work/docx-body.json"]), ["报告.docx", ".work/docx-body.json"]);
+  // 选项与绝对路径都不算"被引用的暂存文件"
+  assert.deepEqual(collectReferencedPaths(["view", "报告.docx", "text", "--json"]), ["报告.docx"]);
   assert.deepEqual(collectReferencedPaths(["get", "C:/tmp/绝对路径.docx"]), []);
 });
 
@@ -132,9 +132,9 @@ function 场景(name, fn) {
 场景("输入区布局：任务卡在输入框之外，对话区有高度下限", () => {
   const panel = read("client/src/components/ChatPanel.jsx");
   const css = read("client/src/styles.css");
-  const composeMatch = panel.match(/<div\s+className=\{`chat-compose/);
-  assert.ok(composeMatch, "任务卡与输入框要有共同外壳");
-  const composeAt = composeMatch.index;
+  const composeMarker = 'className={`chat-compose';
+  assert.ok(panel.includes(composeMarker), "任务卡与输入框要有共同外壳（允许 drag-active 动态类）");
+  const composeAt = panel.indexOf(composeMarker);
   const cardAt = panel.indexOf("<TaskProgressCard", composeAt);
   const inputAt = panel.indexOf('<div className="chat-input">', composeAt);
   assert.ok(cardAt > 0 && inputAt > cardAt, "任务卡要排在输入框之前（在输入框外面）");

@@ -248,13 +248,14 @@ try {
   assert.match(widthStyles, /\.center-chat-slot \.msg\.user \.msg-main \{ width: auto; max-width: min\(78%, 540px\); \}/, "用户气泡应随内容收缩（不再固定宽度）");
   assert.match(widthStyles, /\.center-chat-slot \.msg\.user \.bubble \{ width: fit-content/, "用户气泡应为内容宽度");
   // 会话流改版（2026-10-31）把硬编码 880px 改为统一的内容列令牌：
-  // .chat-body > .msg 由 --msg-content-max（min(100%, 720px)）限宽并居中。
-  assert.match(widthStyles, /--msg-content-max: min\(100%, 720px\)/, "消息内容列宽度应由 --msg-content-max 统一");
+  // .chat-body > .msg 由 --msg-content-max（min(100%, 760px)）限宽并居中。
+  assert.match(widthStyles, /--msg-content-max: min\(100%, 760px\)/, "消息内容列宽度应由 --msg-content-max 统一");
   assert.match(widthStyles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,240}?max-width: var\(--msg-content-max\)/, "消息列应改用统一内容宽度令牌并按令牌居中");
   assert.doesNotMatch(widthStyles, /\.msg-main > \.message-process-fold \{ order: -1; \}/, "执行过程顺序应由 DOM 表达，不再用 flex order 制造视觉/阅读顺序错位");
   assert.match(chatPanelSource, /\{renderMessageBlocks\(\)\}[\s\S]{0,300}?<div className="msg-blocks">|className="msg-blocks">[\s\S]{0,60}?\{renderMessageBlocks\(\)\}/, "过程折叠与正文按输出顺序同列渲染");
   assert.match(widthStyles, /\.msg-main > \.msg-header \{ margin-bottom: 2px; order: -2; \}/, "标题应保持在最上方");
-  assert.match(widthStyles, /\.msg \.markdown-body \{ line-height: 1\.65; \}/, "对话正文行距应收紧");
+  // 规范 v2.0 §4：对话正文 14px / 行高 1.75（与 ZCode 同口径），不再压到 1.65。
+  assert.match(widthStyles, /\.msg \.markdown-body \{ font-size: 14px; line-height: 1\.75; \}/, "对话正文应为 14px / 1.75");
   assert.match(chatPanelSource, /待审批：\{approvalLabel\}/, "待审批应显示在输入栏");
   assert.match(chatPanelSource, /待回答：\{String\(ask\.question/, "待回答应显示在输入栏");
   assert.match(chatPanelSource, /\/api\/agent\/approval/, "输入栏可直接提交审批");

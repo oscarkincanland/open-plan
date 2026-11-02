@@ -1595,6 +1595,7 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
         <div className="sp-section-title"><Icon name="menu" size={12} /> 高级</div>
         <div className="sp-note">命令面板：按 Ctrl/Cmd+K，或点击左侧顶部搜索按钮打开。</div>
         <button className="sp-danger" onClick={resetAll}>重置界面状态与设置</button>
+        <div className="sp-note">字体：OPPO Sans 4.0（版权归 Guangdong OPPO Mobile Telecommunications Corp., Ltd. 所有），依据 OPPO Sans Fonts License Agreement 随软件内嵌。</div>
         <div className="sp-note">版本 {version || "v0.10.0"}</div>
       </div>
       }

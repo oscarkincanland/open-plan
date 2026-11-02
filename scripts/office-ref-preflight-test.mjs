@@ -86,12 +86,15 @@ await test("抽取结果去重", () => {
   assert.equal(refs.filter((item) => item === "a.md").length, 1);
 });
 
-await test("命令的目标文件不算引用（否则 create 会被误判为缺失）", () => {
+await test("只有 create 的目标文件不算引用（add/set/batch 仍算引用）", () => {
   const create = collectReferencedPaths(["create", "新文档.docx"]);
-  assert.equal(create.includes("新文档.docx"), false, "create 的目标文件不是引用");
+  assert.equal(create.includes("新文档.docx"), false, "create 的目标文件本来就不存在，不能当引用");
   const add = collectReferencedPaths(["add", "报告.docx", "/", "--type", "markdown", "--prop", "src=ch01.md"]);
-  assert.equal(add.includes("报告.docx"), false, "add 的目标文件不是引用");
+  assert.equal(add.includes("报告.docx"), true, "add 的目标是既有文档，物化无害且历史契约要求算引用");
   assert.ok(add.includes("ch01.md"), "真正的引用仍要被抽出来");
+  const set = collectReferencedPaths(["set", "数据.xlsx", "/", "--prop", "path=输入/明细.csv"]);
+  assert.equal(set.includes("数据.xlsx"), true, "set 的目标是既有文档，应算引用");
+  assert.ok(set.includes("输入/明细.csv"), "path= 前缀仍要剥掉");
 });
 
 console.log("\n▶ 引用预检");

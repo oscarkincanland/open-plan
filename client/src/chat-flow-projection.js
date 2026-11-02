@@ -12,7 +12,7 @@
  * 本模块必须保持纯函数、零 React 依赖，Node 测试可直接调用。
  */
 import { toolIdentity } from "./事件展示.js";
-import { runToolDetailText } from "./运行轨迹.js";
+import { formatDuration, runToolDetailText } from "./运行轨迹.js";
 import { 计算展示字符数 } from "./components/流式文本队列.js";
 
 /**
@@ -59,6 +59,47 @@ export function toolStateOf(block, traceTool = null) {
   return "ok";
 }
 
+/**
+ * 把运行轨迹里的工具结果合并回消息块。
+ *
+ * 为什么要合并：历史恢复时消息块可能拿不到结果（toolResult 消息缺失或被窗口截断），
+ * 此时块会永远停在 done=false / 空结果，界面上表现为「工具一直转圈、展开没有内容」。
+ * 轨迹（reduceRunTrace 的产物）带 tool_end 的结果，可以补齐这一段。
+ *
+ * 合并规则（只在块缺结果时补，不覆盖块自己的内容）：
+ *   - output / result：块为空才取轨迹值；
+ *   - done：块未完结且轨迹已完结时置为 true；
+ *   - isError / duration：块缺值时取轨迹值。
+ */
+export function mergeTraceTool(block, traceTool) {
+  if (!block || !traceTool) return block;
+  const output = String(block.output || "");
+  const result = String(block.result || "");
+  const traceOutput = String(traceTool.output || "");
+  const traceResult = String(traceTool.result || "");
+  const nextOutput = output || traceOutput;
+  const nextResult = result || traceResult;
+  const traceDone = traceTool.status === "done";
+  const nextDone = block.done === true ? true : (traceDone && (nextOutput || nextResult) ? true : block.done);
+  const nextIsError = block.isError === true ? true : (traceTool.isError ? true : block.isError);
+  const nextDuration = Number.isFinite(block.duration) ? block.duration : (traceTool.duration ?? block.duration);
+  if (
+    nextOutput === output
+    && nextResult === result
+    && nextDone === block.done
+    && nextIsError === block.isError
+    && nextDuration === block.duration
+  ) return block;
+  return {
+    ...block,
+    output: nextOutput,
+    result: nextResult,
+    done: nextDone,
+    isError: nextIsError,
+    duration: nextDuration,
+  };
+}
+
 function traceToolIndex(trace) {
   const byId = new Map();
   const byName = [];
@@ -66,15 +107,29 @@ function traceToolIndex(trace) {
     if (tool.toolCallId) byId.set(String(tool.toolCallId), tool);
     else byName.push(tool);
   }
-  return { byId, byName };
+  return { byId, byName, used: new Set() };
 }
 
+/**
+ * 找到块对应的轨迹工具：
+ *   1. 有 id 且轨迹里有同 id → 直接命中；
+ *   2. 否则按名字匹配尚未被占用的轨迹工具（块与轨迹都是时间序，取最早未占用的一条），
+ *      避免两个同名工具被合并到同一条轨迹上。
+ */
 function findTraceTool(index, block) {
   const id = String(block?.toolCallId || block?.id || "");
-  if (id && index.byId.has(id)) return index.byId.get(id);
-  if (!id && block?.name) {
-    for (let i = index.byName.length - 1; i >= 0; i -= 1) {
-      if (index.byName[i].name === block.name) return index.byName[i];
+  if (id && index.byId.has(id)) {
+    const hit = index.byId.get(id);
+    index.used.add(hit);
+    return hit;
+  }
+  if (block?.name) {
+    for (let i = 0; i < index.byName.length; i += 1) {
+      const candidate = index.byName[i];
+      if (index.used.has(candidate)) continue;
+      if (candidate.name !== block.name) continue;
+      index.used.add(candidate);
+      return candidate;
     }
   }
   return null;
@@ -101,10 +156,13 @@ export function buildRunTimeline({ blocks = [], trace = null } = {}) {
     const id = String(block.id || block.toolCallId || `${block.type}:${items.length}`);
     switch (block.type) {
       case "thinking": {
-        const chars = String(block.text || "").length;
+        // 兼容 Pi 的 thinking 字段与旧前端写入的 text 字段；空思考块不渲染
+        // （历史里存在只有签名的空 thinking 块，展开后会是空白行）。
+        const text = String(block.text || block.thinking || "");
+        if (!text.trim()) break;
         items.push({
           kind: "thinking", id, icon: "brain", verb: "思考", obj: "内部推理",
-          timeText: chars ? `${chars.toLocaleString()} 字` : "", state: "ok", text: String(block.text || ""),
+          timeText: `${text.length.toLocaleString()} 字`, state: "ok", text,
         });
         break;
       }
@@ -112,8 +170,11 @@ export function buildRunTimeline({ blocks = [], trace = null } = {}) {
         items.push({ kind: "text", id, cap: "阶段结论", text: String(block.text || "") });
         break;
       case "tool": {
+        // 轨迹里同名/同 id 的工具结果合并回块：历史恢复时块可能没拿到结果。
+        const traceTool = findTraceTool(index, block);
+        const merged = mergeTraceTool(block, traceTool);
         seenToolKeys.add(String(block.toolCallId || block.id || `byname:${block.name}`));
-        items.push({ kind: "tool", id, icon: toolIdentity(block.name).icon, block });
+        items.push({ kind: "tool", id, icon: toolIdentity(block.name).icon, block: merged });
         break;
       }
       case "subagent":
@@ -143,6 +204,8 @@ export function buildRunTimeline({ blocks = [], trace = null } = {}) {
   for (const tool of Array.isArray(trace?.tools) ? trace.tools : []) {
     const key = String(tool.toolCallId || `byname:${tool.name}`);
     if (seenToolKeys.has(key)) continue;
+    // 已被合并进某个块的轨迹工具不再补插，否则同一次调用会出现两行。
+    if (index.used.has(tool)) continue;
     // 无 id 的轨迹工具按「同名块已存在」去重，避免同一调用出现两行。
     if (!tool.toolCallId && Array.isArray(blocks) && blocks.some((b) => b?.type === "tool" && b?.name === tool.name)) continue;
     missing.push(tool);
@@ -183,6 +246,21 @@ export function summarizeTimeline(items = []) {
 }
 
 /**
+ * 折叠头呈述（会话流前端规范 §2.1 + ADR 0014）：把一轮 Run 的终态映射成状态点与一句文案。
+ * 只做纯映射，不读时间、无副作用，Node 可直接单测。步数不进 label ——
+ * 它由 RunFoldBar 单独渲染（字号与颜色比用时更弱）。
+ *
+ * @param {{ interrupted?: boolean, failed?: boolean, risky?: boolean, elapsedMs?: number }} input
+ * @returns {{ state: "ok"|"warn"|"err"|"cancelled", label: string }}
+ */
+export function describeRunFold({ interrupted = false, failed = false, risky = false, elapsedMs = 0 } = {}) {
+  const state = interrupted ? "cancelled" : failed ? "err" : risky ? "warn" : "ok";
+  const headText = { ok: "已完成", warn: "完成（有风险）", err: "失败", cancelled: "已取消" }[state];
+  const ms = Number(elapsedMs) > 0 ? Number(elapsedMs) : 0;
+  return { state, label: ms > 0 ? `${headText} · 用时 ${formatDuration(ms)}` : headText };
+}
+
+/**
  * complete_task.summary → { what, conclusion, detail }。
  *  - conclusion：优先取「结论」分节首段；无标题结构时取全文首段；
  *  - what：取「做了什么/完成工作/工作内容」分节（R-C 落地前可能缺失，缺失即空串不渲染）；
@@ -218,10 +296,13 @@ export function splitCompletionSummary(summary = "", finalText = "") {
   } else if (!titled.length) {
     const paragraphs = source.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
     conclusion = paragraphs[0] || source.slice(0, 200);
-    detail = paragraphs.slice(1).join("\n\n").trim() || source;
+    // 单段结语已被结论完整展示，详细展开保持为空，避免同一段文字出现两次。
+    detail = paragraphs.slice(1).join("\n\n").trim();
   } else {
     // 有分节但没有「结论」：结论取首个分节首段，detail 保留全文。
     conclusion = firstParagraph(bodyOf(titled[0])) || source.slice(0, 200);
+    // 该段已作为结论展示，从详细展开中移除首次出现，避免重复。
+    if (conclusion) detail = detail.replace(conclusion, "").trim();
   }
   removeSection(whatSection);
   const what = whatSection ? bodyOf(whatSection) : "";

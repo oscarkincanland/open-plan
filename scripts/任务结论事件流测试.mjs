@@ -419,5 +419,12 @@ test("officecli 两类高频失败给出可执行指引", () => {
   assert.match(agent源, /引用的文件不在磁盘上[\s\S]{0,80}?暂存区/, "文件不存在时要指出可能是暂存区未物化");
 });
 
+test("主动询问默认关闭：Work 不再强制 ask_user，Review 只在明确要求写回时确认", () => {
+  assert.match(agent源, /主动询问（默认不问）/, "Work 应改为默认不问");
+  assert.doesNotMatch(agent源, /必须调用 ask_user 主动提问/, "不得再强制信息缺失时提问");
+  assert.doesNotMatch(agent源, /必须调用 ask_user 询问是否写回原文件/, "Review 不得在收尾时强制询问写回");
+  assert.match(agent源, /只有用户在本轮任务中明确要求写回原文时，才调用 ask_user/, "Review 写回确认应只在用户明确要求时触发");
+});
+
 console.log(failed ? "\n✗ 任务结论事件流测试未通过\n" : "\n✓ 任务结论事件流测试全部通过\n");
 process.exit(failed ? 1 : 0);
