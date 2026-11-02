@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>真实会话回放 · 会话流改版确认稿 v3 · 规聚</title>
+<style>
+  :root {
+    --body-bg: #1a1a2e; --panel-bg: #16162a; --panel2-bg: #1e1e3a; --surface: #222240;
+    --text: #d4d4d4; --muted: #8a8a8a; --dim: #8a8d99; --accent: #8abeb7;
+    --border: #3a3a5c; --success: #b5bd68; --error: #cc6666; --warning: #f0c674;
+    --user-bg: #2a2a44; --user-fg: #eef2ff;
+    /* 动效令牌（DESIGN.md §157） */
+    --dur-fast: 120ms; --dur-base: 200ms; --dur-slow: 320ms; --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif; }
+  body { background: var(--body-bg); color: var(--text); font-size: 13px; line-height: 1.65; padding: 28px 16px 80px; }
+  code, .mono, pre { font-family: "Cascadia Code", Consolas, monospace; }
+  button { font-family: inherit; }
+
+  .page { max-width: 680px; margin: 0 auto; }
+  .page-title { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+  .page-sub { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .meta-bar { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--dim); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin-bottom: 18px; background: color-mix(in srgb, var(--panel2-bg) 60%, transparent); }
+  .meta-bar b { color: var(--text); font-weight: 600; }
+
+  .msg-user { display: flex; justify-content: flex-end; margin: 16px 0 10px; }
+  .msg-user .bubble { background: var(--user-bg); color: var(--user-fg); border-radius: 12px 12px 3px 12px; padding: 9px 14px; max-width: 82%; }
+
+  /* ==== 运行框：只装过程时间流，头部以运行时长为主 ==== */
+  .round { border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--panel-bg) 82%, transparent); overflow: hidden; }
+  .fold-head { display: flex; align-items: center; gap: 9px; width: 100%; padding: 11px 14px; background: none; border: none; cursor: pointer; color: var(--text); text-align: left; transition: background-color var(--dur-fast) var(--ease-out); }
+  .fold-head:hover { background: color-mix(in srgb, var(--surface) 45%, transparent); }
+  .fold-chev { color: var(--accent); display: inline-flex; transition: transform var(--dur-base) var(--ease-out); flex: none; }
+  .round.open .fold-chev { transform: rotate(90deg); }
+  .fold-title { font-size: 15px; font-weight: 700; }
+  .fold-meta { font-size: 11px; color: var(--muted); margin-left: auto; display: flex; align-items: center; gap: 10px; flex: none; }
+  .fold-meta .chip-ok { color: var(--success); display: inline-flex; align-items: center; gap: 4px; }
+  .fold-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur-slow) var(--ease-out); }
+  .round.open .fold-body { grid-template-rows: 1fr; }
+  .fold-body-inner { min-height: 0; overflow: hidden; }
+  .fold-pad { padding: 2px 14px 14px; opacity: 0; transform: translateY(-6px); transition: opacity var(--dur-slow) var(--ease-out), transform var(--dur-slow) var(--ease-out); }
+  .round.open .fold-pad { opacity: 1; transform: none; }
+
+  /* ==== 时间流 ==== */
+  .tl { border-left: 1px solid color-mix(in srgb, var(--border) 70%, transparent); margin: 4px 0 8px 5px; padding-left: 14px; display: flex; flex-direction: column; gap: 2px; }
+  .row, .textblock { opacity: 0; transform: translateY(6px); animation: row-in var(--dur-slow) var(--ease-out) forwards; animation-delay: calc(var(--i, 0) * 28ms); }
+  @keyframes row-in { to { opacity: 1; transform: none; } }
+  .row-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 8px; background: none; border: none; cursor: pointer; color: var(--text); text-align: left; border-radius: 6px; transition: background-color var(--dur-fast) var(--ease-out); }
+  .row-head:hover { background: color-mix(in srgb, var(--surface) 55%, transparent); }
+  .row-icon { flex: none; width: 24px; height: 24px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--surface) 80%, transparent); border: 1px solid var(--border); color: var(--dim); transition: color var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out); }
+  .row:hover .row-icon { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+  .row-verb { font-size: 12px; font-weight: 600; flex: none; }
+  .row-obj { font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-time { font-size: 11px; color: var(--muted); margin-left: auto; flex: none; }
+  .row-state { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+  .row-state.ok { background: var(--success); }
+  .row-state.err { background: var(--error); }
+  .row-chev { color: var(--accent); display: inline-flex; transition: transform var(--dur-base) var(--ease-out); flex: none; }
+  .row.open .row-chev { transform: rotate(90deg); }
+  .row-detail-wrap { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur-base) var(--ease-out); }
+  .row.open .row-detail-wrap { grid-template-rows: 1fr; }
+  .row-detail { min-height: 0; overflow: hidden; margin: 0 8px 0 32px; opacity: 0; transform: translateY(-4px); transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out); }
+  .row.open .row-detail { opacity: 1; transform: none; }
+  .row-detail pre { margin: 6px 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: color-mix(in srgb, var(--panel2-bg) 70%, transparent); font-size: 12px; color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow-y: auto; }
+
+  .textblock { padding: 5px 8px 7px 32px; font-size: 13px; color: var(--text); }
+  .textblock .tb-cap { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+
+  /* ==== 框外总结：无框，直接排在正文流里 ==== */
+  .summary-block { margin-top: 16px; padding: 0 2px; }
+  .cap { font-size: 11px; color: var(--muted); letter-spacing: 0.4px; }
+  .sum-what { margin-top: 8px; font-size: 13px; color: var(--text); }
+  .sum-what b { font-weight: 700; }
+  .sum-label { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--accent); margin: 14px 0 5px; }
+  .sum-conclusion { font-size: 15px; font-weight: 700; color: var(--text); line-height: 1.55; }
+  .sum-detail { margin-top: 2px; }
+  .sum-detail p { font-size: 13px; color: var(--text); margin: 6px 0; }
+  .sum-detail h4 { font-size: 14px; font-weight: 700; color: var(--text); margin: 12px 0 4px; }
+  .sum-detail ul { margin: 4px 0 6px 16px; }
+  .sum-detail li { margin-bottom: 3px; color: var(--text); }
+  .sum-detail b { font-weight: 700; }
+  .sum-detail code { font-size: 12px; background: color-mix(in srgb, var(--surface) 70%, transparent); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; color: var(--accent); }
+  .sum-detail pre { font-size: 12px; background: color-mix(in srgb, var(--panel2-bg) 80%, transparent); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; overflow-x: auto; margin: 6px 0 8px; }
+  .sum-detail pre code { background: none; border: none; padding: 0; color: var(--dim); }
+  .sum-detail table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 12.5px; }
+  .sum-detail th, .sum-detail td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
+  .sum-detail th { color: var(--dim); font-weight: 600; background: color-mix(in srgb, var(--surface) 40%, transparent); }
+
+  /* ==== 本轮产物：只有产物本身 ==== */
+  .result-card { margin-top: 16px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--panel2-bg) 55%, transparent); overflow: hidden; }
+  .rc-head { display: flex; align-items: center; gap: 8px; padding: 9px 14px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--dim); }
+  .rc-head .rc-title { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text); }
+  .rc-head .rc-meta { margin-left: auto; }
+  .rc-files { padding: 4px 6px; }
+  .file-row { display: flex; align-items: center; gap: 10px; padding: 8px 8px; border-radius: 6px; transition: background-color var(--dur-fast) var(--ease-out); }
+  .file-row:hover { background: color-mix(in srgb, var(--surface) 45%, transparent); }
+  .file-icon { flex: none; color: var(--accent); display: inline-flex; }
+  .file-row .f-main { min-width: 0; }
+  .file-row .f-name { font-size: 13px; font-weight: 600; color: var(--text); }
+  .file-row .f-name .badge { margin-left: 8px; font-size: 10px; font-weight: 600; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); border-radius: 999px; padding: 0 7px; vertical-align: 1px; }
+  .file-row .f-path { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-row .f-meta { font-size: 11px; color: var(--dim); flex: none; }
+  .file-row .f-actions { flex: none; display: flex; gap: 5px; }
+  .file-row .f-actions button { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--accent); background: none; border: 1px solid var(--border); border-radius: 4px; padding: 3px 8px; cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out); }
+  .file-row .f-actions button:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+
+  .demo-controls { display: flex; gap: 8px; margin: 10px 0 4px; }
+  .demo-controls button { font-size: 11px; color: var(--dim); background: none; border: 1px dashed var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer; transition: color var(--dur-fast), border-color var(--dur-fast); }
+  .demo-controls button:hover { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); }
+
+  .footnote { margin-top: 28px; font-size: 11px; color: var(--muted); border-top: 1px dashed var(--border); padding-top: 12px; }
+  .footnote li { margin-left: 16px; margin-bottom: 3px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+    .row, .textblock { opacity: 1; transform: none; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="page-title">真实会话回放 · 会话流改版确认稿 v3</div>
+  <div class="page-sub">数据取自 run_b1a094cf 真实事件 · 头部只显示运行时长 · 总结无框直接排文 · 结论含表格 · 产物卡只留产物</div>
+  <div class="meta-bar">
+    <span>模式 <b>Work</b></span>
+    <span>模型 <b>deepseek-v4.1-flash</b></span>
+    <span>时间 <b>2026-10-30 21:32:20 → 21:33:37</b></span>
+    <span>用时 <b>1 分 17 秒</b></span>
+    <span>工作区 <b>G:\2025年度绩效考核材料</b></span>
+  </div>
+
+  <div class="msg-user"><div class="bubble">解决一下这台机器bash没装wsl的问题？安装一下吧</div></div>
+
+  <div class="demo-controls">
+    <button id="btn-collapse">▶ 播放收起动效（时间流收进一行）</button>
+    <button id="btn-expand">展开全部明细</button>
+  </div>
+
+  <div class="round open" id="r1">
+    <button class="fold-head" data-toggle="r1" aria-expanded="true">
+      <span class="fold-chev" data-icon="chevronRight"></span>
+      <span class="fold-title">已运行 1 分 17 秒</span>
+      <span class="fold-meta"><span>工具 8</span><span>文件 1</span><span class="chip-ok"><i data-icon="shield"></i>验收通过</span></span>
+    </button>
+    <div class="fold-body"><div class="fold-body-inner"><div class="fold-pad">
+      <div class="tl" id="timeline"></div>
+    </div></div></div>
+  </div>
+
+  <!-- 框外总结：无框 -->
+  <div class="summary-block">
+    <span class="cap">本轮总结 · 运行 1 分 17 秒</span>
+    <div class="sum-what"><b>做了什么</b>：定位了 bash 报错的根因，确认项目侧没有可绕开的配置开关，并把完整安装步骤与避坑指南写成文档交付。</div>
+    <div class="sum-label"><i data-icon="check"></i>结论</div>
+    <div class="sum-conclusion">WSL 无法由我代装，需你在本机以管理员身份执行一次；根因与完整操作步骤已查明并写成文档。</div>
+    <div class="sum-label"><i data-icon="list"></i>详细展开</div>
+    <div class="sum-detail md-body" id="sum-detail"></div>
+  </div>
+
+  <!-- 本轮产物：只有产物 -->
+  <div class="result-card">
+    <div class="rc-head">
+      <span class="rc-title"><i data-icon="flow"></i>本轮产物</span>
+      <span class="rc-meta">1 个文件</span>
+    </div>
+    <div class="rc-files">
+      <div class="file-row">
+        <span class="file-icon" data-icon="md"></span>
+        <div class="f-main">
+          <div class="f-name">WSL安装操作单.md<span class="badge">新增</span></div>
+          <div class="f-path">G:\2025年度绩效考核材料\WSL安装操作单.md</div>
+        </div>
+        <span class="f-meta">4.2 KB</span>
+        <span class="f-actions">
+          <button><i data-icon="externalLink"></i>打开</button>
+          <button><i data-icon="locate"></i>定位</button>
+          <button><i data-icon="refresh"></i>回滚</button>
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="footnote">
+    <ul>
+      <li><b>头部</b>：不再显示「受阻/已完成」状态词，直接以「已运行 1 分 17 秒」为主标题；右侧仅保留 工具数 / 文件数 / 验收结果。</li>
+      <li><b>总结</b>：无框，直接排在正文流里——做了什么 → 结论（大字）→ 详细展开（分节 + 表格 + 命令代码块）；不再显示「未完成/受阻」。</li>
+      <li><b>产物卡</b>：只保留产物文件行（名称/路径/大小/操作），不再有目标达成/文件变更/验证三格。</li>
+      <li><b>详细展开的内容口径</b>：R-C 落地后由 complete_task 的 summary 直接渲染（本页取自真实 run 的显式声明 + 操作单内的真实情况判断表）。</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+/* ==== 项目原版图标（Icon.jsx PATHS 原样内联，viewBox 24） ==== */
+const P = {
+  chevronRight: '<path d="M9 18l6-6-6-6"/>',
+  flow: '<circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 6h5a4 4 0 0 1 4 4v6"/><path d="M16 16l2 2-2 2"/>',
+  brain: '<path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>',
+  edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+  list: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+  check: '<path d="M20 6L9 17l-5-5"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  md: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 15v-5l2 2 2-2v5"/><path d="M8 18h8"/>',
+  shield: '<path d="M12 3 20 6v5c0 5-3.4 8.3-8 10-4.6-1.7-8-5-8-10V6z"/><path d="m8.5 12 2.2 2.2 4.8-4.8"/>',
+  externalLink: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>',
+  locate: '<path d="M12 21s-7-5.4-7-11a7 7 0 0 1 14 0c0 5.6-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>',
+  refresh: '<path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/>',
+  warning: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>'
+};
+function icon(name, size = 14, sw = 2) {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[name] || ""}</svg>`;
+}
+document.querySelectorAll("[data-icon]").forEach((el) => { el.innerHTML = icon(el.dataset.icon, el.classList.contains("file-icon") ? 20 : 13); });
+
+const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/* 极简 Markdown：## 标题 / **粗体** / `行内码` / - 列表 / ``` 代码块 / | 表格 | */
+function md(src) {
+  const lines = esc(src).split(/\r?\n/);
+  let html = "", inCode = false, inList = false, tableBuf = null;
+  const closeList = () => { if (inList) { html += "</ul>"; inList = false; } };
+  const flushTable = () => {
+    if (!tableBuf) return;
+    const rows = tableBuf;
+    tableBuf = null;
+    const isSep = (r) => /^\|[\s:|-]+\|?$/.test(r.trim());
+    const cells = (r) => r.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+    if (rows.length >= 2 && isSep(rows[1])) {
+      const head = cells(rows[0]);
+      html += "<table><tr>" + head.map((c) => `<th>${c}</th>`).join("") + "</tr>";
+      for (const r of rows.slice(2)) html += "<tr>" + cells(r).map((c) => `<td>${c}</td>`).join("") + "</tr>";
+      html += "</table>";
+    } else {
+      for (const r of rows) html += `<p>${r}</p>`;
+    }
+  };
+  for (const line of lines) {
+    if (line.trim().startsWith("```")) { flushTable(); closeList(); html += inCode ? "</code></pre>" : "<pre><code>"; inCode = !inCode; continue; }
+    if (inCode) { html += line + "\n"; continue; }
+    if (line.trim().startsWith("|")) { closeList(); tableBuf = tableBuf || []; tableBuf.push(line); continue; }
+    flushTable();
+    let l = line.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>");
+    if (/^#{1,4}\s/.test(l)) { closeList(); html += `<h4>${l.replace(/^#{1,4}\s/, "")}</h4>`; continue; }
+    if (/^[-*]\s/.test(l)) { if (!inList) { html += "<ul>"; inList = true; } html += `<li>${l.replace(/^[-*]\s/, "")}</li>`; continue; }
+    if (/^\d+\.\s/.test(l)) { if (!inList) { html += "<ul>"; inList = true; } html += `<li>${l.replace(/^\d+\.\s/, "")}</li>`; continue; }
+    closeList();
+    if (l.trim()) html += `<p>${l}</p>`;
+  }
+  flushTable();
+  closeList();
+  if (inCode) html += "</code></pre>";
+  return html;
+}
+
+/* ==== 详细展开：取自真实 run 的显式总结 + 操作单里的真实情况判断表 ==== */
+const DETAIL = `## 根因
+
+\`bash\` 工具是 pi SDK 内置的，在 Windows 上默认通过 WSL 执行命令。已核实两点：
+
+- pi SDK 的 \`dist\` 里没有任何 \`wsl.exe\` 硬编码，项目 \`server/\` 代码里也没有调用 WSL——这是内置工具的默认平台分支，项目侧无配置开关可绕
+- 本机（\`wsl --list\` 层面）连发行版都没有，因此每次 bash 调用都直接返回「没有已安装的分发版」
+
+## 你需要执行（管理员 PowerShell）
+
+先判断属于哪种情况：
+
+| 情况 | 含义 | 处理 |
+| --- | --- | --- |
+| A. WSL 功能已启用，缺发行版 | \`wsl.exe\` 存在，但没装 Ubuntu 等 | 只需装发行版，通常不用重启 |
+| B. WSL 功能未启用 | 连 WSL 内核都没有 | 需 \`wsl --install\` + 重启 |
+
+- 情况 A：\`wsl --install -d Ubuntu --no-launch\`（一般免重启），装完 \`wsl -d Ubuntu\` 初始化用户名密码
+- 情况 B：\`wsl --install\` 后**重启计算机**，重启后设置 Linux 用户名和密码；老版本 Windows 10 先用 dism 启用功能再装
+- 验证：\`wsl -l -v\`（VERSION 应为 2）、\`wsl -d Ubuntu -- bash -lc "uname -a"\`
+
+## 必须避开的坑
+
+装完后**不要**用 WSL 里的 npm 给本项目装依赖。项目在 \`E:\\open plan\`（WSL 路径 \`/mnt/e/open plan\`，有空格需加引号），WSL 的 npm 会把 \`node_modules\` 装成 Linux 二进制，而服务运行在 Windows Node 上，装完会直接起不来。需要装依赖时用桥接方式，命令在 WSL 发出、由 Windows npm 实际执行：
+
+\`\`\`bash
+cd "/mnt/e/open plan" && cmd.exe /c "npm install @earendil-works/pi-coding-agent@1.4.0 --save-exact"
+\`\`\`
+
+日常只读命令（\`ls\`、\`grep\`、\`node -v\`、\`git status\`）在 WSL 里跑没有问题。
+
+## 产出与替代方案
+
+- \`WSL安装操作单.md\`（工作区根目录）：情况判断、两种安装路径、Windows 10 的 dism 兜底、验证命令、跨平台二进制坑规避全收录
+- 免重启替代方案：装 Git for Windows 并让 bash 工具指向 Git Bash；或让宿主注册 pi 自带的 \`powershell\` 工具（更干净，天然没有跨平台二进制问题）
+- 装好后告诉我一声，我会立刻重跑 \`node -v\` 和依赖安装，把 SDK 升到 1.4.0`;
+document.getElementById("sum-detail").innerHTML = md(DETAIL);
+
+/* ==== 时间流（真实事件顺序） ==== */
+const TL = [
+  { t: "row", icon: "brain", verb: "思考", obj: "内部推理 · 安装路径与替代方案", time: "1,858 字 · 10.4 秒", state: "ok", detail: "用户想安装 WSL。关键问题：bash 工具走 WSL，所以我要跑 wsl.exe --install 就必须通过 bash……但 bash 本身依赖 WSL。这是死循环。\n\n错误信息是 WSL 的报错，说明 bash 工具调用 wsl.exe 执行命令。无法用 bash 来装 WSL。\n\nofficecli 是 .NET CLI，不能执行任意命令；browser 不能执行系统命令。所以：无法通过工具执行 wsl.exe --install。\n\n有一个更有价值的替代方案：不装 WSL，而是让 bash 工具改用 Git Bash / cmd。pi 的 bash 工具在 Windows 上通常用 PowerShell/cmd 或 WSL，取决于配置。让 bash 走 PowerShell（Windows 原生）就绕过了 WSL 依赖，免安装、免重启、免管理员权限。\n\n计划：1. 建 todo；2. 查 pi 文档关于 bash shell 的配置；3. 尝试用配置方式解决（若在写作用域内）；4. 若不能，给 WSL 安装指引。\n\n注意：用户明确说\"安装一下吧\"。但如果能通过配置解决（更快、更安全），应优先并说明。\n\n开始。" },
+  { t: "text", cap: "阶段结论", text: "这台机器的 bash 依赖 WSL，但我没法用 bash 去装 WSL，因为 bash 自己就走 wsl.exe，没发行版就启动不了。我先查 pi 的 shell 配置文档，看能不能让 bash 改走 Windows 原生 shell，这比装 WSL 更快，也免得你重启。" },
+  { t: "row", icon: "search", verb: "搜索内容", obj: "pi docs · wsl|powershell|SHELL", time: "0.04 秒", state: "ok", detail: "cli.md-144- | `bash` | Run shell commands |\ncli.md:145- | `powershell` | Run PowerShell commands on Windows |\nenvironment-variables.md:22- Commands run by the `bash` and `powershell` tools receive the current Pi session state…\n\n…（共 23,071 字符，40 条命中上限截断）" },
+  { t: "text", cap: "阶段结论", text: "关键发现：pi 有一个独立的 `powershell` 内置工具（\"Run PowerShell commands on Windows\"）——但我的工具列表里没有它（宿主只注册了 bash）。\n\n所以问题在于宿主（open-plan 项目）注册了 bash 工具，而 bash 在 Windows 上默认走 WSL。\n\n我再确认一下 bash 工具能不能改用 Git Bash，这样你不装 WSL 也能跑命令。" },
+  { t: "row", icon: "search", verb: "搜索内容", obj: "terminal-setup.md · wsl|git bash|bash.exe", time: "0.05 秒", state: "ok", detail: "terminal-setup.md:107- ### Position an IME candidate window in WSL\nterminal-setup.md:169- Windows Terminal uses Pi's Windows and WSL shortcut defaults.\nterminal-setup.md:186- Pi therefore uses Ctrl+Q for follow-ups on Windows and WSL." },
+  { t: "row", icon: "search", verb: "搜索内容", obj: "tools.md · wsl|Git Bash", time: "0.05 秒", state: "err", detail: "Path not found: E:\\open plan\\node_modules\\@earendil-works\\pi-coding-agent\\docs\\tools.md\n\n（该路径不存在 tools.md，Agent 随后改从 dist 源码确认）" },
+  { t: "text", cap: "阶段结论", text: "文档里没有直接的 bash 后端配置项。那 bash 工具在 Windows 上如何选择？可能在代码里。\n\n关键判断：我无法安装 WSL（需要管理员 + 重启 + 我的 shell 不可用）。这是硬性阻塞。\n\n但要给用户最有价值的答案：精确的安装命令、说明为什么不能代劳、装完后如何验证，以及关键坑——如果 bash 走 WSL，npm install 会在 Linux 环境执行，产出 Linux 版 node_modules（如 esbuild 二进制），可能与 Windows 运行的 Node 服务不兼容。所以\"装 WSL 来解决 npm 执行\"其实有坑——更好的方案是让 bash 走 Git Bash/PowerShell。\n\n我从 SDK 代码里确认 bash 工具在 Windows 上的选择逻辑，这样给你的建议才靠谱。" },
+  { t: "row", icon: "search", verb: "搜索内容", obj: "pi dist · wsl.exe|wsl -|PI_BASH_|bashPath", time: "0.11 秒", state: "ok", detail: "No matches found" },
+  { t: "row", icon: "brain", verb: "思考", obj: "dist 无匹配 → 查项目 server", time: "316 字 · 4.8 秒", state: "ok", detail: "dist 里没有 wsl.exe。说明 bash 工具的 WSL 调用不是 pi 内置的，而是 open-plan 宿主自己实现的。\n\n那我要看 open-plan 的 bash 工具实现。grep 项目 server 目录里的 wsl。\n\n这才是根因所在：宿主的 bash 工具写死了走 WSL。如果能改成 cmd/powershell/git bash，问题直接解决，不用装 WSL。" },
+  { t: "row", icon: "search", verb: "搜索内容", obj: "server/ · wsl", time: "0.06 秒", state: "ok", detail: "agent.mjs:1244- \"- The bash tool may run inside WSL: Windows paths like `F:\\\\...` are not directly valid there…\"\nagent.mjs:5087- \"- The bash tool may run inside WSL…\"\noffice.mjs:22- Office CLI 的文件参数必须相对当前工作区，避免 WSL/Windows 绝对路径混用…\nkb.mjs:666- 去掉 stdout 里可能的非 JSON 前缀行（如 wsl 提示）\n\n（仅命中提示词与注释，无调用点）" },
+  { t: "sys", text: "本轮已经进行 6 个模型回合。请先在正文里给用户一段 2-3 行的进度小结：已经完成了什么、当前正在做什么、下一步准备做什么。写完小结后再继续，不要在小结里调用工具。" },
+  { t: "text", cap: "阶段结论", text: "项目里也没有 wsl.exe 调用——只是提示词里提到\"bash 可能运行在 WSL 内\"。结论明确：bash 工具需要 WSL，要让它工作必须安装 WSL 发行版，而我无法执行安装。\n\n注意事项（很重要）：\n1. 需要管理员权限 + 重启一次\n2. 项目在 E: 盘，WSL 里路径是 /mnt/e/open plan（有空格，要引号）\n3. 关键坑：装完后 bash 里的 npm install 是 Linux 侧 npm，会把 node_modules 装成 Linux 二进制（esbuild 等原生模块），而 Windows 侧 node 服务读不了。\n\n我建议：装 WSL 是为了让 bash 工具可用；但 npm install 建议用 Windows 原生 PowerShell 执行，或用 cmd.exe /c 桥接调用 Windows npm。\n\n我应该写一份操作单到工作区，然后 complete_task blocked。产出台账：WSL安装操作单.md，内容要精炼实用。" },
+  { t: "row", icon: "edit", verb: "写入文件", obj: "WSL安装操作单.md", time: "0.02 秒", state: "ok", detail: "> write G:/2025年度绩效考核材料/WSL安装操作单.md\nSuccessfully wrote to G:/2025年度绩效考核材料/WSL安装操作单.md\n\n文档含七节：症状判断 / 情况A只装发行版 / 情况B完整安装 / 验证 / npm 跨平台坑 / 为什么无法代装 / 免重启替代方案（Git Bash 或注册 powershell 工具）。" },
+  { t: "row", icon: "list", verb: "更新清单", obj: "任务清单 2/3 完成", time: "0.01 秒", state: "ok", detail: "✓ 定位 bash 不可用根因：pi 内置 bash 工具在 Windows 默认走 WSL，无发行版\n✓ 确认是否存在免 WSL 的配置开关（无，仅 powershell 工具可替代）\n✗ 执行 WSL 安装（需管理员提权 + 重启，且我的命令通道正是那个不可用的 bash，无法代执行）" },
+  { t: "row", icon: "info", verb: "声明完成状态", obj: "blocked · 含完整总结与核验方式", time: "0.01 秒", state: "ok", detail: "已记录完成状态：受阻。请直接给用户最终答复。" }
+];
+
+const tl = document.getElementById("timeline");
+TL.forEach((item, i) => {
+  if (item.t === "row") {
+    tl.insertAdjacentHTML("beforeend", `
+      <div class="row" data-self style="--i:${i}">
+        <button class="row-head">
+          <span class="row-chev">${icon("chevronRight", 12)}</span>
+          <span class="row-icon">${icon(item.icon, 13)}</span>
+          <span class="row-verb">${esc(item.verb)}</span>
+          <span class="row-obj">${esc(item.obj)}</span>
+          <span class="row-time">${esc(item.time)}</span>
+          <span class="row-state ${item.state}"></span>
+        </button>
+        <div class="row-detail-wrap"><div class="row-detail"><pre>${esc(item.detail)}</pre></div></div>
+      </div>`);
+  } else if (item.t === "sys") {
+    tl.insertAdjacentHTML("beforeend", `
+      <div class="row" data-self style="--i:${i}">
+        <button class="row-head">
+          <span class="row-chev">${icon("chevronRight", 12)}</span>
+          <span class="row-icon" style="color:var(--warning)">${icon("warning", 13)}</span>
+          <span class="row-verb">系统提醒</span>
+          <span class="row-obj">进度小结请求</span>
+          <span class="row-time"></span>
+          <span class="row-state ok"></span>
+        </button>
+        <div class="row-detail-wrap"><div class="row-detail"><pre>${esc(item.text)}</pre></div></div>
+      </div>`);
+  } else if (item.t === "text") {
+    tl.insertAdjacentHTML("beforeend", `
+      <div class="textblock" style="--i:${i}">
+        <div class="tb-cap">${esc(item.cap)}</div>
+        ${md(item.text)}
+      </div>`);
+  }
+});
+
+/* ==== 交互 ==== */
+document.querySelectorAll("[data-toggle]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const round = document.getElementById(btn.dataset.toggle);
+    btn.setAttribute("aria-expanded", round.classList.toggle("open"));
+  });
+});
+document.querySelectorAll("[data-self]").forEach((row) => {
+  row.querySelector(".row-head").addEventListener("click", () => row.classList.toggle("open"));
+});
+document.getElementById("btn-collapse").addEventListener("click", () => {
+  document.querySelectorAll("[data-self].open").forEach((r) => r.classList.remove("open"));
+  document.getElementById("r1").classList.remove("open");
+  setTimeout(() => document.getElementById("r1").scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+});
+document.getElementById("btn-expand").addEventListener("click", () => {
+  document.getElementById("r1").classList.add("open");
+  document.querySelectorAll("[data-self]").forEach((r) => r.classList.add("open"));
+});
+</script>
+</body>
+</html>

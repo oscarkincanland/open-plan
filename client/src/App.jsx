@@ -1,6 +1,8 @@
 import React, { lazy, Suspense, useState, useCallback, useEffect, useRef } from "react";
 import SessionSidebar from "./components/SessionSidebar.jsx";
 import ChatPanel, { normalizeHistoryMessages } from "./components/ChatPanel.jsx";
+import ChatPanelLegacy from "./components/ChatPanelLegacy.jsx";
+import { mergeRunSummaries } from "./运行展示投影.js";
 import Resizer from "./components/Resizer.jsx";
 const SkillsManager = lazy(() => import("./components/SkillsManager.jsx"));
 const AgentMarket = lazy(() => import("./components/AgentMarket.jsx"));
@@ -174,7 +176,7 @@ function buildHistoryMessages(entries = []) {
         const lastAssistant = [...msgs].reverse().find((item) => item.role === "assistant");
         if (lastAssistant) lastAssistant.blocks.push({
           type: "tool", id: histId(), name: m.toolName || "tool result", input: "",
-          output, result: output, done: true, isError: !!m.isError, expanded: false, duration: null,
+          output, result: output, done: true, isError: !!m.isError, duration: null,
         });
       }
       continue;
@@ -190,14 +192,18 @@ function buildHistoryMessages(entries = []) {
         else if (b.type === "image" || b.type === "input_image") {
           const src = historyImageData(b);
           if (src) images.push(src);
-        } else if (b.type === "thinking") blocks.push({ type: "thinking", text: b.thinking || "" });
+        } else if (b.type === "thinking") {
+          // 空 thinking（只有签名/被省略内容）不能变成一条展开后全白的思考行。
+          const thinkingText = b.thinking || b.text || "";
+          if (String(thinkingText).trim()) blocks.push({ type: "thinking", text: thinkingText });
+        }
         else if (b.type === "toolCall") {
           const callId = b.id || b.toolCallId || histId();
           const rawInput = b.input ?? b.arguments ?? b.params ?? "";
           const input = typeof rawInput === "string" ? rawInput : JSON.stringify(rawInput, null, 2);
           const block = {
             type: "tool", id: callId, name: b.toolName || b.name || "tool", input,
-            output: "", result: "", done: false, isError: false, expanded: false, duration: null,
+            output: "", result: "", done: false, isError: false, duration: null,
           };
           blocks.push(block);
           toolBlocks.set(callId, block);
@@ -221,6 +227,50 @@ function buildHistoryMessages(entries = []) {
     });
   }
   return msgs;
+}
+
+/**
+ * Run 摘要卡（"本轮任务完成/失败…"）转成消息。
+ *
+ * 首屏与"加载更早"必须共用同一份规则：此前分页路径漏了这一步，
+ * 旧页缺 runSummary 会让 associateRunMessages 找不到本轮 Run，
+ * 已加载的旧轮次因此退回旧渲染形态（与首屏不一致）。
+ *
+ * @param {Array} runs listRuns 返回的 Run 列表
+ * @returns {Array} 可直接交给 mergeRunSummaries 的摘要消息
+ */
+function buildRunSummaryMessages(runs = []) {
+  return [...(runs || [])]
+    .filter((run) => run?.status)
+    .filter((run, index, list) => list.findIndex((item) => item.id === run.id) === index)
+    .sort((a, b) => String(a.startedAt || "").localeCompare(String(b.startedAt || "")))
+    .map((run, index, list) => ({
+      id: `run-summary-${run.id}`,
+      role: "system",
+      text: run.summary || (run.status === "running" ? "本轮任务仍在执行中" : `本轮任务${run.status === "failed" ? "失败" : run.status === "cancelled" ? "已取消" : "完成"}，处理 ${run.artifacts?.length || 0} 个文件`),
+      products: (run.artifacts || []).map((a) => a.path).filter(Boolean),
+      artifacts: run.artifacts || [],
+      runId: run.id,
+      runStatus: run.status,
+      references: run.references || [],
+      task: run.task || null,
+      status: run.status === "running" ? "streaming" : "done",
+      summary: true,
+      runIndex: index + 1,
+      runCount: list.length,
+      runMode: run.task?.mode || "agent",
+      // 完成语义：显式 complete_task 或服务端推断结果
+      completion: run.completion || null,
+      eventCount: Array.isArray(run.events) ? run.events.length : 0,
+      events: Array.isArray(run.events) ? run.events.map((event, eventIndex) => ({
+        ...event,
+        key: `history:${run.id}:${event.seq || eventIndex}`,
+      })) : [],
+      expanded: true,
+      startedAt: run.startedAt || null,
+      finishedAt: run.finishedAt || null,
+      createdAt: run.finishedAt || run.startedAt || null,
+    }));
 }
 
 function sameWorkspacePath(a, b) {
@@ -427,6 +477,8 @@ export default function App() {
   const [restoredRunHint, setRestoredRunHint] = useState(null);
   const restoredRunProbedRef = useRef(false);
   const [historyWindow, setHistoryWindow] = useState(null); // 服务端为长会话返回的展示窗口信息
+  // 历史会话切换中的加载态：缓存未命中时用它驱动骨架屏，替代此前的空白等待。
+  const [historyLoading, setHistoryLoading] = useState(false);
   // v0.13.2：当前会话已加载助手消息里的外部链接（ChatPanel 提取，Links 页签展示）。
   const [chatLinks, setChatLinks] = useState([]);
   const [sessionResumeError, setSessionResumeError] = useState(null); // { sessionId, message } Agent 恢复失败时历史只读
@@ -1100,7 +1152,18 @@ export default function App() {
         setTabs([]);
         setActiveTab(null);
       } catch (e) {
-        console.warn("切换到会话工作区失败，仍尝试加载历史:", e.message);
+        // 工作区不可用就不要再加载这份历史：否则会出现"会话 A 的历史 + 会话 B 的文件树"
+        // 的错配（用户无法判断自己看到的是哪个项目的产物）。用已有的恢复失败横幅展示。
+        console.warn("切换到会话工作区失败，已中止本次历史加载:", e.message);
+        if (loadSeq === sessionLoadSeqRef.current) {
+          setSessionResumeError({
+            sessionId: session.id,
+            message: `该会话的工作区不可用：${e.message || targetWorkspace}`,
+            code: "WORKSPACE_UNAVAILABLE",
+            detail: { workspace: targetWorkspace },
+          });
+        }
+        return;
       }
     }
     const conversationId = session.threadId || session.id;
@@ -1109,10 +1172,13 @@ export default function App() {
       setHistoryThreadId(conversationId);
       setHistoryMessages(cachedHistory);
       setHistoryWindow(sessionHistoryMetaRef.current.get(session.id) || null);
+      setHistoryLoading(false);
     } else {
       setHistoryThreadId(null);
       setHistoryMessages(null);
       setHistoryWindow(null);
+      // 缓存未命中：置加载态，让 ChatPanel 渲染骨架屏而不是空白。
+      setHistoryLoading(true);
     }
     // 恢复 Agent 与读取历史互不依赖；并行执行可明显缩短点击历史后的空白等待。
     // 但在 resume 完成前不切换 thread，避免 SSE 先创建一个新的空会话并与恢复竞态。
@@ -1122,7 +1188,12 @@ export default function App() {
     ]);
     const resumePromise = resumeAgentThread(clientId, conversationId, session.id, resumedWorkspace)
       .then(() => ({ ok: true }))
-      .catch((e) => { console.warn("恢复 Agent 会话失败，历史按只读展示:", e.message); return { ok: false, error: e.message || "恢复失败" }; });
+      .catch((e) => {
+        console.warn("恢复 Agent 会话失败，历史按只读展示:", e.message);
+        // 必须带上 code/detail：前端据此区分「忙，等任务结束后自动重试」与「彻底失败」，
+        // 丢掉后 SESSION_BUSY 分支永远不触发，只能显示一句没用的只读提示。
+        return { ok: false, error: e.message || "恢复失败", code: e.code || "", detail: e.detail || null };
+      });
     setUnreadByThread((prev) => {
       if (!prev[conversationId]) return prev;
       const next = { ...prev };
@@ -1134,7 +1205,12 @@ export default function App() {
       const [[d, runData], resumeResult] = await Promise.all([historyPromise, resumePromise]);
       if (loadSeq !== sessionLoadSeqRef.current) return;
       // 恢复失败时仍展示历史，但明确标注为只读并提供重试，避免用户误以为可以继续对话。
-      setSessionResumeError(resumeResult?.ok ? null : { sessionId: session.id, message: resumeResult?.error || "Agent 会话恢复失败" });
+      setSessionResumeError(resumeResult?.ok ? null : {
+        sessionId: session.id,
+        message: resumeResult?.error || "Agent 会话恢复失败",
+        code: resumeResult?.code || "",
+        detail: resumeResult?.detail || null,
+      });
       setCurrentSessionId(session.id);
       setThreadId(conversationId);
       setChatLinks([]);
@@ -1142,42 +1218,10 @@ export default function App() {
       // 按原始 JSONL 顺序重建消息。toolResult 是工具输出，不能渲染成 You 的用户气泡；
       // 它要按 toolCallId 回填到对应 Agent 工具卡，否则 Word/PPT 读取结果会被误认为用户输入。
       const msgs = buildHistoryMessages(d.entries || []);
-      const runMessages = [...(runData?.runs || [])]
-        .filter((run) => run?.status)
-        .filter((run, index, list) => list.findIndex((item) => item.id === run.id) === index)
-        .sort((a, b) => String(a.startedAt || "").localeCompare(String(b.startedAt || "")))
-        .map((run, index, list) => ({
-          id: `run-summary-${run.id}`,
-          role: "system",
-          text: run.summary || (run.status === "running" ? "本轮任务仍在执行中" : `本轮任务${run.status === "failed" ? "失败" : run.status === "cancelled" ? "已取消" : "完成"}，处理 ${run.artifacts?.length || 0} 个文件`),
-          products: (run.artifacts || []).map((a) => a.path).filter(Boolean),
-          artifacts: run.artifacts || [],
-          runId: run.id,
-          runStatus: run.status,
-          references: run.references || [],
-          task: run.task || null,
-          status: run.status === "running" ? "streaming" : "done",
-          summary: true,
-          runIndex: index + 1,
-          runCount: list.length,
-          runMode: run.task?.mode || "agent",
-          // 完成语义：显式 complete_task 或服务端推断结果
-          completion: run.completion || null,
-          eventCount: Array.isArray(run.events) ? run.events.length : 0,
-          events: Array.isArray(run.events) ? run.events.map((event, eventIndex) => ({
-            ...event,
-            key: `history:${run.id}:${event.seq || eventIndex}`,
-          })) : [],
-          expanded: true,
-          createdAt: run.finishedAt || run.startedAt || null,
-        }));
-      // Run 总结按完成/开始时间插回原始消息流。之前把所有 Run 总结直接
-      // append 到消息末尾，恢复会话后就会出现“对话一坨、产物一坨”。
-      const loadedHistory = normalizeHistoryMessages([...msgs, ...runMessages].sort((a, b) => {
-        const left = Date.parse(a.createdAt || "") || 0;
-        const right = Date.parse(b.createdAt || "") || 0;
-        return left - right;
-      }));
+      const runMessages = buildRunSummaryMessages(runData?.runs);
+      // Run 总结按收尾时间插回原始消息流。不能按 createdAt 全局排序：运行中的 Run
+      // 只有 startedAt，会让总结卡跑到本轮消息之前，整轮因此拿不到 runId 并退回旧渲染。
+      const loadedHistory = normalizeHistoryMessages(mergeRunSummaries(msgs, runMessages));
       sessionHistoryCacheRef.current.set(session.id, loadedHistory);
       const historyStart = Number(d.info?.historyStart || 0);
       const historyHasMore = Boolean(d.info?.historyHasMore);
@@ -1195,15 +1239,17 @@ export default function App() {
         total: Number(d.info?.historyTotal || 0),
       });
       // 只保留最近几条缓存，避免长会话历史常驻内存；再次点击时仍可先显示缓存。
-      while (sessionHistoryCacheRef.current.size > 8) {
+      while (sessionHistoryCacheRef.current.size > 24) {
         const first = sessionHistoryCacheRef.current.keys().next().value;
         if (first === undefined) break;
         sessionHistoryCacheRef.current.delete(first);
         sessionHistoryCursorRef.current.delete(first);
+        sessionHistoryMetaRef.current.delete(first);
       }
       setHistoryMessages(loadedHistory);
       setHistoryWindow(sessionHistoryMetaRef.current.get(session.id) || null);
       setHistoryThreadId(conversationId);
+      setHistoryLoading(false);
       // 从消息里解析会话关联的文件，尝试打开
       const fileMatch = msgs.find((m) => m.role === "user" && m.text && m.text.includes("当前打开文件"));
       if (fileMatch) {
@@ -1217,6 +1263,9 @@ export default function App() {
       }
     } catch (e) {
       if (loadSeq === sessionLoadSeqRef.current) notifyError("加载会话失败: " + e.message);
+    } finally {
+      // 无论成功/失败都结束骨架屏（成功路径已提前置 false，这里兜住提前 return 与异常）。
+      if (loadSeq === sessionLoadSeqRef.current) setHistoryLoading(false);
     }
   }, [clientId, currentWorkspace, open, refreshProjects]);
 
@@ -1227,7 +1276,19 @@ export default function App() {
     if (!sessionId || !cursor?.hasMore) return { messages: [], hasMore: false };
     const pageSize = 50;
     const d = await getSession(sessionId, { view: "chat", limit: pageSize, before: cursor.before });
-    const messages = normalizeHistoryMessages(buildHistoryMessages(d.entries || []));
+    // 旧页也要补 run 摘要：与首屏同一份规则。缺了它，associateRunMessages 找不到本轮 Run，
+    // 已加载的旧轮次会退回旧渲染（时间流/总结形态与首屏不一致）。
+    // 旧页通常不含 events，listRuns 的 includeEvents 默认只给活跃/最新一条，
+    // 这里按会话取一次 run 列表做合并（失败不阻断分页）。
+    let runMessages = [];
+    try {
+      const runData = await listRuns("", 50, { sessionId });
+      runMessages = buildRunSummaryMessages(runData?.runs);
+    } catch {}
+    const pageMessages = normalizeHistoryMessages(
+      mergeRunSummaries(buildHistoryMessages(d.entries || []), runMessages),
+    );
+    const messages = pageMessages;
     const info = d.info || {};
     const nextCursor = {
       before: Number(info.historyStart ?? Math.max(0, cursor.before - pageSize)),
@@ -1235,6 +1296,17 @@ export default function App() {
       total: Number(info.historyTotal || cursor.total || 0),
     };
     sessionHistoryCursorRef.current.set(sessionId, nextCursor);
+    // 单一事实源：分页结果必须回写 App 的 historyMessages 与缓存。
+    // 此前只 return 给 ChatPanel 的本地 state，App 仍认为"这个会话只有首屏那一页"；
+    // 任何重新触发 setHistoryMessages 的路径都会把已加载的旧消息覆盖掉。
+    setHistoryMessages((previous) => {
+      if (!Array.isArray(previous)) return previous;
+      const seen = new Set(previous.map((item) => item?.id).filter(Boolean));
+      const olderOnly = messages.filter((item) => !item?.id || !seen.has(item.id));
+      const merged = [...olderOnly, ...previous];
+      sessionHistoryCacheRef.current.set(sessionId, merged);
+      return merged;
+    });
     const meta = sessionHistoryMetaRef.current.get(sessionId);
     if (meta) {
       sessionHistoryMetaRef.current.set(sessionId, {
@@ -1246,7 +1318,13 @@ export default function App() {
       });
       setHistoryWindow(sessionHistoryMetaRef.current.get(sessionId));
     }
-    return { messages, hasMore: nextCursor.hasMore, total: nextCursor.total, before: nextCursor.before };
+    return {
+      messages,
+      hasMore: nextCursor.hasMore,
+      total: nextCursor.total,
+      before: nextCursor.before,
+      loadedCount: Math.max(0, nextCursor.total - nextCursor.before),
+    };
   }, [currentSessionId]);
 
   // v0.12.8：切换回答版本后重读会话（服务端已把活跃分支固化到 JSONL）。
@@ -1637,8 +1715,11 @@ export default function App() {
     });
   }, [tabs, activeTab, activeModule, currentWorkspace, currentDir, sidebarOpen, currentSessionId, uiRestored]);
 
+  // 会话流形态（开关 chatLegacyTimeline，默认关 = 远程新时间线）：
+  // 旧过程卡片实现保留在 ChatPanelLegacy，不删除、不裁剪；打开开关即回退旧形态。
+  const ChatPanelView = flag("chatLegacyTimeline") ? ChatPanelLegacy : ChatPanel;
   const sharedChatPanel = (
-      <ChatPanel
+      <ChatPanelView
       ref={chatInputRef}
       clientId={clientId}
       threadId={threadId}
@@ -1675,6 +1756,7 @@ export default function App() {
       historyMessages={historyMessages}
       historyThreadId={historyThreadId}
       historyWindow={historyWindow}
+      historyHydrating={historyLoading}
       sessionId={currentSessionId || ""}
       onLoadOlderHistory={loadOlderSessionHistory}
       onReloadHistory={reloadCurrentSessionHistory}
@@ -2056,7 +2138,10 @@ export default function App() {
                 <button className="btn-xs" onClick={() => setRestoredRunHint(null)}>忽略</button>
               </div>
             )}
-            <div className="center-chat-slot">{!activeModule && sharedChatPanel}</div>
+            {/* 对话面板常驻挂载：设置/成果/任务中心是覆盖在上面的浮层（.module-view），
+                不能用 !activeModule 把会话流卸载——卸载会丢掉全部本地状态，
+                回到对话时整段会话要重新水合（表现为"变样"、底部工具条图标闪烁重载）。 */}
+            <div className="center-chat-slot">{sharedChatPanel}</div>
           </div>
         </div>
         {previewOpen && (workspaceTab === "preview" || dualPaneActive) && <Resizer side="right" min={280} max={680} cssVar="--preview-w" />}

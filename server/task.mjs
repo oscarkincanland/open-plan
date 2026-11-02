@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { RUNTIME_FLAGS } from "./运行开关.mjs";
+import { RUNTIME_FLAGS, officeGateActiveFor } from "./运行开关.mjs";
 import { matchTemplate } from "./office规范/模板匹配.mjs";
 import { selectScene, sceneLabels, defaultScene } from "./office规范/场景选择.mjs";
 
@@ -294,6 +294,17 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
   // 原生 Office 生成能力（§5.4/§5.5）：新建 Word/Excel/PPT 走工作台内置 OOXML 引擎。
   if (officeGenerate) {
     capabilities.push({ id: "office_generate", label: "Office 原生生成", status: "preferred", required: false, provider: "native", reason: "新建文档由内置 OOXML 引擎直写，无需外部二进制预检" });
+    // 编辑流水线（计划 2026-10-31-003 / N-03）：写作路由的预设成文主链。
+    // 此前它是隐式工具——白名单里有但能力计划不声明，模型无从知道该走它，
+    // 实测因此退化成 officecli 裸命令试探（20 次失败）。这里显式声明为 preferred。
+    capabilities.push({
+      id: "editorial_pipeline",
+      label: "编辑流水线",
+      status: "preferred",
+      required: false,
+      provider: "native",
+      reason: "成文走 Planner→Writer→Formatter 原生直写→Evaluator 确定性管线；已有 Markdown 可 sourceMarkdown 直通",
+    });
   }
   if (mode === "review") capabilities.push({ id: "reviewEvidence", label: "规范依据台账", status: "required", required: true, provider: "native", reason: "每条审查结论必须绑定实际读取的规范文件" });
   // 子代理能力只在 Chat 与 Work 声明；与 toolPolicyForMode 的 run_subagent 白名单保持一致，
@@ -343,8 +354,8 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
           ? "lazy"
           : "not_needed",
       template: intent.route === "template" ? "preferred" : "not_needed",
-      // 规范层开关：默认关；只有模板/生成路由且开关打开时才生效。
-      officeFormat: RUNTIME_FLAGS.officeFormat && (intent.route === "template" || intent.route === "generate") ? "auto" : "off",
+      // 规范层开关（ADR 0012）：写作路由（模板/生成）自动生效；OAW_OFFICE_FORMAT=off 退出。
+      officeFormat: officeGateActiveFor(intent.route, mode) ? "auto" : "off",
       documentRead: document ? "enabled" : "not_needed",
       knowledge: knowledge ? "enabled" : "not_needed",
       // read_only / read_write：让前端与提示词都能区分"能不能落盘"。
@@ -429,6 +440,33 @@ function mapCapabilityHint(task = {}) {
 }
 
 /**
+ * 写作工具书（计划 2026-10-31-003 / N-02）：写作路由注入提示词的标准流程。
+ *
+ * 背景：实测 run_05198175 里模型不知道存在编辑流水线与模板，只能用 officecli 裸命令试探，
+ * 57 次调用中 15 次在读 help、约 15 次在探针文件上试错，20 次失败。这段提示把
+ * "预设流程"直接讲清楚，让模型走既定主链而不是自由发挥。
+ */
+const OFFICE_WRITING_PLAYBOOK = [
+  "写作流程（按序执行）:",
+  "1) 先 read 模板与配套规范，确认章节骨架、必备图表清单和格式规则；",
+  "2) 成文优先用 editorial_pipeline 工具（Planner→Writer→Formatter 原生直写→Evaluator 确定性验收）；",
+  "   已有成稿 Markdown 时用它的 sourceMarkdown 直通，跳过 Planner/Writer；",
+  "3) 需要逐章增量写入时，用 write 写一章、紧接 add <file> / --type markdown --prop src=<章节.md>（write→add 成对出现，不要攒批）；",
+  "4) 样式：create 新建文档已预置 Normal/Heading1-4/Title/TOC/页眉页脚，直接用，不要用 raw-set 改 styles.xml；",
+  "5) 自检：validate <file> 与 view <file> issues；",
+  "6) 收尾：complete_task 报告产物路径与未完成项。",
+  "禁止：不要用 bash 写生成脚本；不要手写 styles.xml；不要把 JSON 塞进命令行参数。",
+  "常用命令速查（覆盖绝大多数文档操作，不要再跑 help / --help 去探索）：",
+  "  create <f>.docx            新建文档（已预置样式）；create <f>.docx --force 覆盖已有文件",
+  "  add <f> / --type markdown --prop src=<章节.md>   导入写好的章节",
+  "  set <f> /body/p[N] --prop style=Heading2         给段落套标题样式",
+  "  add <f> /body/p[N] --type table                  插入表格",
+  "  add <f> /body/p[N] --type image --prop image=<路径> 插入图片",
+  "  view <f> text|outline|stats|issues               回读校验",
+  "命令失败时：读错误信息、改同一命令再试一次——不要用 help 代替调整（这最浪费回合）。",
+].join("\n");
+
+/**
  * 写作路由提示（O-05）：只从能力计划读取，避免提示词另写一份路由事实。
  * 仅在 template/edit/generate 路由下注入，read 不占上下文。
  */
@@ -439,13 +477,13 @@ function officeWritingHint(task = {}) {
   const scene = plan?.scene?.label || plan?.scene?.id || "";
   const template = plan?.template?.relPath || "";
   if (route === "template") {
-    return `写作路由：模板优先（${template}${scene ? `；场景：${scene}` : ""}）。先读取模板，按其章节骨架、必备图表与格式规则写作。`;
+    return `写作路由：模板优先（${template}${scene ? `；场景：${scene}` : ""}）。先读取模板，按其章节骨架、必备图表与格式规则写作。\n` + OFFICE_WRITING_PLAYBOOK;
   }
   if (route === "edit") {
     return "写作路由：编辑既有文档。先 view 确认内容，再 get 取真实路径，最后 set/add；保留未触及的格式。";
   }
   if (route === "generate") {
-    return `写作路由：生成新文档（场景：${scene || "report"}）。按场景参数生成，完成后走规则闸门。`;
+    return `写作路由：生成新文档（场景：${scene || "report"}）。按场景参数生成，完成后走规则闸门。\n` + OFFICE_WRITING_PLAYBOOK;
   }
   return "";
 }

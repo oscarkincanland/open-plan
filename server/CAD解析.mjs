@@ -15,9 +15,12 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+/** 项目根目录：用于探测随项目分发的便携转换器（bin/ 已在 .gitignore 中，不随仓库提交）。 */
+const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 /** 预览/读取的实体上限：超过即截断（防止超大图纸拖垮预览与上下文）。 */
 export const CAD_ENTITY_LIMIT = 20000;
@@ -303,8 +306,9 @@ let converterCache; // 进程内缓存：探测结果在整个生命周期内复
 /**
  * 探测 DWG→DXF 转换工具（非 npm 依赖，零新增依赖约束下的豁免通道）：
  * 1) OAW_DWG_CONVERTER 环境变量显式指定可执行文件路径；
- * 2) PATH 中的 dwg2dxf（LibreDWG）或 ODAFileConverter；
- * 3) Windows 常见安装目录 C:\Program Files\ODA\*\ODAFileConverter.exe。
+ * 2) 项目内置便携包 bin/libredwg（免安装，下载后即可用）；
+ * 3) PATH 中的 dwg2dxf（LibreDWG）或 ODAFileConverter；
+ * 4) Windows 常见安装目录 C:\Program Files\ODA\*\ODAFileConverter.exe。
  * 都找不到返回 null（调用方降级并提示安装），结果进程内缓存。
  */
 export async function resolveDwgConverter() {
@@ -319,6 +323,8 @@ async function detectConverter() {
     if (fs.existsSync(explicit)) return kindOf(explicit);
     return null; // 显式配置了但不存在：视为未安装，不猜测
   }
+  const bundled = path.join(PROJECT_DIR, "bin", "libredwg", process.platform === "win32" ? "dwg2dxf.exe" : "dwg2dxf");
+  if (fs.existsSync(bundled)) return { kind: "libredwg", program: bundled };
   const finder = process.platform === "win32" ? "where" : "which";
   for (const name of ["dwg2dxf", "ODAFileConverter"]) {
     try {

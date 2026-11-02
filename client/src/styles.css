@@ -1,3 +1,7 @@
+/* 远程 v0.13.x 曾引用 ./assets/fonts/misans/MiSans-Regular.min.css，但该字体资产
+   并未随仓库提交（干净克隆必然构建失败）。这里不引不存在的文件，MiSans 由系统字体栈
+   兜底（Segoe UI Variable / Microsoft YaHei UI / PingFang SC）；若后续补齐字体资产，
+   恢复 @import 即可。 */
 /* ===== pi-style dark theme ===== */
 :root {
   --body-bg: #1a1a2e;
@@ -21,7 +25,24 @@
   --sidebar-w: 220px;
   --sidebar-min: 180px;
   --sidebar-max: 400px;
+  /* --chat-w/min/max 只在"独立对话列"与地图浮动对话栏的基线上生效；
+     正常三栏布局里对话区是 .center-area(flex:1) + .center-chat-slot，
+     由 .center-chat-slot > .chat 的 width:100% 覆盖，不受这三个值影响。
+     调对话区宽度请改 --msg-content-max，不要改这里（实测验证：1280 视口下
+     消息区实测 991px，与 460 无关）。 */
   --chat-w: 460px;
+  /* 消息内容列统一宽度（精修 F8）：用户气泡与助手时间流/总结/产物卡共用 */
+  --msg-content-max: min(100%, 720px);
+  /* 会话列左右留白：消息区与输入框共用，保证两者左右边缘对齐 */
+  --chat-gutter: clamp(20px, 5vw, 72px);
+  /* 时间流竖线缩进（唯一来源）：时间流条目、已决 ask 事件行共用。
+     未决 ask 卡片是全宽交互块，与输入框同宽，不参与这个缩进。 */
+  --tl-indent: 12px;
+  /* 加粗专用字体栈：MiSans 只有 400 一档，600/700 会被浏览器合成加粗（笔画发糊）。
+     需要 600 的元素改用这组系统字体（真 Semibold/Bold，笔画清晰）。 */
+  --font-emphasis: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+  /* 全局滚动条宽度（见下方 ::-webkit-scrollbar）；输入框宽度用它抵消消息区滚动条占位 */
+  --scrollbar-w: 8px;
   --chat-min: 280px;
   --chat-max: 720px;
   --map-chat-w: 360px;
@@ -120,10 +141,21 @@
   scrollbar-color: var(--border) transparent;
 }
 html, body, #root { height: 100%; }
+/*
+ * 字重策略（实测驱动）：
+ *   MiSans 只打包了 400 一档（56 个 @font-face 全是 font-weight:400）。浏览器对
+ *   ≥600 做合成加粗——canvas 墨量实测 400→1168、600→1716（+47%），700 与 600 完全
+ *   相同，中文字形笔画粘连发糊；而 500/550 墨量与 400 完全相同（Chrome 的 bold
+ *   阈值是 600），所以"降到 500"等于取消加粗。
+ *
+ * 因此：正文继续用 MiSans 400；需要加粗的元素改走系统字体栈（真 Semibold/Bold，
+ * 墨量 1800–2018，笔画清晰）。--font-emphasis 就是这组"只给加粗用"的字体栈。
+ */
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-family: "Segoe UI Variable Text", "Segoe UI", "MiSans", system-ui, -apple-system, BlinkMacSystemFont, "Microsoft YaHei UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
   font-size: var(--font-base);
-  line-height: 20px;
+  line-height: 1.7;
+  letter-spacing: 0.01em;
   background: var(--body-bg);
   color: var(--text);
 }
@@ -461,7 +493,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .module-skills-view, .module-agents-view { z-index: 20; background: var(--body-bg); }
 .module-skills-view .skills-modal, .module-agents-view .skills-modal { width: 100%; max-width: 1100px; height: 100%; max-height: none; border: 0; border-radius: 0; background: var(--body-bg); box-shadow: none; margin: 0 auto; }
 .mp-topbar .task-center-panel { position: absolute; top: calc(100% + 8px); left: 0; right: auto; }
-.task-center-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 700; }
+.task-center-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 600; }
 .task-center-head > span { display: inline-flex; align-items: center; gap: 6px; }
 .task-center-filters { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 4px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
 .task-center-filters select { min-width: 0; padding: 3px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--panel2-bg); color: var(--muted); font: inherit; font-size: 10px; }
@@ -603,7 +635,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   visibility: hidden;
   color: var(--accent);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
   padding: 0 3px;
   border-radius: 3px;
@@ -684,7 +716,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .chat-stream-shell { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .chat-topbar { position: relative; z-index: 30; display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 0 auto; padding: 3px 12px; background: var(--panel-bg); }
 .chat-top-controls { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; }
-.chat-body { flex: 1; height: auto; min-height: 0; box-sizing: border-box; overflow-y: auto; padding: 16px 34px 16px 16px; display: flex; flex-direction: column; gap: 16px; }
+.chat-body { flex: 1; height: auto; min-height: 0; box-sizing: border-box; overflow-y: auto; overflow-x: hidden; padding: 16px 34px 16px 16px; display: flex; flex-direction: column; gap: 16px; }
 .chat-scroll-latest { position: absolute; z-index: 20; right: 18px; bottom: 14px; display: inline-flex; align-items: center; gap: 4px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 999px; color: var(--text); background: color-mix(in srgb, var(--panel-bg) 92%, var(--accent)); box-shadow: 0 5px 16px color-mix(in srgb, var(--body-bg) 35%, transparent); cursor: pointer; font: inherit; font-size: 10px; }
 .chat-scroll-latest:hover { border-color: var(--accent); color: var(--accent); }
 .context-ring-wrap { position: relative; flex: 0 0 auto; }
@@ -719,7 +751,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .context-ring-pop-head span:first-child { display: flex; flex-direction: column; min-width: 0; }
 .context-ring-pop-head strong { color: var(--text); font-size: 11px; }
 .context-ring-pop-head small { max-width: 210px; margin-top: 3px; overflow: hidden; color: var(--dim); text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
-.context-ring-percent { color: var(--success); font-size: 12px; font-variant-numeric: tabular-nums; font-weight: 700; }
+.context-ring-percent { color: var(--success); font-size: 12px; font-variant-numeric: tabular-nums; font-weight: 600; }
 .context-ring-meter { height: 5px; margin: 10px 0 8px; overflow: hidden; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--border) 75%, transparent); }
 .context-ring-meter i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .25s ease; }
 .context-ring-stats, .context-ring-breakdown { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; color: var(--dim); font-size: 10px; }
@@ -737,6 +769,14 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .chat-load-older { align-self: center; border: 1px solid var(--line, #d6ddd2); border-radius: 999px; background: var(--surface, var(--pure-white)); color: var(--muted, #667064); padding: 6px 12px; font-size: 12px; cursor: pointer; }
 .chat-load-older:hover { color: var(--text, #243025); border-color: var(--accent, #7c9b2e); background: var(--accent-soft, #f2f6e9); }
 .chat-history-window-note { align-self: center; max-width: min(720px, 92%); color: var(--muted, #667064); font-size: 11px; line-height: 1.5; text-align: center; padding: 4px 10px; }
+/* 分页状态行：加载成功 / 已到最早 / 不支持时的常驻说明（替代"点了没反应"） */
+.chat-history-status { align-self: center; max-width: min(720px, 92%); color: var(--muted, #667064); font-size: 11px; line-height: 1.5; text-align: center; padding: 2px 10px 4px; font-variant-numeric: tabular-nums; }
+/* 切换历史会话的骨架屏（缓存未命中时替代空白等待） */
+.chat-history-skeleton { display: flex; flex-direction: column; gap: 14px; width: 100%; max-width: var(--msg-content-max); margin: 8px auto 0; }
+.chat-history-skeleton-row { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--panel2-bg) 60%, transparent); }
+.chat-history-skeleton-row.is-assistant { align-items: flex-start; }
+.chat-history-skeleton-row.is-user { align-items: flex-end; background: color-mix(in srgb, var(--user-bg) 22%, transparent); }
+.chat-history-skeleton-row .oaw-skeleton-block { height: 10px; }
 .chat-empty { color: var(--muted); text-align: center; padding: 40px 0; font-size: 13px; }
 .vision-hint { padding: 4px 12px; font-size: 11px; color: var(--warning); background: #2a2410; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 /* messages */
@@ -974,15 +1014,6 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 .tool-card.pending .tool-icon { color: var(--warning); }
 .tool-card.success .tool-icon { color: var(--success); }
 .tool-card.error .tool-icon { color: var(--error); }
-.tool-name { font-weight: 600; color: var(--text); }
-.tool-input-preview {
-  color: var(--dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  font-size: 11px;
-}
 .tool-detail {
   padding: 6px 8px;
 }
@@ -1123,14 +1154,27 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   border-collapse: collapse;
   width: 100%;
   margin: 8px 0;
-  font-size: 12px;
+  /* 跟随宿主正文（回复 13px / 总结 12.5px）——此前写死 12px，表格字比正文小一档，
+     同一屏里字高来回跳（用户反馈"格式奇怪"）。 */
+  font-size: inherit;
+  line-height: 1.55;
 }
 .markdown-body th, .markdown-body td {
   border: 1px solid var(--border);
   padding: 5px 10px;
   text-align: left;
+  vertical-align: middle;
+  overflow-wrap: anywhere;
 }
-.markdown-body th { background: var(--panel2-bg); font-weight: 600; }
+/* 数字列对齐：等宽数字让"1,234"这类数据上下对齐 */
+.markdown-body td { font-variant-numeric: tabular-nums; }
+.markdown-body th { background: var(--panel2-bg); font-family: var(--font-emphasis); font-weight: 600; }
+/* 行内代码在表格内降一档，避免与中文正文抢视觉 */
+.markdown-body th code, .markdown-body td code { font-size: 0.92em; }
+/* markdown 里的加粗：改用系统字体承载真 Semibold。
+   MiSans 只有 400，`<strong>` 默认的 bold(700) 会被浏览器合成，中文笔画粘连。 */
+.markdown-body strong,
+.markdown-body b { font-family: var(--font-emphasis); font-weight: 600; }
 .markdown-body hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
 
 /* ===== 消息文件上下文（唯一锚点） ===== */
@@ -1220,7 +1264,7 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   font-size: 10px;
   padding: 0 2px;
 }
-.msg-author { font-weight: 600; color: var(--muted); }
+.msg-author { font-family: var(--font-emphasis); font-weight: 600; color: var(--muted); }
 .msg.user .msg-author { color: var(--muted); }
 .msg-time { font-size: 10px; color: var(--dim); font-variant-numeric: tabular-nums; }
 .msg-streaming-status {
@@ -1713,17 +1757,6 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   background: var(--accent);
   animation: dot-breathe-soft 2.6s ease-in-out infinite;
 }
-.execution-flow-stats,
-.execution-flow-elapsed { flex: 0 0 auto; color: var(--dim); font-variant-numeric: tabular-nums; }
-.execution-flow-chip {
-  flex: 0 0 auto;
-  padding: 1px 6px;
-  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
-  border-radius: 999px;
-  color: var(--dim);
-  font-size: 10px;
-  white-space: nowrap;
-}
 /* 单行状态栏里的“下一步”片段：类名保留上游契约，样式改为可内联收缩 + 省略号 */
 .execution-flow-next {
   display: inline-flex;
@@ -1916,157 +1949,10 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 .center-chat-slot .execution-flow { border-radius: var(--radius-lg); background: color-mix(in srgb, var(--panel2-bg) 82%, transparent); }
 .center-chat-slot .execution-flow-head { min-height: 36px; padding: 0 7px 0 11px; }
 
-/* ===== 执行步骤 todo list ===== */
-.todo-list {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  background: var(--panel2-bg);
-  margin-bottom: 2px;
-}
-.todo-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  cursor: pointer;
-  background: var(--surface);
-}
-.todo-icon { font-family: monospace; color: var(--accent); }
-.todo-title { font-size: 11px; font-weight: 600; }
-.todo-progress {
-  margin-left: auto;
-  font-size: 10px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-.todo-body { padding: 4px 0; }
-.todo-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  font-size: 10px;
-}
-.todo-num { font-family: monospace; width: 14px; text-align: center; flex-shrink: 0; }
-.todo-item.running .todo-num { color: var(--warning); animation: pulse 1s infinite; }
-.todo-item.done .todo-num { color: var(--success); }
-.todo-item.err .todo-num { color: var(--error); }
-.todo-cmd {
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-  font-family: monospace;
-}
-.todo-dur { font-size: 10px; color: var(--dim); flex-shrink: 0; }
-.todo-item.done { opacity: 0.65; }
-
-/* ===== 工作计划展示板（opencode 风格） ===== */
-.plan-icon { font-family: monospace; color: var(--accent); }
-.plan-title {
-  font-size: 11px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.plan-body { padding: 6px 10px 8px; }
-.plan-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 6px;
-  font-size: 11px;
-  color: var(--text);
-  cursor: pointer;
-  border-radius: 4px;
-  transition: background 0.12s;
-}
-.plan-item:hover { background: var(--selected); }
-.plan-item.done { opacity: 0.55; }
-.plan-item.done .plan-text { text-decoration: line-through; color: var(--muted); }
-.plan-check {
-  width: 16px;
-  height: 16px;
-  border: 1.5px solid var(--border);
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  color: var(--body-bg);
-  background: transparent;
-  transition: all 0.15s;
-}
-.plan-item.done .plan-check {
-  background: var(--success);
-  border-color: var(--success);
-}
-.plan-text { flex: 1; min-width: 0; word-break: break-word; }
-
 /* ===== 对话设置栏（输入区下方） ===== */
-.chat-settings {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px dashed var(--border);
-}
-.chat-settings .model-select,
-.chat-settings .effort-select {
-  max-width: 140px;
-  font-size: 10px;
-}
-.effort-select { max-width: 110px; font-size: 10px; }
-
-/* ===== 模式切换 ===== */
-.mode-switch {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  flex-shrink: 0;
-}
+/* 旧「执行步骤 todo 列表」「工作计划展示板」「对话设置栏（mode-switch / effort-select）」
+   已在会话流改版中下线（现状由时间流条目与输入栏承担），对应样式一并删除。 */
 .workspace-selector .project-select { min-width: 0; }
-.mode-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-family: inherit;
-  font-size: 10px;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  background: transparent;
-  color: var(--muted);
-  border: 1px solid transparent;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.mode-btn.active {
-  background: var(--accent);
-  color: var(--body-bg);
-  border-color: var(--accent);
-}
-.mode-switch-wide .mode-btn {
-  width: auto;
-  min-width: 48px;
-  gap: 4px;
-  padding: 0 7px;
-}
-.mode-switch-wide .mode-label { font-size: 10px; line-height: 1; }
-.mode-current-hint {
-  max-width: 72px;
-  overflow: hidden;
-  color: var(--dim);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .chat-mode-badge,
 .chat-project-badge {
   display: inline-flex;
@@ -2087,7 +1973,6 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 .chat-mode-badge.mode-agent { color: var(--success); }
 .chat-mode-badge.mode-review { color: var(--warning); }
 .chat-project-badge { color: var(--text); background: var(--panel2-bg); }
-.task-mode-meta { color: var(--muted); }
 
 /* ===== 文件 tab 栏 ===== */
 .doc-tabs {
@@ -2126,7 +2011,7 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 .doc-tab-icon {
   font-size: 10px;
   color: var(--accent);
-  font-weight: 700;
+  font-weight: 600;
 }
 .doc-tab-name {
   overflow: hidden;
@@ -2447,7 +2332,7 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   color: var(--body-bg);
   border-radius: 50%;
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   flex-shrink: 0;
 }
 
@@ -2494,7 +2379,7 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   color: var(--body-bg);
   border-radius: 50%;
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
   z-index: 5;
   transition: transform 0.15s ease;
@@ -2606,7 +2491,7 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   background: var(--warning);
   color: var(--body-bg);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   border-radius: var(--radius-lg);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
   pointer-events: none;
@@ -2802,7 +2687,7 @@ button > .icon,
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.reference-chip-kind { color: var(--accent); font-weight: 700; }
+.reference-chip-kind { color: var(--accent); font-weight: 600; }
 .reference-chip button { border: 0; background: transparent; color: var(--dim); cursor: pointer; padding: 0 1px; line-height: 1; }
 .msg-references { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0 6px; }
 .msg-reference-chip { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent); border-radius: 4px; padding: 2px 5px; font-size: 10px; line-height: 1.3; display: inline-flex; align-items: center; gap: 3px; }
@@ -2810,46 +2695,7 @@ button.msg-reference-chip { cursor: pointer; font: inherit; }
 button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .msg-reference-chip.missing, .msg-reference-chip.unsupported { color: var(--dim); border-style: dashed; }
 
-/* ===== 最近会话栏 ===== */
-.chat-recent {
-  flex-shrink: 0;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel2-bg);
-}
-.chat-recent-label {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 10px;
-  color: var(--dim);
-  margin-bottom: 4px;
-}
-.chat-recent-list {
-  display: flex;
-  gap: 4px;
-  overflow-x: auto;
-  padding-bottom: 2px;
-}
-.chat-recent-item {
-  flex-shrink: 0;
-  max-width: 130px;
-  padding: 2px 8px;
-  font-size: 10px;
-  color: var(--muted);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transition: all 0.12s;
-}
-.chat-recent-item:hover {
-  color: var(--accent);
-  border-color: var(--accent);
-}
+/* 旧「最近会话栏」已由左侧会话列表承担，样式删除。 */
 
 /* ===== 主题切换 ===== */
 .theme-toggle {
@@ -3121,7 +2967,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   border-radius: 8px;
   background: var(--selected);
 }
-.agent-editor-title { font-size: 12px; font-weight: 700; margin-bottom: 8px; color: var(--text); }
+.agent-editor-title { font-size: 12px; font-weight: 600; margin-bottom: 8px; color: var(--text); }
 .agent-editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .agent-editor-grid .sp-textarea { grid-column: 1 / -1; min-height: 72px; }
 .agent-editor-actions { display: flex; gap: 6px; margin-top: 8px; }
@@ -3350,7 +3196,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   flex-wrap: wrap;
   flex-shrink: 0;
 }
-.kb-title { font-weight: 700; font-size: 14px; margin-right: 4px; }
+.kb-title { font-weight: 600; font-size: 14px; margin-right: 4px; }
 .kb-root-select {
   background: var(--panel2-bg);
   color: var(--text);
@@ -3411,7 +3257,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   background: var(--panel2-bg);
   flex-shrink: 0;
 }
-.retrieval-chat-title { font-size: 12px; font-weight: 700; color: var(--text); }
+.retrieval-chat-title { font-size: 12px; font-weight: 600; color: var(--text); }
 .retrieval-chat-subtitle { margin-top: 2px; color: var(--dim); font-size: 10px; }
 .retrieval-chat-shell > .chat { width: 100%; min-width: 0; max-width: none; height: auto; flex: 1; }
 .retrieval-chat-shell .chat-hist { display: none; }
@@ -3432,7 +3278,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   font-size: 10px;
   line-height: 1.4;
 }
-.agent-capability-preview span:first-child { color: var(--accent); font-weight: 700; }
+.agent-capability-preview span:first-child { color: var(--accent); font-weight: 600; }
 
 .kb-body {
   flex: 1;
@@ -3452,7 +3298,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   padding: 8px 10px;
   font-size: 11px;
   color: var(--muted);
-  font-weight: 700;
+  font-weight: 600;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -3564,7 +3410,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .kb-right-section { margin-bottom: 14px; }
 .kb-right-title {
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--muted);
   margin-bottom: 6px;
   text-transform: uppercase;
@@ -3975,7 +3821,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.tpl-title { font-weight: 700; font-size: 14px; }
+.tpl-title { font-weight: 600; font-size: 14px; }
 .tpl-count { font-size: 11px; color: var(--dim); margin-left: 4px; }
 .tpl-search { display: flex; align-items: center; gap: 4px; background: var(--panel2-bg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; margin-left: 12px; min-width: 180px; }
 .tpl-search svg { flex-shrink: 0; color: var(--dim); }
@@ -4065,7 +3911,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .tpl-cat-title {
   padding: 10px 12px 6px;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -4170,7 +4016,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   gap: 8px;
   flex-shrink: 0;
 }
-.tpl-preview-title { flex: 1; font-size: 14px; font-weight: 700; }
+.tpl-preview-title { flex: 1; font-size: 14px; font-weight: 600; }
 .tpl-preview-meta { display: flex; gap: 8px; font-size: 10px; color: var(--dim); margin-top: 4px; flex-wrap: wrap; }
 .tpl-preview-ext { background: var(--accent); color: var(--on-accent); padding: 1px 6px; border-radius: 3px; font-weight: 600; }
 .tpl-preview-body {
@@ -4449,7 +4295,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   scrollbar-width: thin;
 }
 .mp-topbar > * { flex-shrink: 0; }
-.mp-title { font-weight: 700; font-size: 14px; margin-right: 2px; }
+.mp-title { font-weight: 600; font-size: 14px; margin-right: 2px; }
 /* 地图内的对话模式切换（阶段 0）：Chat 查询/临时可视化 · Work 可保存图层。
    与主对话的 .conversation-mode-switch 同语义，尺寸按地图顶栏收敛。 */
 .mp-mode-switch {
@@ -4580,7 +4426,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   border: none; border-radius: 3px; padding: 2px 8px;
   font-size: 11px; cursor: pointer; white-space: nowrap;
 }
-.mp-drill-x { font-weight: 700; margin-left: 2px; }
+.mp-drill-x { font-weight: 600; margin-left: 2px; }
 .mp-basemap-btn {
   background: var(--panel2-bg);
   border: 1px solid var(--border);
@@ -4619,7 +4465,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   gap: 6px;
   padding: 8px 10px;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--muted);
   border-bottom: 1px solid var(--border);
 }
@@ -4744,7 +4590,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .cambodia-kicker { color: var(--accent-warm); font: 9px/1.4 monospace; letter-spacing: .12em; }
 .cambodia-head h3 { margin-top: 3px; font-size: 15px; }
 .cambodia-source { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; padding: 10px 0; color: var(--muted); font-size: 10px; }
-.cambodia-source span { grid-row: span 2; align-self: center; padding: 3px 6px; border-radius: 3px; color: #805a13; background: var(--pure-white); font-weight: 700; }
+.cambodia-source span { grid-row: span 2; align-self: center; padding: 3px 6px; border-radius: 3px; color: #805a13; background: var(--pure-white); font-weight: 600; }
 .cambodia-source strong { color: var(--text); font-size: 11px; font-weight: 600; }
 .cambodia-source small { color: var(--dim); }
 .cambodia-filter { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; margin: 4px 0 12px; color: var(--muted); font-size: 11px; }
@@ -4809,7 +4655,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   justify-content: space-between;
   padding: 10px 12px;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   border-bottom: 1px solid var(--border);
 }
 .mp-iso-body { padding: 12px; }
@@ -4916,7 +4762,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   align-items: center;
   gap: 5px;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .map-import-btn {
   display: inline-flex;
@@ -5017,7 +4863,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   padding: 5px 8px;
   cursor: pointer;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--muted);
   background: var(--panel2-bg);
   border-top: 1px solid var(--border);
@@ -5123,7 +4969,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   padding: 5px 8px;
   border-bottom: 1px solid var(--border);
 }
-.lp-legend-title { font-size: 11px; font-weight: 700; flex: 1; }
+.lp-legend-title { font-size: 11px; font-weight: 600; flex: 1; }
 .lp-legend-body { padding: 6px 8px; font-size: 11px; color: var(--muted); }
 .lp-legend-row { margin-bottom: 3px; word-break: break-all; line-height: 1.5; }
 .lp-legend-row:last-child { margin-bottom: 0; }
@@ -5193,7 +5039,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   top: 0;
   background: var(--panel2-bg);
 }
-.lp-editor-title { font-size: 12px; font-weight: 700; }
+.lp-editor-title { font-size: 12px; font-weight: 600; }
 .lp-editor-id { margin-left: auto; font-size: 10px; color: var(--dim); font-family: monospace; }
 .lp-editor-toggle {
   border: 0;
@@ -5267,7 +5113,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.lp-attr-title { font-size: 13px; font-weight: 700; }
+.lp-attr-title { font-size: 13px; font-weight: 600; }
 .lp-attr-count { font-size: 11px; color: var(--dim); }
 .lp-attr-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
 .lp-attr-search {
@@ -5363,7 +5209,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .kb-mindmap-outline-head {
   padding: 8px 10px;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--muted);
   border-bottom: 1px solid var(--border);
   display: flex;
@@ -5533,7 +5379,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   font: inherit; font-size: 11px;
 }
 .sidebar-primary-tabs button:hover { color: var(--text); background: var(--panel2-bg); }
-.sidebar-primary-tabs button.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 42%, var(--border)); background: var(--selected); font-weight: 700; }
+.sidebar-primary-tabs button.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 42%, var(--border)); background: var(--selected); font-weight: 600; }
 .workspace-selector { padding: 10px 12px; gap: 6px; background: color-mix(in srgb, var(--panel2-bg) 55%, transparent); }
 .workspace-selector .ws-label { color: var(--dim); font-size: 10px; flex: 0 0 auto; }
 .workspace-selector select { min-width: 0; font-size: 11px; }
@@ -5547,7 +5393,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .workspace-switcher-trigger:hover { border-color: var(--accent); background: var(--selected); }
 .workspace-switcher-trigger > .icon { color: var(--accent); flex: 0 0 auto; }
-.workspace-switcher-trigger span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.workspace-switcher-trigger span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .workspace-switcher-trigger small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; color: var(--dim); font-size: 10px; }
 .workspace-switcher-trigger > .icon:last-child { color: var(--dim); flex: 0 0 auto; }
 .workspace-switcher-backdrop {
@@ -5564,7 +5410,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .workspace-switcher-head .icon { color: var(--accent); }
 .workspace-switcher-body { display: grid; grid-template-columns: 1.15fr 1fr; gap: 12px; padding: 12px; overflow: auto; max-height: calc(min(620px, 100vh - 120px) - 50px); }
 .workspace-switcher-section { min-width: 0; }
-.workspace-switcher-section-title { margin-bottom: 7px; color: var(--text); font-size: 11px; font-weight: 700; }
+.workspace-switcher-section-title { margin-bottom: 7px; color: var(--text); font-size: 11px; font-weight: 600; }
 .workspace-switcher-type { margin: 8px 4px 4px; color: var(--dim); font-size: 10px; }
 .workspace-switcher-option {
   display: flex; align-items: center; gap: 7px; width: 100%; min-width: 0; padding: 8px;
@@ -5593,7 +5439,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 /* 项目列表可滚动：此前 overflow:hidden 覆盖了上一行的 overflow-y:auto，
    项目一多（>9 个）下面的卡片就再也看不到了。保留 flex 纵向布局，滚动交给上一行。 */
 .sidebar-project-list { display: flex; flex-direction: column; }
-.sidebar-view-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; color: var(--muted); font-size: 11px; font-weight: 700; }
+.sidebar-view-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; color: var(--muted); font-size: 11px; font-weight: 600; }
 .sidebar-project-heading { margin-bottom: 4px; }
 .sidebar-project-heading > span:first-child { display: inline-flex; align-items: center; gap: 5px; }
 .sidebar-project-heading em { color: var(--dim); font-size: 10px; font-style: normal; font-weight: 400; }
@@ -5675,7 +5521,9 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .app-preview-slot {
   width: var(--preview-w);
   min-width: 280px;
-  max-width: 520px;
+  /* 与 Resizer 的 max(680) 对齐：此前写死 520，拖到 520 以上手柄还在移动
+     但栏宽不再变化，视觉上"拖不动"。 */
+  max-width: 680px;
   height: 100vh;
   min-height: 0;
   display: flex;
@@ -5684,13 +5532,13 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   background: var(--panel-bg);
   border-left: 1px solid var(--border);
 }
-.preview-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;   border-bottom: 1px solid var(--border); color: var(--muted);  font-weight: 700; }
+.preview-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;   border-bottom: 1px solid var(--border); color: var(--muted);  font-weight: 600; }
 .preview-panel-head > span { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
 .preview-panel-head .icon { color: var(--accent); }
 .preview-panel-tabs { display: flex; gap: 4px;  border-bottom: 1px solid var(--border);  }
 .preview-panel-tabs button { padding: 4px 8px; border: 0; border-radius: var(--radius-sm); color: var(--muted); background: transparent; cursor: pointer; font: inherit;  }
 .preview-panel-tabs button:hover { color: var(--text); background: var(--selected); }
-.preview-panel-tabs button.active { color: var(--accent); background: var(--selected); font-weight: 700; }
+.preview-panel-tabs button.active { color: var(--accent); background: var(--selected); font-weight: 600; }
 .app-preview-slot > .docview { width: 100%; min-width: 0; height: auto; flex: 1; background: var(--panel-bg); }
 .app-preview-slot > .docview .docview-body { background: var(--panel-bg); }
 /* preview-reopen 浮动按钮已删除（P10 整合）：与顶栏预览开关重复，打开内容统一进右侧画布页签。 */
@@ -5761,7 +5609,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .browser-idle-open { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 6px 5px 10px; border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--panel-bg); }
 .browser-idle-open > .icon { flex: 0 0 auto; color: var(--dim); }
 .browser-idle-open input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 11px; }
-.browser-primary-btn { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 7px 11px; border: 0; border-radius: 8px; background: var(--accent); color: #17200f; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }
+.browser-primary-btn { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 7px 11px; border: 0; border-radius: 8px; background: var(--accent); color: #17200f; font: inherit; font-size: 11px; font-weight: 600; cursor: pointer; }
 .browser-primary-btn:hover { filter: brightness(1.05); transform: translateY(-1px); }
 .browser-primary-btn:disabled { opacity: .48; cursor: wait; transform: none; }
 .browser-quick-links { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 10px; }
@@ -5862,7 +5710,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   background: #8b5cf6;
   color: var(--pure-white);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: .02em;
   white-space: nowrap;
   box-shadow: 0 2px 10px rgba(139, 92, 246, .45);
@@ -5962,7 +5810,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   color: var(--muted);
   font: inherit;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
   transition: color .16s ease, background .16s ease, box-shadow .16s ease, transform .16s ease;
 }
@@ -5977,7 +5825,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .conversation-status.working i { background: var(--warning); box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning) 16%, transparent); animation: pulse-status 1.4s ease-in-out infinite; }
 @keyframes pulse-status { 50% { transform: scale(.72); opacity: .58; } }
 .topbar-tools-toggle { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; }
-.center-chat-slot .chat-head, .center-chat-slot .task-status-bar, .center-chat-slot .agent-capability-preview { display: none; }
+.center-chat-slot .chat-head, .center-chat-slot .agent-capability-preview { display: none; }
 .center-chat-slot .chat-body { padding: 34px clamp(28px, 7vw, 104px) 28px; gap: 22px; }
 .center-chat-slot .msg { gap: 10px; }
 .center-chat-slot .msg-main { min-width: 0; max-width: 820px; }
@@ -5985,7 +5833,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .center-chat-slot .msg .avatar { width: 32px; height: 32px; border-radius: var(--radius-lg); }
 .center-chat-slot .msg.assistant .avatar { color: #1f2a12; background: var(--accent); }
 .center-chat-slot .msg-header { min-height: 24px; gap: 7px; }
-.center-chat-slot .msg-author { font-size: 12px; font-weight: 700; }
+.center-chat-slot .msg-author { font-size: 12px; font-weight: 600; }
 .center-chat-slot .msg-time { font-size: 10px; }
 .center-chat-slot .msg.user .bubble { max-width: none; padding: 12px 16px;   background: var(--accent);  box-shadow: 0 7px 18px color-mix(in srgb, var(--accent) 16%, transparent); }
 .center-chat-slot .msg.user .bubble .msg-text { color: inherit;  font-weight: 600; }
@@ -6008,7 +5856,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   padding: 6px 8px;
   cursor: pointer;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--muted);
   background: var(--panel2-bg);
   border-bottom: 1px solid var(--border);
@@ -6139,7 +5987,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   align-items: center;
   gap: 5px;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--muted);
   margin-bottom: 6px;
   border-bottom: 1px dashed var(--border);
@@ -6313,9 +6161,6 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   .context-ring-button { padding-right: 4px; }
   .approval-mode-control span { display: none; }
   .chat-toolbar-group { padding: 1px; }
-  .mode-current-hint { display: none; }
-  .mode-switch-wide .mode-btn { min-width: 30px; padding: 0 5px; }
-  .mode-switch-wide .mode-label { display: none; }
 }
 
 /* 浮层 */
@@ -6373,7 +6218,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .model-provider-mark.provider-moonshot, .model-provider-mark.provider-kimi { color: #f4f1ff; background: #4c3fd1; }
 .model-provider-mark.provider-xai { color: #f4f4f5; background: #27272a; }
 /* 未收录品牌：显示供应商首字母缩写（可辨认），背景色按名称取稳定色相（内联 style 注入） */
-.model-provider-mark.provider-initials { color: var(--pure-white); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; letter-spacing: .02em; }
+.model-provider-mark.provider-initials { color: var(--pure-white); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; letter-spacing: .02em; }
 .model-control-pop { left: auto; right: 0; width: min(360px, calc(100vw - 24px)); min-width: 300px; }
 /* Portal 到 body 后不再受祖先裁切；高度由内联 maxHeight（触发器上方可用空间）夹取，
    列表自身滚动，思考深度控制始终留在弹层底部。 */
@@ -6396,7 +6241,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .ct-pop-refresh { width: 100%; border: 0;   text-align: left; font: inherit; }
 .ct-pop-refresh small { margin-left: auto; color: var(--dim); font-size: 10px; }
 .model-provider-group + .model-provider-group { border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
-.model-provider-heading { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px 4px; color: var(--dim); font-size: 10px; font-weight: 700; }
+.model-provider-heading { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px 4px; color: var(--dim); font-size: 10px; font-weight: 600; }
 .model-provider-heading > span { display: inline-flex; align-items: center; gap: 5px; }
 .model-provider-heading small { font-weight: 400; }
 .model-option { display: flex; align-items: center; gap: 7px; width: 100%; border: 0; background: transparent; text-align: left; font: inherit; }
@@ -6414,7 +6259,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .model-thinking-head strong { color: var(--accent); font-size: 10px; }
 .model-thinking-control input[type="range"] { width: 100%; height: 4px; accent-color: var(--accent); cursor: pointer; }
 .model-thinking-scale { display: flex; justify-content: space-between; margin-top: 5px; color: var(--dim); font-size: 10px; }
-.model-thinking-scale .active { color: var(--accent); font-weight: 700; }
+.model-thinking-scale .active { color: var(--accent); font-weight: 600; }
 .model-thinking-scale .disabled { opacity: .35; text-decoration: line-through; cursor: not-allowed; }
 .model-thinking-desc { display: block; margin-top: 7px; color: var(--dim); font-size: 10px; }
 .model-thinking-hint { display: block; margin-top: 4px; color: var(--dim); font-size: 10px; opacity: 0.85; }
@@ -6464,10 +6309,10 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .ct-pop-desc { display: block; font-size: 10px; color: var(--dim); margin-top: 1px; }
 
 /* ===== 品牌（Open Plan 规聚） ===== */
-.brand-name { font-weight: 700; }
+.brand-name { font-weight: 600; }
 .topbar-title { display: inline-flex; align-items: center; gap: 6px; }
 .topbar-file { color: var(--muted); font-weight: 400; font-size: 12px; }
-.chat-title { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; }
+.chat-title { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
 
 /* ================= v0.7.6 测量/绘制/按字段渲染 ================= */
 .mp-tool-btn.active { background: var(--accent); color: var(--on-accent); }
@@ -6518,7 +6363,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   gap: 10px;
   pointer-events: none;
 }
-.mp-draw-val { color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; }
+.mp-draw-val { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
 .mp-measure {
   position: absolute;
   left: 10px;
@@ -6535,7 +6380,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   gap: 10px;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
-.mp-measure span { font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.mp-measure span { font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
 
 .mp-iso-check { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); cursor: pointer; margin-left: auto; }
 .mp-iso-check input { accent-color: var(--accent); cursor: pointer; }
@@ -6543,7 +6388,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 
 /* 按字段渲染（样式编辑器内） */
 .lp-ed-sec { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 8px; }
-.lp-ed-sec-title { font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 7px; }
+.lp-ed-sec-title { font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 7px; }
 .lp-ed-field { flex: 1; min-width: 0; }
 .lp-palettes { display: flex; gap: 4px; flex-wrap: wrap; }
 .lp-palette {
@@ -6616,7 +6461,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.sb-modal-title { font-size: 13px; font-weight: 700; }
+.sb-modal-title { font-size: 13px; font-weight: 600; }
 .sb-modal-sub { font-size: 10px; color: var(--dim); }
 .sb-modal-head .mp-op { margin-left: auto; }
 .sb-modal-body { flex: 1; overflow: auto; padding: 8px 12px; min-height: 200px; }
@@ -7357,9 +7202,9 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .ask-block.answered { border-color: var(--success); background: rgba(181, 189, 104, 0.08); }
 .ask-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
-.ask-title { font-weight: 700; color: var(--warning); }
+.ask-title { font-weight: 600; color: var(--warning); }
 .ask-status { margin-left: auto; color: var(--success); font-size: 11px; }
-.ask-question { color: var(--text); line-height: 1.6; margin-bottom: 8px; }
+.ask-question { color: var(--text); line-height: 1.6; margin-bottom: 8px; overflow-wrap: anywhere; }
 .ask-options { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .ask-opt {
   padding: 4px 12px;
@@ -7422,7 +7267,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .approval-block.resolved { border-color: var(--success); background: rgba(181, 189, 104, 0.08); }
 .approval-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
-.approval-title { font-weight: 700; color: var(--warning); }
+.approval-title { font-weight: 600; color: var(--warning); }
 .approval-status { margin-left: auto; color: var(--success); font-size: 11px; }
 .approval-status.denied { color: var(--error); }
 .approval-command {
@@ -7457,7 +7302,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   padding: 6px 10px;
   cursor: pointer;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--muted);
   user-select: none;
 }
@@ -7503,7 +7348,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   padding: 10px 12px;
   font-size: 12px;
 }
-.kb-wiki-preview-title { font-weight: 700; color: var(--accent); margin-bottom: 6px; }
+.kb-wiki-preview-title { font-weight: 600; color: var(--accent); margin-bottom: 6px; }
 .kb-wiki-preview-snippet { color: var(--muted); line-height: 1.6; }
 
 /* ===== 文档底部反链区块 ===== */
@@ -7514,7 +7359,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .kb-doc-backlinks-title {
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--muted);
   display: flex;
   align-items: center;
@@ -7660,7 +7505,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 
 .m2-stat-value {
   font-size: 16px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--accent);
 }
 
@@ -7757,7 +7602,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 
 .m2-road-count {
-  font-weight: 700;
+  font-weight: 600;
   color: var(--accent);
 }
 
@@ -8021,7 +7866,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   align-items: center;
   justify-content: center;
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   flex-shrink: 0;
 }
 .m3-top-name {
@@ -8103,7 +7948,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .m3-route-rank {
   width: 16px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--accent);
   font-variant-numeric: tabular-nums;
 }
@@ -8130,7 +7975,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .m3-kpi-value {
   font-size: 16px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--accent);
   font-variant-numeric: tabular-nums;
 }
@@ -8193,7 +8038,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 
 .m3-stat-value {
   font-size: 16px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--accent);
 }
 
@@ -8381,7 +8226,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 
 .m3-stat-number {
   font-size: 24px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--accent);
   line-height: 1.2;
 }
@@ -8660,7 +8505,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   min-width: 0;
   flex: 1;
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .conversation-mode-switch { padding: 3px; }
 .conversation-mode-option { min-width: 72px; height: 31px; padding: 0 12px; }
@@ -8722,14 +8567,18 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 
 .center-chat-slot .chat-head,
-.center-chat-slot .task-status-bar,
 .center-chat-slot .agent-capability-preview { display: none; }
 .center-chat-slot .chat-body {
-  padding: 34px clamp(20px, 5vw, 72px) 28px;
+  padding: 34px var(--chat-gutter) 28px;
   gap: 20px;
+  /* 始终为滚动条留位：输入框按同一宽度收窄后才能与消息列右缘严格对齐 */
+  scrollbar-gutter: stable;
+  /* 只允许纵向滚动。历史会话里的长路径/长文件名任何一次溢出，都不应把整个消息区
+     变成可横滑（根因 .efn-item 缺 min-width 已单独修，这里是兜底）。 */
+  overflow-x: hidden;
 }
 .center-chat-slot .msg { gap: 9px; }
-.center-chat-slot .msg-main { width: min(100%, 880px); max-width: 880px; }
+.center-chat-slot .msg-main { width: 100%; max-width: 100%; }
 .center-chat-slot .msg.user .msg-main { width: auto; max-width: min(78%, 540px); }
 .center-chat-slot .msg.user .bubble { width: fit-content; max-width: 100%; }
 /* 无浏览器/产物侧栏时消息列（含 agent 事件流）居中展示；有侧栏时按可用宽度自适应 */
@@ -8737,7 +8586,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .center-chat-slot .chat-body > .chat-load-older,
 .center-chat-slot .chat-body > .chat-history-window-note {
   width: 100%;
-  max-width: 880px;
+  max-width: var(--msg-content-max);
   margin-left: auto;
   margin-right: auto;
 }
@@ -8754,7 +8603,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   color: var(--user-fg);
   box-shadow: none;
 }
-.center-chat-slot .msg.user .bubble .msg-text { font-size: 13px; font-weight: 500; color: var(--user-fg); }
+.center-chat-slot .msg.user .bubble .msg-text { font-size: 13px; font-weight: 400; color: var(--user-fg); }
 /* 用户气泡内的正文/Markdown/链接/代码统一使用高对比字色：
    避免 accent 链接、继承来的浅色文字落在浅色气泡上不可读。 */
 .center-chat-slot .msg.user .bubble .flow-markdown,
@@ -8784,7 +8633,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .center-chat-slot .tool-card { border-radius: var(--radius-lg); background: var(--panel2-bg); }
 
 .center-chat-slot .chat-input {
-  width: min(760px, calc(100% - 44px));
+  width: min(var(--msg-content-max), calc(100% - var(--chat-gutter) * 2 - var(--scrollbar-w)));
   margin: 0 auto 18px;
   padding: 10px 13px 8px;
   border: 1px solid var(--border);
@@ -8795,7 +8644,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 /* 输入区外壳：任务卡在输入框之外（上面），输入框本体在里面。
    宽度与居中规则只在外壳上写一次，输入框占满外壳。 */
 .center-chat-slot .chat-compose {
-  width: min(760px, calc(100% - 44px));
+  width: min(var(--msg-content-max), calc(100% - var(--chat-gutter) * 2 - var(--scrollbar-w)));
   margin: 0 auto 18px;
   display: flex;
   flex-direction: column;
@@ -8840,17 +8689,12 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .center-chat-slot .chat-input textarea:focus { border: 0; box-shadow: none; }
 .center-chat-slot .chat-toolbar { margin-top: 5px; padding-top: 5px; border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
 .center-chat-slot .chat-toolbar-label,
-.center-chat-slot .mode-label,
-.center-chat-slot .mode-current-hint,
 .center-chat-slot .ct-context-btn span { display: none; }
 .center-chat-slot .chat-toolbar-group { gap: 3px; border: 0; background: transparent; }
 .center-chat-slot .ct-sep { display: none; }
-.center-chat-slot .ct-btn,
-.center-chat-slot .mode-btn { min-width: 28px; height: 27px; padding: 0 6px; border: 0; background: transparent; }
+.center-chat-slot .ct-btn { min-width: 28px; height: 27px; padding: 0 6px; border: 0; background: transparent; }
 .center-chat-slot .ct-btn:hover,
-.center-chat-slot .ct-btn.active,
-.center-chat-slot .mode-btn:hover,
-.center-chat-slot .mode-btn.active { color: var(--accent); background: var(--selected); }
+.center-chat-slot .ct-btn.active { color: var(--accent); background: var(--selected); }
 .center-chat-slot .send-btn { width: 36px; height: 36px; border-radius: var(--radius-lg); background: var(--accent); color: var(--on-accent); }
 .center-chat-slot .busy-input-mode { font-size: 11px; }
 .center-chat-slot .chat-empty { padding-top: 18vh; font-size: 15px; }
@@ -9079,7 +8923,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 
 .settings-overview { margin-bottom: 16px; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-xl); background: color-mix(in srgb, var(--panel-bg) 92%, var(--accent)); }
 .settings-overview-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
-.settings-eyebrow, .artifact-eyebrow { display: block; margin-bottom: 5px; color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.settings-eyebrow, .artifact-eyebrow { display: block; margin-bottom: 5px; color: var(--accent); font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
 .settings-overview h3 { font-size: 20px; line-height: 1.25; letter-spacing: -.02em; }
 .settings-overview p { margin-top: 5px; color: var(--muted); font-size: 11px; }
 .settings-runtime-badge { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; padding: 6px 9px; border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border)); border-radius: 999px; color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); font-size: 10px; }
@@ -9258,7 +9102,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .artifact-summary-grid strong { color: var(--accent); font-size: 17px; line-height: 1; }
 .artifact-summary-grid span { color: var(--muted); font-size: 10px; }
 .artifact-list-card { padding: 3px 14px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-bg); }
-.artifact-list-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0 7px; color: var(--text); font-size: 11px; font-weight: 700; }
+.artifact-list-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0 7px; color: var(--text); font-size: 11px; font-weight: 600; }
 .artifact-list-head small { color: var(--dim); font-size: 10px; font-weight: 400; }
 .artifact-list-card .preview-empty { min-height: 160px; }
 .artifact-list-card .preview-artifact { padding: 11px 0; }
@@ -9302,7 +9146,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .agent-capability-preview > summary::-webkit-details-marker { display: none; }
 .agent-capability-preview > summary::before { content: ""; width: 0; height: 0; flex: 0 0 auto; border-left: 4px solid var(--accent); border-top: 3px solid transparent; border-bottom: 3px solid transparent; transition: transform 0.15s; }
 .agent-capability-preview[open] > summary::before { transform: rotate(90deg); }
-.agent-capability-preview > summary span:first-of-type { color: var(--accent); font-weight: 700; }
+.agent-capability-preview > summary span:first-of-type { color: var(--accent); font-weight: 600; }
 .agent-capability-preview > summary span:last-of-type { color: var(--dim); }
 .agent-capability-details {
   display: flex;
@@ -9475,15 +9319,12 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .app-chat-slot.map .chat-toolbar-spacer,
 .app-chat-slot.map .chat-toolbar > .ct-sep { display: none; }
-.app-chat-slot.map .chat-toolbar .ct-btn,
-.app-chat-slot.map .chat-toolbar .mode-btn {
+.app-chat-slot.map .chat-toolbar .ct-btn {
   min-width: 26px;
   width: 26px;
   height: 27px;
   padding: 0 4px;
 }
-.app-chat-slot.map .chat-toolbar .mode-label,
-.app-chat-slot.map .chat-toolbar .mode-current-hint { display: none; }
 .app-chat-slot.map .toolbar-agent-group {
   flex: 1 1 100%;
   min-width: 0;
@@ -9798,6 +9639,10 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   border-top: 1px dashed color-mix(in srgb, var(--border) 70%, transparent);
   color: var(--muted);
   font-size: 10px;
+  /* 关键：父级是 display:grid，grid item 默认 min-width:auto 会被 .efn-text 的
+     white-space:nowrap 内容（如"文件已更新：a、b、c…"多个长路径）撑到内容宽度，
+     省略号随之失效，整个消息区出现横向滚动条（实测被撑到 1459px）。 */
+  min-width: 0;
 }
 .efn-item:first-child { border-top: 0; }
 .efn-text { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -9854,9 +9699,6 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .chat-compact .chat-head { padding: 6px 9px; }
 .chat-compact .chat-head .doc-hint,
 .chat-compact .chat-head .chat-project-badge { display: none; }
-.chat-compact .task-status-bar { padding: 3px 9px; font-size: 10px; }
-.chat-compact .task-status-bar code,
-.chat-compact .task-status-bar .task-mode-meta { display: none; }
 .chat-compact .chat-stream-shell { padding: 0 6px; }
 .chat-compact .chat-body { padding: 8px 8px 4px; }
 .chat-compact .msg { font-size: 12px; }
@@ -9947,14 +9789,6 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .sp-marquee-preview-text { font-size: 11px; }
 .sp-marquee-preview small { flex: 0 0 auto; color: var(--dim); font-size: 10px; }
-
-/* ---------- 9. 窄栏降级：单行状态栏只留状态位，标签顺次隐藏 ---------- */
-@media (max-width: 900px) {
-  .execution-flow-chip,
-  .execution-flow-stats { display: none; }
-}
-.chat-compact .execution-flow-chip,
-.chat-compact .execution-flow-stats { display: none; }
 
 /* ==========================================================================
    P2：Agent 主任务流（空白态示例 / 目标范围 / 模型选择 / 运行态 / 结果卡）
@@ -10660,6 +10494,136 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .prov-config-msg { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ==========================================================================
+   会话流（时间线 + 框外总结 + 本轮产物）
+   规范：docs/规范/会话流前端规范.md
+   - 颜色一律消费语义令牌（设计令牌棘轮：不新增硬编码色值）；
+   - 本段置于统一动效闸门之前：新增无限动画宿主（.tl-state.run，复用 pulse）
+     已同步闸门清单与 scripts/动效治理测试.mjs 的持续动画宿主表；
+   - 入场动画只挂在运行中的时间流（.tl-list.is-live），历史回放不重播。
+   ========================================================================== */
+/* 时间流 */
+.tl-list { border-left: 1px solid color-mix(in srgb, var(--border) 70%, transparent); margin: 4px 0 6px 0; padding-left: var(--tl-indent); display: flex; flex-direction: column; gap: 2px; }
+.tl-list.is-live > * { animation: tl-row-in var(--dur-slow) var(--ease-out) both; }
+.tl-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 8px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.tl-row-head:hover { background: color-mix(in srgb, var(--surface) 55%, transparent); }
+.tl-row-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tl-chev { display: inline-flex; color: var(--accent); transition: transform var(--dur-base) var(--ease-out); flex: none; }
+.tl-row.open .tl-chev { transform: rotate(90deg); }
+.tl-icon {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  border: 1px solid var(--border);
+  color: var(--dim);
+}
+.tl-row-head:hover .tl-icon { color: var(--accent); }
+.tl-verb { font-size: 12px; font-weight: 400; flex: none; }
+.tl-obj { font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tl-time { font-size: 11px; color: var(--muted); margin-left: auto; flex: none; }
+/* 本轮耗时：保留「已运行 xx」文字，去掉运行框与折叠头（规范 §2 修订） */
+.tl-elapsed { font-size: 11px; color: var(--muted); margin: 2px 0 2px 5px; font-variant-numeric: tabular-nums; }
+.tl-state { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+.tl-state.ok { background: var(--success); }
+.tl-state.err { background: var(--error); }
+.tl-state.run { background: var(--warning); animation: pulse 1.2s var(--ease-out) infinite; }
+.tl-detail-wrap { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur-base) var(--ease-out); }
+.tl-row.open .tl-detail-wrap { grid-template-rows: 1fr; }
+.tl-detail { min-height: 0; overflow: hidden; margin-left: 30px; opacity: 0; transform: translateY(-4px); transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out); }
+.tl-row.open .tl-detail { opacity: 1; transform: none; }
+/* 未决 ask / 审批是全宽交互卡片：与输入框同宽，不参与时间流的图标列缩进。
+   此前它继承 .tl-detail 的 30px，比消息列窄一整截（用户反馈"ask 卡片宽度要和会话一致"）。
+   注意 .tl-detail 在 .tl-detail-wrap 内，必须用后代选择器，不能写 > 。 */
+.tl-row.locked .tl-detail { margin-left: 0; }
+/* 展开后的思考正文：独立滚动容器（滚轮在正文内向下滚动，不带着整段对话一起跳）。
+   overscroll-behavior: contain 是关键——否则内层到底后滚轮会穿透到会话流。 */
+.tl-thinking-text {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.tl-thinking-text::-webkit-scrollbar { width: 8px; }
+.tl-thinking-text::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.tl-sys-text { padding: 6px 8px; font-size: 12px; color: var(--warning); white-space: pre-wrap; overflow-wrap: anywhere; }
+.tl-list .textblock { padding: 5px 8px 7px 30px; }
+.tl-list .textblock .tb-cap { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+@keyframes tl-row-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* 框外总结（无框 · 层级：cap 11 / 标签 12 / 结论 14 加粗 / 正文 12.5） */
+.sum-block { margin: 12px 0 4px; padding: 0; }
+.sum-cap { font-size: 11px; color: var(--muted); }
+.sum-what { margin-top: 6px; font-size: 12.5px; color: var(--text); line-height: 1.65; overflow-wrap: anywhere; }
+.sum-what b { font-family: var(--font-emphasis); font-weight: 600; color: var(--text); }
+.sum-label { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 400; color: var(--dim); margin: 12px 0 4px; }
+.sum-conclusion { font-family: var(--font-emphasis); font-size: 14px; font-weight: 600; color: var(--text); line-height: 1.65; letter-spacing: 0; overflow-wrap: anywhere; }
+.sum-detail { margin-top: 2px; min-width: 0; }
+.sum-detail .markdown-body { background: transparent; border: none; padding: 0; font-size: 12.5px; line-height: 1.7; color: var(--dim); }
+/* 总结区表格：保持 display:table（列宽按内容分配），横向滚动交给外层包裹。
+   此前直接给 table 设 display:block + overflow-x，表格脱离表格布局，
+   列宽不再按内容分配，横向滚动条常驻且表头与内容列错位。 */
+.sum-detail .markdown-body { overflow-x: auto; }
+.sum-detail .markdown-body table { display: table; max-width: 100%; }
+
+/* 本轮产物卡 */
+.ac-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel2-bg) 55%, transparent);
+  margin: 12px 0 4px;
+  overflow: hidden;
+}
+.ac-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--dim); }
+.ac-title { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; color: var(--text); }
+.ac-meta { margin-left: auto; }
+.ac-files { padding: 4px 8px 6px; display: flex; flex-direction: column; }
+/* locked 行（ask/审批交互块）：头部无按钮语义，明细常开 */
+.tl-row.locked .tl-detail-wrap { grid-template-rows: 1fr; }
+.tl-row.locked .tl-detail { opacity: 1; transform: none; }
+.tl-row-head.no-toggle { cursor: default; }
+.tl-row-head.no-toggle:hover { background: none; }
+/* 思考折叠态滚动预览（复用跑马灯体系，动效闸门已覆盖） */
+.tl-think-preview { display: block; min-width: 0; max-width: 320px; overflow: hidden; }
+.tl-think-preview .marquee { max-width: 100%; }
+/* F8 内容列宽统一：msg-main 整列限宽（用户气泡与助手各卡同列，右缘对齐） */
+.msg .msg-main { max-width: min(var(--msg-content-max), 100%); }
+.msg.user .msg-main .bubble { max-width: 100%; width: fit-content; margin-left: auto; padding: 12px 16px; border-radius: 12px; }
+.msg.assistant .msg-main .tl-list,
+.msg.assistant .msg-main .sum-block,
+.msg.assistant .msg-main .ac-card,
+.msg.assistant .msg-main .run-result-action { max-width: var(--msg-content-max); }
+
+/* 会话流动效降级：系统减少动效与产品关闭动效时立即落定（信息不丢） */
+:is([data-reduce-motion="1"], [data-motion-level="off"]) :is(
+  .tl-row, .tl-row-head, .tl-chev, .tl-detail-wrap, .tl-detail,
+  .ac-file-row, .ac-file-actions button
+) { transition: none !important; }
+:is([data-reduce-motion="1"], [data-motion-level="off"]) .tl-list.is-live > * { animation: none !important; opacity: 1; transform: none; }
+
+/* ============================================================================
    §3.3 组件交互规范（Qoder 对标 · opt-in · 默认不生效 · 可一键回滚）
    ---------------------------------------------------------------------------
    来源：对标报告 §3.3 ①（执行流状态点）②（思考块竖线）③（工具卡片中性本体）
@@ -10745,6 +10709,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   .msg-streaming-label,
   .avatar.agent-avatar.is-streaming,
   .tool-icon.run,
+  .tl-state.run,
   .brain-core.running .brain-core-dot,
   .browser-status.loading i,
   .browser-connection.offline i,
@@ -10848,7 +10813,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .mp-menu-label {
   padding: 5px 10px 3px;
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--dim);
   letter-spacing: 0.03em;
 }
@@ -10918,7 +10883,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   border-bottom: 1px solid var(--border);
   background: var(--panel2-bg);
 }
-.vp-title { font-size: 12px; font-weight: 700; }
+.vp-title { font-size: 12px; font-weight: 600; }
 .vp-sub { font-size: 10px; color: var(--dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vp-body { padding: 10px; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
 .vp-ask-row { display: flex; gap: 6px; }
@@ -10968,7 +10933,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .vp-empty { font-size: 11px; color: var(--dim); padding: 8px 2px; }
 .vp-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 9px; background: var(--panel2-bg); }
 .vp-card-head { display: flex; align-items: center; gap: 5px; }
-.vp-card-name { font-size: 12px; font-weight: 700; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vp-card-name { font-size: 12px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vp-card-badge {
   font-size: 10px;
   padding: 1px 5px;
@@ -10995,7 +10960,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   background: color-mix(in srgb, var(--accent) 8%, transparent);
   border-bottom: 1px solid var(--border);
 }
-.cms-project { font-weight: 700; color: var(--text); max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cms-project { font-weight: 600; color: var(--text); max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cms-sep { color: var(--dim); }
 .cms-view { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cms-pin {
@@ -11207,7 +11172,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   cursor: pointer;
 }
 .app-canvas-tabs button:hover { color: var(--text); background: var(--selected); box-shadow: 0 6px 14px rgba(0, 0, 0, 0.30); }
-.app-canvas-tabs button.active { color: var(--accent); background: var(--selected); border-color: color-mix(in srgb, var(--accent) 32%, var(--border)); font-weight: 700; }
+.app-canvas-tabs button.active { color: var(--accent); background: var(--selected); border-color: color-mix(in srgb, var(--accent) 32%, var(--border)); font-weight: 600; }
 .app-canvas-tabs .browser-activity-dot { position: absolute; top: 3px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--panel-bg); }
 .canvas-hidden { display: none !important; }
 .app-canvas-body { display: flex; flex-direction: column; flex: 1; min-height: 0; width: 100%; min-width: 0; }
@@ -11333,7 +11298,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   --ease-out: cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 
-/* 亮色对应（Qoder light：editor.background #FFFFFF / foreground #141414） */
+/* 亮色对应（Qoder light：editor.background 纯白 / foreground #141414） */
 [data-theme="light"][data-oaw-style="qoder"] {
   /* ---- 第 1 层：基础色阶（亮色方向与暗色相反：000 最亮、900 最暗）---- */
   --op-gray-000: #ffffff;

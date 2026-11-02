@@ -314,6 +314,43 @@ await test("agent / task / index / 前端已接入浏览器能力", () => {
   assert.match(index, /resolvePath\(fileName, requestedCwd\)/, "文档接口需支持 cwd 解析");
 });
 
+// ---------- 会话流改版接线（落地文档 2026-10-31-001 §7） ----------
+console.log("\n▶ 会话流改版接线");
+await test("Run 轮次走整轮折叠新路径（已转正），组件与样式齐备", () => {
+  const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
+  const chat = read("client/src/components/ChatPanel.jsx");
+  const projection = read("client/src/chat-flow-projection.js");
+  const styles = read("client/src/styles.css");
+  const pkg = JSON.parse(read("package.json"));
+  const flags = read("server/运行开关.mjs");
+  assert.match(chat, /!isUser && Boolean\(m\.runId\)/, "Run 轮次应走整轮折叠新路径（Review 保留旧渲染）");
+  assert.doesNotMatch(chat, /flag\("chatTimelineUi"\)/, "新路径已转正，不应再有 chatTimelineUi 开关判断");
+  assert.doesNotMatch(flags, /OAW_CHAT_TIMELINE/, "转正后服务端不应残留 OAW_CHAT_TIMELINE 开关");
+  assert.ok(fs.existsSync(path.join(ROOT, "client", "src", "components", "chat-flow", "RunFold.jsx")), "应提供 RunFold 组件（远程新路径未直接引用，保留组件供回退形态使用）");
+  assert.match(chat, /<SummaryBlock/, "新路径应渲染框外总结");
+  assert.match(chat, /<ArtifactCard/, "新路径应渲染本轮产物卡");
+  assert.match(chat, /buildRunTimeline/, "新路径应经会话流投影归约时间线");
+  assert.match(chat, /splitCompletionSummary/, "总结应拆分结论与详细展开");
+  assert.match(projection, /export function buildRunTimeline/, "投影模块应导出 buildRunTimeline");
+  assert.match(projection, /export function splitCompletionSummary/, "投影模块应导出 splitCompletionSummary");
+  for (const comp of ["RunFold.jsx", "TimelineRow.jsx", "SummaryBlock.jsx", "ArtifactCard.jsx"]) {
+    assert.ok(fs.existsSync(path.join(ROOT, "client", "src", "components", "chat-flow", comp)), `缺少组件文件 ${comp}`);
+  }
+  for (const cls of [".tl-row-head", ".tl-detail-wrap", ".sum-block", ".sum-conclusion", ".ac-card"]) {
+    assert.ok(styles.includes(cls), `styles.css 缺少会话流样式 ${cls}`);
+  }
+  // 精修计划 2026-10-31-002 接线断言
+  const artifact = read("client/src/components/chat-flow/ArtifactCard.jsx");
+  assert.match(chat, /useTypewriter|TypewriterText/, "正文/思考应接打字机");
+  assert.match(chat, /跑马灯文本/, "思考折叠态应使用既有跑马灯做滚动预览");
+  assert.match(chat, /tl-row-head no-toggle|locked/, "ask/审批应为 locked 一行头");
+  assert.match(artifact, /product-card-main/, "本轮产物应恢复既有 product-card 行格式");
+  assert.match(artifact, /在产物面板查看/, "本轮产物应保留产物面板入口");
+  assert.match(styles, /--msg-content-max: min\(100%, 720px\)/, "内容列宽令牌应存在");
+  assert.match(styles, /font-family: "Segoe UI Variable Text"/, "字体栈应升级（方案 A：系统栈优先）");
+  assert.equal(pkg.scripts["test:chat-timeline"], "node scripts/chat-timeline-test.mjs", "应注册 test:chat-timeline 脚本");
+});
+
 if (LIVE) {
   console.log("\n▶ 真实浏览器链路（Bing 搜索）");
   const key = browserSessionKey("live", "browser-test");

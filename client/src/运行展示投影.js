@@ -465,6 +465,39 @@ export function upsertRunSummaryMessage(messages = [], data = {}, {
 }
 
 /**
+ * 把 Run 摘要消息插回历史消息流（首屏与"加载更早"共用）。
+ *
+ * 背景：远程会话流改版新增该调用，但实现未随仓库提交（干净克隆会直接构建失败）。
+ * 规则：按 Run 收尾时间插到第一条晚于它的消息之前；无时间戳时追加到末尾；
+ * 同一 runId 已存在摘要时不重复插入（避免分页重载产生双份总结卡）。
+ * 插入后统一走 associateRunMessages，把本轮过程消息挂到该 runId。
+ */
+export function mergeRunSummaries(messages = [], runMessages = []) {
+  const base = Array.isArray(messages) ? messages : [];
+  const summaries = Array.isArray(runMessages)
+    ? runMessages.filter((item) => item && item.summary === true && item.runId)
+    : [];
+  if (!summaries.length) return associateRunMessages(base);
+  const existing = new Set(base.filter((item) => item?.summary && item.runId).map((item) => String(item.runId)));
+  const pending = summaries.filter((item) => !existing.has(String(item.runId)));
+  if (!pending.length) return associateRunMessages(base);
+  const list = [...base];
+  for (const summary of pending) {
+    const at = Number(new Date(summary.finishedAt || summary.createdAt || summary.startedAt || 0)) || 0;
+    let index = list.length;
+    if (at > 0) {
+      const nextIndex = list.findIndex((item) => {
+        const time = Number(new Date(item?.createdAt || 0)) || 0;
+        return time > 0 && time > at;
+      });
+      if (nextIndex >= 0) index = nextIndex;
+    }
+    list.splice(index, 0, summary);
+  }
+  return associateRunMessages(list);
+}
+
+/**
  * 内部 harness 提示：写进会话文件时仍是 user 消息，但不属于用户输入，
  * 既不能在恢复后显示为“You”，也不能截断同一 Run 的过程归约。
  * 旧版本把“模型连接中断后自动续跑”的提示直接以普通 user 消息写入，

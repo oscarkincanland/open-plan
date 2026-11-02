@@ -41,7 +41,7 @@ assert.match(app, /restoredSessionRef\.current = true;/, "恢复标记仍应存�
 assert.match(app, /lastSessionIdRef\.current = null;/, "不得保留会自动恢复会话的旧字段");
 
 // 4. Agent 恢复失败：只读 + 重试
-assert.match(app, /resumeResult\?\.ok \? null : \{ sessionId: session\.id/, "恢复失败应记录为只读状态");
+assert.match(app, /resumeResult\?\.ok \? null : \{\s*sessionId: session\.id/, "恢复失败应记录为只读状态");
 assert.match(app, /const retrySessionResume = useCallback/, "应提供恢复重试");
 assert.match(app, /历史已加载为只读/, "应明确说明历史只读");
 assert.match(样式, /\.session-resume-warning \{/, "只读提示应有样式");

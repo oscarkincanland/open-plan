@@ -13,6 +13,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel) => fs.readFileSync(path.join(root, rel), "utf8");
 const flagsSource = read("server/运行开关.mjs");
 const chatSource = read("client/src/components/ChatPanel.jsx");
+const appSource = read("client/src/App.jsx");
 const stylesSource = read("client/src/styles.css");
 const pkg = JSON.parse(read("package.json"));
 
@@ -57,6 +58,19 @@ test("styles.css 追加 activity-summary 样式块（纯追加）", () => {
 });
 test("package.json 注册 test:activity-summary", () => {
   assert.equal(pkg.scripts["test:activity-summary"], "node scripts/activity-summary-test.mjs");
+});
+
+console.log("\n▶ 旧会话流形态保留（默认关闭，不删除）");
+test("chatLegacyTimeline 注册且默认关", () => {
+  assert.match(flagsSource, /chatLegacyTimeline: readFlag\("OAW_CHAT_LEGACY_TIMELINE"\)/);
+  assert.doesNotMatch(flagsSource, /chatLegacyTimeline: readFlagWithDefault/);
+});
+test("快照下发 chatLegacyTimeline", () => {
+  assert.match(flagsSource, /chatLegacyTimeline: RUNTIME_FLAGS\.chatLegacyTimeline/);
+});
+test("App 按开关选择旧实现，旧组件文件保留", () => {
+  assert.match(appSource, /flag\("chatLegacyTimeline"\) \? ChatPanelLegacy : ChatPanel/);
+  assert.ok(fs.existsSync(path.join(root, "client", "src", "components", "ChatPanelLegacy.jsx")), "旧会话流实现应保留");
 });
 
 console.log(failed ? "\n活动摘要行测试：失败" : "\n活动摘要行测试：通过");

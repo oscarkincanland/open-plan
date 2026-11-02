@@ -28,6 +28,12 @@ import { acquireStream, closeEventSourceQuietly, noteCursorGap } from "../长连
 import { notifyError, askConfirm, askText } from "./Feedback.jsx";
 import { flag, flagsReady, numberFlag } from "../运行开关.js";
 import { getBrowserStreamState } from "../浏览器联动.js";
+import TimelineRow from "./chat-flow/TimelineRow.jsx";
+import SummaryBlock from "./chat-flow/SummaryBlock.jsx";
+import ArtifactCard from "./chat-flow/ArtifactCard.jsx";
+import { TypewriterText } from "./chat-flow/useTypewriter.jsx";
+import 跑马灯文本 from "./跑马灯文本.jsx";
+import { buildRunTimeline, splitCompletionSummary } from "../chat-flow-projection.js";
 
 // O-P3：浏览器"写操作类"工具白名单 —— 只有这些会拉起内置浏览器侧栏；
 // browser_close / browser_tabs / browser_snapshot / browser_screenshot 等查看或收尾动作不拉起。
@@ -667,14 +673,17 @@ export function extractSessionLinks(messages = []) {
   return [...seen.values()];
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "" }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "" }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   // 草稿按 thread 恢复（交互 3）：模块导航会卸载本组件，重挂载时从缓存取回未发送内容。
   const [input, setInput] = useState(() => readDraft(threadId));
   // v0.12.5：服务端游标续拉更早历史的状态（loading / 已到顶）与滚动锚点。
-  const [olderHistory, setOlderHistory] = useState({ loading: false, exhausted: false });
+  const [olderHistory, setOlderHistory] = useState({ loading: false, exhausted: false, status: "" });
   const scrollAnchorRef = useRef(null);
+  // "加载更早"回写 historyMessages 时区分「分页追加」与「切换会话」：
+  // 追加只需更新消息列表，不能重置可见窗口/滚动位置/运行状态。
+  const historyAppendPendingRef = useRef(false);
   // v0.12.6：从某条用户消息编辑重发时，先记录分支点，发送前调用服务端 navigateTree。
   const [pendingBranch, setPendingBranch] = useState(null);
   const pendingBranchRef = useRef(null);
@@ -946,9 +955,16 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const followLatestRef = useRef(true);
   // v0.12.5：历史分页状态随会话/服务端窗口重置；“加载更早”后恢复滚动锚点，
   // 避免用户正在看第 300 条时被新插入的旧消息顶到列表底部。
+  // 切会话：完全重置分页状态与提示文案。
   useEffect(() => {
-    setOlderHistory({ loading: false, exhausted: !historyWindow?.hasMore });
-  }, [threadId, historyThreadId, historyWindow?.hasMore]);
+    setOlderHistory({ loading: false, exhausted: false, status: "" });
+  }, [threadId, historyThreadId]);
+  // hasMore 变化：只同步 exhausted，保留"已加载 N 条 / 已到最早"这类提示文案。
+  useEffect(() => {
+    setOlderHistory((state) => (state.exhausted === !historyWindow?.hasMore
+      ? state
+      : { ...state, exhausted: !historyWindow?.hasMore }));
+  }, [historyWindow?.hasMore]);
   useLayoutEffect(() => {
     const anchor = scrollAnchorRef.current;
     const el = bodyRef.current;
@@ -956,6 +972,17 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     scrollAnchorRef.current = null;
     el.scrollTop = el.scrollHeight - anchor.height + anchor.top;
   }, [messages, messageWindowSize]);
+  // 切回历史会话时恢复上次阅读位置（在消息渲染完成后执行一次）。
+  useLayoutEffect(() => {
+    const target = pendingScrollRestoreRef.current;
+    const el = bodyRef.current;
+    if (target == null || !el) return;
+    pendingScrollRestoreRef.current = null;
+    // 内容可能还没撑开（图片/表格），夹到有效范围避免被浏览器截断到 0。
+    el.scrollTop = Math.min(target, Math.max(0, el.scrollHeight - el.clientHeight));
+    // 只更新跟随意图；"回到底部"按钮与未读数由后续 onScroll 自动同步。
+    followLatestRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }, [messages]);
   const assistantIdRef = useRef(null);
   // agent_end 可能先于 run_finished 到达；保留本轮最后一个气泡，
   // 让服务端补发的权威全文继续写入原气泡，避免出现两条结论。
@@ -1370,6 +1397,15 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     // historyMessages，而 threadId 在恢复完成后才更新，中间渲染必须忽略。
     if (historyThreadId && historyThreadId !== threadId) return;
     if (historyMessages) {
+      // 分页追加（"加载更早"）也会回写 historyMessages（单一事实源）。
+      // 那种情况只更新消息列表：不能重置可见窗口、不能跳到底部、不能重建运行状态，
+      // 否则用户刚加载的旧消息会被窗口裁掉并被顶回列表底部。
+      const appendOnly = historyAppendPendingRef.current;
+      historyAppendPendingRef.current = false;
+      if (appendOnly) {
+        setMessages(normalizeHistoryMessages(historyMessages));
+        return;
+      }
       followLatestRef.current = true;
       setUnreadBelow(0); // 切会话未读归零：旧会话的未读不再延续到新会话
       const normalizedHistory = normalizeHistoryMessages(historyMessages);
@@ -1503,6 +1539,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     }
     agentErrorRef.current = false;
     systemEventKeysRef.current.clear();
+    // 记录目标会话的阅读位置：等 messages 水合完成后由下面的 layout effect 恢复。
+    // 运行中的会话不恢复（应继续跟随底部）。
+    const savedScroll = scrollPositionsRef.current.get(threadId);
+    pendingScrollRestoreRef.current = (savedScroll != null && !hydratedIsLive) ? savedScroll : null;
     previousThreadRef.current = threadId;
   }, [historyMessages, historyThreadId, threadId]);
 
@@ -2616,7 +2656,6 @@ case "runtime_connecting":
                 output: "",
                 done: false,
                 isError: false,
-                expanded: false,
                 startTime: Date.now(),
                 duration: null,
               }],
@@ -2662,7 +2701,6 @@ case "runtime_connecting":
               done: true,
               isError: !!data.isError,
               startMissing: true,
-              expanded: false,
               startTime: null,
               duration: null,
             });
@@ -3321,23 +3359,31 @@ case "runtime_connecting":
     });
   }, [runState.mode, workspace]);
 
+  // 工具卡展开状态由本层统一持有（expandedToolIds），不再写在消息块的 expanded 上。
+  // 原因：同一 Run 的多个 assistant 消息会被聚合成一条渲染单元，块归属哪条消息并不稳定；
+  // 把展开态写回消息会写错宿主，表现为「点击读取文件/编辑文件没有任何反应」。
+  const [expandedToolIds, setExpandedToolIds] = useState(() => new Set());
+  const toggleToolExpanded = useCallback((toolId) => {
+    const key = String(toolId || "");
+    if (!key) return;
+    setExpandedToolIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
   // 脑图点击工具节点：在消息流中展开对应工具卡（工具卡默认折叠）
   const focusTool = useCallback((toolId) => {
     const value = String(toolId || "");
     if (!value) return;
-    setMessages((list) => list.map((message) => {
-      if (!Array.isArray(message.blocks)) return message;
-      let changed = false;
-      const blocks = message.blocks.map((block) => {
-        if (block.type === "tool" && (block.id === value || block.toolCallId === value)) {
-          if (block.expanded) return block;
-          changed = true;
-          return { ...block, expanded: true };
-        }
-        return block;
-      });
-      return changed ? { ...message, blocks } : message;
-    }));
+    setExpandedToolIds((previous) => {
+      if (previous.has(value)) return previous;
+      const next = new Set(previous);
+      next.add(value);
+      return next;
+    });
   }, []);
 
   const finalizeStopped = useCallback(() => {
@@ -3904,18 +3950,6 @@ case "runtime_connecting":
       : { ...msg, blocks: (msg.blocks || []).map((block) => (block.id === blockId ? { ...block, expired: true } : block)) });
   }, [patch]);
 
-  const handleMessageToggleTool = useCallback((messageId, toolId) => {
-    patch(messageId, (msg) => {
-      const blocks = (msg.blocks || []).map((block, index) => {
-        if (block.type === "tool" && (block.id === toolId || (block.id === undefined && index === toolId))) {
-          return { ...block, expanded: !block.expanded };
-        }
-        return block;
-      });
-      return { ...msg, blocks };
-    });
-  }, [patch]);
-
   const resendRef = useRef(null);
   resendRef.current = send;
   const handleMessageResend = useCallback((text) => resendRef.current?.(text), []);
@@ -3999,11 +4033,17 @@ case "runtime_connecting":
   const textareaRef = useRef(null);
   // Trae 式行内引用徽章：镜像层只画徽章底色（文字透明），随输入内容与滚动同步
   const composerOverlayRef = useRef(null);
+  // 按会话记录阅读位置：切回同一会话时恢复到上次停留处（只在用户主动滚离底部时记录，
+  // 停在底部的会话下次仍跟到底部）。
+  const scrollPositionsRef = useRef(new Map());
+  const pendingScrollRestoreRef = useRef(null);
   const updateScrollFollowState = () => {
     const el = bodyRef.current;
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     followLatestRef.current = atBottom;
+    if (atBottom) scrollPositionsRef.current.delete(threadId);
+    else scrollPositionsRef.current.set(threadId, el.scrollTop);
     setShowScrollToBottom(!atBottom && el.scrollHeight > el.clientHeight + 80);
     if (atBottom) setUnreadBelow(0);
   };
@@ -4136,9 +4176,19 @@ case "runtime_connecting":
       setMessageWindowSize((size) => size + MESSAGE_PAGE_SIZE);
       return;
     }
-    if (!historyWindow?.hasMore || typeof onLoadOlderHistory !== "function") return;
-    setOlderHistory((state) => ({ ...state, loading: true }));
+    if (!historyWindow?.hasMore) {
+      // 本地没有隐藏消息、服务端也没有更多：给出明确结论，而不是点了没反应。
+      setOlderHistory({ loading: false, exhausted: true, status: "没有更早的历史了" });
+      return;
+    }
+    if (typeof onLoadOlderHistory !== "function") {
+      setOlderHistory({ loading: false, exhausted: false, status: "当前视图不支持加载更早历史" });
+      return;
+    }
+    setOlderHistory((state) => ({ ...state, loading: true, status: "" }));
     captureAnchor();
+    // 标记本次 historyMessages 变化来自分页追加（见 hydration effect）。
+    historyAppendPendingRef.current = true;
     try {
       const result = await onLoadOlderHistory();
       const older = Array.isArray(result?.messages) ? result.messages : [];
@@ -4146,11 +4196,18 @@ case "runtime_connecting":
         setMessages((previous) => [...older, ...previous]);
         setMessageWindowSize((size) => size + older.length);
       }
-      setOlderHistory({ loading: false, exhausted: !result?.hasMore });
+      const total = Number(result?.total || 0);
+      const loaded = Number(result?.loadedCount || 0);
+      const exhausted = !result?.hasMore;
+      // 三态可见反馈：加载成功（含条数）、已到最早、失败可重试。
+      const status = exhausted
+        ? `已到最早${loaded ? `（共 ${loaded} 条）` : ""}`
+        : (loaded ? `已加载 ${loaded}${total ? ` / ${total}` : ""} 条` : "");
+      setOlderHistory({ loading: false, exhausted, status });
     } catch (error) {
-      setOlderHistory({ loading: false, exhausted: false });
-      setModelMsg("加载更早历史失败：" + (error?.message || "未知错误"));
-      window.setTimeout(() => setModelMsg(""), 3200);
+      setOlderHistory({ loading: false, exhausted: false, status: "" });
+      setModelMsg("加载更早历史失败：" + (error?.message || "未知错误") + "（可再次点击重试）");
+      window.setTimeout(() => setModelMsg(""), 6000);
     }
   }, [olderHistory.loading, visibleStart, historyWindow?.hasMore, onLoadOlderHistory]);
   const hiddenMessageCount = visibleStart;
@@ -4348,8 +4405,21 @@ case "runtime_connecting":
               <ApprovalModeControl mode={approvalMode} saving={approvalModeSaving} onChange={changeApprovalMode} />
             </div>
           </div>
-          <div className="chat-body" ref={bodyRef} onScroll={updateScrollFollowState}>
-          {messages.length === 0 && (
+          <div className="chat-body" ref={bodyRef} onScroll={updateScrollFollowState} aria-busy={historyHydrating || undefined}>
+          {/* 切换历史会话且缓存未命中：渲染骨架屏，替代此前的空白等待。
+              只在还没有任何消息时出现，避免覆盖正在进行的对话。 */}
+          {historyHydrating && messages.length === 0 && (
+            <div className="chat-history-skeleton" role="status" aria-live="polite">
+              <span className="sr-only">正在载入会话历史</span>
+              {[0, 1, 2, 3].map((index) => (
+                <div className={`chat-history-skeleton-row ${index % 2 ? "is-assistant" : "is-user"}`} key={index}>
+                  <span className="oaw-skeleton-block" style={{ width: `${[58, 76, 46, 68][index]}%` }} />
+                  <span className="oaw-skeleton-block" style={{ width: `${[34, 52, 28, 40][index]}%` }} />
+                </div>
+              ))}
+            </div>
+          )}
+          {messages.length === 0 && !historyHydrating && (
             <欢迎卡片
               mode={normalizeUiMode(editMode)}
               emptyExample={emptyExample}
@@ -4358,7 +4428,13 @@ case "runtime_connecting":
             />
           )}
           {(hiddenMessageCount > 0 || (historyWindow?.hasMore && !olderHistory.exhausted)) && (
-            <button className="chat-load-older" type="button" onClick={handleLoadOlder} disabled={olderHistory.loading}>
+            <button
+              className="chat-load-older"
+              type="button"
+              onClick={handleLoadOlder}
+              disabled={olderHistory.loading}
+              aria-busy={olderHistory.loading}
+            >
               {hiddenMessageCount > 0
                 ? `加载更早的 ${Math.min(MESSAGE_PAGE_SIZE, hiddenMessageCount)} 条消息（前面还有 ${hiddenMessageCount} 条）`
                 : olderHistory.loading
@@ -4366,7 +4442,12 @@ case "runtime_connecting":
                   : `加载更早的 ${historyWindow?.pageSize || 50} 条历史`}
             </button>
           )}
-          {historyWindow?.hasMore && (
+          {/* 分页状态行：加载成功/已到最早/失败都留一句可见文案，
+              避免"点了没反应"（加载失败另有 toast，但这里常驻说明当前进度）。 */}
+          {olderHistory.status && (
+            <div className="chat-history-status" role="status">{olderHistory.status}</div>
+          )}
+          {historyWindow?.hasMore && !olderHistory.status && (
             <div className="chat-history-window-note" role="status">
               历史较长，当前先加载最近 {historyWindow.end - historyWindow.start} 条以保持切换流畅；模型仍使用完整 Pi 会话上下文。
             </div>
@@ -4428,7 +4509,7 @@ case "runtime_connecting":
                     <span>模型切换为 <b>{modelDisplayName(roundModel)}</b></span>
                   </div>
                 )}
-                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} clientId={clientId} threadId={threadId} sessionId={sessionId} isLastAssistant={m?.role === "assistant" && m.id === lastAssistantVisibleId} versionSwitching={versionSwitching} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onAskExpired={markAskExpired} onResend={handleMessageResend} onEditMessage={handleEditMessage} onForkMessage={handleForkMessage} onRegenerate={handleRegenerateMessage} onSwitchVersion={handleSwitchVersion} onToggleTool={handleMessageToggleTool} runSummary={runSummary} executionFlow={executionFlow} />
+                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} clientId={clientId} threadId={threadId} sessionId={sessionId} isLastAssistant={m?.role === "assistant" && m.id === lastAssistantVisibleId} versionSwitching={versionSwitching} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onAskExpired={markAskExpired} onResend={handleMessageResend} onEditMessage={handleEditMessage} onForkMessage={handleForkMessage} onRegenerate={handleRegenerateMessage} onSwitchVersion={handleSwitchVersion} onToggleTool={toggleToolExpanded} expandedToolIds={expandedToolIds} runSummary={runSummary} executionFlow={executionFlow} />
               </React.Fragment>
             );
            }); })()}
@@ -5342,7 +5423,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onAskExpired, onResend, onEditMessage, onForkMessage, onRegenerate, onSwitchVersion, isLastAssistant = false, versionSwitching = false, index, prevRole, clientId, threadId, sessionId = "", runSummary = null, executionFlow = null }) {
+function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onAskExpired, onResend, onEditMessage, onForkMessage, onRegenerate, onSwitchVersion, isLastAssistant = false, versionSwitching = false, index, prevRole, clientId, threadId, sessionId = "", runSummary = null, executionFlow = null }) {
   if (m.role === "system") {
     if (m.summary) {
       const runId = m.runId || null;
@@ -5433,6 +5514,15 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
   // 模型已结束但 Run 还在验收/发布产物：过程区仍展开，但标签必须是“收尾中”，
   // 不能再显示“实时”，否则用户会以为任务还在生成。
   const isTaskFinishing = Boolean(executionFlow?.finishing);
+  // 本轮耗时：保留「已运行 xx」这条信息，但去掉运行框/折叠头（只留一行无框小字）。
+  // 运行中按秒自增；结束后固定为实测用时（Run 轨迹的 durationMs 优先）。
+  const [clockNow, setClockNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isTaskLive) return undefined;
+    setClockNow(Date.now());
+    const timer = window.setInterval(() => setClockNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [isTaskLive]);
   const processBlockTypes = new Set(["thinking", "tool", "subagent", "pipeline", "ask", "approval", "process_note"]);
   // 模型发言（text）不再归入过程区：它是这一小节的结论，必须留在消息正文里。
   // 过去只有"最后一个文本块"能留在外面，于是每写一段新小结，上一段就被折进
@@ -5493,6 +5583,191 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
     if (block?.type === "message_boundary" || isProcessBlock(block)) return false;
     return blockIndex !== hiddenFinalTextIndex;
   });
+  // ---- 会话流改版（落地文档 2026-10-31-001）：Run 轮次走整轮折叠新路径（已转正，无开关）----
+  // Review 轮次保留旧渲染（RunSummary 结果卡含审查依据页签）；纯问答消息（无 runId）走旧文本路径。
+  const timelinePath = !isUser && Boolean(m.runId)
+    && !/^review$/i.test(String(m.runMode || m.task?.mode || ""));
+  // 事件源（精修计划 F7）：anchor 轮优先实时流 executionFlow.events——运行中秒数、
+  // 当前动作与工具 run 状态点才能实时更新；历史/非 anchor 轮回退 runSummary.events。
+  const timelineEventsSource = timelinePath
+    ? (Array.isArray(executionFlow?.events) && executionFlow.events.length ? executionFlow.events : (Array.isArray(runSummary?.events) ? runSummary.events : []))
+    : [];
+  const runTraceForTimeline = useMemo(
+    () => (timelinePath && timelineEventsSource.length ? reduceRunTrace(timelineEventsSource, m.runId) : null),
+    [timelinePath, timelineEventsSource, m.runId],
+  );
+  const timelineBlocks = useMemo(
+    () => (timelinePath ? blocks.filter((block, blockIndex) => blockIndex !== hiddenFinalTextIndex) : []),
+    [timelinePath, blocks, hiddenFinalTextIndex],
+  );
+  const runTimeline = useMemo(
+    () => (timelinePath ? buildRunTimeline({ blocks: timelineBlocks, trace: runTraceForTimeline }) : []),
+    [timelinePath, timelineBlocks, runTraceForTimeline],
+  );
+  // 「已运行 xx」：运行中按 startedAt 实时累加，结束后用实测总时长。
+  // 不能整轮隐藏——用户需要一眼看到这一轮跑了多久；也不能再包回运行框。
+  //
+  // 历史轮兜底：服务端 listRuns 的 includeEvents 默认只给"活跃 Run + 列表第一条"带 events，
+  // 切回旧会话时 runTraceForTimeline 为 null，此前会导致整条"已运行"消失。
+  // 这里退回到消息自带的 startedAt/finishedAt（App 已从 run 写入消息）。
+  const runElapsedMs = (() => {
+    if (!timelinePath) return 0;
+    const traceStartedMs = Date.parse(runTraceForTimeline?.startedAt || "") || 0;
+    const traceDuration = Number(runTraceForTimeline?.durationMs || 0);
+    if (isTaskLive) {
+      const startedMs = traceStartedMs || (Date.parse(m.startedAt || "") || 0);
+      return startedMs ? Math.max(0, clockNow - startedMs) : 0;
+    }
+    if (traceDuration > 0) return traceDuration;
+    if (traceStartedMs && runTraceForTimeline?.endedAt) {
+      const ms = Date.parse(runTraceForTimeline.endedAt) - traceStartedMs;
+      if (Number.isFinite(ms) && ms > 0) return ms;
+    }
+    // 兜底：消息自带的起止时间（历史轮 events 为空时仍然可用）
+    const msgStart = Date.parse(m.startedAt || "") || 0;
+    const msgEnd = Date.parse(m.finishedAt || "") || 0;
+    if (msgStart && msgEnd && msgEnd > msgStart) return msgEnd - msgStart;
+    return 0;
+  })();
+  const runElapsedText = (() => {
+    if (!(runElapsedMs > 0)) return "";
+    // 等待时长占比高时标注，避免"跑了 2 小时"里其实 1 小时在等审批。
+    const waitingMs = Number(runTraceForTimeline?.waitingMs || 0);
+    const waitingNote = waitingMs > 0 && waitingMs >= runElapsedMs * 0.3
+      ? `（其中等待 ${formatDuration(waitingMs)}）`
+      : "";
+    return `已运行 ${formatDuration(runElapsedMs)}${waitingNote}`;
+  })();
+  const timelineCompletion = runCardView?.outcome || runSummary?.completion || null;
+  // 本轮结语以模型终稿为准：complete_task.summary 是工具结构化产物，常与真实结语不一致。
+  // 只有终稿不可用（未匹配到时间流文本块/缺失）时才退回 complete_task.summary。
+  const timelineSummaryText = String(timelineCompletion?.summary || "").trim();
+  const timelineFinalText = !streaming ? authoritativeFinalText : "";
+  const finalTextIsSummary = Boolean(timelineFinalText && finalTextBlockIndex >= 0);
+  const summaryParts = useMemo(
+    () => (timelinePath
+      ? splitCompletionSummary(finalTextIsSummary ? "" : timelineSummaryText, finalTextIsSummary ? timelineFinalText : "")
+      : { what: "", conclusion: "", detail: "" }),
+    [timelinePath, finalTextIsSummary, timelineFinalText, timelineSummaryText],
+  );
+  // 总结展示条件：终稿已从时间流隐藏（匹配到文本块）→ 用终稿渲染；否则有 complete_task.summary 才渲染。
+  const showTimelineSummary = timelinePath && !streaming && (finalTextIsSummary || Boolean(timelineSummaryText));
+  const timelineActionNeeded = timelinePath && runCardView ? (() => {
+    if (runCardView.lifecycle === "waiting_approval") return { kind: "approval", text: runCardView.progress?.waitingReason || "等待你审批后继续" };
+    if (runCardView.lifecycle === "waiting_user") return { kind: "ask", text: runCardView.progress?.waitingReason || "等待你回答后继续" };
+    if (timelineCompletion?.status === "blocked") return { kind: "blocked", text: "有受阻项需要你先处理" };
+    if (timelineCompletion?.status === "partial") return { kind: "partial", text: "有未完成项，需要你决定是否继续" };
+    if (runCardView.lifecycle === "failed") return { kind: "failed", text: "本轮失败，可重试或调整要求" };
+    if (runCardView.lifecycle === "cancelled" || timelineCompletion?.status === "cancelled") return { kind: "cancelled", text: "本轮已中断，已保留生成到一半的内容；可以重新发送、补充要求，或直接继续提问。" };
+    return null;
+  })() : null;
+  // ask / 审批只在未决时常驻；已回答 / 已过期 / 已决后从消息流移除
+  // （结果已在事件流与总结里体现，不能继续显示答题卡）。
+  const timelineInteractionItems = timelinePath
+    ? runTimeline.filter((item) => {
+      const block = item.block || {};
+      if (item.kind === "ask") return !block.answer && !block.expired;
+      if (item.kind === "approval") return !block.decision;
+      return false;
+    })
+    : [];
+  const renderTimelineInteraction = (item) => {
+    if (item.kind === "ask") {
+      const question = String(item.block?.question || "").replace(/\s+/g, " ").slice(0, 40);
+      return (
+        <TimelineRow key={item.id} icon="comment" verb="等待你回答" obj={question} state="run" locked>
+          <AskBlock
+            block={item.block}
+            clientId={clientId}
+            threadId={threadId}
+            onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)}
+            onExpired={(blockId) => onAskExpired?.(m.id, blockId)}
+          />
+        </TimelineRow>
+      );
+    }
+    if (item.kind === "approval") {
+      const toolName = String(item.block?.tool || item.block?.name || "工具");
+      return (
+        <TimelineRow key={item.id} icon="shield" verb="等待审批" obj={toolName} state="run" locked>
+          <ApprovalBlock block={item.block} />
+        </TimelineRow>
+      );
+    }
+    return null;
+  };
+  const renderTimelineItem = (item) => {
+    const lastTextIndex = runTimeline.reduce((last, candidate, candidateIndex) => (candidate.kind === "text" ? candidateIndex : last), -1);
+    const lastThinkingIndex = runTimeline.reduce((last, candidate, candidateIndex) => (candidate.kind === "thinking" ? candidateIndex : last), -1);
+    switch (item.kind) {
+      case "thinking": {
+        // F2-b：流式思考——折叠态=单行跑马灯滚动预览（复用既有跑马灯，纳入动效闸门），展开态=打字机。
+        const isLiveThinking = streaming && item === runTimeline[lastThinkingIndex];
+        const tail = String(item.text || "").replace(/\s+/g, " ").trim();
+        const previewText = tail.length > 60 ? `…${tail.slice(-60)}` : tail;
+        const objNode = isLiveThinking
+          ? <span className="tl-think-preview"><跑马灯文本 text={previewText} active title={tail} /></span>
+          : item.obj;
+        return (
+          <TimelineRow key={item.id} icon={item.icon} verb={item.verb} obj={objNode} objTitle={item.obj} timeText={item.timeText} state={item.state}>
+            {isLiveThinking
+              ? <TypewriterText text={item.text} enabled className="tl-thinking-text" />
+              : <div className="tl-thinking-text">{item.text}</div>}
+          </TimelineRow>
+        );
+      }
+      case "text": {
+        const isStreamingText = streaming && item === runTimeline[lastTextIndex];
+        // 流式中间态不显示「阶段结论」标签：模型还在吐字，此时只是半句；
+        // 过短（<8 字）的碎片也不当作阶段结论，避免出现「阶段结论 15」之类的假结论。
+        const showCap = !isStreamingText && String(item.text || "").trim().length >= 8;
+        return (
+          <div className="textblock flow-markdown" key={item.id}>
+            {showCap && <div className="tb-cap">{item.cap}</div>}
+            {isStreamingText
+              ? <TypewriterText text={item.text} enabled className="flow-stream-text" />
+              : <SafeMarkdown text={item.text} onOpenFile={onOpenFile} artifacts={answerArtifacts} />}
+          </div>
+        );
+      }
+      case "tool":
+        return (
+          <ToolCard
+            key={item.id}
+            tool={item.block}
+            expanded={expandedToolIds.has(toolExpandKey(item.block, item.id))}
+            onToggle={() => onToggleTool?.(toolExpandKey(item.block, item.id))}
+          />
+        );
+      case "subagent": {
+        // F3：子代理默认折叠为一行条目，展开才见完整卡。
+        const b = item.block || {};
+        const state = ["completed", "closed"].includes(String(b.status)) ? (b.isError ? "err" : "ok")
+          : ["failed", "cancelled"].includes(String(b.status)) ? "err"
+            : "run";
+        const roleLabel = { scout: "资料探索", reviewer: "审阅", planner: "方案拆解", verifier: "独立核验", worker: "执行" }[b.role] || b.role || "只读任务";
+        const taskLabel = b.task ? String(b.task).replace(/\s+/g, " ").slice(0, 40) : "";
+        const timeText = b.startAt && b.endAt
+          ? (() => { const ms = new Date(b.endAt) - new Date(b.startAt); return Number.isFinite(ms) && ms >= 0 ? `${(ms / 1000).toFixed(1)} 秒` : ""; })()
+          : "";
+        return (
+          <TimelineRow key={item.id} icon={item.icon} verb="子代理" obj={taskLabel ? `${roleLabel} · ${taskLabel}` : roleLabel} timeText={timeText} state={state}>
+            <SubagentCard block={b} onOpenDetail={onOpenSubagent} />
+          </TimelineRow>
+        );
+      }
+      case "pipeline":
+        return <PipelineCard key={item.id} block={item.block} onOpenFile={onOpenFile} />;
+      case "sys":
+        return (
+          <TimelineRow key={item.id} icon={item.icon} verb={item.verb} obj={item.obj} state={item.state} showState={false}>
+            <div className="tl-sys-text">{item.text}</div>
+          </TimelineRow>
+        );
+      default:
+        return null;
+    }
+  };
   // 有序片段：连续的过程块合成一个可折叠区，模型发言（小节结论）留在原位置可见。
   // 于是渲染顺序就是模型真实的输出顺序——过程区 → 小节结论 → 新的过程区 → ……
   // 折叠只收起思考与工具，小节结论不会被后面的小节吞掉。
@@ -5517,8 +5792,32 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
   const lastProcessSegmentIndex = renderSegments.reduce((last, segment, segmentIndex) => (segment.kind === "process" ? segmentIndex : last), -1);
   const renderProcessBlock = ({ block, blockIndex, processOrder }) => {
     const key = block.id || `block-${blockIndex}`;
-    if (block.type === "thinking") return <ThinkingBlock key={key} text={block.text} startTime={block.startTime} streaming={streaming && processOrder === lastThinkingBlockIndex} embedded />;
-    if (block.type === "tool") return <ToolCard key={key} tool={block} onToggle={() => onToggleTool?.(m.id, block.id || blockIndex)} />;
+    if (block.type === "thinking") {
+      const text = String(block.text || "");
+      if (!text.trim()) return null;
+      const live = streaming && processOrder === lastThinkingBlockIndex;
+      const tail = text.replace(/\s+/g, " ").trim();
+      const previewText = tail.length > 60 ? `…${tail.slice(-60)}` : tail;
+      // 思考统一走会话流条目（TimelineRow）：与新路径同一套无外框样式，
+      // 旧的整块思考气泡（.thinking-block）已下线，避免同一条对话出现两种形态。
+      return (
+        <TimelineRow
+          key={key}
+          icon="brain"
+          verb="思考"
+          obj={live ? <span className="tl-think-preview"><跑马灯文本 text={previewText} active title={tail} /></span> : "内部推理"}
+          objTitle={live ? tail : "内部推理"}
+          timeText={`${text.length.toLocaleString()} 字`}
+          state={live ? "run" : "ok"}
+        >
+          <div className="tl-thinking-text">{text}</div>
+        </TimelineRow>
+      );
+    }
+    if (block.type === "tool") {
+      const key = toolExpandKey(block, `block-${blockIndex}`);
+      return <ToolCard key={key} tool={block} expanded={expandedToolIds.has(key)} onToggle={() => onToggleTool?.(key)} />;
+    }
     if (block.type === "subagent") return <SubagentCard key={key} block={block} onOpenDetail={onOpenSubagent} />;
     if (block.type === "pipeline") return <PipelineCard key={key} block={block} onOpenFile={onOpenFile} />;
     if (block.type === "ask") return <AskBlock key={key} block={block} clientId={clientId} threadId={threadId} onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)} onExpired={(blockId) => onAskExpired?.(m.id, blockId)} />;
@@ -5602,7 +5901,10 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
         </summary>
         <div className="message-process-fold-body">
           <div className="message-process-scroll" ref={isLastProcess ? processScrollRef : undefined} onScroll={isLastProcess ? handleProcessScroll : undefined}>
-            {renderProcessItems(segment.items)}
+            {/* 过程条目统一用会话流时间线容器（左侧 1px 竖线 + 2px 行距），
+                与 Run 轮次的新路径视觉一致；本地活动摘要（开关 activitySummary，
+                默认关）仍在 renderProcessItems 内聚合，关闭时逐条渲染。 */}
+            <div className="tl-list">{renderProcessItems(segment.items)}</div>
             {isLastProcess && messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
           </div>
         </div>
@@ -5703,6 +6005,50 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
             {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
             {m.text && <div className="msg-text">{m.text}</div>}
           </div>
+        ) : timelinePath ? (
+          <>
+            {m.images?.length > 0 && (
+              <div className="msg-images assistant-images">{m.images.map((src, i) => <img key={i} src={src} alt="Agent 附图" />)}</div>
+            )}
+            {/* 会话流改版（落地文档 2026-10-31-001 + 规范 docs/规范/会话流前端规范.md）：
+                本轮耗时（无框一行小字）→ 时间流（无运行框，直接按真实顺序排条目）
+                → 交互块（ask/审批）→ 框外总结 → 本轮产物 → 需行动提示。
+                结束后"已运行 xx"折进总结 cap（见 SummaryBlock elapsedMs），不再单占一行。 */}
+            {runElapsedText && !showTimelineSummary && <div className="tl-elapsed">{runElapsedText}</div>}
+            <div className={`tl-list ${isTaskLive ? "is-live" : ""}`}>{runTimeline.map(renderTimelineItem)}</div>
+            {timelineInteractionItems.map(renderTimelineInteraction)}
+            {showTimelineSummary && (
+              <SummaryBlock
+                conclusion={summaryParts.conclusion}
+                what={summaryParts.what}
+                detail={summaryParts.detail}
+                elapsedMs={runElapsedMs}
+                onOpenFile={onOpenFile}
+                artifacts={answerArtifacts}
+              />
+            )}
+            <ArtifactCard
+              products={answerArtifacts || []}
+              onOpenFile={onOpenFile}
+              onOpenPanel={onOpenRunArtifacts ? () => onOpenRunArtifacts(runSummary?.runId || m.runId) : undefined}
+            />
+            {timelineActionNeeded && (
+              <div className={`run-result-action ${timelineActionNeeded.kind}`}>
+                <Icon name="arrowRight" size={12} /> {timelineActionNeeded.text}
+              </div>
+            )}
+            {/* 系统提示聚合（压缩/文件变更等）：沿用 ExecutionFlow 嵌入态，只渲染 notes */}
+            {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
+            {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
+            {streaming && (
+              <div className="msg-streaming-status" role="status" aria-live="off">
+                <StreamingDot />
+                <StreamingActivityLabel />
+                {!hasContent && waitSec > 0 && <span className="msg-streaming-elapsed">{waitSec}s</span>}
+              </div>
+            )}
+            {m.status === "error" && <div className="err-badge" title={m.errorText}>{m.errorText || "处理失败，请重试"}</div>}
+          </>
         ) : (
           <>
             {m.images?.length > 0 && (
@@ -5828,7 +6174,9 @@ const MemoMessage = React.memo(Message, (previous, next) => {
     && previous.onEditMessage === next.onEditMessage
     && previous.onForkMessage === next.onForkMessage
     && previous.onRegenerate === next.onRegenerate
-    && previous.onSwitchVersion === next.onSwitchVersion;
+    && previous.onSwitchVersion === next.onSwitchVersion
+    // 展开态是工具卡的唯一真源：集合不变才允许跳过重渲染，否则点击「展开」不会有反应。
+    && previous.expandedToolIds === next.expandedToolIds;
 });
 
 function ReferenceChips({ references = [], onOpenFile }) {
@@ -6854,8 +7202,19 @@ function ActivitySummaryRow({ tools, children }) {
   );
 }
 
-function ToolCard({ tool, onToggle }) {
-  const { name, input, output, done, isError, expanded, duration } = tool;
+/**
+ * 工具卡展开态的稳定键：优先用 toolCallId / block.id，其次退回调用方给的兜底键。
+ * 同一 Run 的工具块会被聚合到一起，只有全局唯一的键才能让展开态跟着正确的卡片走。
+ */
+function toolExpandKey(block, fallback = "") {
+  const id = String(block?.toolCallId || block?.id || "").trim();
+  return id || String(fallback || "");
+}
+
+const EMPTY_TOOL_IDS = new Set();
+
+function ToolCard({ tool, expanded = false, onToggle }) {
+  const { name, input, output, done, isError, duration } = tool;
   // 命令预览：bash/officecli 等命令行工具显示 $ 前缀
   // 注意：JSON.stringify(undefined) 返回 undefined，历史会话中 tool.input 可能缺失
   let inputStr = typeof input === "string" ? input : (input != null ? JSON.stringify(input, null, 2) : "");

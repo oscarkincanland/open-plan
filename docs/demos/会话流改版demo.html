@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>会话流改版 Demo · 规聚</title>
+<style>
+  /* ==== 设计令牌：与 client/src/styles.css 暗色主题一致 ==== */
+  :root {
+    --body-bg: #1a1a2e; --panel-bg: #16162a; --panel2-bg: #1e1e3a; --surface: #222240;
+    --text: #d4d4d4; --muted: #8a8a8a; --dim: #8a8d99; --accent: #8abeb7;
+    --border: #3a3a5c; --success: #b5bd68; --error: #cc6666; --warning: #f0c674;
+    --user-bg: #2a2a44; --user-fg: #eef2ff;
+    --status-partial: #d9a13c;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  /* B4 字体统一：全会话流只用这一个字体族，层级只靠字号+字重区分 */
+  html, body { font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif; }
+  body { background: var(--body-bg); color: var(--text); font-size: 13px; line-height: 1.65; padding: 28px 16px 80px; }
+  code, .mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 0.92em; }
+
+  .page { max-width: 680px; margin: 0 auto; }
+  .page-title { font-size: 17px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+  .page-sub { font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 22px; }
+  .legend span { font-size: 11px; color: var(--dim); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; background: color-mix(in srgb, var(--panel2-bg) 60%, transparent); }
+  .legend b { color: var(--accent); font-weight: 600; }
+
+  /* ==== 消息流 ==== */
+  .msg-user { display: flex; justify-content: flex-end; margin: 18px 0 10px; }
+  .msg-user .bubble { background: var(--user-bg); color: var(--user-fg); border-radius: 12px 12px 3px 12px; padding: 9px 14px; max-width: 82%; font-size: 13px; }
+
+  .round { border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--panel-bg) 82%, transparent); margin: 10px 0; overflow: hidden; }
+
+  /* ==== B1 整轮折叠头：已完成 · 运行 x 分 x 秒 ==== */
+  .fold-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 14px; background: none; border: none; cursor: pointer; color: var(--text); font: inherit; text-align: left; }
+  .fold-head:hover { background: color-mix(in srgb, var(--surface) 45%, transparent); }
+  .fold-chev { color: var(--accent); font-size: 14px; transition: transform .18s ease; flex: none; }
+  .round.open .fold-chev { transform: rotate(90deg); }
+  .fold-title { font-size: 13px; font-weight: 600; }
+  .fold-title.done { color: var(--accent); }
+  .fold-title.live { color: var(--warning); }
+  .fold-time { font-size: 12px; color: var(--dim); font-weight: 400; }
+  .fold-meta { font-size: 11px; color: var(--muted); margin-left: auto; display: flex; align-items: center; gap: 10px; flex: none; }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warning); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+  .fold-body { display: none; padding: 2px 14px 12px; }
+  .round.open .fold-body { display: block; }
+
+  /* ==== B2 时间流：工具一行条目 ==== */
+  .tl { border-left: 1px solid color-mix(in srgb, var(--border) 70%, transparent); margin: 4px 0 8px 5px; padding-left: 14px; display: flex; flex-direction: column; gap: 2px; }
+  .row { border-radius: 6px; }
+  .row-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 8px; background: none; border: none; cursor: pointer; color: var(--text); font: inherit; text-align: left; border-radius: 6px; }
+  .row-head:hover { background: color-mix(in srgb, var(--surface) 55%, transparent); }
+  .row-head.no-toggle { cursor: default; }
+  .row-head.no-toggle:hover { background: none; }
+  .row-icon { flex: none; width: 22px; height: 22px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--surface) 80%, transparent); border: 1px solid var(--border); }
+  .row-icon svg { width: 12px; height: 12px; }
+  .row-verb { font-size: 12px; font-weight: 600; flex: none; }
+  .row-obj { font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-time { font-size: 11px; color: var(--muted); margin-left: auto; flex: none; }
+  .row-state { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+  .row-state.ok { background: var(--success); }
+  .row-state.err { background: var(--error); }
+  .row-state.run { background: var(--warning); animation: pulse 1.2s infinite; }
+  .row-detail { display: none; margin: 0 8px 6px 30px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: color-mix(in srgb, var(--panel2-bg) 70%, transparent); font-size: 12px; color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow-y: auto; }
+  .row.open .row-detail { display: block; }
+  .row.open .row-chev { transform: rotate(90deg); }
+  .row-chev { color: var(--accent); font-size: 12px; flex: none; transition: transform .15s ease; }
+
+  /* B3 思考：与工具行同一套一行形态 */
+  .row-icon.think { color: var(--accent); }
+
+  /* ==== 结构化小结：一句加粗结论 + ≤3 条要点 ==== */
+  .note { padding: 6px 8px 8px 30px; }
+  .note-conc { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 3px; }
+  .note ul { list-style: none; }
+  .note li { font-size: 12.5px; color: var(--dim); padding-left: 14px; position: relative; }
+  .note li::before { content: "·"; position: absolute; left: 2px; color: var(--accent); font-weight: 700; }
+  .note li b { color: var(--text); font-weight: 600; }
+
+  /* ==== 最终答复：①②③ 分节，标题只靠字号+字重 ==== */
+  .final { padding: 10px 8px 4px 30px; }
+  .final-lede { font-size: 13px; color: var(--text); margin-bottom: 10px; }
+  .final h4 { font-size: 14.5px; font-weight: 700; color: var(--text); margin: 12px 0 6px; }
+  .final p { font-size: 13px; color: var(--text); margin-bottom: 6px; }
+  .final ul { list-style: none; margin-bottom: 6px; }
+  .final li { font-size: 13px; color: var(--text); padding-left: 14px; position: relative; margin-bottom: 3px; }
+  .final li::before { content: "·"; position: absolute; left: 2px; color: var(--accent); font-weight: 700; }
+  .final b { font-weight: 700; }
+  .final .k { color: var(--accent); }
+  .final table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 12.5px; }
+  .final th, .final td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+  .final th { color: var(--dim); font-weight: 600; background: color-mix(in srgb, var(--surface) 40%, transparent); }
+  .final a { color: var(--accent); }
+
+  /* ==== B5 详细总结卡（complete_task.summary 完整渲染） ==== */
+  .result-card { margin: 12px 0 4px 30px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--panel2-bg) 65%, transparent); overflow: hidden; }
+  .result-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--dim); }
+  .result-head b { color: var(--text); font-weight: 600; }
+  .result-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border); }
+  .result-cell { background: var(--panel-bg); padding: 8px 12px; }
+  .result-cell .lb { display: block; font-size: 11px; color: var(--muted); }
+  .result-cell .vl { font-size: 13px; font-weight: 700; }
+  .result-cell .vl.success { color: var(--success); }
+  .result-sum { padding: 10px 12px; font-size: 12.5px; color: var(--dim); }
+  .result-sum p { margin-bottom: 6px; }
+  .result-sum b { color: var(--text); }
+
+  .divider { text-align: center; font-size: 11px; color: var(--muted); margin: 26px 0 10px; }
+  .footnote { margin-top: 30px; font-size: 11px; color: var(--muted); border-top: 1px dashed var(--border); padding-top: 12px; }
+  .footnote li { margin-left: 16px; margin-bottom: 3px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="page-title">会话流改版 Demo（确认稿）</div>
+  <div class="page-sub">静态演示数据，非真实任务 · 点击折叠头 / 工具行 / 思考行可展开</div>
+  <div class="legend">
+    <span><b>1</b> 整轮折叠「已完成 · 运行 x 秒」</span>
+    <span><b>2</b> 工具一行条目</span>
+    <span><b>3</b> 单一字体·字号分层</span>
+    <span><b>4</b> 小结固定结构</span>
+    <span><b>5</b> 详细总结卡</span>
+  </div>
+
+  <div class="msg-user"><div class="bubble">帮我把义乌物流专题的 OD 数据核一遍，产出一份核验报告，并生成配套图表。</div></div>
+
+  <!-- ============ 轮 1：已完成的轮次（默认收起，点击展开完整时间流） ============ -->
+  <div class="round" id="r1">
+    <button class="fold-head" data-toggle="r1" aria-expanded="false">
+      <span class="fold-chev">›</span>
+      <span class="fold-title done">已完成</span>
+      <span class="fold-time">运行 1 分 42 秒</span>
+      <span class="fold-meta"><span>工具 6</span><span>文件 3</span></span>
+    </button>
+    <div class="fold-body">
+      <div class="tl">
+
+        <!-- 思考：一行条目，可展开 -->
+        <div class="row" data-toggle-self>
+          <button class="row-head">
+            <span class="row-chev">›</span>
+            <span class="row-icon think"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.5a4.5 4.5 0 0 1 4.5 4.5c0 1.7-.9 2.6-1.7 3.4-.5.5-.8 1-.8 1.6H6c0-.6-.3-1.1-.8-1.6C4.4 8.6 3.5 7.7 3.5 6A4.5 4.5 0 0 1 8 1.5z"/><path d="M6.5 13.5h3M7 15h2"/></svg></span>
+            <span class="row-verb">思考</span>
+            <span class="row-obj">先核数据完整性，再决定报告结构</span>
+            <span class="row-time">186 字 · 4.2 秒</span>
+            <span class="row-state ok"></span>
+          </button>
+          <div class="row-detail">OD 表共 12,847 行，先核对预期记录数与站点字典是否一致；如果 expected vs actual 不一致要立即阻断，不能继续出图。报告按「数据核验 → 差异明细 → 结论」三段组织。</div>
+        </div>
+
+        <!-- 工具行 -->
+        <div class="row" data-toggle-self>
+          <button class="row-head">
+            <span class="row-chev">›</span>
+            <span class="row-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9.5 1.5V5H13"/></svg></span>
+            <span class="row-verb">读取文件</span>
+            <span class="row-obj">义乌物流专题/OD出行矩阵_全日.xlsx</span>
+            <span class="row-time">0.8 秒</span>
+            <span class="row-state ok"></span>
+          </button>
+          <div class="row-detail">读取工作表「OD全日」，获得 12,847 行记录，字段：起点小区、终点小区、客流、出行目的。</div>
+        </div>
+
+        <!-- 小结 1 -->
+        <div class="note">
+          <div class="note-conc">OD 主表已读入，开始做记录数一致性校验。</div>
+          <ul>
+            <li>实际读入 <b>12,847 行</b>，与数据说明标注的 12,847 行一致</li>
+            <li>下一步：校验小区编码与站点字典的映射关系</li>
+          </ul>
+        </div>
+
+        <div class="row" data-toggle-self>
+          <button class="row-head">
+            <span class="row-chev">›</span>
+            <span class="row-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M4 6l2.5 2L4 10M8 10h4"/></svg></span>
+            <span class="row-verb">执行命令</span>
+            <span class="row-obj">node 校验脚本 · OD vs 站点字典</span>
+            <span class="row-time">3.2 秒</span>
+            <span class="row-state ok"></span>
+          </button>
+          <div class="row-detail">> node .work/od_check.mjs
+expected=12847 actual=12847 命中
+未匹配小区编码：0
+结论：data_integrity_passed</div>
+        </div>
+
+        <!-- 工具行（失败示例） -->
+        <div class="row" data-toggle-self>
+          <button class="row-head">
+            <span class="row-chev">›</span>
+            <span class="row-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 2.5h7l3 3v8H3z"/><path d="M6.5 8h4M6.5 10.5h4"/></svg></span>
+            <span class="row-verb">Office CLI</span>
+            <span class="row-obj">核验报告.docx · add 批注</span>
+            <span class="row-time">1.1 秒</span>
+            <span class="row-state err"></span>
+          </button>
+          <div class="row-detail">officecli add 核验报告.docx /body/p[12] --type comment
+失败：sharing violation（文件被预览进程占用）。已按规范关闭预览后重试成功，未中断任务。</div>
+        </div>
+
+        <!-- 小结 2 -->
+        <div class="note">
+          <div class="note-conc">数据核验通过，报告初稿已生成，正在独立核验。</div>
+          <ul>
+            <li>记录数校验 <b>12847/12847 全部命中</b>，无越界坐标</li>
+            <li>报告初稿已产出：<b>核验报告.docx</b>（含 3 张图表）</li>
+            <li>Office CLI 一次文件占用报错，重试后恢复</li>
+          </ul>
+        </div>
+
+        <!-- 子代理一行 -->
+        <div class="row" data-toggle-self>
+          <button class="row-head">
+            <span class="row-chev">›</span>
+            <span class="row-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="8" r="2"/><circle cx="12" cy="3.5" r="2"/><circle cx="12" cy="12.5" r="2"/><path d="M6 7l4-2.5M6 9l4 2.5"/></svg></span>
+            <span class="row-verb">独立核验</span>
+            <span class="row-obj">子 Agent 复核报告数据引用与图表</span>
+            <span class="row-time">26 秒</span>
+            <span class="row-state ok"></span>
+          </button>
+          <div class="row-detail">核验结论：通过。报告引用的 5 处数字与源数据一致，图表坐标轴与图例完整，演示数据标注齐全。</div>
+        </div>
+
+        <!-- 最终答复：①②③ 分节 -->
+        <div class="final">
+          <p class="final-lede">OD 数据核验完成，报告与图表已产出。</p>
+          <h4>① 数据核验结果</h4>
+          <ul>
+            <li>记录数 <b>expected 12,847 vs actual 12,847</b>，全部命中，<span class="k">data_integrity_passed</span></li>
+            <li>坐标范围全部落在 WGS84 中国境内，无 <span class="k">geo_out_of_range</span></li>
+          </ul>
+          <h4>② 产出物</h4>
+          <table>
+            <tr><th>文件</th><th>说明</th><th>状态</th></tr>
+            <tr><td><a href="javascript:void(0)">核验报告.docx</a></td><td>三段式核验报告，含差异明细</td><td>✅ 验收通过</td></tr>
+            <tr><td><a href="javascript:void(0)">od_flow_全日.png</a></td><td>全日 OD 客流期望线图</td><td>✅ 已生成</td></tr>
+            <tr><td><a href="javascript:void(0)">od_top20.png</a></td><td>TOP20 区对客流柱状图</td><td>✅ 已生成</td></tr>
+          </table>
+          <h4>③ 验证方式与风险</h4>
+          <ul>
+            <li>验证：校验脚本回读源表比对记录数；子 Agent 独立复核报告数字引用</li>
+            <li>风险：OD 表为<b>演示数据</b>，不能表述为真实调查数据；高峰时段矩阵未在本次范围内</li>
+          </ul>
+        </div>
+
+        <!-- B5 详细总结卡 -->
+        <div class="result-card">
+          <div class="result-head"><b>本轮总结</b><span>目标达成 · 3 个文件 · 验收通过</span></div>
+          <div class="result-grid">
+            <div class="result-cell"><span class="lb">目标达成</span><span class="vl success">已完成</span></div>
+            <div class="result-cell"><span class="lb">文件变更</span><span class="vl">3 项</span></div>
+            <div class="result-cell"><span class="lb">验证</span><span class="vl">验收通过</span></div>
+          </div>
+          <div class="result-sum">
+            <p><b>完成了什么</b>：读入义乌物流专题 OD 全日矩阵并完成完整性校验，产出核验报告与两张配套图表。</p>
+            <p><b>关键结果</b>：记录数 12,847/12,847 命中；未匹配小区编码 0；坐标全部在界。</p>
+            <p><b>产物路径</b>：office-workspace/义乌物流专题/ 下的 核验报告.docx、od_flow_全日.png、od_top20.png。</p>
+            <p><b>验证方式</b>：node 校验脚本回读比对 + 子 Agent 独立复核报告引用。</p>
+            <p><b>未完成与风险</b>：高峰时段矩阵不在本次范围；数据为演示数据，对外表述需带标注。</p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="divider">— 下面是运行中的实时形态 —</div>
+
+  <!-- ============ 轮 2：运行中（实时计时 + 当前行脉冲） ============ -->
+  <div class="msg-user"><div class="bubble">再补一版高峰时段的期望线图。</div></div>
+  <div class="round open" id="r2">
+    <button class="fold-head" data-toggle="r2" aria-expanded="true">
+      <span class="fold-chev">›</span>
+      <span class="fold-title live">运行中</span>
+      <span class="fold-time" id="live-time">运行 47 秒</span>
+      <span class="fold-meta"><span class="live-dot"></span><span id="live-now">正在执行命令</span></span>
+    </button>
+    <div class="fold-body">
+      <div class="tl">
+        <div class="row open" data-toggle-self>
+          <button class="row-head">
+            <span class="row-chev">›</span>
+            <span class="row-icon think"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.5a4.5 4.5 0 0 1 4.5 4.5c0 1.7-.9 2.6-1.7 3.4-.5.5-.8 1-.8 1.6H6c0-.6-.3-1.1-.8-1.6C4.4 8.6 3.5 7.7 3.5 6A4.5 4.5 0 0 1 8 1.5z"/><path d="M6.5 13.5h3M7 15h2"/></svg></span>
+            <span class="row-verb">思考</span>
+            <span class="row-obj">复用全日矩阵按高峰系数折算</span>
+            <span class="row-time">212 字 · 流式</span>
+            <span class="row-state run"></span>
+          </button>
+          <div class="row-detail">高峰系数取 0.28，按既有 OD 缩放即可；出图样式沿用全日版的配色，保证两版可对比。</div>
+        </div>
+        <div class="row" data-toggle-self>
+          <button class="row-head">
+            <span class="row-chev">›</span>
+            <span class="row-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9.5 1.5V5H13"/></svg></span>
+            <span class="row-verb">读取文件</span>
+            <span class="row-obj">OD出行矩阵_全日.xlsx</span>
+            <span class="row-time">0.7 秒</span>
+            <span class="row-state ok"></span>
+          </button>
+          <div class="row-detail">复用轮 1 已读入的矩阵缓存。</div>
+        </div>
+        <div class="note">
+          <div class="note-conc">矩阵已就位，开始折算高峰 OD 并出图。</div>
+          <ul><li>高峰系数 <b>0.28</b>，两版图表保持同配色可对比</li></ul>
+        </div>
+        <div class="row">
+          <div class="row-head no-toggle">
+            <span class="row-chev" style="visibility:hidden">›</span>
+            <span class="row-icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M4 6l2.5 2L4 10M8 10h4"/></svg></span>
+            <span class="row-verb">执行命令</span>
+            <span class="row-obj">python od_peak.py · 出期望线图</span>
+            <span class="row-time">进行中</span>
+            <span class="row-state run"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footnote">
+    <ul>
+      <li><b>整轮一条</b>：收起时只剩一行「已完成 · 运行 1 分 42 秒 · 工具 6 · 文件 3」，历史轮次同样按此渲染；运行中显示实时秒数与当前动作。</li>
+      <li><b>完整时间流</b>：展开后按真实时间顺序排列——思考、工具、小结、子代理、最终答复、总结卡；小结文本不再被吞进折叠区。</li>
+      <li><b>一行条目</b>：每个工具/思考/子代理各占一行（图标 + 动作词 + 对象 + 耗时 + 状态点），点击展开明细，替代现在的多层大卡片。</li>
+      <li><b>字体统一</b>：全流程单一字体族，标题层级只靠字号 + 字重（①②③ 小节 14.5px 加粗，小结结论 13px 加粗，正文 13px，条目 12px，元数据 11px）。</li>
+      <li><b>详细总结</b>：complete_task 的完整 Markdown 总结落在折叠头下方的「本轮总结」卡里，不再截断成一句话。</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+  // 折叠头：整轮开合
+  document.querySelectorAll("[data-toggle]").forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      // 避免与行内自开关冲突
+      if (event.target.closest("[data-toggle-self]")) return;
+      const round = document.getElementById(btn.dataset.toggle);
+      const open = round.classList.toggle("open");
+      btn.setAttribute("aria-expanded", open);
+    });
+  });
+  // 行内自开关：思考 / 工具 / 子代理行
+  document.querySelectorAll("[data-toggle-self]").forEach((row) => {
+    row.querySelector(".row-head").addEventListener("click", (event) => {
+      if (event.target.closest(".no-toggle")) return;
+      row.classList.toggle("open");
+    });
+  });
+  // 运行中：秒数实时跳动
+  let liveSec = 47;
+  const steps = ["正在执行命令", "正在生成期望线图", "正在排版图表"];
+  let stepIdx = 0;
+  setInterval(() => {
+    liveSec += 1;
+    const t = document.getElementById("live-time");
+    const n = document.getElementById("live-now");
+    if (t) t.textContent = `运行 ${Math.floor(liveSec / 60) ? Math.floor(liveSec / 60) + " 分 " : ""}${liveSec % 60} 秒`;
+    if (n && liveSec % 12 === 0) { stepIdx = (stepIdx + 1) % steps.length; n.textContent = steps[stepIdx]; }
+  }, 1000);
+</script>
+</body>
+</html>
