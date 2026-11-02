@@ -8,6 +8,7 @@ import { listWorkspace, searchWorkspace, filePath, safeName, WORKSPACE_DIR, CLIE
 import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, queryComments, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
 import { getApprovalMode, listPendingApprovals, listPermissionRules, removeUserRule, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
 import { agentManager, classifyAgentError, getCredentialErrors, isAbortLikeError, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
+import { bashEnvironmentInfo } from "./environment-capabilities.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
@@ -15,27 +16,30 @@ import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves } from "./runs.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves, startOwnerHeartbeat, stopOwnerHeartbeat } from "./runs.mjs";
 import { attachRunTimingMeta, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
 import { workspaceTrustSummary, setWorkspaceTrust } from "./项目信任.mjs";
 import { runtimeFlagsSnapshot, RUNTIME_FLAGS } from "./运行开关.mjs";
+import { readCadDocument, CAD_ENTITY_LIMIT } from "./CAD解析.mjs";
 import { summarizeRunUsage, exportObservabilityJson } from "./观测导出.mjs";
 import { listPlans, writePlan } from "./计划文件.mjs";
 import { loadHookConfig, HOOK_EVENTS } from "./Hook事件层.mjs";
 import { listToolMetadata, metadataCoverageReport, TOOL_NAMES } from "./工具元数据.mjs";
-import { validateArtifacts } from "./产物验证.mjs";
+import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
 import { listPublishedArtifacts, publishArtifact, inspectRunAcceptance, confirmArtifactAcceptance, rollbackPublishedArtifact } from "./成果管理.mjs";
 import { atomicWriteFile, atomicWriteJson, ensureDirectory, flushPendingFsync } from "./持久化工具.mjs";
 import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs";
+import { buildMapContextPatch } from "./session-map-context.mjs";
 import { listConnectors, getConnector, beginConnectorAuth, setConnectorStatus } from "./connectors.mjs";
 import * as projectManager from "./项目管理.mjs";
 import { listAgents, createAgent, updateAgent, deleteAgent } from "./智能体管理.mjs";
 import { writeWorkspaceFile, withWriteLockAsync } from "./写入协调.mjs";
 import { evaluateWorkspaceWrite, runRuntimeEvaluation } from "./运行评测.mjs";
 import { normalizeOfficeFailure, normalizeWorkspaceWriteError, workspaceWriteHttpStatus } from "./文件权限错误.mjs";
-import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, CHANNEL_HISTORY_LIMIT } from "./事件协议.mjs";
+import { PREVIEW_PREVIEW_MAX_BYTES, codeLanguageFor, isCodeExt, isTextExt, readTextPreview } from "./preview-types.mjs";
+import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, channelEvictionStatsSnapshot, CHANNEL_HISTORY_LIMIT } from "./事件协议.mjs";
 import * as searchModule from "./联网搜索.mjs";
 import { nativeCapabilities, openWithDefaultApp, pickFiles, pickFolder, revealInFileManager, cancelActivePicker, activePickerInfo } from "./原生文件.mjs";
 import { DIFF_LIMITS, diffFileContents } from "./文件差异.mjs";
@@ -46,7 +50,7 @@ import { listMcpServers, saveMcpServer, updateMcpServer, deleteMcpServer, testMc
 import { listPiExtensions, addPiExtension, updatePiExtension, checkPiExtension, deletePiExtension } from "./pi扩展管理.mjs";
 import { readGoal, setGoal as setSessionGoalRecord, actOnGoal, clearGoal, goalPromptContext } from "./goal.mjs";
 import { searchPiPackageCatalog, resolveInstalledPiPackage } from "./pi包目录.mjs";
-import { registerServerStream, releaseServerStream, noteStreamWrite, listServerStreams, serverStreamStats, closeServerStreams, sweepServerStreams, streamQuotaOf, rejectStreamQuota } from "./流连接.mjs";
+import { registerServerStream, releaseServerStream, noteStreamWrite, isStreamStale, listServerStreams, serverStreamStats, closeServerStreams, sweepServerStreams, streamQuotaOf, rejectStreamQuota } from "./流连接.mjs";
 // P1-1 统一执行句柄：执行 / 中断 / 响应交互 / 释放 / 订阅 / 可用性 / 能力
 import {
   执行句柄,
@@ -264,74 +268,198 @@ function nodeChildren(node) {
   return Array.isArray(node?.children) ? node.children : Array.isArray(node?.Children) ? node.Children : [];
 }
 
-async function readWorkbook(file) {
-  // 尝试 officecli（Windows），失败则用 xlsx 包原生读取（macOS/Linux）
-  try {
-    const { get } = await import("./office.mjs");
-    // 枚举 sheets：depth 1 不够则递增重试
-    let info = await get(file, "/", 1);
-    const sheetNodes = [];
-    const collect = (results) => {
-      for (const r of results || []) {
-        if (r.type === "sheet" && r.path) sheetNodes.push(r);
-        collect(nodeChildren(r));
-      }
-    };
-    collect(officeResults(info));
-    if (sheetNodes.length === 0) {
-      info = await get(file, "/", 2);
-      collect(officeResults(info));
+// ---------- Excel 预览上限：防大文件一次性全量进前端 ----------
+const XLSX_PREVIEW_MAX_ROWS = 5000;
+const XLSX_PREVIEW_MAX_COLS = 120;
+const XLSX_PREVIEW_MAX_SHEETS = 30;
+
+// 把 officecli DOM 路径产出的 1-based 行列键统一为 0-based（与 x-spreadsheet 坐标系
+// 一致；此前 1-based 键直接喂给 0-based 渲染器，整体偏移一格、首行首列恒为空）。
+function clampGridRows(rows) {
+  const out = {};
+  for (const key of Object.keys(rows || {})) {
+    const ri = Number(key);
+    if (!Number.isFinite(ri)) continue;
+    const zeroRi = ri - 1;
+    if (zeroRi < 0 || zeroRi >= XLSX_PREVIEW_MAX_ROWS) continue;
+    const cells = {};
+    for (const ck of Object.keys(rows[key]?.cells || {})) {
+      const ci = Number(ck);
+      if (!Number.isFinite(ci)) continue;
+      const zeroCi = ci - 1;
+      if (zeroCi < 0 || zeroCi >= XLSX_PREVIEW_MAX_COLS) continue;
+      cells[zeroCi] = rows[key].cells[ck];
     }
-    if (sheetNodes.length === 0) {
-      throw new Error("无法枚举工作表");
+    out[zeroRi] = { cells };
+  }
+  return out;
+}
+
+function buildXlsxSheetGrid(XLSX, wb, name) {
+  const ws = wb.Sheets[name] || {};
+  // raw:false → 取 Excel 显示值：日期/金额/百分比按单元格格式输出，
+  // 而不是 45000+ 日期序列号或 0.0345 裸小数（2026-10-20 用户反馈"数据显示不对"）。
+  const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: false });
+  const totalRows = data.length;
+  const rows = {};
+  const rowCount = Math.min(totalRows, XLSX_PREVIEW_MAX_ROWS);
+  for (let ri = 0; ri < rowCount; ri += 1) {
+    const cells = {};
+    const row = data[ri] || [];
+    const colCount = Math.min(row.length, XLSX_PREVIEW_MAX_COLS);
+    for (let ci = 0; ci < colCount; ci += 1) {
+      const val = row[ci];
+      if (val !== "" && val != null) cells[ci] = { text: String(val) };
     }
-    const sheets = [];
-    const grids = {};
-    for (const s of sheetNodes) {
-      const name = s.preview || s.path.split("/").pop();
-      if (!sheets.some((x) => x.name === name)) {
-        sheets.push({ name, path: s.path });
-      }
-    }
-    for (const s of sheets) {
-      // 使用 Office CLI 返回的 DOM 路径，而不是工作表显示名；名称含空格、斜杠
-      // 或非 ASCII 字符时，显示名不一定能作为查询路径。
-      const r = await get(file, s.path || `/${s.name}`, 3);
-      const results = officeResults(r);
-      const res = results.find((item) => item.type === "sheet") || results[0];
-      grids[s.name] = sheetToGrid(nodeChildren(res));
-    }
-    return { sheets: sheets.map((s) => s.name), grids };
-  } catch (officeErr) {
-    // officecli 不可用，使用 xlsx 包原生读取
+    rows[ri] = { cells };
+  }
+  const grid = { rows, totalRows };
+  // 合并单元格：!merges 转为 x-spreadsheet 的 A1 引用串
+  const merges = (ws["!merges"] || []).map((m) => XLSX.utils.encode_range(m));
+  if (merges.length) grid.merges = merges;
+  // 列宽：!cols 的 wpx / wch 转像素（0-based 键，与 Cols.setData 一致）
+  const cols = {};
+  (ws["!cols"] || []).forEach((c, i) => {
+    if (!c) return;
+    const px = c.wpx || (c.wch ? Math.round(c.wch * 7 + 5) : 0);
+    if (px) cols[i] = { width: Math.min(400, Math.max(40, Math.round(px))) };
+  });
+  if (Object.keys(cols).length) grid.cols = cols;
+  return { grid, truncated: totalRows > XLSX_PREVIEW_MAX_ROWS ? [{ name, totalRows }] : [] };
+}
+
+function buildXlsxGrids(XLSX, wb) {
+  const grids = {};
+  const truncated = [];
+  const names = (wb.SheetNames || []).slice(0, XLSX_PREVIEW_MAX_SHEETS);
+  for (const name of names) {
+    const built = buildXlsxSheetGrid(XLSX, wb, name);
+    grids[name] = built.grid;
+    truncated.push(...built.truncated);
+  }
+  return { sheets: wb.SheetNames || [], grids, truncated, maxRows: XLSX_PREVIEW_MAX_ROWS };
+}
+
+/**
+ * P3-c：工作簿解析结果 LRU 缓存（开关 previewLazySheets 开启时使用）。
+ * key = 绝对路径，mtime 变化即失效重读；上限 6 本防止多文件预览撑爆内存。
+ * 切页签的 /sheet 请求复用缓存，不再整簿重读（xlsx readFile 本身要解压全簿，
+ * 缓存命中的收益 = 省掉重复解压 + 只对当前查看的表跑 sheet_to_json）。
+ */
+const XLSX_WB_CACHE_MAX = 6;
+const xlsxWbCache = new Map();
+
+async function loadWorkbookCached(file) {
+  const stat = fs.statSync(file);
+  const hit = xlsxWbCache.get(file);
+  if (hit && hit.mtimeMs === stat.mtimeMs) {
+    xlsxWbCache.delete(file);
+    xlsxWbCache.set(file, hit);
+    return hit;
+  }
+  const xlsxModule = await import("xlsx");
+  const XLSX = xlsxModule.default || xlsxModule;
+  const wb = XLSX.readFile(file, { cellNF: true });
+  const entry = { XLSX, wb, mtimeMs: stat.mtimeMs };
+  xlsxWbCache.set(file, entry);
+  while (xlsxWbCache.size > XLSX_WB_CACHE_MAX) {
+    xlsxWbCache.delete(xlsxWbCache.keys().next().value);
+  }
+  return entry;
+}
+
+async function readWorkbook(file, { lazy = false } = {}) {
+  // P3-c：懒加载——首屏只解析首个工作表；解析失败的整簿路径照常回落，
+  // 保持"能预览"优先于"省性能"。
+  if (lazy) {
     try {
-      // xlsx 是 CommonJS 包：动态 import 后需要用 .default 取导出对象
-      const xlsxModule = await import("xlsx");
-      const XLSX = xlsxModule.default || xlsxModule;
-      const wb = XLSX.readFile(file);
-      const sheets = wb.SheetNames;
+      const entry = await loadWorkbookCached(file);
+      const names = entry.wb.SheetNames || [];
+      const first = names[0];
       const grids = {};
-      for (const name of sheets) {
-        const ws = wb.Sheets[name];
-        const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-        const rows = {};
-        data.forEach((row, ri) => {
-          const cells = {};
-          row.forEach((val, ci) => {
-            cells[ci + 1] = { text: String(val) };
-          });
-          rows[ri + 1] = { cells };
-        });
-        grids[name] = { rows };
+      let truncated = [];
+      if (first) {
+        const built = buildXlsxSheetGrid(entry.XLSX, entry.wb, first);
+        grids[first] = built.grid;
+        truncated = built.truncated;
       }
-      return { sheets, grids };
-    } catch (xlsxErr) {
-      throw new Error(`officecli: ${officeErr.message} | xlsx: ${xlsxErr.message}`);
+      return { sheets: names.slice(0, XLSX_PREVIEW_MAX_SHEETS), grids, truncated, maxRows: XLSX_PREVIEW_MAX_ROWS, lazySheets: true };
+    } catch {
+      // 回落到下方整簿路径
+    }
+  }
+  // 预览优先用 xlsx 包原生读取：显示值（日期/数字格式）、合并单元格、列宽都能还原，
+  // 且不依赖外部二进制、无 officecli 冷启动；officecli 保留为解析失败时的兜底。
+  try {
+    // xlsx 是 CommonJS 包：动态 import 后需要用 .default 取导出对象
+    const xlsxModule = await import("xlsx");
+    const XLSX = xlsxModule.default || xlsxModule;
+    const wb = XLSX.readFile(file, { cellNF: true });
+    return buildXlsxGrids(XLSX, wb);
+  } catch (xlsxErr) {
+    // officecli 兜底：枚举工作表 → 按路径取单元格 DOM
+    try {
+      const { get } = await import("./office.mjs");
+      // 枚举 sheets：depth 1 不够则递增重试
+      let info = await get(file, "/", 1);
+      const sheetNodes = [];
+      const collect = (results) => {
+        for (const r of results || []) {
+          if (r.type === "sheet" && r.path) sheetNodes.push(r);
+          collect(nodeChildren(r));
+        }
+      };
+      collect(officeResults(info));
+      if (sheetNodes.length === 0) {
+        info = await get(file, "/", 2);
+        collect(officeResults(info));
+      }
+      if (sheetNodes.length === 0) {
+        throw new Error("无法枚举工作表");
+      }
+      const sheets = [];
+      const grids = {};
+      for (const s of sheetNodes) {
+        const name = s.preview || s.path.split("/").pop();
+        if (!sheets.some((x) => x.name === name)) {
+          sheets.push({ name, path: s.path });
+        }
+      }
+      const capped = sheets.slice(0, XLSX_PREVIEW_MAX_SHEETS);
+      for (const s of capped) {
+        // 使用 Office CLI 返回的 DOM 路径，而不是工作表显示名；名称含空格、斜杠
+        // 或非 ASCII 字符时，显示名不一定能作为查询路径。
+        const r = await get(file, s.path || `/${s.name}`, 3);
+        const results = officeResults(r);
+        const res = results.find((item) => item.type === "sheet") || results[0];
+        grids[s.name] = { rows: clampGridRows(sheetToGrid(nodeChildren(res))), totalRows: null };
+      }
+      return { sheets: sheets.map((s) => s.name), grids, truncated: [], maxRows: XLSX_PREVIEW_MAX_ROWS };
+    } catch (officeErr) {
+      throw new Error(`xlsx: ${xlsxErr.message} | officecli: ${officeErr.message}`);
     }
   }
 }
 
 // ---------- REST ----------
+// 请求诊断（只读计数）：多窗口轮询问题排查用，不改变任何响应内容。
+const requestStats = new Map();
+app.use((req, res, next) => {
+  const raw = String(req.path || "");
+  if (!raw.startsWith("/api/")) return next();
+  const route = raw.replace(/\/[0-9a-f]{8}-[0-9a-f-]{16,}/gi, "/:id").replace(/\/run_[^/]+/g, "/:runId");
+  if (requestStats.size > 500 && !requestStats.has(route)) requestStats.clear();
+  const started = process.hrtime.bigint();
+  const entry = requestStats.get(route) || { path: route, count: 0, totalMs: 0, maxMs: 0 };
+  requestStats.set(route, entry);
+  res.on("finish", () => {
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    entry.count += 1;
+    entry.totalMs += ms;
+    entry.maxMs = Math.max(entry.maxMs, ms);
+  });
+  next();
+});
 app.get("/api/status", (req, res) => {
   if (API_TOKEN && tokenMatches(req.query?.token)) setAuthCookie(res);
   res.json({
@@ -414,6 +542,13 @@ app.get("/api/diagnostics/streams", (_req, res) => {
   // 顺手清扫一次：诊断数据只反映真正存活的流。
   const swept = sweepServerStreams();
   res.json({ stats: serverStreamStats(), streams: listServerStreams(), swept });
+});
+
+app.get("/api/diagnostics/traffic", (_req, res) => {
+  const routes = [...requestStats.values()]
+    .map((entry) => ({ ...entry, avgMs: entry.count ? Math.round((entry.totalMs / entry.count) * 10) / 10 : 0 }))
+    .sort((a, b) => b.totalMs - a.totalMs);
+  res.json({ since: SERVICE_STARTED_AT, routes, uptimeSec: Math.round(process.uptime()) });
 });
 
 app.post("/api/diagnostics/streams/close", (req, res) => {
@@ -660,7 +795,9 @@ app.get(/^\/api\/map\/data\/([^/]+)\/style\.json$/, (req, res) => {
   const p = path.join(map.STATIC_ROOT, name, "style.json");
   if (!fs.existsSync(p)) return res.status(404).json({ error: "style not found" });
   try {
-    const style = map.hydrateBasemapSources(JSON.parse(fs.readFileSync(p, "utf8")));
+    // 弹性读取：写入方已改为原子 rename，这里再兜底短重试 + 最后好样式缓存，
+    // 避免瞬时共享冲突把前端样式轮询打成 500（表现为地图「加载失败」）。
+    const style = map.hydrateBasemapSources(map.readProjectStyleResilient(name));
     const origin = `${req.protocol}://${req.get("host")}`;
     for (const s of Object.values(style.sources || {})) {
       if (Array.isArray(s.tiles)) {
@@ -689,12 +826,86 @@ app.post("/api/map/projects", (req, res) => {
       project: req.body?.project,
       name: req.body?.name,
       baseProject: req.body?.baseProject || map.DEFAULT_PROJECT,
+      kind: req.body?.kind === "blank" ? "blank" : "copy",
+      description: req.body?.description,
     });
     res.status(201).json({ ok: true, project: created.config?.project, config: created.config, style: created.style, files: created.files || [] });
   } catch (e) {
     const status = ["MAP_PROJECT_INVALID", "MAP_PROJECT_EXISTS", "MAP_BASE_PROJECT_NOT_FOUND"].includes(e?.code) ? 409 : 500;
     res.status(status).json({ ok: false, error: e.message, code: e.code || "MAP_PROJECT_CREATE_FAILED" });
   }
+});
+
+// GIS 工程化：图层注册表 / 元数据 / 单层导出 / 基线 / 三级重置 / 操作日志
+app.get("/api/map/project/:name/layers", (req, res) => {
+  const registry = map.listLayerRegistry(req.params.name);
+  if (!registry) return res.status(404).json({ error: "project not found" });
+  res.json(registry);
+});
+
+// 项目文件树（地图面板文件树入口）：按文件夹搜索，跳过 tiles/.trash。
+app.get("/api/map/project/:name/tree", (req, res) => {
+  const tree = map.listProjectFiles(req.params.name, {
+    q: String(req.query.q || ""),
+    maxDepth: Number(req.query.maxDepth) || 4,
+    maxFiles: Number(req.query.maxFiles) || 500,
+  });
+  if (!tree) return res.status(404).json({ error: "project not found", code: "MAP_PROJECT_NOT_FOUND" });
+  res.json(tree);
+});
+
+app.patch("/api/map/project/:name/layer/:layerId", (req, res) => {
+  const result = map.updateLayerMeta(req.params.name, req.params.layerId, req.body || {});
+  if (!result) return res.status(404).json({ error: "layer not found" });
+  res.json(result);
+});
+
+app.post("/api/map/project/:name/layer/:layerId/export", (req, res) => {
+  const geojson = map.getLayer(req.params.name, req.params.layerId);
+  if (!geojson) return res.status(404).json({ error: "layer not found" });
+  const safeId = String(req.params.layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+  res.setHeader("Content-Type", "application/geo+json; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(safeId)}.geojson"`);
+  res.send(JSON.stringify(geojson));
+});
+
+app.post("/api/map/project/:name/layer/:layerId/replace", async (req, res) => {
+  try {
+    const result = await map.replaceLayer(req.params.name, req.params.layerId, req.body?.geojson, {
+      format: String(req.body?.format || "geojson"),
+    });
+    if (!result?.ok) return res.status(result?.error === "layer not found" ? 404 : 400).json(result || { error: "replace failed" });
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message, code: e.code || "MAP_LAYER_REPLACE_FAILED" });
+  }
+});
+
+app.get("/api/map/project/:name/baseline", (req, res) => {
+  const baseline = map.getBaseline(req.params.name);
+  if (!baseline) return res.status(404).json({ error: "baseline not found", code: "MAP_BASELINE_MISSING" });
+  res.json({ ok: true, baseline });
+});
+
+app.post("/api/map/project/:name/baseline", (req, res) => {
+  const baseline = map.setBaseline(req.params.name, { actor: "user" });
+  if (!baseline) return res.status(404).json({ error: "project not found" });
+  res.json({ ok: true, baseline });
+});
+
+app.post("/api/map/project/:name/reset", (req, res) => {
+  const level = String(req.body?.level || "tree");
+  const result = map.resetProject(req.params.name, level, { actor: "user" });
+  if (!result?.ok) return res.status(400).json(result || { error: "reset failed" });
+  res.json(result);
+});
+
+app.get("/api/map/project/:name/operations", (req, res) => {
+  const list = map.listOperations(req.params.name, {
+    layerId: String(req.query.layerId || ""),
+    limit: Number(req.query.limit) || 200,
+  });
+  res.json({ ok: true, operations: list });
 });
 
 app.get("/api/map/project", async (req, res) => {
@@ -838,6 +1049,34 @@ app.post("/api/map/layer/delete", (req, res) => {
   res.json(r);
 });
 
+// 一键清零：移除全部非初始图层（agent/演示产物），注册层恢复默认样式与可见性
+app.post("/api/map/reset", (req, res) => {
+  try {
+    const r = map.resetProjectToInitial(req.body?.name || map.DEFAULT_PROJECT);
+    if (!r) return res.status(400).json({ error: "invalid project" });
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 图层版本回溯与归档（项目级图层管理）
+app.get("/api/map/layer/versions", (req, res) => {
+  res.json({ versions: map.listLayerVersions(req.query.name || map.DEFAULT_PROJECT, req.query.layer) });
+});
+app.post("/api/map/layer/restore", (req, res) => {
+  const { name, layer, file } = req.body || {};
+  const r = map.restoreLayerVersion(name || map.DEFAULT_PROJECT, layer, file);
+  if (!r) return res.status(400).json({ error: "version not found" });
+  res.json(r);
+});
+app.post("/api/map/layer/archive", (req, res) => {
+  const { name, layer, archived } = req.body || {};
+  const r = map.setLayerArchived(name || map.DEFAULT_PROJECT, layer, Boolean(archived));
+  if (!r) return res.status(400).json({ error: "layer not found" });
+  res.json(r);
+});
+
 app.get("/api/map/layer", (req, res) => {
   const g = map.getLayer(req.query.name || map.DEFAULT_PROJECT, req.query.layer);
   if (!g) return res.status(404).json({ error: "layer not found" });
@@ -910,17 +1149,48 @@ app.get("/api/files", (req, res) => {
   }
   const { workspace, explicit, invalid } = resolveRequestWorkspace(req);
   if (explicit && !workspace) return res.status(409).json({ error: "unknown workspace", workspace: invalid });
-  const target = dir ? resolvePath(dir, workspace) : workspace;
-  if (dir && (!target || !fs.existsSync(target) || !fs.statSync(target).isDirectory())) return res.status(404).json({ error: "directory not found", workspace });
-  const files = listWorkspace(target).map((item) => {
-    if (item.isDir) return item;
-    const p = path.join(target, item.name);
-    try {
-      const st = fs.statSync(p);
-      return { ...item, mime: mimeForExt(item.ext), mtime: st.mtimeMs, version: `${st.size}:${st.mtimeMs}` };
-    } catch { return item; }
-  });
-  res.json({ files, dir, workspace });
+  try {
+    const target = dir ? resolvePath(dir, workspace) : workspace;
+    if (dir && !target) return res.status(404).json({ error: "directory not found", code: "FILES_NOT_FOUND", workspace });
+    if (dir) {
+      let isDir = false;
+      try {
+        isDir = fs.statSync(target).isDirectory();
+      } catch {}
+      if (!isDir) return res.status(404).json({ error: "directory not found", code: "FILES_NOT_FOUND", workspace });
+    }
+    // 目录本身瞬时不可读（外部盘/权限/文件抖动）时短重试一次；条目级消失由
+    // listWorkspace 直接跳过，不应该让整页列表失败。
+    let raw = null;
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        raw = listWorkspace(target);
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        const code = String(error?.code || "");
+        if (!["EPERM", "EACCES", "EBUSY", "EIO"].includes(code)) break;
+      }
+    }
+    if (lastError) throw lastError;
+    const files = raw.map((item) => {
+      if (item.isDir) return item;
+      // 使用 listWorkspace 已经拿到的 stat 结果，避免第二次 stat 再撞上同一竞态窗口。
+      return { ...item, mime: mimeForExt(item.ext), version: `${item.size}:${item.mtime}` };
+    });
+    res.json({ files, dir, workspace });
+  } catch (error) {
+    const code = String(error?.code || "");
+    const notFound = code === "ENOENT" || code === "ENOTDIR";
+    // 不能落到 Express 的 HTML 500：前端必须拿到可读错误码才能决定重试/回根目录。
+    return res.status(notFound ? 404 : 503).json({
+      error: notFound ? "directory not found" : "文件列表暂时不可用，请重试",
+      code: notFound ? "FILES_NOT_FOUND" : "FILES_TRANSIENT",
+      workspace,
+    });
+  }
 });
 
 app.get("/api/files/search", (req, res) => {
@@ -1134,7 +1404,7 @@ app.get(/^\/api\/doc\/(.+)\/text$/, async (req, res) => {
 // open document
 app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
   const fileName = decodeURIComponent(req.params[0]);
-  if (/(?:^|\/)(?:raw|text|html|comments|watch|outline)(?:\/stop)?$/.test(fileName)) return next();
+  if (/(?:^|\/)(?:raw|text|html|comments|watch|outline|sheet)(?:\/stop)?$/.test(fileName)) return next();
   // 支持按调用方指定的工作区解析（产物可能属于其他工作区，不能只看全局当前工作区）
   const requestedCwd = requestedPreviewWorkspace(req);
   const p = resolvePath(fileName, requestedCwd);
@@ -1150,27 +1420,71 @@ app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
   }
   try {
     if (ext === "xlsx" || ext === "xls") {
-      const wb = await readWorkbook(p);
+      const wb = await readWorkbook(p, { lazy: RUNTIME_FLAGS.previewLazySheets });
       res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "xlsx", name: fileName, identity, ...wb });
-    } else if (["md", "markdown", "txt", "csv", "json"].includes(ext)) {
-      const content = fs.readFileSync(p, "utf8");
+    } else if (isTextExt(ext)) {
+      const preview = readTextPreview(p, PREVIEW_PREVIEW_MAX_BYTES);
+      if (preview.binary) return res.status(415).json({ error: "该文件看起来是二进制内容，无法作为文本预览" });
       res.setHeader("Cache-Control", "no-store, max-age=0");
-      res.json({ kind: "text", name: fileName, content, ext, identity });
+      res.json({ kind: "text", name: fileName, content: preview.text, ext, truncated: preview.truncated, size: preview.size, encoding: preview.encoding, identity });
     } else if (ext === "html" || ext === "htm") {
-      const content = fs.readFileSync(p, "utf8");
+      const preview = readTextPreview(p, PREVIEW_PREVIEW_MAX_BYTES);
+      if (preview.binary) return res.status(415).json({ error: "该文件看起来是二进制内容，无法作为网页预览" });
       res.setHeader("Cache-Control", "no-store, max-age=0");
-      res.json({ kind: "htmlfile", name: fileName, content, identity });
+      res.json({ kind: "htmlfile", name: fileName, content: preview.text, ext, truncated: preview.truncated, size: preview.size, encoding: preview.encoding, identity });
+    } else if (isCodeExt(ext)) {
+      // 源码只读预览：文本 + 语言标识，前端用 CodeViewer 渲染；不执行任何内容。
+      const preview = readTextPreview(p);
+      if (preview.binary) return res.status(415).json({ error: "该文件看起来是二进制内容，无法作为源码预览" });
+      res.setHeader("Cache-Control", "no-store, max-age=0");
+      res.json({ kind: "code", name: fileName, ext, language: codeLanguageFor(ext), content: preview.text, truncated: preview.truncated, size: preview.size, encoding: preview.encoding, identity });
     } else if (ext === "pdf") {
       res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "pdf", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/raw${cwdQuery}` });
     } else if (IMAGE_EXTENSIONS.has(ext)) {
       // D04：独立图片格式走专用查看器（raw 已按扩展名给正确 MIME）
       res.json({ kind: "image", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/raw${cwdQuery}` });
+    } else if (RUNTIME_FLAGS.cadPreview && (ext === "dxf" || ext === "dwg")) {
+      // CAD 预览（开关 cadPreview，默认关=DXF/DWG 落入下方 html 兜底与基线一致）：
+      // 解析结果随 open 响应一次返回（实体数受 CAD_ENTITY_LIMIT 截断，truncated 标记提示）。
+      // DWG 无转换工具时 readCadDocument 抛安装指引，由 500 错误链路转述（AC2 降级）。
+      const cad = await readCadDocument(p, { maxEntities: CAD_ENTITY_LIMIT });
+      res.setHeader("Cache-Control", "no-store, max-age=0");
+      res.json({
+        kind: "cad", name: fileName, ext, identity,
+        format: cad.format, converter: cad.converter,
+        layers: cad.layers, blocks: cad.blocks, entities: cad.entities,
+        entityCounts: cad.entityCounts, extents: cad.extents, truncated: cad.truncated,
+      });
     } else {
       res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "html", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/html${cwdQuery}` });
     }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// P3-c：Excel 预览 sheet 懒加载（开关 previewLazySheets，默认关 = 404，基线不变）。
+// 首屏 readWorkbook 只解析首个工作表；前端切页签时按需取单表网格，
+// 服务端复用工作簿 LRU 缓存，不再整簿重读。
+app.get(/^\/api\/doc\/(.+)\/sheet$/, async (req, res) => {
+  if (!RUNTIME_FLAGS.previewLazySheets) return res.status(404).json({ error: "not found" });
+  const fileName = decodeURIComponent(req.params[0]);
+  const requestedCwd = requestedPreviewWorkspace(req);
+  const p = resolvePath(fileName, requestedCwd);
+  if (!p) return res.status(404).json({ error: "not found" });
+  if (!/\.(xlsx|xls)$/i.test(p)) return res.status(400).json({ error: "仅支持 Excel 工作簿" });
+  const sheetName = String(req.query.sheet || "").trim();
+  try {
+    const entry = await loadWorkbookCached(p);
+    const names = entry.wb.SheetNames || [];
+    const target = names.includes(sheetName) ? sheetName : names[0];
+    if (!target) return res.status(404).json({ error: "工作簿没有工作表" });
+    const built = buildXlsxSheetGrid(entry.XLSX, entry.wb, target);
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    res.json({ ok: true, kind: "xlsx-sheet", name: target, sheets: names.slice(0, XLSX_PREVIEW_MAX_SHEETS), grid: built.grid, truncated: built.truncated, maxRows: XLSX_PREVIEW_MAX_ROWS, lazySheets: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1581,6 +1895,7 @@ app.post("/api/agent/model-configs", async (req, res) => {
     if (input.apiKey) await setApiKey(input.provider, input.apiKey);
     else if (input.clearApiKey) await removeApiKey(input.provider);
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({ ok: true, config: publicModelConfigs().find((item) => item.provider === input.provider) || null });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message, code: "MODEL_CONFIG_INVALID" });
@@ -1596,12 +1911,48 @@ app.delete("/api/agent/model-configs/:provider", async (req, res) => {
   writeModelsConfig({ ...config, providers });
   await removeApiKey(provider);
   piRuntimeManager.resetModelRuntime();
+  agentManager.invalidateModelCatalogCache();
   res.json({ ok: true, provider });
 });
 
-// 从供应商接口地址拉取模型列表（OpenAI 兼容 GET /models），供前端一键导入
+// 从供应商接口地址拉取模型列表，供前端一键导入。
+// 支持三种协议（按 api 参数或内置目录推断）：
+//   openai-completions / openai-responses / openai-codex-responses → GET {baseUrl}/models（Bearer）
+//   anthropic-messages → GET {baseUrl}/v1/models（x-api-key + anthropic-version）
+//   google-generative-ai → GET {baseUrl}/models?key=（过滤 generateContent，去 models/ 前缀）
+// 其余协议（azure/bedrock/vertex/mistral 等）返回 422，走内置静态模型清单。
+const MODELS_FETCH_PROTOCOLS = new Set([
+  "openai-completions",
+  "openai-responses",
+  "openai-codex-responses",
+  "anthropic-messages",
+  "google-generative-ai",
+]);
+
+function normalizeModelsFetchEntries(api, body) {
+  if (api === "anthropic-messages") {
+    const rows = Array.isArray(body?.data) ? body.data : [];
+    return rows.map((item) => ({ id: String(item?.id || "").trim(), name: String(item?.display_name || item?.id || "").trim() })).filter((item) => item.id);
+  }
+  if (api === "google-generative-ai") {
+    const rows = Array.isArray(body?.models) ? body.models : [];
+    return rows
+      .filter((item) => Array.isArray(item?.supportedGenerationMethods) ? item.supportedGenerationMethods.includes("generateContent") : true)
+      .map((item) => {
+        const raw = String(item?.name || "").trim();
+        const id = raw.startsWith("models/") ? raw.slice("models/".length) : raw;
+        return { id, name: String(item?.displayName || id).trim() };
+      })
+      .filter((item) => item.id);
+  }
+  // OpenAI 兼容家族：data[].id
+  const rows = Array.isArray(body?.data) ? body.data : [];
+  return rows.map((item) => ({ id: String(item?.id || "").trim(), name: String(item?.id || "").trim() })).filter((item) => item.id);
+}
+
 app.post("/api/agent/model-configs/fetch-models", async (req, res) => {
   const { provider, baseUrl, apiKey } = req.body || {};
+  let api = String(req.body?.api || "").trim();
   let url = String(baseUrl || "").trim().replace(/\/+$/, "");
   let key = String(apiKey || "").trim();
   if (!url && provider) {
@@ -1611,18 +1962,32 @@ app.post("/api/agent/model-configs/fetch-models", async (req, res) => {
     const auth = listAuth() || {};
     key = String(auth[provider]?.key || auth[provider]?.apiKey || auth[provider]?.token || "").trim();
   }
+  // 协议未显式给出时按内置目录推断；目录里没有的默认按 OpenAI 兼容处理。
+  if (!MODELS_FETCH_PROTOCOLS.has(api)) {
+    const builtin = provider ? builtinProviderDetail(provider) : null;
+    api = MODELS_FETCH_PROTOCOLS.has(builtin?.api) ? builtin.api : "openai-completions";
+  }
   if (!/^https?:\/\//i.test(url)) return res.status(400).json({ ok: false, error: "接口地址必须以 http:// 或 https:// 开头", code: "MODELS_FETCH_INVALID_URL" });
   if (!key) return res.status(400).json({ ok: false, error: "缺少 API Key：请先保存凭据，或临时填写 Key", code: "MODELS_FETCH_NO_KEY" });
+  // 各协议的列表端点与鉴权头：anthropic 无 /v1 时补拼；google 用 query 传 key；openai 用 Bearer。
+  let endpoint = `${url}/models`;
+  const headers = { "Content-Type": "application/json" };
+  if (api === "anthropic-messages") {
+    endpoint = /\/v1$/.test(url) ? `${url}/models` : `${url}/v1/models`;
+    headers["x-api-key"] = key;
+    headers["anthropic-version"] = "2023-06-01";
+  } else if (api === "google-generative-ai") {
+    endpoint = `${url}/models?key=${encodeURIComponent(key)}`;
+  } else {
+    headers.Authorization = `Bearer ${key}`;
+  }
   const adapter = createPiNetworkAdapter();
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
     let response;
     try {
-      response = await adapter.fetch(`${url}/models`, {
-        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-        signal: controller.signal,
-      });
+      response = await adapter.fetch(endpoint, { headers, signal: controller.signal });
     } catch (error) {
       clearTimeout(timer);
       const message = String(error?.oawNetwork?.message || error?.message || error).slice(0, 300);
@@ -1639,23 +2004,23 @@ app.post("/api/agent/model-configs/fetch-models", async (req, res) => {
         code: response.status === 401 || response.status === 403 ? "MODELS_FETCH_AUTH" : "MODELS_FETCH_FAILED",
       });
     }
-    const ids = Array.isArray(body?.data) ? body.data.map((item) => String(item?.id || "").trim()).filter(Boolean) : [];
-    if (!ids.length) return res.status(422).json({ ok: false, error: "接口未返回模型列表（响应缺少 data[]）", code: "MODELS_FETCH_EMPTY" });
-    const unique = [...new Set(ids)];
+    const entries = normalizeModelsFetchEntries(api, body);
+    if (!entries.length) return res.status(422).json({ ok: false, error: "接口未返回模型列表", code: "MODELS_FETCH_EMPTY" });
+    const unique = [...new Map(entries.map((item) => [item.id, item])).values()];
     // 拉到的模型 ID 去 Pi 内置目录里对一遍：对上的直接带出上下文窗口 / 图片 / 思考能力，
     // 前端就不用一个个手填（对不上的仍可手填）。
-    const models = unique.map((id) => {
-      const known = findBuiltinModel(id);
+    const models = unique.map((entry) => {
+      const known = findBuiltinModel(entry.id);
       return {
-        id,
-        name: known?.name || id,
+        id: entry.id,
+        name: known?.name || entry.name || entry.id,
         contextWindow: known?.contextWindow || null,
         vision: known ? known.vision : null,
         reasoning: known ? known.reasoning : null,
         matchedProvider: known?.provider || null,
       };
     });
-    res.json({ ok: true, models, ids: unique, count: unique.length, matched: models.filter((model) => model.matchedProvider).length, fetchedAt: new Date().toISOString() });
+    res.json({ ok: true, models, ids: unique.map((item) => item.id), count: unique.length, matched: models.filter((model) => model.matchedProvider).length, fetchedAt: new Date().toISOString() });
   } catch (error) {
     res.status(500).json({ ok: false, error: String(error?.message || error).slice(0, 300), code: "MODELS_FETCH_UNEXPECTED" });
   } finally {
@@ -1779,6 +2144,7 @@ app.post("/api/agent/provider-catalog/import", async (req, res) => {
       defaultModel = `${built.provider}/${target}`;
     }
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({
       ok: true,
       provider: built.provider,
@@ -1823,6 +2189,7 @@ app.post("/api/agent/default-model", (req, res) => {
   try {
     const saved = writeDefaultModel({ provider, model });
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({ ok: true, ...saved, defaultModel: `${saved.defaultProvider}/${saved.defaultModel}` });
   } catch (error) {
     res.status(500).json({ ok: false, error: String(error?.message || error), code: "DEFAULT_MODEL_FAILED" });
@@ -1891,6 +2258,7 @@ app.post("/api/agent/custom-provider", (req, res) => {
     delete nextProvider.apiKey;
     writeModelsConfig({ ...config, providers: { ...providers, [provider]: nextProvider } });
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({ ok: true, provider, model: `${provider}/${modelId}`, modelName: model.name, api, baseUrl });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message, code: "CUSTOM_PROVIDER_SAVE_FAILED" });
@@ -1993,6 +2361,9 @@ app.get("/api/agent/diagnostics", async (req, res) => {
     authProviders,
     authErrors: getCredentialErrors(),
     network: piRuntimeManager.networkDiagnostics(),
+    // bash 能力快照：可用性、实际使用的 shell 与来源（自动探测 / Pi settings.json / 环境变量）。
+    // 这台机器的 bash 曾经被误判为不可用，诊断接口能一眼看出当前用的是哪个 shell。
+    environment: { bash: bashEnvironmentInfo() },
   });
 });
 
@@ -2072,6 +2443,16 @@ const SESSION_HEADER_BYTES = 65536;
 const SESSION_HEAD_SCAN_BYTES = 512 * 1024;
 const SESSION_CACHE_LIMIT = 800;
 const SESSION_META_STORE = path.join(PROJECT_DIR, ".oaw", "sessions-meta.json");
+// 会话列表热缓存：多标签/多窗口会同时轮询 /api/sessions，单次构建要扫描全部
+// 会话头与 Run 索引（实测 0.2–3.5s）。统一缓存 5s，避免 N 个窗口把同一份
+// 列表重复计算 N 次、把事件循环拖到健康检查超时。新建/改名/删除/置顶/冻结/
+// 分支会主动失效；地图视口（1.5s 写一次 header）不失效，允许最多 5s 滞后。
+const SESSIONS_LIST_CACHE_MS = Math.max(500, Number.parseInt(process.env.OAW_SESSIONS_LIST_CACHE_MS || "5000", 10) || 5000);
+let sessionsListCache = { at: 0, payload: null };
+function invalidateSessionsListCache() {
+  sessionsListCache = { at: 0, payload: null };
+}
+const SESSION_LIST_FIELDS = new Set(["label", "pinned", "frozen", "freezeReason", "projectId", "cwd", "parentSessionId", "agentId", "threadId"]);
 const sessionHeaderCache = new Map();
 const sessionMetaCache = new Map();
 const persistedSessionMeta = new Map();
@@ -2229,6 +2610,15 @@ function enforceStreamQuota(res, path) {
   return true;
 }
 
+/**
+ * Qoder P1-6：陈旧流停摆门（开关 staleStreamSuspend，默认关 = 旧流照常推送，行为与基线一致）。
+ * 已被同键新流接管（stale）的旧流停止数据帧下发、保留心跳；连接不主动关闭，
+ * 由前端自身重连机制自然换新，避免"新流接上、旧流挂着"占满同源连接池。
+ */
+function isStaleSuspended(id) {
+  return Boolean(id) && RUNTIME_FLAGS.staleStreamSuspend && isStreamStale(id);
+}
+
 app.get("/api/browser/stream", (req, res) => {
   const client = String(req.query.client || "");
   const thread = String(req.query.thread || "");
@@ -2272,6 +2662,8 @@ app.get("/api/browser/stream", (req, res) => {
   let writable = true;
   const pump = () => {
     if (closed || !writable) return;
+    // P1-6：stale 流不再消费队列（数据帧在 write 入口即被丢弃，此处只兜底清残留）。
+    if (isStaleSuspended(streamId)) { pendingEvents.length = 0; pendingFrame = null; return; }
     for (;;) {
       const next = pendingEvents.shift() || pendingFrame;
       if (!next) return;
@@ -2294,6 +2686,8 @@ app.get("/api/browser/stream", (req, res) => {
   };
   const write = (payload) => {
     if (closed) return;
+    // P1-6：stale 流丢弃数据帧（心跳走独立通道保留，连接不断、前端可自行重连）。
+    if (isStaleSuspended(streamId)) return;
     if (payload.type === "frame") pendingFrame = payload;
     else pendingEvents.push(payload);
     pump();
@@ -2406,6 +2800,7 @@ app.post("/api/agent/plans/apply", async (req, res) => {
     const result = await planCatalog.applyPlan(req.body || {});
     if (!result.ok) return res.status(400).json(result);
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({ ...result, status: getConfigStatus() });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message, code: "PLAN_APPLY_FAILED" });
@@ -2417,6 +2812,7 @@ app.post("/api/agent/plans/disconnect", (req, res) => {
     const result = planCatalog.disconnectPlan(req.body || {});
     if (!result.ok) return res.status(400).json(result);
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json(result);
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message, code: "PLAN_DISCONNECT_FAILED" });
@@ -2438,6 +2834,7 @@ app.post("/api/agent/import-config", async (req, res) => {
     sessionTextCache.clear();
     sessionIdIndex.clear();
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({ ...result, sessions, status: getConfigStatus() });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message, code: "PI_IMPORT_FAILED" });
@@ -3019,6 +3416,9 @@ function buildSessionMeta(f, h, text, { truncated = false } = {}) {
     branchPurpose: h.branchPurpose || "",
     // v0.13.7 Agent 继承：会话 header 记录的智能体 id，供新建沿用与界面展示
     agentId: typeof h.agentId === "string" ? h.agentId : "",
+    // 地图会话绑定：项目名 + 视口（只存白名单字段，供初始页小地图与切回恢复）
+    mapProject: typeof h.mapProject === "string" ? h.mapProject : "",
+    mapView: h.mapView && typeof h.mapView === "object" ? h.mapView : null,
     created: h.created || "",
     title,
     hasUserMessage,
@@ -3078,7 +3478,8 @@ function updateSessionHeader(id, patch = {}) {
     lines[0] = JSON.stringify(next);
     atomicWriteFile(writable.fullPath, lines.join("\n"), "utf8");
     sessionTextCache.delete(writable.fullPath);
-    return { ok: true, header: next };
+    if (Object.keys(patch).some((key) => SESSION_LIST_FIELDS.has(key))) invalidateSessionsListCache();
+    return { ok: true, header: next, previous: header };
   } catch (error) {
     return { ok: false, status: 500, error: error.message };
   }
@@ -3160,7 +3561,8 @@ app.get("/api/agent/events", (req, res) => {
   };
   const matches = (event) => event.clientId === clientId && (!threadId || event.threadId === threadId);
   const send = (event) => {
-    if (closed || !event || !matches(event) || Number(event.seq) <= lastSent) return;
+    // P1-6：已被同键新流接管（stale）的旧流停止数据/回放下发，心跳保留。
+    if (closed || (isStaleSuspended(streamId)) || !event || !matches(event) || Number(event.seq) <= lastSent) return;
     lastSent = Number(event.seq);
     try {
       const chunk = `id: ${event.seq}\ndata: ${JSON.stringify({ event })}\n\n`;
@@ -3198,7 +3600,8 @@ app.get("/api/agent/events", (req, res) => {
 app.get("/api/agent/events/state", (req, res) => {
   const clientId = String(req.query.client || "").trim();
   if (!clientId) return res.status(400).json({ error: "client required" });
-  res.json({ ...eventStoreInfo(), readCursor: getReadCursor(clientId) });
+  // P2-5：channelEvictions = 通道历史淘汰量（按类型），与 typeStats（投递/落盘）互补。
+  res.json({ ...eventStoreInfo(), readCursor: getReadCursor(clientId), channelEvictions: channelEvictionStatsSnapshot() });
 });
 
 app.post("/api/agent/events/read", (req, res) => {
@@ -3507,6 +3910,7 @@ app.post("/api/sessions/:id/fork", (req, res) => {
     };
     const fileName = `${id}.jsonl`;
     atomicWriteFile(path.join(SESSIONS_DIR, fileName), [JSON.stringify(nextHeader), ...kept].join("\n") + "\n", "utf8");
+    invalidateSessionsListCache();
     res.json({ ok: true, id, fileName, parentSessionId: nextHeader.parentSessionId, cwd: nextHeader.cwd, threadId: id, label, projectId: nextHeader.projectId || null, sourceMessageId: sourceMessageId || null, entryCount: kept.length });
   } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
@@ -3727,6 +4131,13 @@ app.get("/api/sessions", (req, res) => {
   const runStatusFilter = String(req.query.runStatus || "").trim();
   const pinnedFilter = req.query.pinned === undefined ? null : req.query.pinned === "true";
   const frozenFilter = req.query.frozen === undefined ? null : req.query.frozen === "true";
+  // 只有“无筛选、无分页”的热轮询走缓存；带 file/project/mode/limit 的查询保持实时。
+  const cacheable = !fileFilter && !projectFilter && !modeFilter && !runStatusFilter
+    && pinnedFilter === null && frozenFilter === null
+    && !req.query.limit && !req.query.cursor && !req.query.groupBy;
+  if (cacheable && sessionsListCache.payload && Date.now() - sessionsListCache.at <= SESSIONS_LIST_CACHE_MS) {
+    return res.json(sessionsListCache.payload);
+  }
   try {
     const files = listSessionFiles();
     const recentRuns = listRunSummaries({ limit: 200 });
@@ -3783,6 +4194,8 @@ app.get("/api/sessions", (req, res) => {
           parentSessionId: meta.parentSessionId,
           branchSourceMessageId: meta.branchSourceMessageId,
           branchPurpose: meta.branchPurpose,
+          mapProject: meta.mapProject || "",
+          mapView: meta.mapView || null,
           fileName: f.fileName,
           title,
           runStatus: latestRun?.status || "idle",
@@ -3824,12 +4237,14 @@ app.get("/api/sessions", (req, res) => {
       }
       groups = [...byKey.values()].map((group) => ({ ...group, count: group.sessions.length }));
     }
-    res.json({
+    const payload = {
       sessions: paged,
       total,
       ...(pageLimit > 0 ? { cursor, nextCursor } : {}),
       ...(groups ? { groups } : {}),
-    });
+    };
+    if (cacheable) sessionsListCache = { at: Date.now(), payload };
+    res.json(payload);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -3858,6 +4273,7 @@ app.post("/api/sessions", (req, res) => {
     };
     const fileName = id + ".jsonl";
     atomicWriteFile(path.join(SESSIONS_DIR, fileName), JSON.stringify(header) + "\n", "utf8");
+    invalidateSessionsListCache();
     res.json({ id, fileName, cwd: header.cwd, projectId: header.projectId, created, status: "idle", pinned: false, frozen: header.frozen });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -4049,6 +4465,8 @@ app.get("/api/sessions/:id", (req, res) => {
         label: header.label || "",
         pinned: Boolean(header.pinned),
         frozen: Boolean(header.frozen),
+        mapProject: typeof header.mapProject === "string" ? header.mapProject : "",
+        mapView: header.mapView && typeof header.mapView === "object" ? header.mapView : null,
         freezeReason: header.freezeReason || "",
         contextSnapshot: header.contextSnapshot || null,
         parentSessionId: header.parentSessionId || null,
@@ -4171,6 +4589,7 @@ app.post("/api/sessions/batch-delete", (req, res) => {
       skipped.push({ id, reason: error.message || "删除失败" });
     }
   }
+  if (deleted.length) invalidateSessionsListCache();
   res.json({ ok: true, deleted, skipped, missing });
 });
 
@@ -4181,6 +4600,7 @@ app.delete("/api/sessions/:id", (req, res) => {
   try {
     fs.unlinkSync(found.fullPath);
     sessionTextCache.delete(found.fullPath);
+    invalidateSessionsListCache();
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -4198,6 +4618,22 @@ app.post("/api/sessions/:id/pin", (req, res) => {
   const result = updateSessionHeader(req.params.id, { pinned: req.body?.pinned !== false });
   if (!result.ok) return res.status(result.status || 400).json(result);
   res.json({ ok: true, sessionId: req.params.id, pinned: Boolean(result.header.pinned) });
+});
+
+// 地图会话绑定：持久化当前地图项目与视口（初始页小地图、重启后切回恢复）。
+app.post("/api/sessions/:id/map-context", (req, res) => {
+  const patch = buildMapContextPatch(req.body || {});
+  if (patch.mapProject) {
+    const dir = map.projectDir(patch.mapProject);
+    if (!dir || !fs.existsSync(path.join(dir, "map.config.json"))) {
+      return res.status(400).json({ ok: false, error: "地图项目不存在", code: "MAP_PROJECT_NOT_FOUND" });
+    }
+  }
+  const result = updateSessionHeader(req.params.id, patch);
+  if (!result.ok) return res.status(result.status || 400).json({ ok: false, error: result.error || "not found" });
+  // 项目绑定变化要立即反映到列表（初始页小地图）；纯视口更新不失效，避免 1.5s 写一次 header 打穿缓存。
+  if (String(result.previous?.mapProject || "") !== String(result.header.mapProject || "")) invalidateSessionsListCache();
+  res.json({ ok: true, mapProject: result.header.mapProject || "", mapView: result.header.mapView || {} });
 });
 
 app.post("/api/sessions/:id/freeze", (req, res) => {
@@ -4919,8 +5355,11 @@ app.get("/api/agent/stream", async (req, res) => {
       pumping = false;
     }
   };
-  const write = (chunk) => {
+  const write = (chunk, { heartbeatFrame = false } = {}) => {
     if (closed) return false;
+    // P1-6：stale 流停止数据帧下发（心跳带 heartbeatFrame 豁免，连接保持不断，
+    // 前端旧标签页可凭自身重连机制换新流）。返回 true 让调用方走"已写入"分支。
+    if (!heartbeatFrame && isStaleSuspended(streamId)) return true;
     if (!RUNTIME_FLAGS.qoderSseBackpressure) {
       // ── 基线分支（开关关闭时执行，与优化前逐字一致）──
       try {
@@ -4952,7 +5391,7 @@ app.get("/api/agent/stream", async (req, res) => {
   // 5 秒粒度比默认 15 秒更适合浏览器切换会话后的半开连接检测；
   // 前端会把它当作传输层心跳，不会提前标记 Agent 已握手。
   heartbeat = setInterval(() => {
-    write(`event: heartbeat\ndata: ${JSON.stringify({ type: "heartbeat", at: new Date().toISOString() })}\n\n`);
+    write(`event: heartbeat\ndata: ${JSON.stringify({ type: "heartbeat", at: new Date().toISOString() })}\n\n`, { heartbeatFrame: true });
     // P2-2：心跳间隔由开关提供，默认 5000 = 基线值（不设环境变量时行为完全不变）。
   }, RUNTIME_FLAGS.heartbeatChatMs);
 
@@ -5189,7 +5628,7 @@ app.get("/api/memory/stream", (req, res) => {
     if (streamId) releaseServerStream(streamId);
   };
   const onChange = (data) => {
-    if (closed) return;
+    if (closed || (isStaleSuspended(streamId))) return;
     try {
       const chunk = `data: ${JSON.stringify(data)}\n\n`;
       res.write(chunk);
@@ -6021,6 +6460,8 @@ async function shutdownService(reason, exitCode = 0) {
   // 避免“服务正常关闭但最后一批数据未写”。
   try { flushPendingRunSaves(); } catch (error) { recordProcessFault("shutdown_run_flush_failed", error); }
   try { flushPendingFsync(); } catch (error) { recordProcessFault("shutdown_fsync_failed", error); }
+  // 清掉本实例的心跳文件：残留的"存活"记录会让别的实例误以为这些 Run 还在跑。
+  try { stopOwnerHeartbeat(); } catch (error) { recordProcessFault("shutdown_owner_heartbeat_failed", error); }
   if (httpServer) {
     await new Promise((resolve) => {
       let settled = false;
@@ -6068,12 +6509,20 @@ httpServer = app.listen(PORT, HOST, () => {
   });
   // R1：恢复必须在监听成功之后执行。端口被占的重复实例会在 listen 失败后退出，
   // 不能让它改写磁盘上的活跃 Run；同时把这段 IO 从启动关键路径移到可用之后。
-  try {
-    const recoveredRunIds = recoverActiveRuns();
-    if (recoveredRunIds.length) console.warn(`[runs] 已将 ${recoveredRunIds.length} 个中断前活动 Run 标记为 recovering，等待用户继续。`);
-  } catch (error) {
-    console.warn(`[runs] 恢复中断 Run 失败：${String(error?.message || error).slice(0, 200)}`);
+  // OAW_DISABLE_RECOVERY=1：仅测试/验证实例使用——测试实例不应改写任何 Run 的恢复状态。
+  if (process.env.OAW_DISABLE_RECOVERY === "1") {
+    console.warn("[runs] 已按 OAW_DISABLE_RECOVERY=1 跳过中断 Run 恢复。");
+  } else {
+    try {
+      const recoveredRunIds = recoverActiveRuns();
+      if (recoveredRunIds.length) console.warn(`[runs] 已将 ${recoveredRunIds.length} 个中断前活动 Run 标记为 recovering，等待用户继续。`);
+    } catch (error) {
+      console.warn(`[runs] 恢复中断 Run 失败：${String(error?.message || error).slice(0, 200)}`);
+    }
   }
+  // 本实例开始提供服务后才写心跳：只有真正在跑的实例才应被视为 Run 的存活 owner，
+  // 一次性脚本/测试进程即使创建过 Run 也不应阻止后续恢复。
+  startOwnerHeartbeat();
 });
 // SSE 连接由 15 秒 heartbeat 保活；关闭 Node 默认的请求/Socket 空闲超时，
 // 避免长文档任务超过默认时限后断流，而 Agent 实际仍在继续执行。

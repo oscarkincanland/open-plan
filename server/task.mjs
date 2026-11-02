@@ -5,6 +5,7 @@ import { selectScene, sceneLabels, defaultScene } from "./office规范/场景选
 
 const OFFICE_EXTENSIONS = /\.(?:docx|xlsx|pptx|xls|doc)$/i;
 const DOCUMENT_EXTENSIONS = /\.(?:docx|xlsx|pptx|xls|doc|pdf|csv|json|md|markdown|txt|html|htm)$/i;
+const CAD_EXTENSIONS = /\.(?:dxf|dwg)$/i;
 
 /**
  * 工作台保留四种后端模式值。office 是历史兼容值，前端主入口展示
@@ -19,7 +20,7 @@ export const TASK_MODES = Object.freeze(["chat", "office", "agent", "review"]);
 const READ_ONLY_TOOLS = Object.freeze([
   "read", "grep", "find", "ls", "ask_user", "kb_search", "kb_read", "context_read", "skills_search", "skills_read",
   "web_search", "web_fetch",
-  "map_read", "map_analyze", "map_clear_analysis", "map_datasets",
+  "map_read", "map_analyze", "map_clear_analysis", "map_datasets", "map_screenshot", "map_layer_info", "cad_read",
 ]);
 // Office 模式专注文档处理，不暴露地图工具（地图能力只在 Chat 与 Work 出现）。
 const OFFICE_TOOLS = Object.freeze([
@@ -34,12 +35,15 @@ const REVIEW_TOOLS = Object.freeze([
 const AGENT_TOOLS = Object.freeze([
   ...OFFICE_TOOLS,
   "bash", "write", "edit",
-  // Work 模式持有全部地图工具（含只读四件套与三个写工具）。
-  "map_read", "map_analyze", "map_clear_analysis", "map_datasets",
-  "map_edit", "map_import", "map_save_analysis",
+  // Work 模式持有全部地图工具（含只读四件套与写工具）。
+  "map_read", "map_analyze", "map_clear_analysis", "map_datasets", "map_screenshot", "map_layer_info",
+  "map_edit", "map_import", "map_save_analysis", "map_reset", "map_project_create",
+  "cad_read", "cad_edit",
   "memory_update", "todo", "complete_task",
   // P2-A：编辑流水线（生成 Word/PPT 初稿的原生流水线，仅 Work 模式）
   "editorial_pipeline",
+  // 场景化分析模板（确定性编排，产出图层统计 + Word 报告；由 OAW_MAP_TEMPLATES 控制启用）
+  "map_template",
   "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close",
   "browser_wait_for", "browser_act", "browser_extract", "browser_select_option",
 ]);
@@ -136,6 +140,23 @@ export function toolPolicyForMode(mode) {
   };
 }
 
+/**
+ * 全部模式的工具并集（会话可激活工具全集）。
+ *
+ * 用途：Pi 会话创建时需要一次性注册所有模式的工具（按轮次再由
+ * toolPolicyForMode 裁剪可见性）。此前这段清单在 server/agent.mjs 里
+ * 硬编码了一份，与本文件的白名单形成两份事实来源，已发生漂移
+ * （map_template 定义了却不在任何白名单，Work 模式调不到）。
+ * 现在统一从这里派生，agent.mjs 只保留 run_subagent 与 MCP/扩展的动态追加。
+ */
+export function allModeToolNames() {
+  const names = new Set();
+  for (const mode of TASK_MODES) {
+    for (const name of toolPolicyForMode(mode).tools) names.add(name);
+  }
+  return [...names];
+}
+
 function containsAny(text, words) {
   return words.some((word) => text.includes(String(word).toLowerCase()));
 }
@@ -150,13 +171,15 @@ function collectContext({ text = "", task = {}, references = [], attachments = [
     .map((item) => String(item || "").trim())
     .filter(Boolean)
     .join(" ");
+  // CAD 意图：文件扩展名或话术命中（cad 读取/修改能力，cadPreview/cadAgent 开关族）
+  const cad = CAD_EXTENSIONS.test(files) || containsAny(source, ["dxf", "dwg", "cad", "图纸", "红线图", "总平面"]);
   const officeRefExists = OFFICE_EXTENSIONS.test(files);
   const document = DOCUMENT_EXTENSIONS.test(files) || refList.some((item) => item.kind === "file" || item.kind === "template");
   const office = officeRefExists || containsAny(source, OFFICE_INTENT_WORDS);
   const output = containsAny(source, OUTPUT_WORDS);
   const editIntent = containsAny(source, EDIT_WORDS);
   const templateIntent = containsAny(source, TEMPLATE_INTENT_WORDS) || /@模板\[/.test(String(text || ""));
-  return { mode, source, refList, files, officeRefExists, document, office, output, editIntent, templateIntent };
+  return { mode, source, refList, files, officeRefExists, document, office, output, editIntent, templateIntent, cad };
 }
 
 /**
@@ -241,7 +264,7 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
   const ctx = collectContext({ text, task, references, attachments });
   const intent = routeTaskIntent({ text, task, references, attachments });
   const clarification = assessClarification({ text, route: intent.route, template: intent.template, scene: intent.scene });
-  const { mode, source, refList, document, output } = ctx;
+  const { mode, source, refList, document, output, cad } = ctx;
   // Chat 模式下识别到写作意图时，前端提示切换到 Work（不改变只读边界）。
   const hint = mode === "chat" && ctx.output && ctx.office
     ? { code: "MODE_SWITCH_REQUIRED", message: "当前是 Chat 只读模式；生成文档请切换到 Work。" }
@@ -324,6 +347,14 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
     });
   }
   if (workflow) capabilities.push({ id: "skills", label: "Skills / 工作流", status: "planned", required: Boolean(task.workflowId), provider: "native", reason: task.workflowId ? `工作流 ${task.workflowId} 声明了技能依赖` : "本轮出现工作流或技能意图" });
+  // CAD 能力（cadAgent 开关，默认关）：关闭时不声明，编排/遥测与基线一致。
+  // cad 恒 preferred（解析内置于工作台，无外部二进制）；cad_dwg 的实际可用性取决于
+  // 外部转换工具（ODA/LibreDWG），计划期不做同步探测，以 cad_read/cad_edit 返回为准。
+  if (RUNTIME_FLAGS.cadAgent && cad && (mode === "chat" || mode === "agent")) {
+    capabilities.push({ id: "cad", label: "CAD 读取", status: "ready", required: false, provider: "native", reason: "DXF/DWG 结构化读取（cad_read/context_read），解析内置于工作台" });
+    capabilities.push({ id: "cad_edit", label: "CAD 白名单修改", status: mode === "agent" ? "ready" : "not_available", required: false, provider: "native", reason: mode === "agent" ? "DXF 实体级白名单修改（cad_edit，写入走审批）；DWG 经 DXF 往返" : "Chat 只读，不声明修改能力" });
+    capabilities.push({ id: "cad_dwg", label: "CAD DWG 转换", status: "planned", required: false, provider: "external", reason: "DWG 依赖外部转换工具（ODA/LibreDWG），未装时自动降级 DXF 另存" });
+  }
   return {
     version: 3,
     mode,

@@ -87,6 +87,8 @@ const REGISTRY = [
 
   // ---- 审批 / 提问 ----
   { type: "ask_user", lifecycle: true, persist: true, note: "向用户提问", schema: { required: ["askId", "question"], types: { askId: "string", question: "string", options: "array" } } },
+  { type: "ask_answered", lifecycle: true, persist: true, note: "用户回答了提问（mode：live=等待中回答 / queued_resume=排队接力 / resumed=迟到回答自动续跑）", schema: { required: ["askId"], types: { askId: "string", answer: "string", mode: "string" } } },
+  { type: "ask_expired", lifecycle: true, persist: true, note: "提问等待窗口到期（Agent 按假设继续，迟到回答可自动续跑）", schema: { required: ["askId"], types: { askId: "string", expiresAt: "string" } } },
   { type: "tool_approval_request", lifecycle: true, persist: true, note: "工具审批请求", schema: { required: ["id", "tool"], types: { id: "string", tool: "string", action: "string" } } },
   { type: "interaction_owner_changed", lifecycle: true, persist: true, note: "交互归属变更（Qoder P1-4 子代理接管，默认关）", schema: { required: ["owner"], types: { owner: "object", status: "string" } } },
   { type: "tool_approval_resolved", lifecycle: true, persist: true, note: "工具审批结果" },

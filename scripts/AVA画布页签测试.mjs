@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 /**
- * AVA 画布页签测试（v0.13.9）
+ * 工作区画布测试（浏览器式标签）
  *
  * 守护：
- *   1) 画布新增文件树/新会话页签：点开即激活、可关闭；页签体保持挂载、CSS 显隐（切换不卸载）；
- *   2) 文件树三段过滤（全部/代码/网页），点击文件在预览打开，空态提示；
- *   3) 新会话页签复用 handleNewSession（Agent 继承语义）并在创建后聚焦输入；
- *   4) 激活页签偏好持久化（localStorage），宽度受 Resizer 与断点约束。
+ *   1) 画布状态纯函数：文档去重、单例视图、关闭相邻、标签上限；
+ *   2) 单画布外壳：一个宽度变量、一个主拖拽条，不再有双面板；
+ *   3) 文档标签提升到画布顶部，DocViewer 不再渲染内部标签栏；
+ *   4) 文件树抽屉识别目录、进入子目录、面包屑返回；
+ *   5) 工作产物内部有任务摘要、产物/链接分段；
+ *   6) 新建对话是 + 菜单动作，不再占画布标签。
  *
  * 用法：node scripts/AVA画布页签测试.mjs
  */
@@ -14,14 +16,20 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createDocTab, createViewTab, openCanvasTab, closeCanvasTab, reorderCanvasTabs, MAX_CANVAS_TABS } from "../client/src/canvas-state.js";
+import { sideDrawerAllowed } from "../client/src/canvas-drawer.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (file) => fs.readFileSync(path.join(ROOT, file), "utf8").replace(/\r\n/g, "\n");
 const app = read("client/src/App.jsx");
-const chatPanel = read("client/src/components/ChatPanel.jsx");
-const filetree = read("client/src/components/文件树页签.jsx");
-const newchat = read("client/src/components/新会话页签.jsx");
+const drawer = read("client/src/components/FileTreeDrawer.jsx");
+const tabbar = read("client/src/components/CanvasTabBar.jsx");
+const panel = read("client/src/components/工作产物面板.jsx");
+const docViewer = read("client/src/components/DocViewer.jsx");
+const docxViewer = read("client/src/components/DocxViewer.jsx");
+const excelGrid = read("client/src/components/ExcelGrid.jsx");
 const styles = read("client/src/styles.css");
+const pkg = JSON.parse(read("package.json"));
 
 let failed = 0;
 const test = (name, fn) => {
@@ -29,43 +37,135 @@ const test = (name, fn) => {
   catch (error) { failed = 1; console.error(`  ✗ ${name}: ${error.message}`); }
 };
 
-test("画布新增文件树/新会话页签（点开激活、可关闭、参与 tab 链）", () => {
-  assert.match(app, /const \[filesTabOpen, setFilesTabOpen\] = useState\(false\)/);
-  assert.match(app, /const \[newchatTabOpen, setNewchatTabOpen\] = useState\(false\)/);
-  assert.match(app, /workspaceTabPref === "files" && filesTabOpen \? "files"/, "激活偏好参与 tab 链");
-  assert.match(app, /workspaceTabPref === "newchat" && newchatTabOpen \? "newchat"/);
-  assert.match(app, /onClick=\{\(\) => \{ setFilesTabOpen\(true\); setWorkspaceTabPref\("files"\); \}\}/);
-  assert.match(app, /onClick=\{\(\) => \{ setNewchatTabOpen\(true\); setWorkspaceTabPref\("newchat"\); \}\}/);
-  assert.match(app, /onClick=\{\(\) => setFilesTabOpen\(false\)\}/, "文件树页签可关闭");
-  assert.match(app, /onClick=\{\(\) => setNewchatTabOpen\(false\)\}/, "新会话页签可关闭");
+test("画布状态：文档去重、单例视图、关闭相邻、标签上限", () => {
+  let state = openCanvasTab([], createDocTab("a", "A.md"));
+  assert.equal(state.tabs.length, 1);
+  assert.equal(state.activeId, "doc:a");
+  state = openCanvasTab(state.tabs, createDocTab("a", "A.md"));
+  assert.equal(state.tabs.length, 1, "同一文档不应重复开标签");
+  state = openCanvasTab(state.tabs, createDocTab("b", "B.md"));
+  state = openCanvasTab(state.tabs, createViewTab("artifacts"));
+  state = openCanvasTab(state.tabs, createViewTab("artifacts"));
+  assert.equal(state.tabs.filter((tab) => tab.kind === "artifacts").length, 1, "单例视图只保留一个");
+  const closed = closeCanvasTab(state.tabs, state.activeId, "doc:b");
+  assert.equal(closed.tabs.length, state.tabs.length - 1);
+  assert.notEqual(closed.activeId, "doc:b", "关闭当前标签后应选相邻标签");
+  let many = [];
+  for (let i = 0; i < MAX_CANVAS_TABS + 3; i += 1) many = openCanvasTab(many, createDocTab(`d${i}`, `D${i}.md`)).tabs;
+  assert.equal(many.length, MAX_CANVAS_TABS, "标签数量应受上限约束");
+  const reordered = reorderCanvasTabs(state.tabs, "doc:b", "doc:a");
+  assert.equal(reordered[0].id, "doc:b", "拖拽排序应移动标签");
 });
 
-test("页签体保持挂载、CSS 显隐（切换不卸载）", () => {
-  assert.match(app, /\{filesTabOpen && \(\n\s*<div className=\{`app-canvas-body canvas-body-files \$\{workspaceTab === "files" \? "" : "canvas-hidden"\}`\}/);
-  assert.match(app, /\{newchatTabOpen && \(\n\s*<div className=\{`app-canvas-body canvas-body-newchat \$\{workspaceTab === "newchat" \? "" : "canvas-hidden"\}`\}/);
-  assert.match(styles, /\.app-canvas-slot\.canvas-tab-files, \.app-canvas-slot\.canvas-tab-newchat \{ width: var\(--preview-w, 420px\)/, "宽度受约束");
-  assert.match(styles, /@media \(max-width: 1024px\) \{\n  \.app-canvas-slot\.canvas-tab-preview \{ min-width: 0; \}\n  \.app-canvas-slot\.canvas-tab-files, \.app-canvas-slot\.canvas-tab-newchat \{ min-width: 0; \}/, "窄屏约束");
+test("单画布外壳：一个容器、一个宽度、一个主拖拽条，无双面板", () => {
+  assert.match(app, /const \[canvasTabs, setCanvasTabs\] = useState\(\[\]\)/);
+  assert.match(app, /const canvasOpen = canvasTabs\.length > 0 && !canvasCollapsed/);
+  assert.match(app, /<画布标签栏/);
+  assert.match(app, /onReorder=\{\(fromId, toId\) => setCanvasTabs/, "App 必须接上拖拽排序回调");
+  assert.match(app, /cssVar="--canvas-w"/, "画布使用统一宽度");
+  assert.match(app, /cssVar="--canvas-side-w"/, "文件树抽屉有独立宽度");
+  assert.doesNotMatch(app, /dualPanePref|dualPaneActive|dual-pane/, "不应再有双面板状态/类名");
+  assert.doesNotMatch(styles, /dual-pane/, "不应再有双面板样式");
+  assert.doesNotMatch(app, /const \[previewOpen, setPreviewOpen\]|const \[browserPanelOpen, setBrowserPanelOpen\]/,
+    "不应再保留四个独立画布开关");
 });
 
-test("文件树页签：三段过滤 / 点击预览打开 / 空态", () => {
-  assert.match(filetree, /\[\["all", "全部"\], \["code", "代码"\], \["web", "网页"\]\]/);
-  assert.match(filetree, /onClick=\{\(\) => onOpenFile\?\.\(file\.name\)\}/, "点击文件走预览打开");
-  assert.match(filetree, /工作区暂无文件：把文件放进工作区后点击刷新/, "空态提示");
-  assert.match(filetree, /aria-selected=\{filter === id\}/, "过滤段 tab 语义");
-  assert.match(app, /<文件树页签\n\s*files=\{files\}\n\s*loading=\{loadStatus\?\.files === "loading"\}\n\s*currentName=\{current\?\.name \|\| ""\}\n\s*onOpenFile=\{open\}/);
+test("浏览器式标签栏：关闭、收起、最大化、+ 菜单", () => {
+  assert.match(tabbar, /className="canvas-tabbar"/);
+  assert.match(tabbar, /onClose\?\.\(tab\.id\)/, "标签可关闭");
+  assert.match(tabbar, /onCollapse/, "有收起画布动作");
+  assert.match(tabbar, /onToggleMaximize/, "有最大化动作");
+  assert.match(tabbar, /浏览器铺满工作区/, "浏览器标签有全屏动作");
+  assert.match(app, /onToggleBrowserFullscreen=\{\(\) => setBrowserFullscreen/);
+  assert.match(tabbar, /任务摘要/);
+  assert.match(tabbar, /代码变更/);
+  assert.match(tabbar, /新建对话/);
+  assert.match(tabbar, /最近地图会话/, "保留 GIS 地图会话入口");
+  assert.doesNotMatch(tabbar, /终端/, "不提供终端死入口");
 });
 
-test("新会话页签：复用 handleNewSession + 创建后聚焦输入", () => {
-  assert.match(app, /onNewSession=\{async \(\) => \{ await handleNewSession\(currentWorkspaceRef\.current \|\| currentWorkspace\); chatInputRef\.current\?\.focusInput\?\.\(\); \}\}/);
-  assert.match(chatPanel, /focusInput\(\) \{\n\s*requestAnimationFrame\(\(\) => textareaRef\.current\?\.focus\(\)\);\n\s*\}/, "ChatPanel 暴露 focusInput 句柄");
-  assert.match(newchat, /onSelectSession\?\.\(session\)/, "最近会话可切换");
-  assert.match(newchat, /disabled=\{busyCreating\}/, "创建中禁用按钮");
+test("标签溢出菜单、快捷键与未保存标记", () => {
+  assert.match(tabbar, /canvas-overflow-menu/, "标签溢出菜单存在");
+  assert.match(tabbar, /已打开标签 · \{tabs\.length\}/);
+  assert.match(tabbar, /event\.key === "Tab"/, "Ctrl+Tab 切换");
+  assert.match(tabbar, /canvas-tab-dirty/);
+  assert.match(app, /onDirtyChange=\{handleDocDirtyChange\}/);
+  assert.match(app, /askConfirm\(`「\$\{tab\.title \|\| "文档"\}」有未保存修改/, "关闭未保存文档需确认");
+  assert.match(docViewer, /onDirtyChange/);
+  assert.match(docxViewer, /onDirtyChange/);
+  assert.match(excelGrid, /onDirtyChange/);
+  assert.match(excelGrid, /setDirty\(true\)/, "Excel 编辑标记 dirty");
+  assert.match(excelGrid, /setDirty\(false\)/, "Excel 保存/刷新清除 dirty");
 });
 
-test("激活页签偏好持久化（刷新恢复）", () => {
-  assert.match(app, /localStorage\.getItem\("oaw_workspace_tab"\) \|\| "preview"/);
-  assert.match(app, /localStorage\.setItem\("oaw_workspace_tab", value\)/);
+test("文档标签提升到画布顶部，DocViewer 不再渲染内部标签栏", () => {
+  assert.match(app, /createDocTab\(id, name\)/);
+  assert.match(app, /openCanvasTab\(prev, docTab\)/);
+  assert.match(docViewer, /hideTabBar = false/);
+  assert.match(docViewer, /\{!hideTabBar && tabs\.length > 0 && \(/);
+  assert.match(app, /hideTabBar/);
 });
 
-console.log(failed ? "\nAVA 画布页签测试：存在失败项" : "\nAVA 画布页签测试：全部通过（5 例）");
+test("文件树抽屉：识别目录、进入子目录、面包屑返回", () => {
+  assert.match(app, /import 文件树抽屉 from "\.\/components\/FileTreeDrawer\.jsx"/);
+  assert.doesNotMatch(app, /import 文件树页签/);
+  assert.match(drawer, /fetch\(`\/api\/files\?\$\{params\.toString\(\)\}`/);
+  assert.match(drawer, /entry\.isDir/);
+  assert.match(drawer, /setDir\(relPath\)/, "点击目录应进入子目录");
+  assert.match(drawer, /breadcrumb\(dir\)/);
+  assert.match(drawer, /返回上一级/);
+  assert.match(drawer, /onOpenFile\?\.\(relPath\)/, "点击文件应打开预览");
+});
+
+test("文件树抽屉跟随标签显隐：浏览器自动收起，文档/产物/改动恢复", () => {
+  assert.equal(sideDrawerAllowed("doc"), true);
+  assert.equal(sideDrawerAllowed("artifacts"), true);
+  assert.equal(sideDrawerAllowed("changes"), true);
+  assert.equal(sideDrawerAllowed("browser"), false);
+  assert.equal(sideDrawerAllowed("objects"), false);
+  assert.equal(sideDrawerAllowed("mapPreview"), false);
+  assert.match(app, /canvasSideVisible = canvasSideOpen && sideDrawerAllowed\(activeCanvasTab\?\.kind\)/);
+  assert.match(app, /previousCanvasKindRef/);
+  assert.match(app, /sideOpenBeforeHideRef/);
+  assert.match(app, /filesOpen=\{canvasSideVisible\}/);
+  assert.match(app, /\{canvasSideVisible && \(/);
+  assert.doesNotMatch(app, /\{canvasSideOpen && \(/, "抽屉渲染必须使用派生可见状态");
+});
+
+test("关闭标签后焦点归位", () => {
+  assert.match(app, /\.canvas-tab\.active \.canvas-tab-main/, "优先聚焦相邻标签");
+  assert.match(app, /previewToggleRef\.current\)\?\.focus/, "没有标签时回到顶栏入口");
+});
+
+test("工作产物：任务摘要 + 产物/链接分段", () => {
+  assert.match(panel, /export function ArtifactPanel/);
+  assert.match(panel, /export function RunChangesPanel/);
+  assert.match(panel, /export function LinksPanel/);
+  assert.match(panel, /function ArtifactSummaryCard/);
+  assert.match(panel, /artifact-run-summary/);
+  assert.match(panel, /function ArtifactSegmentBar/);
+  assert.match(panel, /segment === "links"/, "链接分段存在");
+  assert.match(panel, /<LinksPanel links=\{links\} \/>/, "链接并入工作产物");
+  assert.doesNotMatch(app, /\['links', '链接'\]/, "链接不再是一级标签");
+  assert.doesNotMatch(app, /preview-panel-tabs/, "不再有内层预览/改动/产物/链接标签");
+});
+
+test("持久化：画布标签、宽度、抽屉", () => {
+  assert.match(app, /loadCanvasState\(currentWorkspace\)/);
+  assert.match(app, /saveCanvasState\(currentWorkspace/);
+  const stateModule = read("client/src/canvas-state.js");
+  assert.match(stateModule, /oaw_canvas_v2/);
+  assert.match(stateModule, /oaw_canvas_w/);
+  assert.match(stateModule, /oaw_canvas_side_w/);
+  assert.match(stateModule, /pendingDocRestoreRef|payload\?\.name/, "恢复文档标签需要保留文件名");
+});
+
+test("新建对话是菜单动作，不是画布标签", () => {
+  assert.match(tabbar, /onNewChat/);
+  assert.doesNotMatch(app, /新会话页签/);
+  assert.match(app, /handleNewSession\(currentWorkspaceRef\.current \|\| currentWorkspace\)/);
+  assert.equal(pkg.scripts["test:ava-dualpane"], undefined, "双面板测试脚本应移除");
+});
+
+console.log(failed ? "\n工作区画布测试：存在失败项" : "\n工作区画布测试：全部通过（11 例）");
 process.exit(failed ? 1 : 0);

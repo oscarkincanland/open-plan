@@ -6,6 +6,7 @@ import 提及菜单 from "./提及菜单.jsx";
 import { detectMentionTrigger, filterAgentsForMention, buildMentionPrefix } from "./提及逻辑.js";
 import 欢迎卡片 from "./欢迎卡片.jsx";
 import { ATTACHMENT_SIZE_LIMIT, ATTACHMENT_ALLOWED_EXT, mediaKindFor, formatBytes } from "./媒体工具.js";
+import { clipboardImageFiles, imageDedupeKey, imageContentKey, imageFileName, limitImages, compressImage, compressionSummary } from "../image-utils.js";
 import Icon, { ProviderIcon } from "./Icon.jsx";
 import 提示气泡 from "./提示气泡.jsx";
 import ToolIdentityIcon from "./工具语义图标.jsx";
@@ -15,10 +16,11 @@ import QueueDock from "./QueueDock.jsx";
 import GoalBar from "./GoalBar.jsx";
 import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
-import { completionLabel, formatDuration, formatTokenCount, reduceRunTrace, reduceTurnMetrics, runToolDetailText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, summarizeTurnMetrics, turnMetricsText, verificationLabel } from "../运行轨迹.js";
+import { completionLabel, formatDuration, formatTokenCount, reduceRunTrace, reduceTurnMetrics, resolveRunElapsedMs, runToolDetailText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, summarizeTurnMetrics, turnMetricsText, verificationLabel } from "../运行轨迹.js";
 import { associateRunMessages, findAssistantEntryByText, isInternalHarnessMessage, projectLegacyRunSummary, upsertRunSummaryMessage } from "../运行展示投影.js";
 import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, toolIdentity } from "../事件展示.js";
 import { buildArtifactIndex } from "../产物类型.js";
+import 文件类型图标 from "./FileTypeIcon.jsx";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
 import { isStaleChunkError, recoverFromStaleChunk } from "../分包恢复.js";
@@ -28,12 +30,13 @@ import { acquireStream, closeEventSourceQuietly, noteCursorGap } from "../长连
 import { notifyError, askConfirm, askText } from "./Feedback.jsx";
 import { flag, flagsReady, numberFlag } from "../运行开关.js";
 import { getBrowserStreamState } from "../浏览器联动.js";
-import TimelineRow from "./会话流/TimelineRow.jsx";
-import SummaryBlock from "./会话流/SummaryBlock.jsx";
-import ArtifactCard from "./会话流/ArtifactCard.jsx";
-import { TypewriterText } from "./会话流/useTypewriter.jsx";
+import TimelineRow from "./chat-flow/TimelineRow.jsx";
+import RunFoldBar from "./chat-flow/RunFoldBar.jsx";
+import SummaryBlock from "./chat-flow/SummaryBlock.jsx";
+import ArtifactCard from "./chat-flow/ArtifactCard.jsx";
+import { TypewriterText } from "./chat-flow/useTypewriter.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
-import { buildRunTimeline, splitCompletionSummary } from "../会话流投影.js";
+import { buildRunTimeline, describeRunFold, splitCompletionSummary } from "../chat-flow-projection.js";
 
 // O-P3：浏览器"写操作类"工具白名单 —— 只有这些会拉起内置浏览器侧栏；
 // browser_close / browser_tabs / browser_snapshot / browser_screenshot 等查看或收尾动作不拉起。
@@ -86,9 +89,11 @@ const DEFAULT_CONTEXT_WINDOW = 128000;
 const PI_COMPACTION_RESERVE_TOKENS = 16384;
 const PI_COMPACTION_KEEP_RECENT_TOKENS = 20000;
 const LIVE_RUN_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested", "finishing"]);
-// 提问卡片的时间窗口兜底（服务端 ASK_TIMEOUT_MS = 5 分钟，正常由事件里的 expiresAt 给出）：
+// 提问卡片的时间窗口兜底（服务端 ASK_TIMEOUT_MS 默认 60 分钟，正常由事件里的 expiresAt 给出）：
 // 缺少 expiresAt 时按同一口径计时，到期把卡片置为已超时，不再留下点得动却必然 404 的死卡片。
-const ASK_TIMEOUT_FALLBACK_MS = 5 * 60 * 1000;
+// ask_user 等待窗口回退值：仅当服务端事件缺 expiresAt 时使用；正式值以事件为准。
+// 与服务端默认（OAW_ASK_TIMEOUT_MS，默认 60 分钟）对齐，避免回退值比真实窗口短导致卡片提前失效。
+const ASK_TIMEOUT_FALLBACK_MS = 60 * 60 * 1000;
 const MAX_VISIBLE_MESSAGES = 120;
 const MESSAGE_PAGE_SIZE = 80;
 const COMPOSER_COMMANDS = [
@@ -611,6 +616,35 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
+/**
+ * 输入框里引用记号的字符区间（与 parseReferenceMarkers 同一口径）。
+ * 用于 Trae 式行内引用徽章渲染与「整块编辑」：Backspace 一次删掉整个记号、
+ * 记号内部输入先整块选中，避免打字误删一半导致引用悄悄失效。
+ */
+function referenceTokenRanges(text = "") {
+  const value = String(text || "");
+  const ranges = [];
+  const push = (start, end) => { if (end > start) ranges.push({ start, end }); };
+  const bracketPatterns = [
+    /@知识库目录\[[^\]]*\]/g, /@知识库\[[^\]]*\]/g, /@模板目录\[[^\]]*\]/g,
+    /@模板\[[^\]]*\]/g, /@文件\[[^\]]*\]/g, /&会话\[[^\]]*\]/g,
+  ];
+  for (const re of bracketPatterns) {
+    for (const m of value.matchAll(re)) push(m.index, m.index + m[0].length);
+  }
+  for (const m of value.matchAll(/(^|[\s(])@([^\s@，。！？\]}]+)/g)) {
+    const start = m.index + m[1].length;
+    // m[1] 之后还有一个字面量 "@"，m[2] 从 start+1 开始——end 必须含上这一位，
+    // 否则切片少最后一个字符，.docx 等后缀判定失败、徽章整条丢失。
+    let end = start + 1 + m[2].length;
+    while (end > start + 1 && /[),;。！？]/.test(value[end - 1])) end -= 1;
+    const target = value.slice(start + 1, end);
+    if (/^(?:文件|知识库|模板|模板目录)\[/.test(target)) continue;
+    if (target.includes("/") || target.includes("\\") || /\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i.test(target)) push(start, end);
+  }
+  return ranges.sort((a, b) => a.start - b.start);
+}
+
 // v0.13.2：从已加载的助手消息里提取外部链接（URL 去重，保留首次出现的消息 id）。
 // 只做展示与打开/复制，不抓取网页内容，也不执行网页中的指令。
 const LINK_URL_PATTERN = /https?:\/\/[^\s<>"'`）)】\]，。；;]+/gi;
@@ -642,7 +676,7 @@ export function extractSessionLinks(messages = []) {
   return [...seen.values()];
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "" }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, agentReady = true, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "" }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   // 草稿按 thread 恢复（交互 3）：模块导航会卸载本组件，重挂载时从缓存取回未发送内容。
@@ -736,6 +770,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [histOpen, setHistOpen] = useState(false); // 会话历史抽屉（默认隐藏，点击展开）
   const [images, setImages] = useState([]);
   const [attachments, setAttachments] = useState([]); // 非图片附件
+  // 图片去重/数量上限需要在异步压缩期间拿到最新清单，避免连续粘贴时重复加入。
+  const imagesRef = useRef([]);
+  const imageQueueRef = useRef(Promise.resolve());
+  useEffect(() => { imagesRef.current = images; }, [images]);
   const [busy, setBusy] = useState(false);
   // v0.13.1：Run 收口后刷新 Goal 统计（轮次/Token/预算状态），无需用户重开会话。
   const previousBusyRef = useRef(false);
@@ -1209,6 +1247,61 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
+  // ---- 行内引用记号：镜像层排版同步 + 整块编辑保护 ----
+  const syncComposerOverlay = useCallback(() => {
+    const el = textareaRef.current;
+    const overlay = composerOverlayRef.current;
+    if (!el || !overlay) return;
+    const cs = window.getComputedStyle(el);
+    const style = overlay.style;
+    style.fontFamily = cs.fontFamily;
+    style.fontSize = cs.fontSize;
+    style.fontWeight = cs.fontWeight;
+    style.lineHeight = cs.lineHeight;
+    style.letterSpacing = cs.letterSpacing;
+    style.padding = cs.padding;
+    overlay.scrollTop = el.scrollTop;
+    overlay.scrollLeft = el.scrollLeft;
+  }, []);
+  useEffect(() => { syncComposerOverlay(); }, [input, syncComposerOverlay]);
+  useEffect(() => {
+    window.addEventListener("resize", syncComposerOverlay);
+    return () => window.removeEventListener("resize", syncComposerOverlay);
+  }, [syncComposerOverlay]);
+
+  // 引用记号整块编辑：光标在记号内先整块选中（防打字误删一半）；记号尾 Backspace /
+  // 记号首 Delete 一次删除整个记号。补全菜单打开时不接管（@ 查询词要能逐字回退）。
+  const handleComposerTokenKeys = (e) => {
+    if (composerMenu || e.ctrlKey || e.metaKey || e.altKey) return;
+    const el = textareaRef.current;
+    if (!el || el.selectionStart !== el.selectionEnd) return;
+    const caret = el.selectionStart;
+    const ranges = referenceTokenRanges(el.value);
+    if (!ranges.length) return;
+    const editableKey = e.key.length === 1 || e.key === "Backspace" || e.key === "Delete";
+    const inside = ranges.find((r) => caret > r.start && caret < r.end);
+    if (inside && editableKey) {
+      e.preventDefault();
+      el.setSelectionRange(inside.start, inside.end);
+      return;
+    }
+    if (e.key === "Backspace") {
+      const hit = ranges.find((r) => caret === r.end);
+      if (!hit) return;
+      e.preventDefault();
+      el.setRangeText("", hit.start, hit.end, "end");
+      updateInput(el.value);
+      requestAnimationFrame(() => el.setSelectionRange(hit.start, hit.start));
+    } else if (e.key === "Delete") {
+      const hit = ranges.find((r) => caret === r.start);
+      if (!hit) return;
+      e.preventDefault();
+      el.setRangeText("", hit.start, hit.end, "end");
+      updateInput(el.value);
+      requestAnimationFrame(() => el.setSelectionRange(hit.start, hit.start));
+    }
+  };
+
   useEffect(() => {
     if (!embedded || lastPrompt || !messages.length) return;
     const lastUser = [...messages].reverse().find((item) => item?.role === "user" && item?.text);
@@ -1268,9 +1361,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
 
   useEffect(() => {
     const found = parseReferenceMarkers(input);
-    if (!found.length) return;
     setReferences((prev) => {
-      const merged = [...found, ...prev.filter((r) => input.includes(r.source || `@${r.target}`))];
+      // 来自输入文本的引用（带 source 记号）随文本编辑联动：记号被删掉即从引用条移除；
+      // 外部注入的引用（App/侧栏传入，无 source 字段）不受输入框影响，始终保留。
+      const kept = prev.filter((r) => !r.source || input.includes(r.source));
+      if (!found.length && kept.length === prev.length) return prev;
+      const merged = [...found, ...kept];
       return merged.filter((r, i, arr) => arr.findIndex((x) => x.id === r.id) === i);
     });
   }, [input]);
@@ -1507,7 +1603,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       setRunState((state) => ({ ...state, mode: nextMode }));
       return true;
     },
-    // v0.13.9：画布新会话页签创建会话后聚焦输入框
+    // 画布 + 菜单「新建对话」创建会话后聚焦输入框
     focusInput() {
       requestAnimationFrame(() => textareaRef.current?.focus());
     },
@@ -1856,6 +1952,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
 
   // SSE 连接
   useEffect(() => {
+    // 历史可以先展示；恢复未完成时不要建立对话流，避免服务端先创建空 runtime。
+    if (!agentReady) return undefined;
     const generation = streamGenerationRef.current + 1;
     streamGenerationRef.current = generation;
     let es = null;
@@ -2036,7 +2134,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         streamReadyRef.current = null;
       }
     };
-  }, [clientId, threadId, workspace]);
+  }, [clientId, threadId, workspace, agentReady]);
 
   // 恢复/切换会话后拉取服务端保存的上下文用量，避免刷新后一直显示 0
   useEffect(() => {
@@ -2251,7 +2349,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       streamBufRef.current = { text: "", thinking: "" };
       setMessages((ms) => ms.some((message) => message.id === recoveredId)
         ? ms
-        : [...ms, { id: recoveredId, role: "assistant", blocks: [], status: "streaming", images: [], createdAt: Date.now() }]);
+        : [...ms, { id: recoveredId, role: "assistant", blocks: [], status: "streaming", images: [], createdAt: Date.now(), runId: activeRunIdRef.current || null }]);
       aid = recoveredId;
       return recoveredId;
     };
@@ -2324,8 +2422,15 @@ case "runtime_connecting":
         setAgentPhase("任务已受理");
         if (data.runId) {
           // Run ID 全局唯一；这里防御性移除，允许同一 ID 的恢复/重试重新进入运行态。
-          finishedRunIdsRef.current.delete(String(data.runId));
+          const admittedRunId = String(data.runId);
+          finishedRunIdsRef.current.delete(admittedRunId);
+          // 运行锚点必须在事件到达时就同步到 ref 与消息上：POST 响应晚于 SSE 时，
+          // 气泡若没有 runId 会退回旧过程卡渲染（用户看到“老的框还在”）。
+          activeRunIdRef.current = admittedRunId;
           setRunState((s) => ({ ...s, runId: data.runId }));
+          if (assistantIdRef.current) {
+            patch(assistantIdRef.current, (m) => (m.runId ? m : { ...m, runId: admittedRunId }));
+          }
         }
         // 新的一轮任务开始：上一轮的系统提示摘要不再跟随，避免长期堆在顶部
         clearSystemNotes();
@@ -3005,6 +3110,16 @@ case "runtime_connecting":
         if (source === "turn-progress" || source.startsWith("turn-budget")) {
           // 轮次/预算提示是 harness 内部控制事件，不把原始提示词或轮次计数展示给用户。
           // 模型生成的进度小结仍作为普通过程播报，进入消息级折叠。
+        } else if (source === "office-pipeline") {
+          // 写作路由的"改用编辑流水线"提醒同样是 harness 对模型的内部引导：
+          // 用户不能对它做任何行动，渲染成"⟳ 插入新指令"会被误认为用户操作；
+          // 且 pushSystem 加的是永久气泡（Run 结束后不清理、也不会因模型随后用了
+          // 流水线而撤回），所以只记入可折叠的系统提示，不占消息流。
+          pushSystemNote({
+            key: "office-pipeline",
+            kind: "progress",
+            text: "已提醒模型改用编辑流水线（本轮尚未使用时触发一次）",
+          });
         } else if (message) {
           pushSystem(`⟳ 插入新指令：${message.slice(0, 60)}${message.length > 60 ? "…" : ""}`, `steer:${message.slice(0, 40)}`);
         }
@@ -3326,6 +3441,11 @@ case "runtime_connecting":
       window.setTimeout(() => setModelMsg(""), 3200);
       return;
     }
+    if (!agentReady) {
+      setModelMsg("正在恢复会话，请稍候再发送。");
+      window.setTimeout(() => setModelMsg(""), 2600);
+      return;
+    }
     // 压缩期间不允许发送：服务端会把新消息排到压缩之后，但界面必须与 AVA 的
     // “压缩中不可发送”语义一致，避免用户以为消息已进入当前回合。
     if (compacting) {
@@ -3338,6 +3458,11 @@ case "runtime_connecting":
     const sourceImages = source.images || images;
     const sourceAttachments = source.attachments || attachments;
     const sourceReferences = source.references || references;
+    // D4：非视觉模型发送图片前二次确认，避免静默失败或图片被忽略。
+    if (!options.payload && sourceImages.length > 0 && !modelVision) {
+      const proceed = await askConfirm(`当前模型「${model || "未选择"}」不支持图片输入，继续发送可能失败。是否仍然发送？`);
+      if (!proceed) return;
+    }
     const rawText = String(source.rawText ?? overrideText ?? input).trim();
     if (!rawText && sourceImages.length === 0 && sourceAttachments.length === 0) return;
     if (!options.payload && /^\/goal(?:\s|$)/i.test(rawText)) {
@@ -3378,6 +3503,7 @@ case "runtime_connecting":
         clearInput();
         setImages([]);
         setAttachments([]);
+        setReferences([]);
         pushSystem("已加入待注入上下文，不会打断当前任务。", `context:${Date.now()}:${text.slice(0, 40)}`);
         return;
       }
@@ -3414,6 +3540,7 @@ case "runtime_connecting":
         clearInput();
         setImages([]);
         setAttachments([]);
+        setReferences([]);
         setInjectedContext([]);
         pushSystem(`已排队第 ${nextQueue.length} 条，当前任务完成后自动执行。`, `queue:${messageId}`);
         return;
@@ -3512,6 +3639,7 @@ case "runtime_connecting":
     clearInput();
     setImages([]);
     setAttachments([]);
+    setReferences([]);
     setInjectedContext([]);
     setContextFileDismissed(false);
       setBusy(true);
@@ -3755,20 +3883,42 @@ case "runtime_connecting":
     } catch (e) { pushSystem(`回滚失败：${e.message}`); }
   };
 
-  const handleFiles = async (list) => {
+  const handleFilesNow = async (list) => {
+    const incoming = Array.from(list || []);
     const addedImgs = [];
     const addedAtts = [];
-    // v0.13.8：文档白名单扩展音视频（mp4/webm/mov、mp3/wav/m4a）；
-    // 音视频不作为图片进模型，作为附件暂存，Agent 通过工作区读取；100MB 上限。
     const skipped = [];
-    for (const f of Array.from(list).slice(0, 6)) {
-      if (f.size > ATTACHMENT_SIZE_LIMIT) { skipped.push(`${f.name}（超过 ${formatBytes(ATTACHMENT_SIZE_LIMIT)} 上限）`); continue; }
-      if (f.type.startsWith("image/")) {
+    const imageFiles = incoming.filter((f) => String(f?.type || "").startsWith("image/"));
+    const otherFiles = incoming.filter((f) => !String(f?.type || "").startsWith("image/"));
+
+    // 图片：去重 → 数量上限 → 压缩。已有图片也算进 8 张上限。
+    const existingKeys = new Set((imagesRef.current || []).map((item) => item?.dedupeKey).filter(Boolean));
+    const remaining = Math.max(0, 8 - (imagesRef.current || []).length);
+    const { kept, rejected } = limitImages(imageFiles, remaining);
+    for (const file of kept) {
+      if (file.size > ATTACHMENT_SIZE_LIMIT) { skipped.push(`${imageFileName(file)}（超过 ${formatBytes(ATTACHMENT_SIZE_LIMIT)} 上限）`); continue; }
+      // 内容哈希（异步）；剪贴板 same image 的 lastModified 不可靠。
+      const key = await imageContentKey(file);
+      if (existingKeys.has(key)) { skipped.push(`${imageFileName(file)}（重复图片）`); continue; }
+      existingKeys.add(key);
+      const compressed = await compressImage(file).catch(() => null);
+      if (compressed) {
+        addedImgs.push({ ...compressed, name: imageFileName(file), dedupeKey: key });
+      } else {
         try {
-          const { mediaType, data } = await fileToBase64(f);
-          addedImgs.push({ mediaType, data, dataUrl: `data:${mediaType};base64,${data}`, name: f.name });
+          const { mediaType, data } = await fileToBase64(file);
+          addedImgs.push({ mediaType, data, dataUrl: `data:${mediaType};base64,${data}`, name: imageFileName(file), dedupeKey: key, originalBytes: file.size, compressedBytes: file.size });
         } catch {}
-      } else if (ATTACHMENT_ALLOWED_EXT.test(f.name)) {
+      }
+    }
+    for (const file of rejected) skipped.push(`${imageFileName(file)}（最多 8 张图片）`);
+
+    // 非图片附件：沿用白名单与 100MB 上限；单次最多 6 个，避免一次拖入过多。
+    for (let index = 0; index < otherFiles.length; index += 1) {
+      const f = otherFiles[index];
+      if (index >= 6) { skipped.push(`${f.name}（单次最多 6 个附件）`); continue; }
+      if (f.size > ATTACHMENT_SIZE_LIMIT) { skipped.push(`${f.name}（超过 ${formatBytes(ATTACHMENT_SIZE_LIMIT)} 上限）`); continue; }
+      if (ATTACHMENT_ALLOWED_EXT.test(f.name)) {
         try {
           const { mediaType, data } = await fileToBase64(f);
           addedAtts.push({ mediaType, data, dataUrl: `data:${mediaType};base64,${data}`, name: f.name, size: f.size, mediaKind: mediaKindFor(f.name) });
@@ -3777,17 +3927,37 @@ case "runtime_connecting":
         skipped.push(f.name);
       }
     }
-    if (addedImgs.length) setImages((im) => [...im, ...addedImgs]);
+    if (addedImgs.length) {
+      // 队列串行化后同步更新 ref，避免两次粘贴在 compress 期间都按旧数量放行。
+      imagesRef.current = [...(imagesRef.current || []), ...addedImgs];
+      setImages(imagesRef.current);
+    }
     if (addedAtts.length) setAttachments((at) => [...at, ...addedAtts]);
     const count = addedImgs.length + addedAtts.length;
+    const savings = compressionSummary(addedImgs);
     if (count) {
-      setModelMsg(`已加入上下文 ${count} 个文件`);
-      setTimeout(() => setModelMsg(""), 2200);
+      setModelMsg(`已加入 ${count} 个${savings ? `（图片${savings}）` : ""}`);
+      setTimeout(() => setModelMsg(""), 2400);
     }
     if (skipped.length) {
-      setModelMsg(`已跳过 ${skipped.length} 个文件：${skipped.slice(0, 3).join("、")}${skipped.length > 3 ? " 等" : ""}`);
-      setTimeout(() => setModelMsg(""), 3200);
+      setTimeout(() => {
+        setModelMsg(`已跳过 ${skipped.length} 个：${skipped.slice(0, 3).join("、")}${skipped.length > 3 ? " 等" : ""}`);
+        setTimeout(() => setModelMsg(""), 3600);
+      }, count ? 1400 : 0);
     }
+  };
+
+  // 图片选择/拖入串行执行：压缩是异步的，串行才能保证“已有 8 张”判断准确。
+  const handleFiles = (list) => {
+    const run = imageQueueRef.current.then(() => handleFilesNow(list));
+    imageQueueRef.current = run.catch(() => {});
+    return run;
+  };
+
+  const removeImageAt = (index) => {
+    const next = (imagesRef.current || []).filter((_, itemIndex) => itemIndex !== index);
+    imagesRef.current = next;
+    setImages(next);
   };
 
   // v0.13.8：全区域拖拽——整个输入区容器（含附件栏）都接受拖入，显示高亮遮罩。
@@ -3795,10 +3965,7 @@ case "runtime_connecting":
   const dragDepthRef = useRef(0);
 
   const handleClipboardPaste = (e) => {
-    const files = Array.from(e.clipboardData?.items || [])
-      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
-      .map((item) => item.getAsFile())
-      .filter(Boolean);
+    const files = clipboardImageFiles(e);
     if (!files.length) return;
     e.preventDefault();
     handleFiles(files);
@@ -3939,6 +4106,8 @@ case "runtime_connecting":
   // 滚动：用户向上滑动查看历史时暂停自动滚动；在底部才自动滚到最新
   const scrollTimerRef = useRef(null);
   const textareaRef = useRef(null);
+  // Trae 式行内引用徽章：镜像层只画徽章底色（文字透明），随输入内容与滚动同步
+  const composerOverlayRef = useRef(null);
   // 按会话记录阅读位置：切回同一会话时恢复到上次停留处（只在用户主动滚离底部时记录，
   // 停在底部的会话下次仍跟到底部）。
   const scrollPositionsRef = useRef(new Map());
@@ -4436,9 +4605,17 @@ case "runtime_connecting":
         {images.length > 0 && (
           <div className="img-preview-row">
             {images.map((img, i) => (
-              <div className="img-chip" key={i}>
+              <div
+                className="img-chip"
+                key={img.dedupeKey || i}
+                title={`${img.name}${img.originalBytes ? ` · ${formatBytes(img.originalBytes)}${img.compressedBytes && img.compressedBytes < img.originalBytes ? ` → ${formatBytes(img.compressedBytes)}` : ""}` : ""}`}
+              >
                 <img src={img.dataUrl} alt={img.name} />
-                <button onClick={() => setImages((im) => im.filter((_, j) => j !== i))}>x</button>
+                <span className="img-chip-meta">{img.name}</span>
+                {img.originalBytes && img.compressedBytes && img.compressedBytes < img.originalBytes ? (
+                  <span className="img-chip-size">{formatBytes(img.originalBytes)} → {formatBytes(img.compressedBytes)}</span>
+                ) : null}
+                <button onClick={() => removeImageAt(i)} aria-label={`移除图片 ${img.name}`}>x</button>
               </div>
             ))}
           </div>
@@ -4603,12 +4780,15 @@ case "runtime_connecting":
                 onClose={() => setMentionState(null)}
               />
             )}
+            <div className="composer-shell">
             <textarea
               ref={textareaRef}
               value={input}
-              disabled={frozen}
-              placeholder={frozen ? "会话已冻结，可新建分支继续分析" : busy ? "输入后可排队执行，或仅注入下一轮上下文…" : "输入消息…"}
+              disabled={frozen || !agentReady}
+              placeholder={!agentReady ? "正在恢复会话，请稍候…" : frozen ? "会话已冻结，可新建分支继续分析" : busy ? "输入后可排队执行，或仅注入下一轮上下文…" : "输入消息…"}
               onKeyDown={(e) => {
+                handleComposerTokenKeys(e);
+                if (e.defaultPrevented) return;
                 if (mentionState && mentionFiltered.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
                   e.preventDefault();
                   setMentionIndex((index) => (index + (e.key === "ArrowDown" ? 1 : -1) + mentionFiltered.length) % mentionFiltered.length);
@@ -4645,6 +4825,7 @@ case "runtime_connecting":
                 }
               }}
               onCompositionEnd={() => {}}
+              onScroll={syncComposerOverlay}
               onPaste={(e) => {
                 handleClipboardPaste(e);
               }}
@@ -4659,10 +4840,28 @@ case "runtime_connecting":
                 setMentionIndex(0);
               }}
             />
+            {/* Trae 式行内引用徽章：只画底色徽章（文字由 textarea 渲染），指针事件全透传 */}
+            <div className="composer-overlay" ref={composerOverlayRef} aria-hidden="true">
+              {(() => {
+                const ranges = referenceTokenRanges(input);
+                if (!ranges.length) return null;
+                const value = `${input}\n`;
+                const nodes = [];
+                let cursor = 0;
+                for (const range of ranges) {
+                  if (range.start > cursor) nodes.push(<span key={`p${cursor}`}>{value.slice(cursor, range.start)}</span>);
+                  nodes.push(<span key={`t${range.start}`} className="composer-token-ghost">{value.slice(range.start, range.end)}</span>);
+                  cursor = range.end;
+                }
+                if (cursor < value.length) nodes.push(<span key={`p${cursor}`}>{value.slice(cursor)}</span>);
+                return nodes;
+              })()}
+            </div>
+            </div>
             <div className="input-send">
               {busy ? (
                 <>
-                  {hasDraft && <button className="btn primary pending-send-btn" onClick={() => send()} disabled={compacting} title={compacting ? "正在压缩上下文，请稍候" : busyInputMode === "steer" ? "打断当前回合立即执行（Enter）" : busyInputMode === "queue" ? "排队执行（Enter）" : "注入上下文（Enter）"}>
+                  {hasDraft && <button className="btn primary pending-send-btn" onClick={() => send()} disabled={compacting || !agentReady} title={!agentReady ? "正在恢复会话" : compacting ? "正在压缩上下文，请稍候" : busyInputMode === "steer" ? "打断当前回合立即执行（Enter）" : busyInputMode === "queue" ? "排队执行（Enter）" : "注入上下文（Enter）"}>
                     <Icon name={busyInputMode === "steer" ? "send" : busyInputMode === "queue" ? "list" : "layers"} size={14} />
                     <span>{busyInputMode === "steer" ? "立即" : busyInputMode === "queue" ? "排队" : "注入"}</span>
                   </button>}
@@ -4675,8 +4874,8 @@ case "runtime_connecting":
                 <button
                   className="btn primary send-btn"
                   onClick={() => send()}
-                  disabled={frozen || compacting || !hasDraft}
-                  title={frozen ? "会话已冻结" : compacting ? "正在压缩上下文，请稍候" : !hasDraft ? "请输入内容后发送" : "发送 (Enter)"}
+                  disabled={frozen || !agentReady || compacting || !hasDraft}
+                  title={!agentReady ? "正在恢复会话" : frozen ? "会话已冻结" : compacting ? "正在压缩上下文，请稍候" : !hasDraft ? "请输入内容后发送" : "发送 (Enter)"}
                 ><Icon name="send" size={14} /></button>
               )}
             </div>
@@ -4936,7 +5135,9 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
   const statusLabel = view.lifecycleLabel; // R04：状态缺失显示“状态待同步”，不默认“运行结束”
   const completion = view.outcome || m.completion || null;
   const finalAnswer = String(view.answer?.text || m.authoritativeFinalText || "").trim();
-  const fallbackSummary = finalAnswer ? "" : String(completion?.summary || "").trim();
+  // 总结优先：complete_task.summary 是本轮工作的完整结论，不能因为存在最终答复就被隐藏。
+  const summaryText = String(completion?.summary || m.summaryText || "").trim();
+  const fallbackSummary = summaryText || (finalAnswer ? "" : String(m.text || "").trim());
   // 标题只用于非嵌入的历史摘要，优先取权威最终答复；收尾摘要只作为兼容标题。
   const conclusionSource = String(view.answer?.text || m.authoritativeFinalText || completion?.summary || m.text || m.task?.text || m.task?.goal || "").trim();
   const titleLine = conclusionSource.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0] || "";
@@ -4969,7 +5170,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
       ? { kind: "ask", text: view.progress.waitingReason || "等待你回答后继续" }
       : completion?.status === "blocked"
         ? { kind: "blocked", text: "有受阻项需要你先处理" }
-        : completion?.status === "partial"
+        : completion?.status === "partial" && (completion?.incomplete?.length || completion?.blockers?.length)
           ? { kind: "partial", text: "有未完成项，需要你决定是否继续" }
           : view.lifecycle === "failed"
             ? { kind: "failed", text: "本轮失败，可重试或调整要求" }
@@ -4995,6 +5196,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
     || reviewSources.length > 0
     || Boolean(actionNeeded)
     || interrupted
+    || Boolean(fallbackSummary)
     || Boolean(completion?.incomplete?.length || completion?.blockers?.length);
   // 单一产物集合（交付优先、路径去重）＋ 类型/大小，供「本轮产物」tab 的卡片使用。
   const products = useMemo(() => artifactsFromView(view) || [], [view]);
@@ -5010,8 +5212,10 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
     if (resultTab === "sources" && !reviewSources.length) setResultTab(products.length ? "products" : "changes");
   }, [resultTab, reviewSources.length, products.length]);
   const runIsLive = LIVE_RUN_STATUSES.has(String(m.runStatus || ""));
-  const [summaryOpen, setSummaryOpen] = useState(runIsLive);
-  useEffect(() => setSummaryOpen(runIsLive), [runIsLive]);
+  const hasSummaryText = Boolean(String(completion?.summary || m.summaryText || "").trim());
+  // 运行中展开过程；完成后默认展开“本轮总结”，过程仍单独折叠。
+  const [summaryOpen, setSummaryOpen] = useState(runIsLive || hasSummaryText);
+  useEffect(() => setSummaryOpen(runIsLive || hasSummaryText), [runIsLive, hasSummaryText]);
   const hasRunDetails = showResultCard;
   // 单一文件清单的行类名：角色 + 内部弱化 + “本轮刚结束”的短时高亮（历史回放不重播）
   const changeClass = (change) => `summary-product clickable role-${change.role}${change.role === "internal" ? " internal" : ""}${m.flashFiles ? " fresh" : ""}`;
@@ -5075,7 +5279,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
           </div>
           {fallbackSummary && (
             <div className="run-result-fallback">
-              <strong>运行摘要</strong>
+              <strong>本轮总结</strong>
               <SafeMarkdown text={fallbackSummary} onOpenFile={onOpenFile} artifacts={products.length ? products : null} />
             </div>
           )}
@@ -5204,10 +5408,10 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
                 </div>
                 {productCards.length > 0 && (
                   <div className="product-cards">
-                    {productCards.map((item) => (
+                    {productCards.slice(0, 6).map((item) => (
                       <div className={`product-card${item.deliverable ? " deliverable" : ""}${item.confirmed ? "" : " provisional"}`} key={item.path}>
                         <button type="button" className="product-card-main" onClick={() => onOpenFile?.(item.path)} title={item.path}>
-                          <span className={`product-card-icon artifact-kind-${item.icon}`}><Icon name={item.icon} size={15} /></span>
+                          <span className="product-card-icon"><文件类型图标 file={item.path} size={15} /></span>
                           <span className="product-card-meta">
                             <strong>{item.name}</strong>
                             <small>{item.typeLabel}{item.sizeText ? ` · ${item.sizeText}` : ""}</small>
@@ -5342,6 +5546,8 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   const streaming = m.status === "streaming";
   const authoritativeFinalText = String(
     m.authoritativeFinalText
+      || m.finalText
+      || runSummary?.finalText
       || [...(Array.isArray(runSummary?.events) ? runSummary.events : [])].reverse().find((event) => event?.type === "assistant_final" && String(event?.data?.text || "").trim())?.data?.text
       || "",
   ).trim();
@@ -5376,6 +5582,12 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   // B02 回答详细程度：唯一答案出口在消息气泡，因此收窄只作用于此处，且只在非流式时生效。
   const answerDetail = useAppearance().answerDetail;
   const [answerExpanded, setAnswerExpanded] = useState(false);
+  // 总结已经覆盖最终答复时只保留总结，避免同一段文字出现两次。
+  const summaryCoversFinal = (() => {
+    const summary = String(runSummary?.completion?.summary || m.completion?.summary || "").replace(/\s+/g, " ").trim();
+    const final = String(authoritativeFinalText || "").replace(/\s+/g, " ").trim();
+    return Boolean(summary && final && final.length > 20 && summary.includes(final));
+  })();
   // v0.12.8：最后一条助手消息按需读取“第 N / M 版”；读取失败静默隐藏，不影响回答展示。
   const [versions, setVersions] = useState(null);
   useEffect(() => {
@@ -5493,26 +5705,10 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   //
   // 历史轮兜底：服务端 listRuns 的 includeEvents 默认只给"活跃 Run + 列表第一条"带 events，
   // 切回旧会话时 runTraceForTimeline 为 null，此前会导致整条"已运行"消失。
-  // 这里退回到消息自带的 startedAt/finishedAt（App 已从 run 写入消息）。
-  const runElapsedMs = (() => {
-    if (!timelinePath) return 0;
-    const traceStartedMs = Date.parse(runTraceForTimeline?.startedAt || "") || 0;
-    const traceDuration = Number(runTraceForTimeline?.durationMs || 0);
-    if (isTaskLive) {
-      const startedMs = traceStartedMs || (Date.parse(m.startedAt || "") || 0);
-      return startedMs ? Math.max(0, clockNow - startedMs) : 0;
-    }
-    if (traceDuration > 0) return traceDuration;
-    if (traceStartedMs && runTraceForTimeline?.endedAt) {
-      const ms = Date.parse(runTraceForTimeline.endedAt) - traceStartedMs;
-      if (Number.isFinite(ms) && ms > 0) return ms;
-    }
-    // 兜底：消息自带的起止时间（历史轮 events 为空时仍然可用）
-    const msgStart = Date.parse(m.startedAt || "") || 0;
-    const msgEnd = Date.parse(m.finishedAt || "") || 0;
-    if (msgStart && msgEnd && msgEnd > msgStart) return msgEnd - msgStart;
-    return 0;
-  })();
+  // 回退链：trace → runSummary（含 durationMs/起止）→ 消息自带的 startedAt/finishedAt。
+  const runElapsedMs = timelinePath
+    ? resolveRunElapsedMs({ live: isTaskLive, now: clockNow, trace: runTraceForTimeline, runSummary, message: m })
+    : 0;
   const runElapsedText = (() => {
     if (!(runElapsedMs > 0)) return "";
     // 等待时长占比高时标注，避免"跑了 2 小时"里其实 1 小时在等审批。
@@ -5555,6 +5751,22 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
       return false;
     })
     : [];
+  // 折叠头终态与文案（规范 §2.1 + ADR 0014）：折叠的是过程，答案与可执行动作留在折叠体外。
+  // 运行中不渲染折叠头（直铺时间流），因此这里只处理终态。
+  const runFold = describeRunFold({
+    interrupted: runInterrupted,
+    failed: runCardView?.lifecycle === "failed",
+    risky: timelineCompletion?.status === "blocked" || timelineCompletion?.status === "partial",
+    elapsedMs: runElapsedMs,
+  });
+  const runFoldPending = timelineInteractionItems.length
+    ? (timelineInteractionItems.some((item) => item.kind === "approval") ? "等待你审批" : "等待你回答")
+    : "";
+  // 总结正文：结论段 + 详细展开合并为一篇连续 Markdown（v2.0 不再分栏、不再加标签）。
+  const summaryBody = useMemo(
+    () => (timelinePath ? [summaryParts.conclusion, summaryParts.detail].filter(Boolean).join("\n\n") : ""),
+    [timelinePath, summaryParts],
+  );
   const renderTimelineInteraction = (item) => {
     if (item.kind === "ask") {
       const question = String(item.block?.question || "").replace(/\s+/g, " ").slice(0, 40);
@@ -5655,11 +5867,17 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   // 有序片段：连续的过程块合成一个可折叠区，模型发言（小节结论）留在原位置可见。
   // 于是渲染顺序就是模型真实的输出顺序——过程区 → 小节结论 → 新的过程区 → ……
   // 折叠只收起思考与工具，小节结论不会被后面的小节吞掉。
+  // 结束后把中间小节/进度文本一并收进过程折叠：主阅读流只保留最终答复与总结。
+  // 运行中仍按原顺序平铺，保证实时进度可见。
+  const foldIntermediateText = !streaming && isTaskActivity;
   const renderSegments = [];
   let processOrder = -1;
   blocks.forEach((block, blockIndex) => {
     if (block?.type === "message_boundary" || blockIndex === hiddenFinalTextIndex) return;
-    if (isProcessBlock(block)) {
+    const isIntermediateText = foldIntermediateText
+      && block?.type === "text"
+      && blockIndex !== finalAnswerBlockIndex;
+    if (isProcessBlock(block) || isIntermediateText) {
       processOrder += 1;
       const item = { block, blockIndex, processOrder };
       const tail = renderSegments[renderSegments.length - 1];
@@ -5706,12 +5924,46 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     if (block.type === "pipeline") return <PipelineCard key={key} block={block} onOpenFile={onOpenFile} />;
     if (block.type === "ask") return <AskBlock key={key} block={block} clientId={clientId} threadId={threadId} onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)} onExpired={(blockId) => onAskExpired?.(m.id, blockId)} />;
     if (block.type === "approval") return <ApprovalBlock key={key} block={block} />;
+    if (block.type === "text") return (
+      <div className="flow-markdown process-narration" key={key}>
+        <SafeMarkdown text={block.text} onOpenFile={onOpenFile} />
+      </div>
+    );
     if (block.type === "process_note") return (
       <div className="flow-markdown process-narration process-note" key={key}>
         <SafeMarkdown text={String(block.text || "").replace(/^\s*\[系统提醒\]\s*/, "")} />
       </div>
     );
     return null;
+  };
+  // P3-b（开关 activitySummary，默认关 = 工具卡照常平铺）：把过程区内连续的工具卡
+  // 聚合为「一行活动摘要 + 可展开明细」（不足 3 个的短串保持原样，避免噪音）。
+  // 聚合只影响展示顺序内的连续 tool 段，thinking/ask/approval 等其余过程块原位不动。
+  const ACTIVITY_SUMMARY_MIN_TOOLS = 3;
+  const renderProcessItems = (items) => {
+    if (!activitySummaryOn) return items.map(renderProcessBlock);
+    const out = [];
+    let toolRun = [];
+    const flushToolRun = () => {
+      if (!toolRun.length) return;
+      if (toolRun.length < ACTIVITY_SUMMARY_MIN_TOOLS) {
+        toolRun.forEach((item) => out.push(renderProcessBlock(item)));
+      } else {
+        out.push(
+          <ActivitySummaryRow key={`activity-${toolRun[0].blockIndex}`} tools={toolRun}>
+            {toolRun.map((item) => renderProcessBlock(item))}
+          </ActivitySummaryRow>,
+        );
+      }
+      toolRun = [];
+    };
+    items.forEach((item) => {
+      if (item.block?.type === "tool") { toolRun.push(item); return; }
+      flushToolRun();
+      out.push(renderProcessBlock(item));
+    });
+    flushToolRun();
+    return out;
   };
   // 渲染时才读取 processOpenMap（状态声明在后面），因此这里是函数而不是常量数组。
   const renderMessageBlocks = () => renderSegments.map((segment, segmentIndex) => {
@@ -5734,6 +5986,14 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     const foldKey = `process-${segment.items[0]?.blockIndex ?? "flow"}`;
     const override = processOpenMap[foldKey];
     const open = typeof override === "boolean" ? override : isLiveFold;
+    const runStartedAt = Date.parse(String(runSummary?.startedAt || ""));
+    const runFinishedAt = Date.parse(String(runSummary?.finishedAt || ""));
+    const processDurationMs = Number(runSummary?.durationMs)
+      || (Number.isFinite(runStartedAt)
+        ? Math.max(0, (Number.isFinite(runFinishedAt) ? runFinishedAt : (isLiveFold ? Date.now() : runStartedAt)) - runStartedAt)
+        : 0);
+    const processStepCount = Number(runSummary?.stepCount ?? m.stepCount) || 0;
+    const processArtifactCount = Number(runSummary?.artifactCount ?? m.artifactCount) || 0;
     return (
       <details
         className={`message-process-fold ${isTaskActivity ? "run-activity-fold" : ""} ${isLiveFold ? "is-live" : ""}`}
@@ -5752,13 +6012,21 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
         <summary>
           <Icon name="flow" size={12} />
           {isTaskActivity ? "执行过程" : foldedProcessBlocks.some((block) => block.type === "tool") ? "思考与工具过程" : "思考记录"}
+          {isTaskActivity && processDurationMs > 0 && (
+            <span className="process-fold-meta">
+              {isLiveFold ? "已用" : "运行了"} {formatDuration(processDurationMs)}
+              {processStepCount ? ` · ${processStepCount} 步` : ""}
+              {!isLiveFold && processArtifactCount ? ` · ${processArtifactCount} 个产物` : ""}
+            </span>
+          )}
           {isLiveFold && <span>{isTaskFinishing ? "收尾中" : "实时"}</span>}
         </summary>
         <div className="message-process-fold-body">
           <div className="message-process-scroll" ref={isLastProcess ? processScrollRef : undefined} onScroll={isLastProcess ? handleProcessScroll : undefined}>
             {/* 过程条目统一用会话流时间线容器（左侧 1px 竖线 + 2px 行距），
-                与 Run 轮次的新路径视觉一致；旧的过程卡片样式不再使用。 */}
-            <div className="tl-list">{segment.items.map(renderProcessBlock)}</div>
+                与 Run 轮次的新路径视觉一致；本地活动摘要（开关 activitySummary，
+                默认关）仍在 renderProcessItems 内聚合，关闭时逐条渲染。 */}
+            <div className="tl-list">{renderProcessItems(segment.items)}</div>
             {isLastProcess && messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
           </div>
         </div>
@@ -5776,6 +6044,14 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   const processWasLiveRef = useRef(isTaskLive);
   const processScrollRef = useRef(null);
   const followProcessTailRef = useRef(true);
+  // P3-b：活动摘要行开关——快照异步到达后置 ready 触发重渲染（就绪前按关闭=基线处理）。
+  const [activitySummaryReady, setActivitySummaryReady] = useState(false);
+  useEffect(() => {
+    let active = true;
+    flagsReady.then(() => { if (active) setActivitySummaryReady(true); });
+    return () => { active = false; };
+  }, []);
+  const activitySummaryOn = activitySummaryReady && flag("activitySummary");
 
   useEffect(() => {
     if (isTaskLive && !processWasLiveRef.current) {
@@ -5856,19 +6132,25 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
             {m.images?.length > 0 && (
               <div className="msg-images assistant-images">{m.images.map((src, i) => <img key={i} src={src} alt="Agent 附图" />)}</div>
             )}
-            {/* 会话流改版（落地文档 2026-10-31-001 + 规范 docs/规范/会话流前端规范.md）：
-                本轮耗时（无框一行小字）→ 时间流（无运行框，直接按真实顺序排条目）
-                → 交互块（ask/审批）→ 框外总结 → 本轮产物 → 需行动提示。
-                结束后"已运行 xx"折进总结 cap（见 SummaryBlock elapsedMs），不再单占一行。 */}
-            {runElapsedText && !showTimelineSummary && <div className="tl-elapsed">{runElapsedText}</div>}
-            <div className={`tl-list ${isTaskLive ? "is-live" : ""}`}>{runTimeline.map(renderTimelineItem)}</div>
+            {/* 会话流（规范 v2.0 §2 + ADR 0014）：运行中直铺时间流；结束后把过程收进一行折叠头。
+                折叠的只有过程——未决 ask/审批、结论正文、产物卡、需行动提示一律留在折叠体外，
+                失败/取消同样默认折叠，可执行动作靠「需行动提示」在折叠外表达。 */}
+            {isTaskLive ? (
+              <>
+                {runElapsedText && !showTimelineSummary && <div className="tl-elapsed">{runElapsedText}</div>}
+                <div className={`tl-list ${isTaskLive ? "is-live" : ""}`}>{runTimeline.map(renderTimelineItem)}</div>
+                {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
+              </>
+            ) : (
+              <RunFoldBar state={runFold.state} label={runFold.label} steps={runTimeline.length} pendingLabel={runFoldPending}>
+                <div className="tl-list">{runTimeline.map(renderTimelineItem)}</div>
+                {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
+              </RunFoldBar>
+            )}
             {timelineInteractionItems.map(renderTimelineInteraction)}
             {showTimelineSummary && (
               <SummaryBlock
-                conclusion={summaryParts.conclusion}
-                what={summaryParts.what}
-                detail={summaryParts.detail}
-                elapsedMs={runElapsedMs}
+                body={summaryBody}
                 onOpenFile={onOpenFile}
                 artifacts={answerArtifacts}
               />
@@ -5883,8 +6165,6 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                 <Icon name="arrowRight" size={12} /> {timelineActionNeeded.text}
               </div>
             )}
-            {/* 系统提示聚合（压缩/文件变更等）：沿用 ExecutionFlow 嵌入态，只渲染 notes */}
-            {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
             {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
             {streaming && (
               <div className="msg-streaming-status" role="status" aria-live="off">
@@ -5910,7 +6190,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                 </button>
               )}
             </div>
-            {!streaming && authoritativeFinalText && !replaceLegacyFinalCandidate && (
+            {!streaming && authoritativeFinalText && !replaceLegacyFinalCandidate && !summaryCoversFinal && (
               <>
                 <div className="flow-markdown assistant-final-answer"><SafeMarkdown text={clampAnswer(authoritativeFinalText)} onOpenFile={onOpenFile} artifacts={answerArtifacts} /></div>
                 {answerClamped && (
@@ -6261,10 +6541,10 @@ function PendingActionBar({ approval, ask, onLocateApproval, onLocateAsk, client
       });
       const result = await res.json().catch(() => ({}));
       if (res.status === 404) {
-        // 服务端已无该问题（5 分钟窗口已过或已在别处回答）：收起卡片，
+        // 服务端已无该问题（等待窗口已过或已在别处回答）：收起卡片，
         // 而不是留一张点得动、一发就报 no pending question 的死卡片。
         onExpired?.(ask?.id);
-        throw new Error("该问题已失效（超过 5 分钟未回答或已在别处回答），回答未提交");
+        throw new Error("该问题已失效（超过等待窗口未回答或已在别处回答），回答未提交");
       }
       if (!res.ok) throw new Error(result.error || `回答失败（${res.status}）`);
       onAnswered?.(ask?.id, value);
@@ -6324,8 +6604,10 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
-  // 提问有 5 分钟时间窗口：服务端超时后按假设继续，卡片必须同步失效而不是继续接受输入。
+  // 提问有等待窗口（服务端默认 60 分钟）：服务端超时后按假设继续，卡片置为已超时。
+  // askAutoResume（服务端默认开）下超时卡仍可提交：迟到回答会落档并自动续跑接下来的任务。
   const expired = Boolean(block.expired);
+  const canAnswerLate = expired && flag("askAutoResume");
   // v0.13.5：结构化表单（fields）与旧的快捷选项/单行输入兼容。
   const fields = Array.isArray(block.fields) ? block.fields : [];
   const [formValues, setFormValues] = useState({});
@@ -6333,7 +6615,7 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
 
   const submit = async (text) => {
     const answer = (text || "").trim();
-    if (!answer || sending || expired) return;
+    if (!answer || sending || (expired && !canAnswerLate)) return;
     setSending(true);
     setError("");
     try {
@@ -6345,7 +6627,7 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
       const result = await res.json().catch(() => ({}));
       if (res.status === 404) {
         onExpired?.(block.id);
-        throw new Error("该问题已失效（超过 5 分钟未回答或已在别处回答），回答未提交");
+        throw new Error("该问题已失效（超过等待窗口未回答或已在别处回答），回答未提交");
       }
       if (!res.ok) throw new Error(result.error || `回答失败（${res.status}）`);
       onAnswered?.(block.id, answer);
@@ -6382,9 +6664,9 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
       <div className="ask-question">{block.question}</div>
       {block.answer ? (
         <div className="ask-answer">你的回答：{block.answer}</div>
-      ) : expired ? (
+      ) : expired && !canAnswerLate ? (
         <div className="ask-expired" role="status">
-          超过 5 分钟未回答，Agent 已按自己的假设继续（本轮不再接受该问题的回答）。如需修正，请直接在下方输入消息说明。
+          超过等待窗口未回答，Agent 已按自己的假设继续（本轮不再接受该问题的回答）。如需修正，请直接在下方输入消息说明。
         </div>
       ) : fields.length ? (
         <div className="ask-form">
@@ -6454,6 +6736,11 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
         </div>
       ) : (
         <>
+          {expired && (
+            <div className="ask-expired" role="status">
+              等待窗口已过，Agent 已按假设继续。现在回答仍有效：提交后系统会把回答作为补充信息，自动继续/重启未完成的任务。
+            </div>
+          )}
           {block.options?.length > 0 && (
             <div className="ask-options">
               {block.options.map((opt, i) => (
@@ -6997,6 +7284,50 @@ function toolPhrase(name, input, done) {
 }
 
 // ========== 工具调用行（Proma ToolUseBlock：状态图标 + 语义短语 + 展开详情） ==========
+/**
+ * P3-b 活动摘要行（开关 activitySummary，默认关）：过程区内连续 ≥3 个工具卡
+ * 聚合为一行摘要（调用数 / 高频工具 chip / 运行中或失败状态 / 总耗时），
+ * 展开后显示原工具卡明细——明细经 children 由调用方用既有 renderProcessBlock
+ * 渲染，各自的 onToggle 与折叠逻辑保持不变。
+ */
+function ActivitySummaryRow({ tools, children }) {
+  const [open, setOpen] = useState(false);
+  const failed = tools.filter((item) => item.block.isError).length;
+  const running = tools.filter((item) => !item.block.done).length;
+  const counts = new Map();
+  tools.forEach((item) => {
+    const name = String(item.block.name || "tool");
+    counts.set(name, (counts.get(name) || 0) + 1);
+  });
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 4);
+  const totalSeconds = tools.reduce((sum, item) => sum + (Number(item.block.duration) || 0), 0);
+  return (
+    <details
+      className={`activity-summary-row${open ? " is-open" : ""}`}
+      open={open}
+      onToggle={(event) => { const next = event.currentTarget.open; if (next !== open) setOpen(next); }}
+    >
+      <summary>
+        <Icon name="tool" size={12} />
+        <span className="activity-summary-title">{tools.length} 个工具调用</span>
+        <span className="activity-summary-chips">
+          {top.map(([name, count]) => (
+            <span key={name} className="activity-chip">{name}{count > 1 ? `×${count}` : ""}</span>
+          ))}
+          {counts.size > top.length ? <span className="activity-chip is-more">+{counts.size - top.length}</span> : null}
+        </span>
+        {running > 0
+          ? <span className="activity-summary-state is-running">运行中 {running}</span>
+          : failed > 0
+            ? <span className="activity-summary-state is-error">失败 {failed}</span>
+            : <span className="activity-summary-state is-ok">全部成功</span>}
+        {totalSeconds > 0 ? <span className="activity-summary-time">{totalSeconds.toFixed(1)}s</span> : null}
+      </summary>
+      <div className="activity-summary-body">{children}</div>
+    </details>
+  );
+}
+
 /**
  * 工具卡展开态的稳定键：优先用 toolCallId / block.id，其次退回调用方给的兜底键。
  * 同一 Run 的工具块会被聚合到一起，只有全局唯一的键才能让展开态跟着正确的卡片走。

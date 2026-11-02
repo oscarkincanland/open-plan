@@ -98,6 +98,7 @@ const PATHS = {
   globe: (<><circle cx="12" cy="12" r="10" /><path d="M2 12h20" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></>),
   terminal: (<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 9l3 3-3 3" /><path d="M13 15h5" /></>),
   code: (<><path d="m8 8-4 4 4 4" /><path d="m16 8 4 4-4 4" /><path d="m14 4-4 16" /></>),
+  wrap: (<><path d="M4 6h16" /><path d="M4 12h11a3 3 0 1 1 0 6h-2" /><path d="m15 15-2 3 2 3" /><path d="M4 18h5" /></>),
   plug: (<><path d="M12 22v-5" /><path d="M9 8V2" /><path d="M15 8V2" /><path d="M18 8v4a6 6 0 0 1-12 0V8z" /></>),
   package: (<><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="M3 12l9 5 9-5" /><path d="M3 16l9 5 9-5" /><path d="M12 8v5" /></>),
   edit: (<><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" /></>),

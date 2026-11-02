@@ -109,7 +109,7 @@ assert.match(对话面板, /import \{[^}]*projectLegacyRunSummary[^}]*\} from "\
 assert.match(对话面板, /const fileChanges = useMemo\(\(\) => changes\.filter\(\(change\) => change\.role !== "internal"\)/, "文件改动应来自投影的单一份集合");
 // 最终答案只在助手正文显示；结果卡只给状态与文件入口。
 assert.match(对话面板, /const finalAnswer = String\(view\.answer\?\.text \|\| m\.authoritativeFinalText/, "结果卡应识别已显示的权威答案");
-assert.match(对话面板, /const fallbackSummary = finalAnswer \? ""/, "有最终答案时不得再显示 completion 摘要");
+assert.match(对话面板, /const fallbackSummary = summaryText \|\| \(finalAnswer \? ""/, "有最终答案且无总结时不得再显示 completion 摘要");
 assert.doesNotMatch(对话面板, /run-result-conclusion/, "结果卡不能再生成第二份折叠结论");
 assert.match(对话面板, /交付产物 \{deliverables\.length\}/, "交付产物应单独成入口");
 assert.doesNotMatch(对话面板, /m\.products\.map/, "结果卡不应再单独渲染产物标签（与变更重复）");

@@ -1,0 +1,16 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {"type":"Feature","properties":{"origin":"义乌市","destination":"杭州市","flow":420,"direction":"outbound","mode":"公路","name":"义乌→杭州 · 420"},"geometry":{"type":"LineString","coordinates":[[120.0754,29.3069],[120.1552,30.2741]]}},
+    {"type":"Feature","properties":{"origin":"义乌市","destination":"宁波市","flow":360,"direction":"outbound","mode":"公路","name":"义乌→宁波 · 360"},"geometry":{"type":"LineString","coordinates":[[120.0754,29.3069],[121.5504,29.8746]]}},
+    {"type":"Feature","properties":{"origin":"义乌市","destination":"温州市","flow":260,"direction":"outbound","mode":"公路","name":"义乌→温州 · 260"},"geometry":{"type":"LineString","coordinates":[[120.0754,29.3069],[120.6994,27.9944]]}},
+    {"type":"Feature","properties":{"origin":"义乌市","destination":"嘉兴市","flow":300,"direction":"outbound","mode":"公路","name":"义乌→嘉兴 · 300"},"geometry":{"type":"LineString","coordinates":[[120.0754,29.3069],[120.7552,30.7460]]}},
+    {"type":"Feature","properties":{"origin":"义乌市","destination":"湖州市","flow":150,"direction":"outbound","mode":"公路","name":"义乌→湖州 · 150"},"geometry":{"type":"LineString","coordinates":[[120.0754,29.3069],[120.0868,30.8927]]}},
+    {"type":"Feature","properties":{"origin":"义乌市","destination":"绍兴市","flow":330,"direction":"outbound","mode":"公路","name":"义乌→绍兴 · 330"},"geometry":{"type":"LineString","coordinates":[[120.0754,29.3069],[120.5821,30.0022]]}},
+    {"type":"Feature","properties":{"origin":"义乌市","destination":"金华市","flow":480,"direction":"outbound","mode":"公路","name":"义乌→金华 · 480"},"geometry":{"type":"LineString","coordinates":[[120.0754,29.3069],[119.6492,29.0895]]}},
+    {"type":"Feature","properties":{"origin":"义乌市","destination":"衢州市","flow":180,"direction":"outbound","mode":"公路","name":"义乌→衢州 · 180"},"geometry":{"type":"LineString","coordinates":[[120.0754,29.3069],[118.8593,28.9701]]}},
+    {"type":"Feature","properties":{"origin":"义乌市","destination":"舟山市","flow":120,"direction":"outbound","mode":"公路","name":"义乌→舟山 · 120"},"geometry":{"type":"LineString","coordinates":[[120.0754,29.3069],[122.2072,29.9852]]}},
+    {"type":"Feature","properties":{"origin":"义乌市","destination":"台州市","flow":290,"direction":"outbound","mode":"公路","name":"义乌→台州 · 290"},"geometry":{"type":"LineString","coordinates":[[120.0754,29.3069],[121.4208,28.6564]]}},
+    {"type":"Feature","properties":{"origin":"义乌市","destination":"丽水市","flow":140,"direction":"outbound","mode":"公路","name":"义乌→丽水 · 140"},"geometry":{"type":"LineString","coordinates":[[120.0754,29.3069],[119.9220,28.4677]]}}
+  ]
+}

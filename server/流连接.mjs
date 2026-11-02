@@ -10,6 +10,8 @@
  *   3. 诊断：GET /api/diagnostics/streams 能直接看到当前挂了哪些流、各挂了多久。
  */
 
+import { RUNTIME_FLAGS } from "./运行开关.mjs";
+
 const streams = new Map();
 let seq = 0;
 
@@ -20,6 +22,8 @@ let seq = 0;
  * 踢掉对方（此前共享 client id 时只能放宽到 2，导致重复流长期占池）。
  */
 const MAX_SAME_KEY = 1;
+/** P1-6：stale 接管模式需要保留次旧流以标记 stale；默认（开关关）仍只保留 1 条。 */
+const maxSameKeyFor = () => (RUNTIME_FLAGS.staleStreamSuspend ? 2 : MAX_SAME_KEY);
 /** 同一个 client + tab 允许同时存活的总流条数（留出浏览器池的其余槽位给控制面请求）。 */
 const MAX_PER_CLIENT = Math.max(2, Number(process.env.OAW_STREAM_MAX_PER_TAB || 4) || 4);
 /** 单条流的最长存活时间：超过后强制回收，客户端 EventSource 会自动重连。 */
@@ -42,7 +46,7 @@ export function streamKeyOf({ path, client = "", thread = "", tab = "" }) {
 
 /** 诊断/测试用：当前配额策略快照（只读，不修改运行时状态）。 */
 export function streamQuotaPolicy() {
-  return { maxSameKey: MAX_SAME_KEY, maxPerClientTab: MAX_PER_CLIENT, maxAgeMs: MAX_STREAM_AGE_MS, supersede: SUPERSEDE };
+  return { maxSameKey: maxSameKeyFor(), maxPerClientTab: MAX_PER_CLIENT, maxAgeMs: MAX_STREAM_AGE_MS, supersede: SUPERSEDE };
 }
 
 /** 单条流是否超过寿命上限（S1：超时强制回收，客户端会自动重连）。 */
@@ -103,7 +107,7 @@ export function registerServerStream({ path, client = "", thread = "", tab = "",
   const replaced = [];
   // 同键去重：旧连接不主动收掉的话，客户端每次重连都会多占一个池槽位。
   const sameKey = [...streams.values()].filter((entry) => entry.key === key);
-  while (sameKey.length >= MAX_SAME_KEY) {
+  while (sameKey.length >= maxSameKeyFor()) {
     const victim = sameKey.shift();
     streams.delete(victim.id);
     replaced.push({ id: victim.id, reason: "same-key" });
@@ -134,8 +138,28 @@ export function registerServerStream({ path, client = "", thread = "", tab = "",
     }
   }
   const id = `stream-${++seq}`;
-  streams.set(id, { id, key, path, client, tab: tab || "", thread, note, probe, openedAt: Date.now(), bytes: 0, lastWriteAt: 0, close });
+  streams.set(id, { id, key, path, client, tab: tab || "", thread, note, probe, openedAt: Date.now(), bytes: 0, lastWriteAt: 0, stale: false, staleAt: 0, close });
+  // P1-6（Qoder 对标）：接管即标记陈旧——同键 (path|client|thread) 已有更新的流接管后，
+  // 宽限期外的旧流标记 stale：**停推数据帧、保留心跳**（连接不关，避免旧标签页
+  // 断线重连把新流又顶掉、陷入"你连我断"循环）。宽限期内的并存视为组件切换的
+  // 短暂重叠，不判旧；不同 thread 的流（多标签页看不同会话）不受影响。
+  // 开关 staleStreamSuspend（默认关）：关闭时本段不执行，旧流照常推送，与基线一致。
+  if (RUNTIME_FLAGS.staleStreamSuspend && rule && client) {
+    const now = Date.now();
+    for (const entry of streams.values()) {
+      if (entry.key !== key || entry.id === id || entry.stale) continue;
+      if (now - entry.openedAt < rule.graceMs) continue;
+      entry.stale = true;
+      entry.staleAt = now;
+    }
+  }
   return { id, release: () => releaseServerStream(id), replaced };
+}
+
+/** P1-6：某条流是否已被同键新流接管（stale 流应停止推送数据帧，心跳保留）。 */
+export function isStreamStale(id) {
+  const entry = streams.get(id);
+  return Boolean(entry?.stale);
 }
 
 /**
@@ -184,6 +208,9 @@ export function listServerStreams() {
     ageMs: now - entry.openedAt,
     idleMs: entry.lastWriteAt ? now - entry.lastWriteAt : now - entry.openedAt,
     bytes: entry.bytes,
+    // P1-6：已被同键新流接管的旧流（停推数据帧、保留心跳）
+    stale: Boolean(entry.stale),
+    staleAt: entry.staleAt || 0,
   }));
 }
 

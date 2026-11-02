@@ -44,6 +44,7 @@ const agent源 = read("server/agent.mjs");
 const index源 = read("server/index.mjs");
 // 成功/异常/截断收口已迁到执行句柄；恢复路径仍在 index.mjs。
 const 执行句柄源 = read("server/执行句柄.mjs");
+const { allModeToolNames } = await import("../server/task.mjs");
 
 // ---------- 1. 运行终态（Run 生命周期层） ----------
 console.log("\n▶ 运行终态与语气");
@@ -103,19 +104,17 @@ test("思维 / 搜索 / 读写 / 终端 / 浏览器 / Office / 知识库 / 审�
 });
 
 test("内置工具清单全部映射到确定图标（无遗漏、无异常）", () => {
-  // agent.mjs 里还有子代理等较短的 tools 清单；内置工具清单是最长的那一个，按此取用。
-  const candidates = [...agent源.matchAll(/tools: \[([^\]]+)\]/g)].map((m) => m[1]);
-  const toolsLine = candidates.reduce((longest, item) => (item.length > (longest?.length || 0) ? item : longest), null);
-  assert.ok(toolsLine, "应能从 agent.mjs 解析出内置工具清单");
-  const names = [...toolsLine.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  // 工具清单的唯一来源是 server/task.mjs 的模式白名单并集（agent.mjs 不再维护第二份清单）。
+  const names = allModeToolNames();
   assert.ok(names.length >= 30, `工具清单应完整（实际 ${names.length} 项）`);
   const expected = {
-    read: "file", context_read: "file",
-    write: "edit", edit: "edit", review_source_apply: "edit",
+    read: "file", context_read: "file", cad_read: "file",
+    write: "edit", edit: "edit", review_source_apply: "edit", cad_edit: "edit",
     bash: "terminal", officecli: "doc",
     grep: "search", find: "search", ls: "search", web_search: "search", web_fetch: "search",
     kb_search: "book", kb_read: "book", skills_search: "book", skills_read: "book", memory_update: "book",
-    map_read: "map", map_datasets: "map", map_edit: "map", map_import: "map", map_analyze: "map", map_template: "map", map_save_analysis: "map", map_clear_analysis: "map",
+    map_read: "map", map_datasets: "map", map_edit: "map", map_import: "map", map_analyze: "map", map_template: "map", map_save_analysis: "map", map_clear_analysis: "map", map_screenshot: "map",
+    map_layer_info: "map", map_reset: "map", map_project_create: "map",
     review_copy: "shield", ask_user: "comment", todo: "list", complete_task: "check", run_subagent: "flow",
     // P2-A：编辑流水线与子代理同属编排类
     editorial_pipeline: "flow",
@@ -417,6 +416,13 @@ test("officecli 两类高频失败给出可执行指引", () => {
   assert.match(agent源, /\[修复建议\]/, "失败信息要带修复建议");
   assert.match(agent源, /输入 JSON 语法错误：字符串里的双引号必须用反斜杠转义/, "JSON 转义错误要给出明确做法");
   assert.match(agent源, /引用的文件不在磁盘上[\s\S]{0,80}?暂存区/, "文件不存在时要指出可能是暂存区未物化");
+});
+
+test("主动询问默认关闭：Work 不再强制 ask_user，Review 只在明确要求写回时确认", () => {
+  assert.match(agent源, /主动询问（默认不问）/, "Work 应改为默认不问");
+  assert.doesNotMatch(agent源, /必须调用 ask_user 主动提问/, "不得再强制信息缺失时提问");
+  assert.doesNotMatch(agent源, /必须调用 ask_user 询问是否写回原文件/, "Review 不得在收尾时强制询问写回");
+  assert.match(agent源, /只有用户在本轮任务中明确要求写回原文时，才调用 ask_user/, "Review 写回确认应只在用户明确要求时触发");
 });
 
 console.log(failed ? "\n✗ 任务结论事件流测试未通过\n" : "\n✓ 任务结论事件流测试全部通过\n");

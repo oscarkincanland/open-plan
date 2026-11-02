@@ -246,7 +246,11 @@ export function flowEventLabel(event) {
     case "run_draining": return "正在收尾（等待在途消息投递）";
     case "step_updated": return `步骤已更新${data.title || data.name ? `：${String(data.title || data.name).slice(0, 40)}` : ""}`;
     case "artifact_rolled_back": return "产物已回滚";
-    case "map_action": return `地图操作${data.action ? `：${String(data.action).slice(0, 30)}` : ""}`;
+    case "map_action":
+      if (data.action === "screenshot") return `地图截图：${String(data.file || "").slice(0, 44)}`;
+      if (data.action === "add_transient") return `临时图层上屏：${String(data.id || data.name || "").replace(/^transient-/, "").slice(0, 26)}`;
+      if (data.action === "clear_analysis") return data.all ? "已清除地图全部临时图层" : `清除地图临时图层：${String(data.id || "").slice(0, 26)}`;
+      return `地图操作${data.action ? `：${String(data.action).slice(0, 30)}` : ""}`;
     case "memory_initialized": return "记忆已初始化";
     case "memory_proposal":
     case "memory_proposal_created": return "新增记忆建议";
@@ -337,9 +341,9 @@ const TOOL_IDENTITY_RULES = [
   [/^(web_search|web_fetch|webSearch|webFetch)$/i, "search"],
   [/^(grep|find|ls|glob)$/i, "search"],
   [/^(kb_search|kb_read|memory_update|skills_search|skills_read)$/i, "book"],
-  [/^(read|context_read)$/i, "file"],
-  [/^(map_read|map_datasets|map_edit|map_import|map_analyze|map_template|map_save_analysis|map_clear_analysis)$/i, "map"],
-  [/^(write|edit|review_source_apply)$/i, "edit"],
+  [/^(read|context_read|cad_read)$/i, "file"],
+  [/^(map_read|map_datasets|map_edit|map_import|map_analyze|map_template|map_save_analysis|map_clear_analysis|map_screenshot|map_layer_info|map_reset|map_project_create)$/i, "map"],
+  [/^(write|edit|review_source_apply|cad_edit)$/i, "edit"],
   [/^officecli$/i, "doc"],
   [/^(bash|terminal|shell)$/i, "terminal"],
   [/^(todo|taskcreate|taskupdate)$/i, "list"],

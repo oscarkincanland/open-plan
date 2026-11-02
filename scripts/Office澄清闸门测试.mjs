@@ -139,7 +139,7 @@ console.log("\n▶ 单槽位与超时（6 例）");
 await test("ask_user 有单槽位保护", () => assert.ok(AGENT_SOURCE.includes("单槽位保护（O-26）")));
 await test("已有待回答时拒绝第二个", () => assert.ok(AGENT_SOURCE.includes("this.pendingAsks.has(clientId)")));
 await test("拒绝文案明确", () => assert.ok(AGENT_SOURCE.includes("同一会话同时只能有一个问题")));
-await test("保留 5 分钟超时", () => assert.ok(AGENT_SOURCE.includes("ASK_TIMEOUT_MS = 300_000")));
+await test("保留 60 分钟超时（本地 HITL 决策，OAW_ASK_TIMEOUT_MS 可调）", () => assert.ok(AGENT_SOURCE.includes("ASK_TIMEOUT_MS = RUNTIME_FLAGS.askTimeoutMs")));
 await test("超时后按专业判断继续并注明假设", () => assert.ok(AGENT_SOURCE.includes("按专业判断继续")));
 await test("取消时回填已取消提醒", () => assert.ok(AGENT_SOURCE.includes("本轮任务已被用户取消")));
 

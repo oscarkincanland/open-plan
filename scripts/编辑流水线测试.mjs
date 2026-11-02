@@ -16,6 +16,7 @@ import {
   PIPELINE_STAGES,
   safePipelineName,
   parseLooseJson,
+  diagnoseUnparsable,
   evaluateGeneratedFile,
   runEditorialPipeline,
 } from "../server/编辑流水线.mjs";
@@ -43,6 +44,17 @@ test("safePipelineName 清洗非法字符", () => {
 });
 test("PIPELINE_STAGES 顺序固定", () => {
   assert.deepEqual([...PIPELINE_STAGES], ["planner", "writer", "formatter", "evaluator"]);
+});
+test("解析失败诊断给出工作区相对路径（模型按提示能找到落盘文件）", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-ws-"));
+  const intermediateDir = path.join(workspace, ".work", "pipeline");
+  fs.mkdirSync(intermediateDir, { recursive: true });
+  const text = diagnoseUnparsable("这不是 JSON", { intermediateDir, fileBase: "报告", stage: "planner", workspace });
+  assert.ok(text.includes("原始返回已落盘"), "应说明已落盘");
+  assert.ok(text.includes(".work/pipeline/报告.planner.raw.txt"), `应给出工作区相对路径，实际：${text}`);
+  assert.ok(!text.includes(workspace), "不应泄漏绝对工作区路径");
+  const noWorkspace = diagnoseUnparsable("x", { intermediateDir, fileBase: "报告", stage: "planner" });
+  assert.ok(noWorkspace.includes("报告.planner.raw.txt"), "无 workspace 时退回文件名");
 });
 
 console.log("\n▶ docx 流水线（一次通过）");

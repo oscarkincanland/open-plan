@@ -41,6 +41,22 @@ export function resolveReplayCursor({ clientStreamId = "", channelStreamId = "",
 }
 
 /**
+ * Qoder P2-5：通道历史淘汰遥测——按类型累计被语义化淘汰挤出历史窗口的事件量。
+ * 进程内只读计数，不落盘、不参与任何业务判定，不改变淘汰语义与回放行为。
+ * 投递/落盘量在 事件存储.mjs 的 typeStats（appendEvent 记账），本表只记「淘汰」这一半。
+ */
+const channelEvictionStats = new Map();
+
+/** 按淘汰量倒序返回各事件类型的淘汰统计（诊断接口用）。 */
+export function channelEvictionStatsSnapshot({ limit = 60 } = {}) {
+  const size = Number.isFinite(limit) && limit > 0 ? limit : 60;
+  return [...channelEvictionStats.entries()]
+    .map(([type, evicted]) => ({ type, evicted }))
+    .sort((a, b) => b.evicted - a.evicted || a.type.localeCompare(b.type))
+    .slice(0, size);
+}
+
+/**
  * 写入通道历史并对超限做语义化淘汰：优先丢弃最早的高频增量，
  * 只有全为生命周期事件时才退回 FIFO。生命周期事件（工具边界、错误、
  * assistant_final、run_finished 等）因此不会被 token 洪水挤出窗口。
@@ -50,8 +66,12 @@ export function pushChannelEvent(channel, event) {
   const limit = Number(channel.historyLimit) > 0 ? Number(channel.historyLimit) : CHANNEL_HISTORY_LIMIT;
   while (channel.history.length > limit) {
     const deltaIndex = channel.history.findIndex((item) => DELTA_EVENT_TYPES.has(item?.type));
-    if (deltaIndex >= 0) channel.history.splice(deltaIndex, 1);
-    else channel.history.shift();
+    const removed = deltaIndex >= 0 ? channel.history.splice(deltaIndex, 1)[0] : channel.history.shift();
+    // P2-5：淘汰量按类型记账（含 FIFO 兜底淘汰的生命周期事件）。
+    if (removed) {
+      const key = String(removed?.type || "unknown");
+      channelEvictionStats.set(key, (channelEvictionStats.get(key) || 0) + 1);
+    }
   }
 }
 

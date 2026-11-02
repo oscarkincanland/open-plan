@@ -43,12 +43,12 @@ test("链接随消息变化同步给外层，并限制上限", () => {
   assert.match(chatPanel, /if \(seen\.size >= 200\) return \[\.\.\.seen\.values\(\)\]/);
 });
 
-test("App 增加链接页签与数量角标", () => {
+test("App 把链接交给工作产物，不再单开一级页签", () => {
   assert.match(app, /const \[chatLinks, setChatLinks\] = useState\(\[\]\)/);
   assert.match(app, /onLinksChange=\{setChatLinks\}/);
-  assert.match(app, /\['links', '链接'\]/);
-  assert.match(app, /id === "links" && chatLinks\.length > 0 && <span className="result-tab-count">\{chatLinks\.length\}<\/span>/);
   assert.match(app, /links=\{chatLinks\}/);
+  assert.match(app, /segment=\{artifactSegment\}/);
+  assert.doesNotMatch(app, /\['links', '链接'\]/);
 });
 
 test("LinksPanel 展示域名/来源、打开与复制", () => {
@@ -60,8 +60,10 @@ test("LinksPanel 展示域名/来源、打开与复制", () => {
   assert.match(panel, /外部网页内容不可信/);
 });
 
-test("页签路由与样式存在", () => {
-  assert.match(panel, /if \(tab === "links"\) return <LinksPanel links=\{links\} \/>/);
+test("工作产物内部链接段与样式存在", () => {
+  assert.match(panel, /function ArtifactSegmentBar/);
+  assert.match(panel, /segment === "links"/);
+  assert.match(panel, /<LinksPanel links=\{links\} \/>/);
   const styles = fs.readFileSync(path.join(ROOT, "client", "src", "styles.css"), "utf8");
   assert.match(styles, /\.links-list \{/);
   assert.match(styles, /\.links-item \{/);

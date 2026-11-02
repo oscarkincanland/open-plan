@@ -264,9 +264,10 @@ await test("契约：新工具已登记（agent 定义 + 三处白名单 + task 
   for (const name of names) {
     assert.match(agent, new RegExp(`name: "${name}"`), `agent 缺少工具定义 ${name}`);
     assert.match(task, new RegExp(`"${name}"`), `task 白名单缺少 ${name}`);
-    const quoted = (agent.match(new RegExp(`"${name}"`, "g")) || []).length;
-    assert.ok(quoted >= 2, `tools/setActiveTools 白名单应包含 ${name}（实际 ${quoted} 处字符串）`);
   }
+  // 工具白名单已收敛到 task.mjs 的单一事实源（agent.mjs 只保留 sessionToolNames 派生），
+  // 不再要求 agent.mjs 里出现第二份硬编码清单。
+  assert.match(agent, /const sessionToolNames = \[\.\.\.allModeToolNames\(\)/, "agent 的工具全集应派生自 allModeToolNames");
   for (const toolVar of ["browserWaitForTool", "browserActTool", "browserExtractTool", "browserSelectOptionTool"]) {
     assert.match(agent, new RegExp(toolVar), `customTools 缺少 ${toolVar}`);
   }
@@ -301,8 +302,8 @@ await test("agent / task / index / 前端已接入浏览器能力", () => {
   assert.match(panel, /queueBrowserInput/, "浏览器输入事件必须经过串行队列");
   assert.match(panel, /action: "resize"/, "浏览器面板尺寸变化需要同步给 CDP viewport");
   assert.match(fs.readFileSync(path.join(ROOT, "client", "src", "styles.css"), "utf8"), /object-fit: contain/);
-  assert.match(app, /setBrowserPanelOpen\(true\)/, "浏览器活动应自动打开独立侧栏");
-  assert.match(app, /canvas-tab-browser/, "浏览器应为独立可伸缩侧栏（v0.13 布局重构后挂画布槽位 canvas-tab-browser，宽度由 --browser-w 驱动）");
+  assert.match(app, /openCanvasView\("browser"\)/, "浏览器活动应打开浏览器标签");
+  assert.match(app, /const browserOpen = canvasTabs\.some\(\(tab\) => tab\.kind === "browser"\)/, "浏览器标签存在性由画布标签推导");
   assert.doesNotMatch(app, /setPreviewTab\("browser"\)/, "浏览器不应再作为工作产物页签");
   // 标签页 UI 与文档按 cwd 打开（产物跨工作区）
   assert.match(panel, /action: "tab_switch"/);
@@ -316,39 +317,48 @@ await test("agent / task / index / 前端已接入浏览器能力", () => {
 
 // ---------- 会话流改版接线（落地文档 2026-10-31-001 §7） ----------
 console.log("\n▶ 会话流改版接线");
-await test("Run 轮次走整轮折叠新路径（已转正），组件与样式齐备", () => {
+await test("Run 轮次走新路径（已转正），组件与样式齐备", () => {
   const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
   const chat = read("client/src/components/ChatPanel.jsx");
-  const projection = read("client/src/会话流投影.js");
+  const projection = read("client/src/chat-flow-projection.js");
   const styles = read("client/src/styles.css");
   const pkg = JSON.parse(read("package.json"));
   const flags = read("server/运行开关.mjs");
-  assert.match(chat, /!isUser && Boolean\(m\.runId\)/, "Run 轮次应走整轮折叠新路径（Review 保留旧渲染）");
+  assert.match(chat, /!isUser && Boolean\(m\.runId\)/, "Run 轮次应走新路径（Review 保留旧渲染）");
   assert.doesNotMatch(chat, /flag\("chatTimelineUi"\)/, "新路径已转正，不应再有 chatTimelineUi 开关判断");
   assert.doesNotMatch(flags, /OAW_CHAT_TIMELINE/, "转正后服务端不应残留 OAW_CHAT_TIMELINE 开关");
-  assert.match(chat, /<RunFold/, "新路径应渲染 RunFold 整轮折叠");
+  assert.match(chat, /<RunFoldBar/, "终态过程应折叠成一行折叠头（规范 v2.0 / ADR 0016）");
+  assert.doesNotMatch(chat, /<RunFold\s/, "不得复用已删除的旧 RunFold 组件");
+  assert.match(chat, /className=\{`tl-list/, "时间流应直接渲染为无框条目列表");
   assert.match(chat, /<SummaryBlock/, "新路径应渲染框外总结");
   assert.match(chat, /<ArtifactCard/, "新路径应渲染本轮产物卡");
   assert.match(chat, /buildRunTimeline/, "新路径应经会话流投影归约时间线");
   assert.match(chat, /splitCompletionSummary/, "总结应拆分结论与详细展开");
   assert.match(projection, /export function buildRunTimeline/, "投影模块应导出 buildRunTimeline");
   assert.match(projection, /export function splitCompletionSummary/, "投影模块应导出 splitCompletionSummary");
-  for (const comp of ["RunFold.jsx", "TimelineRow.jsx", "SummaryBlock.jsx", "ArtifactCard.jsx"]) {
-    assert.ok(fs.existsSync(path.join(ROOT, "client", "src", "components", "会话流", comp)), `缺少组件文件 ${comp}`);
+  assert.match(projection, /export function describeRunFold/, "投影模块应导出 describeRunFold 折叠头呈述");
+  for (const comp of ["TimelineRow.jsx", "RunFoldBar.jsx", "SummaryBlock.jsx", "ArtifactCard.jsx"]) {
+    assert.ok(fs.existsSync(path.join(ROOT, "client", "src", "components", "chat-flow", comp)), `缺少组件文件 ${comp}`);
   }
-  for (const cls of [".rf-head", ".rf-body", ".tl-row-head", ".tl-detail-wrap", ".sum-block", ".sum-conclusion", ".ac-card"]) {
+  for (const cls of [".tl-list", ".tl-row-head", ".tl-detail-wrap", ".run-fold-head", ".sum-block", ".sum-body", ".ac-card"]) {
     assert.ok(styles.includes(cls), `styles.css 缺少会话流样式 ${cls}`);
   }
   // 精修计划 2026-10-31-002 接线断言
-  const artifact = read("client/src/components/会话流/ArtifactCard.jsx");
-  assert.match(chat, /useTypewriter|TypewriterText/, "正文/思考应接打字机");
+  const artifact = read("client/src/components/chat-flow/ArtifactCard.jsx");
+  assert.match(chat, /import \{ TypewriterText \} from "\.\/chat-flow\/useTypewriter\.jsx"/, "打字机必须命名导入（默认导出是 hook，误用会渲染出数字）");
+  assert.match(chat, /!block\.answer && !block\.expired/, "已回答/已过期的 ask 必须从常驻交互区移除");
+  assert.match(chat, /showCap/, "流式文本不得显示「阶段结论」标签");
   assert.match(chat, /跑马灯文本/, "思考折叠态应使用既有跑马灯做滚动预览");
   assert.match(chat, /tl-row-head no-toggle|locked/, "ask/审批应为 locked 一行头");
   assert.match(artifact, /product-card-main/, "本轮产物应恢复既有 product-card 行格式");
   assert.match(artifact, /在产物面板查看/, "本轮产物应保留产物面板入口");
-  assert.match(styles, /--msg-content-max: min\(100%, 720px\)/, "内容列宽令牌应存在");
-  assert.match(styles, /font-family: "Segoe UI Variable Text"/, "字体栈应升级（方案 A：系统栈优先）");
-  assert.equal(pkg.scripts["test:chat-timeline"], "node scripts/会话流时间线测试.mjs", "应注册 test:chat-timeline 脚本");
+  assert.match(styles, /--msg-content-max: min\(100%, 760px\)/, "内容列宽令牌应统一为 760px");
+  assert.match(styles, /--chat-gutter: clamp\(16px, 4vw, 40px\)/, "会话列留白应随窗口自适应");
+  assert.match(styles, /\.center-chat-slot \.chat-compose > \.task-card \{[^}]*width: 100%/, "任务卡应与输入框同宽");
+  assert.match(chat, /runId: activeRunIdRef\.current \|\| null/, "运行气泡创建时应带上 runId 锚点");
+  assert.match(chat, /activeRunIdRef\.current = admittedRunId/, "run_admitted 到达时应同步运行锚点，避免退回旧过程卡");
+  assert.match(styles, /font-family: "OPPO Sans 4\.0", "Segoe UI Variable Text"/, "字体栈应以 OPPO Sans 4.0 优先、系统栈兜底");
+  assert.equal(pkg.scripts["test:chat-timeline"], "node scripts/chat-timeline-test.mjs", "应注册 test:chat-timeline 脚本");
 });
 
 if (LIVE) {

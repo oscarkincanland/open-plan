@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MCODE 事件流 · SSE 全链路复现演示</title>
+<style>
+:root{
+  --bg:#0e1214; --bg-elev:#151b1e; --bg-elev2:#1b2327; --line:#26313580;
+  --fg:#e6edf0; --fg-dim:#8fa3ab; --accent:#4f9a88; --accent-soft:#4f9a8822;
+  --ok:#5fb877; --warn:#d9a04a; --err:#d96a5a; --info:#5a9dd9;
+  --mono:"Cascadia Code","JetBrains Mono",Consolas,monospace;
+  --dur-1:120ms; --dur-2:240ms; --ease:cubic-bezier(.22,.9,.36,1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font:13px/1.6 "Segoe UI","Microsoft YaHei",sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--bg-elev);flex-wrap:wrap}
+header .logo{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,#4f9a88,#2f6e5f);display:grid;place-items:center;font-weight:700;color:#fff;font-size:12px}
+header b{font-size:14px}
+header .dim{color:var(--fg-dim);font-weight:400;font-size:12px}
+.btn{height:28px;padding:0 12px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--fg);cursor:pointer;font-size:12px;transition:all var(--dur-1) var(--ease)}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{filter:brightness(1.1)}
+.btn.scenario.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.spacer{flex:1}
+main{flex:1;display:grid;grid-template-columns:minmax(340px,1.1fr) minmax(300px,.9fr) minmax(360px,1.2fr);gap:0;min-height:0}
+.panel{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--line)}
+.panel:last-child{border-right:none}
+.panel-head{padding:8px 14px;border-bottom:1px solid var(--line);font-size:12px;color:var(--fg-dim);display:flex;align-items:center;gap:8px;background:var(--bg-elev)}
+.panel-head b{color:var(--fg);font-size:12.5px}
+.panel-body{flex:1;overflow:auto;padding:12px 14px;min-height:0}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:#2c3a40;border-radius:4px}
+
+/* ============ 左栏：聊天复现 ============ */
+.msg{max-width:92%;margin-bottom:12px;animation:pop-in var(--dur-2) var(--ease)}
+@keyframes pop-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.msg.user{margin-left:auto;background:var(--bg-elev2);border:1px solid var(--line);border-radius:12px 12px 3px 12px;padding:8px 12px;width:fit-content}
+.msg.assistant{background:var(--bg-elev);border:1px solid var(--line);border-radius:12px 12px 12px 3px;padding:10px 12px}
+.msg .role{font-size:10.5px;color:var(--fg-dim);margin-bottom:4px;display:flex;gap:8px;align-items:center}
+.msg .role .msg-id{font-family:var(--mono);font-size:10px;color:#5a7680}
+.msg .msg-id.rebind{color:var(--accent);animation:flash 900ms var(--ease)}
+@keyframes flash{0%,100%{background:transparent}30%{background:var(--accent-soft)}}
+.stream-text{white-space:pre-wrap;word-break:break-word}
+.cursor{display:inline-block;width:7px;height:14px;background:var(--accent);vertical-align:-2px;animation:blink 900ms steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.block{border:1px solid var(--line);border-radius:9px;margin-top:8px;overflow:hidden}
+.block-head{display:flex;align-items:center;gap:8px;padding:6px 10px;font-family:var(--mono);font-size:11.5px;cursor:pointer;background:var(--bg-elev2)}
+.block-head .pill{font-size:10px;padding:1px 8px;border-radius:99px;border:1px solid var(--line);color:var(--fg-dim)}
+.block-head .pill.running{color:var(--warn);border-color:var(--warn);animation:pulse 1.2s ease infinite}
+.block-head .pill.done{color:var(--ok);border-color:var(--ok)}
+.block-head .pill.failed{color:var(--err);border-color:var(--err)}
+@keyframes pulse{50%{opacity:.45}}
+.block-body{padding:8px 10px;font-family:var(--mono);font-size:11.5px;color:var(--fg-dim);white-space:pre-wrap;word-break:break-word;border-top:1px solid var(--line);max-height:180px;overflow:auto}
+.thinking .block-body{color:#7d95b5}
+.todo-list{list-style:none}
+.todo-list li{display:flex;gap:8px;align-items:baseline;padding:3px 0;font-size:12px}
+.todo-list .st{font-family:var(--mono);font-size:10px;width:78px;flex:none;color:var(--fg-dim)}
+.todo-list li.completed .text{color:var(--fg-dim);text-decoration:line-through}
+.todo-list li.in_progress .st{color:var(--warn)}
+.permission-card{border:1px solid var(--warn);border-radius:10px;margin-top:8px;padding:10px 12px;animation:pop-in var(--dur-2) var(--ease)}
+.permission-card .t{font-size:12px;color:var(--warn);font-weight:600;margin-bottom:4px}
+.permission-card .d{font-family:var(--mono);font-size:11px;color:var(--fg-dim);margin-bottom:8px;word-break:break-all}
+.permission-card .row{display:flex;gap:8px}
+.usage-line{margin-top:8px;font-family:var(--mono);font-size:10.5px;color:var(--fg-dim);display:flex;gap:14px}
+.composer{border-top:1px solid var(--line);padding:10px 14px;background:var(--bg-elev)}
+.composer .fake-input{border:1px solid var(--line);border-radius:10px;padding:8px 12px;color:var(--fg-dim);font-size:12.5px;background:var(--bg);margin-bottom:8px}
+.notice{border:1px dashed var(--warn);border-radius:10px;padding:8px 12px;font-size:12px;color:var(--warn);margin-bottom:10px;display:none}
+.notice.show{display:block}
+
+/* ============ 中栏：传输层 ============ */
+.lane-box{border:1px solid var(--line);border-radius:11px;padding:10px 12px;background:var(--bg-elev);margin-bottom:10px}
+.lane-box .t{font-size:11.5px;color:var(--fg-dim);display:flex;justify-content:space-between;margin-bottom:6px}
+.lane-box .t b{color:var(--fg);font-weight:600}
+.arrow{display:flex;align-items:center;gap:8px;margin:6px 0;color:var(--fg-dim);font-size:11px;font-family:var(--mono)}
+.arrow .line{flex:1;height:1px;background:var(--line);position:relative;overflow:visible}
+.arrow .packet{position:absolute;top:-4px;width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent);opacity:0}
+.arrow .packet.go{animation:packet-go var(--dur-2) linear}
+.arrow .packet.back{background:var(--info);box-shadow:0 0 8px var(--info);animation:packet-back var(--dur-2) linear}
+@keyframes packet-go{0%{left:0;opacity:1}100%{left:calc(100% - 8px);opacity:1}}
+@keyframes packet-back{0%{left:calc(100% - 8px);opacity:1}100%{left:0;opacity:1}}
+.frame-chip{font-family:var(--mono);font-size:10.5px;border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:6px;padding:3px 8px;margin:3px 0;background:var(--bg);animation:pop-in var(--dur-1) var(--ease);word-break:break-all}
+.frame-chip.up{border-left-color:var(--warn)}
+.frame-chip.ctrl{border-left-color:var(--info)}
+.frame-chip .seq{color:var(--accent);margin-right:6px}
+.meter{height:8px;border-radius:99px;background:var(--bg-elev2);overflow:hidden;margin:4px 0 2px}
+.meter>i{display:block;height:100%;background:linear-gradient(90deg,var(--ok),var(--warn) 70%,var(--err));width:0%;transition:width var(--dur-2) var(--ease)}
+.meter-label{font-family:var(--mono);font-size:10px;color:var(--fg-dim);display:flex;justify-content:space-between}
+.batcher{border:1px solid var(--line);border-radius:11px;padding:10px 12px;background:var(--bg-elev)}
+.batcher .window{min-height:34px;border:1px dashed var(--line);border-radius:8px;padding:4px;display:flex;flex-wrap:wrap;gap:3px;margin:6px 0}
+.batcher .window .cell{font-family:var(--mono);font-size:9.5px;background:var(--accent-soft);color:var(--accent);border-radius:4px;padding:1px 5px;animation:pop-in var(--dur-1) var(--ease)}
+.batcher.flushed .window{border-color:var(--ok)}
+.batcher .flush-info{font-family:var(--mono);font-size:10px;color:var(--fg-dim)}
+
+/* ============ 右栏：双流事件检视 ============ */
+.stream-tabs{display:flex;gap:6px;margin-bottom:8px}
+.ev{font-family:var(--mono);font-size:10.8px;border-bottom:1px solid var(--line);padding:4px 2px;display:flex;gap:8px;animation:pop-in var(--dur-1) var(--ease)}
+.ev .id{color:#5a7680;width:34px;flex:none;text-align:right}
+.ev .ty{flex:none;font-weight:600}
+.ev .pl{color:var(--fg-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ev.g-session .ty{color:var(--accent)} .ev.g-permission .ty{color:var(--warn)}
+.ev.g-compaction .ty{color:var(--info)} .ev.g-terminal .ty{color:var(--err)}
+.ev.g-todo .ty{color:#9a8fd9} .ev.g-delta .ty{color:var(--fg-dim)}
+.ev.replayed{background:#4f9a880f}
+.ev.dropped{opacity:.45}
+
+/* ============ 底部：编排时间线 ============ */
+footer{border-top:1px solid var(--line);background:var(--bg-elev);padding:8px 16px;display:flex;align-items:center;gap:6px;overflow-x:auto;flex:0 0 auto}
+.step{flex:none;display:flex;align-items:center;gap:5px;font-size:11px;color:var(--fg-dim)}
+.step .dot{width:16px;height:16px;border-radius:50%;border:1px solid var(--line);display:grid;place-items:center;font-size:9px;font-family:var(--mono)}
+.step.active{color:var(--accent)} .step.active .dot{border-color:var(--accent);background:var(--accent-soft)}
+.step.done .dot{border-color:var(--ok);color:var(--ok)}
+.step .sep{color:#33454c;margin:0 2px}
+.legend{font-size:10.5px;color:var(--fg-dim);margin-left:14px;flex:none}
+.legend b{color:var(--accent)}
+@media (max-width:1100px){main{grid-template-columns:1fr;overflow-y:auto}.panel{border-right:none;border-bottom:1px solid var(--line)}body{overflow:auto}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">MX</div>
+  <b>MCODE 事件流 · SSE 全链路复现</b><span class="dim">依据《2026-10-16-MCODE前端模型工作流全链路逆向分析报告》</span>
+  <div class="spacer"></div>
+  <button class="btn scenario active" data-s="normal">① 正常一轮</button>
+  <button class="btn scenario" data-s="permission">② 权限打断</button>
+  <button class="btn scenario" data-s="resume">③ 断线续传</button>
+  <div class="spacer"></div>
+  <button class="btn primary" id="btnRun">▶ 发送</button>
+  <button class="btn" id="btnPause">⏸ 暂停</button>
+  <select class="btn" id="selSpeed"><option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="2">2x</option><option value="4">4x</option></select>
+  <button class="btn" id="btnReset">↺ 重置</button>
+</header>
+
+<main>
+  <!-- 左：聊天复现 -->
+  <section class="panel">
+    <div class="panel-head"><b>渲染层 · 对话</b><span>zustand store → React</span><div class="spacer"></div><span class="dim" id="phaseLabel">空闲</span></div>
+    <div class="panel-body" id="chatBody"></div>
+    <div class="notice" id="resumeNotice">⚠ 连接断开 —— 正在以 <code>GET /session/:id/resume?after_message_id=…</code> 增量续传（游标之后的事件，重放帧标灰）</div>
+    <div class="composer">
+      <div class="fake-input" id="fakeInput">输入消息…（点击「▶ 发送」触发模拟）</div>
+      <div class="usage-line"><span id="usageTokens">tokens: —</span><span id="usageCursor">cursor: —</span><span id="usageMsgId">msgId: —</span></div>
+    </div>
+  </section>
+
+  <!-- 中：传输层 -->
+  <section class="panel">
+    <div class="panel-head"><b>传输层 · 帧协议 v2</b><span>MessagePort 上的伪 HTTP/SSE</span></div>
+    <div class="panel-body">
+      <div class="lane-box">
+        <div class="t"><b>渲染层 fetch-shim</b><span>合成标准 Response</span></div>
+        <div class="arrow">request 帧<span class="line"><i class="packet" id="pk1"></i></span>POST /session/:id/message</div>
+        <div class="arrow">stream-chunk<span class="line"><i class="packet back" id="pk2"></i></span>SSE 字节流（seq 单调递增）</div>
+      </div>
+      <div class="lane-box">
+        <div class="t"><b>credit 流控窗口</b><span>默认 16 / 上限 256</span></div>
+        <div class="meter"><i id="creditBar"></i></div>
+        <div class="meter-label"><span id="creditText">outstanding 0</span><span>seq 去重 + resume 校验</span></div>
+      </div>
+      <div class="batcher" id="batcherBox">
+        <div class="t"><b>消费端 batcher</b><span>16ms 窗口 / 64KB 强刷</span></div>
+        <div class="window" id="batchWindow"></div>
+        <div class="flush-info" id="batchInfo">等待事件…</div>
+      </div>
+      <div class="lane-box">
+        <div class="t"><b>主进程（仅端口搬运）</b><span>数据面不经过</span></div>
+        <div class="frame-chip ctrl">webContents.postMessage('runtime:transport-port') → MessageChannelMain</div>
+        <div class="frame-chip ctrl">runtime:transport-lost → 端口吊销广播</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 右：双流检视 -->
+  <section class="panel">
+    <div class="panel-head"><b>事件检视 · 双流</b><span>Turn 流 + GlobalEvent 流</span></div>
+    <div class="panel-body">
+      <div class="stream-tabs">
+        <button class="btn scenario active" data-stream="turn">Turn 流（每轮 SSE）</button>
+        <button class="btn scenario" data-stream="ge">GlobalEvent 流（34 种闭目录）</button>
+      </div>
+      <div id="turnLog"></div>
+      <div id="geLog" style="display:none"></div>
+    </div>
+  </section>
+</main>
+
+<footer id="timeline"></footer>
+
+<script>
+"use strict";
+/* ================= 虚拟时钟调度器（支持暂停/倍速） ================= */
+const SCHED = { playing: true, speed: 1, vTime: 0, lastReal: performance.now(), queue: [] };
+setInterval(() => {
+  const now = performance.now();
+  if (SCHED.playing) { SCHED.vTime += (now - SCHED.lastReal) * SCHED.speed; while (SCHED.queue.length && SCHED.queue[0].at <= SCHED.vTime) { SCHED.queue.shift().fn(); } }
+  SCHED.lastReal = now;
+}, 30);
+const sleep = (ms) => new Promise((res) => SCHED.queue.push({ at: SCHED.vTime + ms, fn: res }));
+const fire = (ms, fn) => SCHED.queue.push({ at: SCHED.vTime + ms, fn });
+
+/* ================= 状态 ================= */
+const S = { seq: 0, cursor: 0, msgId: "temp-local-1", realMsgId: null, todos: null, credit: 0, batch: [], batchBytes: 0, batchTimer: null, turnRows: 0, geRows: 0, pendingPermission: null };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const short = (o, n = 72) => { const s = JSON.stringify(o); return s.length > n ? s.slice(0, n) + "…" : s; };
+
+/* ================= 底部时间线 ================= */
+const STEPS = ["发送/准入", "session.start", "delta/thinking 流", "tool_call", "todo/usage", "落库定稿", "session_status", "[DONE]+终态兜底"];
+function renderTimeline(activeIdx) {
+  $("timeline").innerHTML = STEPS.map((s, i) =>
+    `<span class="step ${i < activeIdx ? "done" : i === activeIdx ? "active" : ""}"><span class="dot">${i < activeIdx ? "✓" : i + 1}</span>${s}</span><span class="sep">▸</span>`
+  ).join("") + `<span class="legend">参照：<b>§5 编排规则</b> · 准入 409 六种拒绝码 → permission 双通道打断 → 终态双通道兜底 → after_message_id 增量恢复</span>`;
+}
+renderTimeline(-1);
+
+/* ================= 传输层可视化 ================= */
+function packet(dir) { const pk = $(dir === "go" ? "pk1" : "pk2"); pk.classList.remove("go", "back"); void pk.offsetWidth; pk.classList.add(dir === "go" ? "go" : "back"); }
+function setCredit(n) { S.credit = n; $("creditBar").style.width = Math.min(100, (n / 256) * 100) + "%"; $("creditText").textContent = "outstanding " + n; }
+
+/* ================= batcher（16ms / 64KB） ================= */
+function batchPush(kind) {
+  S.batch.push(kind); S.batchBytes += kind.length + 12;
+  $("batchWindow").insertAdjacentHTML("beforeend", `<span class="cell">${esc(kind)}</span>`);
+  $("batchInfo").textContent = `窗口累积 ${S.batch.length} 帧 / ${(S.batchBytes / 1024).toFixed(1)} KB`;
+  if (!S.batchTimer) S.batchTimer = fire(16, batchFlush);
+  if (S.batchBytes > 64 * 1024) { clearTimeout(S.batchTimer); batchFlush(); }
+}
+function batchFlush() {
+  S.batchTimer = null;
+  if (!S.batch.length) return;
+  $("batcherBox").classList.add("flushed");
+  $("batchInfo").textContent = `→ store.commit(${S.batch.length} 帧 / ${(S.batchBytes / 1024).toFixed(1)} KB) @16ms`;
+  const n = S.batch.length; S.batch = []; S.batchBytes = 0;
+  fire(240, () => { $("batchWindow").innerHTML = ""; $("batcherBox").classList.remove("flushed"); });
+  return n;
+}
+
+/* ================= 事件检视 ================= */
+function geGroup(t) {
+  if (t === "session.finish" || t === "session.error" || t === "session.abort") return "g-terminal";
+  if (t.startsWith("permission")) return "g-permission";
+  if (t.includes("compaction") || t === "session.llm_retry") return "g-compaction";
+  if (t.includes("todo")) return "g-todo";
+  if (t === "delta" || t === "thinking" || t === "text") return "g-delta";
+  return "g-session";
+}
+function logTurn(type, payload, opts = {}) {
+  S.seq++; S.cursor = S.seq;
+  const cls = ["delta", "thinking", "text"].includes(type) ? "g-delta" : ["session_status"].includes(type) ? "g-terminal" : "g-session";
+  $("turnLog").insertAdjacentHTML("beforeend",
+    `<div class="ev ${cls} ${opts.replay ? "replayed" : ""}"><span class="id">${S.seq}</span><span class="ty">${esc(type)}</span><span class="pl">${esc(short(payload))}</span></div>`);
+  const log = $("turnLog"); if (log.children.length > 220) log.removeChild(log.firstChild);
+  if (!opts.silent) { $("usageCursor").textContent = "cursor: " + S.cursor; }
+  packet("back"); setCredit(Math.min(256, S.credit + 1)); fire(80, () => setCredit(Math.max(0, S.credit - 1)));
+}
+function logGE(type, payload, opts = {}) {
+  $("geLog").insertAdjacentHTML("beforeend",
+    `<div class="ev ${geGroup(type)} ${opts.replay ? "replayed" : ""}"><span class="id">G${++S.geRows && S.geRows}</span><span class="ty">${esc(type)}</span><span class="pl">${esc(short(payload))}</span></div>`);
+  const log = $("geLog"); if (log.children.length > 220) log.removeChild(log.firstChild);
+}
+
+/* ================= 聊天渲染 ================= */
+function setPhase(t) { $("phaseLabel").textContent = t; }
+function addUserMsg(text) {
+  $("chatBody").insertAdjacentHTML("beforeend", `<div class="msg user">${esc(text)}</div>`);
+  scrollChat();
+}
+function addAssistantMsg() {
+  S.msgId = "temp-local-" + Math.floor(Math.random() * 900 + 100);
+  $("chatBody").insertAdjacentHTML("beforeend",
+    `<div class="msg assistant" id="liveMsg"><div class="role">assistant · <span class="msg-id" id="msgIdTag">${esc(S.msgId)}</span><span>临时 id → 落库后 swapMsgId 换绑</span></div><div class="stream-text" id="liveText"></div><span class="cursor" id="liveCursor"></span><div id="liveBlocks"></div></div>`);
+  scrollChat();
+}
+function appendText(t) { const el = $("liveText"); if (el) { el.textContent += t; scrollChat(); } }
+function addBlock(kind, head, bodyHtml, cls = "") {
+  $("liveBlocks")?.insertAdjacentHTML("beforeend", `<div class="block ${cls}">${head}${bodyHtml ? `<div class="block-body">${bodyHtml}</div>` : ""}</div>`);
+  scrollChat();
+}
+function toolCard(name, args) {
+  addBlock("tool", `<div class="block-head">🔧 ${esc(name)}<span class="pill running" id="toolPill">START</span></div>`, esc(args));
+}
+function toolDone(ok, result) {
+  const pill = $("toolPill"); if (pill) { pill.className = "pill " + (ok ? "done" : "failed"); pill.textContent = ok ? "FINISHED" : "FAILED"; }
+  const bodies = document.querySelectorAll("#liveBlocks .block:last-child .block-body");
+  if (bodies.length) bodies[bodies.length - 1].textContent = result;
+  scrollChat();
+}
+function setTodos(todos) {
+  S.todos = todos;
+  const html = `<div class="block"><div class="block-head">📋 todo_updated<span class="pill done">SYSTEM_EVENT</span></div><div class="block-body"><ul class="todo-list">${todos.map(t => `<li class="${t.status}"><span class="st">${t.status}</span><span class="text">${esc(t.content)}</span></li>`).join("")}</ul></div></div>`;
+  const old = $("liveBlocks")?.querySelector(".todo-list"); if (old) old.closest(".block").remove();
+  $("liveBlocks")?.insertAdjacentHTML("beforeend", html);
+  scrollChat();
+}
+function addPermissionCard(req) {
+  S.pendingPermission = req;
+  $("liveBlocks")?.insertAdjacentHTML("beforeend",
+    `<div class="permission-card" id="permCard"><div class="t">🔐 permission.ask（双通道：流内 + 全局）</div><div class="d">tool: ${esc(req.tool)} · args: ${esc(req.args)}</div><div class="row"><button class="btn primary" id="permAllow">允许（allowOnce）</button><button class="btn" id="permDeny">拒绝（deny）</button></div></div>`);
+  scrollChat();
+  return new Promise((resolve) => {
+    $("permAllow").onclick = () => resolve("allowOnce");
+    $("permDeny").onclick = () => resolve("deny");
+  });
+}
+function scrollChat() { const b = $("chatBody"); b.scrollTop = b.scrollHeight; }
+function rebindMsgId() {
+  S.realMsgId = "msg_" + Math.random().toString(36).slice(2, 10);
+  const tag = $("msgIdTag"); if (tag) { tag.textContent = S.realMsgId + "  (swapMsgId ✓)"; tag.classList.add("rebind"); }
+  $("usageMsgId").textContent = "msgId: " + S.realMsgId;
+}
+
+/* ================= 场景脚本 ================= */
+const TEXT_A = "好的，我先查看仓库当前状态，确认分支与未提交改动，然后执行你要求的重构。";
+const TEXT_B = "已完成。本次共调整 3 个文件：分支 feature/v0.11.54 上新增事件缓冲，回归测试全绿。";
+const DELAY_CHUNKS = (text, n) => { const size = Math.ceil(text.length / n); const out = []; for (let i = 0; i < text.length; i += size) out.push(text.slice(i, i + size)); return out; };
+
+async function runCommon(head) {
+  $("btnRun").disabled = true;
+  setPhase("准备任务"); renderTimeline(0);
+  addUserMsg("帮我把运行日志模块重构成独立 sidecar 进程");
+  await sleep(200);
+  packet("go");
+  logTurn("request", { method: "POST", url: "/session/:id/message" }, { silent: true });
+  await sleep(260);
+  logTurn("response-start", { seq: 0 }, { silent: true });
+  logTurn("heartbeat", { type: 10 });                       // 首帧心跳 §3.2
+  await sleep(160);
+  logGE("session.start", { turnId: "turn-8f21", source: "user" });
+  setPhase("任务已受理"); renderTimeline(1);
+  await sleep(140);
+  addAssistantMsg();
+  $("usageMsgId").textContent = "msgId: " + S.msgId + "（临时）";
+  await head();
+}
+async function streamText(text, n, dt) {
+  for (const chunk of DELAY_CHUNKS(text, n)) {
+    logTurn("delta", { content: chunk, chunkIndex: 0 });
+    batchPush("delta");
+    appendText(chunk);
+    setPhase("生成回复"); renderTimeline(2);
+    await sleep(dt);
+  }
+}
+async function finishSequence() {
+  setPhase("落库定稿"); renderTimeline(5);
+  logTurn("message_persisted", { type: 2, agent_message: { msgId: "…", role: "assistant" } });
+  batchFlush();
+  rebindMsgId();                                             // temp→real swapMsgId §5.5
+  await sleep(220);
+  logTurn("messageActionDeltas", { frames: 1 }, { silent: true });
+  await sleep(200);
+  setPhase("finished"); renderTimeline(7);
+  logTurn("session_status", { type: "finished" });
+  logTurn("done", "[DONE]");
+  logGE("session.finish", { status: "finished", turnId: "turn-8f21" });  // 终态双通道兜底 §5.3
+  const c = $("liveCursor"); if (c) c.remove();
+  $("btnRun").disabled = false;
+}
+
+const SCENARIOS = {
+  async normal() {
+    await runCommon(async () => {
+      await streamText(TEXT_A, 7, 130);
+      await sleep(180);
+      logTurn("thinking", { content: "先查 git 状态再决定改动顺序…" }); batchPush("thinking");
+      addBlock("think", `<div class="block-head thinking">💭 thinking<span class="pill done">流式块</span></div>`, "先查 git 状态再决定改动顺序…", "thinking");
+      renderTimeline(3); await sleep(420);
+      logTurn("tool_call", { toolCallId: "tc_01", toolName: "bash", toolCallStatus: "START", toolCallArgs: "git status --short" });
+      toolCard("bash", "git status --short"); setPhase("工具执行中");
+      await sleep(560);
+      logTurn("tool_call", { toolCallId: "tc_01", toolCallStatus: "FINISHED", toolCallResultData: " M server/agent.mjs\n?? server/sidecar.mjs" });
+      toolDone(true, " M server/agent.mjs\n?? server/sidecar.mjs");
+      renderTimeline(4); await sleep(260);
+      const todos = [{ content: "盘点运行日志调用点", status: "completed" }, { content: "抽出 sidecar 进程骨架", status: "in_progress" }, { content: "回归验证", status: "pending" }];
+      logTurn("todo_updated", { todos: "…(3)" }); setTodos(todos);   // todo = SYSTEM_EVENT 包 §3.3
+      await sleep(240);
+      logTurn("usage", { inputTokens: 18230, outputTokens: 642, cacheRead: 12200 });
+      $("usageTokens").textContent = "tokens: in 18.2k / out 642";
+      await sleep(300);
+      await streamText(TEXT_B, 6, 120);
+      await finishSequence();
+    });
+  },
+
+  async permission() {
+    await runCommon(async () => {
+      await streamText(TEXT_A, 6, 130);
+      await sleep(180);
+      logTurn("tool_call", { toolCallId: "tc_02", toolName: "bash", toolCallStatus: "START", toolCallArgs: "npm publish --dry-run" });
+      toolCard("bash", "npm publish --dry-run"); setPhase("等待授权"); renderTimeline(3);
+      await sleep(300);
+      // permission 双通道打断 §5.2
+      logTurn("permission_asked", { permission: { requestId: "pr_91", toolName: "bash" } });
+      logGE("permission.ask", { requestId: "pr_91", toolName: "bash", ruleContents: ["bash(npm publish)"], allowAlwaysSupported: true });
+      const decision = await addPermissionCard({ tool: "bash", args: "npm publish --dry-run" });   // 交互点：等待用户点击
+      logTurn("permission_replied", { requestId: "pr_91", decision });
+      logGE("permission.resolved", { requestId: "pr_91", decision });   // Goal 态 executionWait.reason='permission' 解除
+      const card = $("permCard"); if (card) { card.querySelector(".d").textContent += "  → " + decision; card.querySelector(".row").remove(); }
+      await sleep(320);
+      logTurn("tool_call", { toolCallId: "tc_02", toolCallStatus: "FINISHED", toolCallResultData: "--dry-run passed (0 vulnerabilities)" });
+      toolDone(true, "--dry-run passed (0 vulnerabilities)");
+      renderTimeline(4); await sleep(260);
+      await streamText("授权通过，发布演练完成：包体积 2.1MB，未发现漏洞。可以执行正式发布。", 5, 120);
+      await finishSequence();
+    });
+  },
+
+  async resume() {
+    await runCommon(async () => {
+      await streamText(TEXT_A, 6, 130);
+      await sleep(160);
+      logTurn("tool_call", { toolCallId: "tc_03", toolName: "read", toolCallStatus: "START", toolCallArgs: "server/agent.mjs" });
+      toolCard("read", "server/agent.mjs");
+      await sleep(380);
+      logTurn("tool_call", { toolCallId: "tc_03", toolCallStatus: "FINISHED", toolCallResultData: "// …412 lines" });
+      toolDone(true, "// …412 lines");
+      await streamText("看完代码了，sidecar 的拆分方案是：", 4, 120);
+      /* ── 模拟断线 ── */
+      setPhase("连接断开");
+      $("resumeNotice").classList.add("show");
+      logTurn("stream-error", { code: 499, message: "aborted (transport lost)" });
+      await sleep(1100);
+      /* ── 增量续传：GET /session/:id/resume?after_message_id ── */
+      setPhase("增量续传中");
+      logTurn("resume", { url: "GET /session/:id/resume", after_message_id: S.cursor }, { silent: true });
+      logTurn("delta", { content: "① 进程托管复用 utility-process-manager", replay: true });
+      batchPush("delta(replay)"); appendText("① 进程托管复用 utility-process-manager");
+      await sleep(200);
+      logTurn("delta", { content: "② 事件面沿用帧协议 v2 的 credit 流控", replay: true });
+      batchPush("delta(replay)"); appendText("② 事件面沿用帧协议 v2 的 credit 流控");
+      $("resumeNotice").classList.remove("show");
+      setPhase("生成回复"); renderTimeline(2);
+      await sleep(260);
+      const btn = document.createElement("button");
+      btn.className = "btn"; btn.style.marginTop = "8px"; btn.textContent = "注入 resume_overflow（增量溢出 → 全量快照重取）";
+      btn.onclick = () => {
+        logTurn("resume_overflow", { reason: "cursor-out-of-window" });
+        setPhase("全量重取");
+        Array.from($("chatBody").querySelectorAll(".msg.assistant")).forEach(m => m.style.outline = "1px solid var(--accent)");
+        logGE("session.queue.updated", { status: "snapshot-refetch" });
+        setTimeout(() => { setPhase("生成回复"); btn.remove(); }, 900);
+      };
+      $("chatBody").appendChild(btn);
+      await streamText("③ 空闲回收与保活策略交给 CacheWarmer。", 4, 120);
+      await finishSequence();
+    });
+  },
+};
+
+/* ================= 控制与复位 ================= */
+function resetUI() {
+  SCHED.queue.length = 0;
+  S.seq = 0; S.cursor = 0; S.realMsgId = null; S.geRows = 0;
+  $("chatBody").innerHTML = ""; $("turnLog").innerHTML = ""; $("geLog").innerHTML = "";
+  $("batchWindow").innerHTML = ""; $("batchInfo").textContent = "等待事件…";
+  $("usageTokens").textContent = "tokens: —"; $("usageCursor").textContent = "cursor: —"; $("usageMsgId").textContent = "msgId: —";
+  $("resumeNotice").classList.remove("show");
+  setCredit(0); setPhase("空闲"); renderTimeline(-1);
+  $("btnRun").disabled = false;
+}
+let currentScenario = "normal";
+document.querySelectorAll(".scenario[data-s]").forEach((b) => b.onclick = () => {
+  document.querySelectorAll(".scenario[data-s]").forEach((x) => x.classList.remove("active"));
+  b.classList.add("active"); currentScenario = b.dataset.s; resetUI();
+});
+document.querySelectorAll("[data-stream]").forEach((b) => b.onclick = () => {
+  document.querySelectorAll("[data-stream]").forEach((x) => x.classList.remove("active"));
+  b.classList.add("active");
+  $("turnLog").style.display = b.dataset.stream === "turn" ? "" : "none";
+  $("geLog").style.display = b.dataset.stream === "ge" ? "" : "none";
+});
+$("btnRun").onclick = () => { if (!$("btnRun").disabled) SCENARIOS[currentScenario](); };
+$("btnPause").onclick = () => { SCHED.playing = !SCHED.playing; $("btnPause").textContent = SCHED.playing ? "⏸ 暂停" : "▶ 继续"; };
+$("selSpeed").onchange = (e) => { SCHED.speed = Number(e.target.value); };
+$("btnReset").onclick = resetUI;
+resetUI();
+</script>
+</body>
+</html>

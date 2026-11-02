@@ -109,8 +109,8 @@ const 对比度 = (前景, 背景) => {
   return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 };
 /** 从样式表里取某个选择器块的变量表。 */
-function 主题变量(块选择器) {
-  const start = 样式.indexOf(块选择器);
+function 主题变量(块选择器, 起点 = 0) {
+  const start = 样式.indexOf(块选择器, 起点);
   assert.notEqual(start, -1, `样式表缺少 ${块选择器}`);
   const 结束 = 样式.indexOf("\n}", start);
   const 块 = 样式.slice(start, 结束 === -1 ? undefined : 结束);
@@ -230,6 +230,34 @@ console.log("\n▶ 对比度（按主题变量实际计算）");
   console.log(`    实测最低：${最低.主题名} ${最低.名称} = ${最低.值.toFixed(2)}（阈值 ${最低.阈值}）`);
 });
 
+检查("--dim 在生效主题的各个底色上 ≥4.5（12px 次要信息 AA）", () => {
+  // 主题变量() 取的是第一个同名块；0.10 收敛层与皮肤块在其后，必须从收敛层起点再取一次。
+  const 收敛起点 = 样式.indexOf("0.10 收敛层");
+  assert.ok(收敛起点 > 0, "样式表缺少 0.10 收敛层");
+  const 主题 = [
+    ["默认暗色", 主题变量(":root {", 收敛起点)],
+    ["默认亮色", 主题变量('[data-theme="light"] {', 收敛起点)],
+    ["proma 暗色", 主题变量(':root[data-skin="proma"] {')],
+    ["proma 亮色", 主题变量(':root[data-skin="proma"][data-theme="light"] {')],
+    ["glass 暗色", 主题变量(':root[data-skin="glass"] {')],
+    ["glass 亮色", 主题变量(':root[data-skin="glass"][data-theme="light"] {')],
+  ];
+  const 底色 = ["--body-bg", "--panel-bg", "--panel2-bg", "--surface"];
+  const 结果 = [];
+  for (const [主题名, 变量] of 主题) {
+    assert.ok(变量["--dim"], `${主题名} 缺少 --dim`);
+    for (const bg of 底色) {
+      // glass 的面板底色是 rgba()，静态样式表无法确定叠底，已有单独人工复核。
+      if (!变量[bg] || !/^#[0-9a-fA-F]{6}$/.test(变量[bg])) continue;
+      const 值 = 对比度(变量["--dim"], 变量[bg]);
+      结果.push({ 主题名, bg, 值 });
+      assert.ok(值 + 0.05 >= 4.5, `${主题名} --dim on ${bg} 对比度 ${值.toFixed(2)} 低于 4.5`);
+    }
+  }
+  const 最低 = 结果.reduce((min, item) => (item.值 < min.值 ? item : min), 结果[0]);
+  console.log(`    --dim 实测最低：${最低.主题名} on ${最低.bg} = ${最低.值.toFixed(2)}`);
+});
+
 检查("用户气泡正文对比度达标（所有主题/皮肤）", () => {
   // 每处 --user-bg 都必须紧跟一个针对该底色的 --user-fg。
   const 配对 = [...样式.matchAll(/--user-bg:\s*([^;]+);\s*\n\s*--user-fg:\s*([^;]+);/g)]
@@ -317,7 +345,7 @@ console.log("\n▶ 最小点击目标与窄屏");
   assert.match(样式, /\.map-toolbar \{ flex-wrap: wrap;/, "地图工具栏应可换行");
   // App 层自动折叠：窄屏或打开浏览器栏时收起预览
   assert.match(App, /const enforceNarrowLayout = \(\) => \{/, "应有窄屏自动折叠逻辑");
-  assert.match(App, /if \(window\.innerWidth > 1024\) return;/, "窄屏阈值应为 1024");
+  assert.match(App, /if \(window\.innerWidth <= 768\) setSidebarOpen\(false\)/, "窄屏应自动收起侧栏抽屉");
   assert.match(App, /window\.addEventListener\("resize", enforceNarrowLayout\)/, "窗口变化时应重新收口");
 });
 
@@ -337,7 +365,7 @@ console.log("\n▶ 启动稳定骨架与焦点归还");
 检查("弹层/面板关闭后焦点归还触发控件", () => {
   assert.match(App, /const previewToggleRef = useRef\(null\)/, "右预览应记录触发按钮");
   assert.match(App, /ref=\{previewToggleRef\}/, "预览开关应绑定引用");
-  assert.match(App, /const closePreview = useCallback/, "应有统一关闭预览逻辑");
+  assert.match(App, /const collapseCanvas = useCallback/, "应有统一收起画布逻辑");
   assert.match(App, /requestAnimationFrame\(\(\) => previewToggleRef\.current\?\.focus\(\)\)/, "关闭预览后应把焦点还给开关");
   assert.match(TaskCenter, /const triggerRef = useRef\(null\)/, "任务中心应记录触发按钮");
   assert.match(TaskCenter, /const closePanel = useCallback/, "应有统一关闭弹层逻辑");

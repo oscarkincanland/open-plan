@@ -10,10 +10,20 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SERVER_ENTRY = path.join(ROOT, "server", "index.mjs");
 const LOG_DIR = path.join(ROOT, "运行日志");
 const LOG_FILE = path.join(LOG_DIR, "服务监督.log");
+// 本地运行配置（.env 已被 .gitignore 忽略）：Node 原生加载，缺失即跳过。
+// 只用于本地开启默认关闭的能力（如 OAW_CAD_PREVIEW/OAW_CAD_AGENT），不改变代码默认值；
+// 显式传入的环境变量优先（loadEnvFile 不覆盖已有 process.env）。
+try {
+  const envFile = path.join(ROOT, ".env");
+  if (fs.existsSync(envFile)) process.loadEnvFile(envFile);
+} catch {}
 const HOST = String(process.env.HOST || "127.0.0.1");
 const PORT = Number.parseInt(String(process.env.PORT || "3002"), 10);
 const HEALTH_INTERVAL_MS = 15_000;
-const HEALTH_TIMEOUT_MS = 4_000;
+// 健康检查超时必须比控制面超时（client/src/api.js CONTROL_TIMEOUT_MS=8s）更宽松：
+// 多标签/多窗口轮询会话列表时，控制请求排队数秒是正常负载，4s 会频繁误判
+// “服务卡住”并重启，反而中断正在执行的任务、把 Run 打成 recovering。
+const HEALTH_TIMEOUT_MS = 10_000;
 const HEALTH_FAILURE_LIMIT = 3;
 // 冷启动实测已漂移到 ~100s：宽限期必须覆盖它，否则健康检查在启动期内连判 3 次失败，
 // 监督器会把"还在启动"的服务反复 SIGTERM 重启（表现为永远起不来）。
@@ -23,6 +33,46 @@ const RAPID_RESTART_WINDOW_MS = 30_000;
 const RAPID_RESTART_LIMIT = 5;
 const RESTART_DELAY_MS = 3_000;
 const RESTART_COOLDOWN_MS = 30_000;
+// 监督器单实例锁：重复 `npm start` / 多个终端同时启动时，只允许一个监督器存活。
+// 否则两个监督器会各自拉起子进程，端口竞争导致 EADDRINUSE、服务在重启窗口内不可用。
+const SUPERVISOR_LOCK_FILE = process.env.OAW_SUPERVISOR_LOCK || path.join(ROOT, ".oaw", "服务监督.lock");
+
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+export function readSupervisorLock() {
+  try {
+    const value = JSON.parse(fs.readFileSync(SUPERVISOR_LOCK_FILE, "utf8"));
+    return value && Number(value.pid) ? value : null;
+  } catch { return null; }
+}
+
+export function liveSupervisorLock() {
+  const lock = readSupervisorLock();
+  return lock && lock.pid !== process.pid && pidAlive(Number(lock.pid)) ? lock : null;
+}
+
+export function acquireSupervisorLock() {
+  const live = liveSupervisorLock();
+  if (live) return { ok: false, pid: Number(live.pid) };
+  try {
+    fs.mkdirSync(path.dirname(SUPERVISOR_LOCK_FILE), { recursive: true });
+    fs.writeFileSync(SUPERVISOR_LOCK_FILE, JSON.stringify({ pid: process.pid, port: PORT, startedAt: new Date().toISOString() }), "utf8");
+    process.once("exit", releaseSupervisorLock);
+    return { ok: true, pid: process.pid };
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) };
+  }
+}
+
+export function releaseSupervisorLock() {
+  try {
+    const lock = readSupervisorLock();
+    if (lock && Number(lock.pid) === process.pid) fs.rmSync(SUPERVISOR_LOCK_FILE, { force: true });
+  } catch {}
+}
 
 export function isHealthyPayload(payload, expectedVersion = "") {
   if (!payload || typeof payload !== "object" || payload.ok !== true) return false;
@@ -327,8 +377,22 @@ async function main() {
     return;
   }
   const foreground = process.argv.includes("--foreground");
-  if (foreground) await launchForeground();
-  else await launchBackground();
+  if (foreground) {
+    // 单实例：重复 `npm start` / 多终端同时启动时，不创建第二个监督器。
+    const lock = acquireSupervisorLock();
+    if (!lock.ok) {
+      log(`已有监督器在运行（PID ${lock.pid || "unknown"}），本次不重复启动。`);
+      return;
+    }
+    await launchForeground();
+    return;
+  }
+  const live = liveSupervisorLock();
+  if (live) {
+    log(`已有监督器在运行（PID ${live.pid}），跳过后台启动。`);
+    return;
+  }
+  await launchBackground();
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

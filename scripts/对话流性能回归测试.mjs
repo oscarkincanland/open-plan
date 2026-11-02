@@ -67,7 +67,7 @@ try {
   assert.match(runSummarySource, /className=\{`product-card\$\{item\.deliverable \? " deliverable" : ""\}\$\{item\.confirmed \? "" : " provisional"\}`\}/, "本轮产物应渲染为文件卡片（图标 + 名称 + 类型，未确认的带待确认标记）");
   assert.match(runSummarySource, /className="product-card-badge">交付/, "产物卡片应标记交付项");
   assert.match(runSummarySource, /className="product-card-open"[\s\S]{0,200}?>打开</, "产物卡片应有“打开”按钮");
-  assert.match(runSummarySource, /productCards\.map/, "产物卡片应来自统一去重集合（不再截断成 6 项）");
+  assert.match(runSummarySource, /productCards\.slice\(0, 6\)\.map/, "产物卡片首屏最多 6 个，其余走产物面板");
   // 归属分层：write-ledger/已验收 = 已确认；"本轮写过 + 窗口内变更" = 待确认（可见但标注）；
   // 完全没有写入证据的差异才是"未归属线索"，不参与产物计数。
   assert.match(runSummarySource, /const attributedProducts = useMemo\(\(\) => products\.filter\(\(item\) => item\.attributed\)/, "产物应按归属过滤（未归属线索不计数）");
@@ -82,10 +82,11 @@ try {
   assert.doesNotMatch(runSummarySource, /run-summary-details/, "文件清单不再另起一层折叠，统一进结果区页签");
   assert.match(runSummarySource, /run-result-fold \$\{embedded \? "embedded" : ""\}/, "嵌入式结果摘要应服从消息级统一折叠");
   assert.doesNotMatch(runSummarySource, /任务轮次 \{m\.runIndex/, "常规对话结果头不显示任务轮次计数");
-  assert.match(runSummarySource, /useEffect\(\(\) => setSummaryOpen\(runIsLive\), \[runIsLive\]\)/, "任务结束时应自动收起结论与工具轨迹");
+  assert.match(runSummarySource, /useEffect\(\(\) => setSummaryOpen\(runIsLive \|\| hasSummaryText\), \[runIsLive, hasSummaryText\]\)/, "运行中/有总结时展开，过程仍单独折叠");
   assert.match(runSummarySource, /!embedded && \(trace\?\.tools\?\.length > 0/, "嵌入式结果卡不重复渲染工具明细");
   assert.match(runSummarySource, /run-trace-step-heading/, "独立结果摘要仍保留有序工具时间线");
-  assert.match(runSummarySource, /const fallbackSummary = finalAnswer \? ""/, "已有最终答案时结果卡不再重复展示结论");
+  assert.match(runSummarySource, /const summaryText = String\(completion\?\.summary/, "总结优先取 complete_task.summary");
+  assert.match(runSummarySource, /const fallbackSummary = summaryText \|\|/, "总结不再因存在最终答复而隐藏");
   assert.match(chatPanelSource, /foldedProcessBlocks/, "思考、工具及运行中的进度播报应并入消息级过程卡");
   assert.match(chatPanelSource, /message-process-scroll/, "过程内容应在一个有界滚动容器中回看");
   assert.match(chatPanelSource, /<ExecutionFlow \{\.\.\.messageExecutionFlow\} embedded \/>/, "去重后的 SSE 轨迹应嵌入消息过程卡");
@@ -248,13 +249,15 @@ try {
   assert.match(widthStyles, /\.center-chat-slot \.msg\.user \.msg-main \{ width: auto; max-width: min\(78%, 540px\); \}/, "用户气泡应随内容收缩（不再固定宽度）");
   assert.match(widthStyles, /\.center-chat-slot \.msg\.user \.bubble \{ width: fit-content/, "用户气泡应为内容宽度");
   // 会话流改版（2026-10-31）把硬编码 880px 改为统一的内容列令牌：
-  // .chat-body > .msg 由 --msg-content-max（min(100%, 720px)）限宽并居中。
-  assert.match(widthStyles, /--msg-content-max: min\(100%, 720px\)/, "消息内容列宽度应由 --msg-content-max 统一");
-  assert.match(widthStyles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,240}?max-width: var\(--msg-content-max\)/, "消息列应改用统一内容宽度令牌并按令牌居中");
+  // --msg-content-max（min(100%, 760px)）与 --chat-content-w（760px）同源。
+  assert.match(widthStyles, /--msg-content-max: min\(100%, 760px\)/, "消息内容列宽度应由 --msg-content-max 统一");
+  assert.match(widthStyles, /--chat-content-w: 760px/, "对话内容列宽度应由 --chat-content-w 统一");
+  assert.match(widthStyles, /\.center-chat-slot \.msg-main \{ width: 100%; max-width: var\(--chat-content-w\); \}/, "agent 回答区与输入区共用同一内容列（--chat-content-w）");
   assert.doesNotMatch(widthStyles, /\.msg-main > \.message-process-fold \{ order: -1; \}/, "执行过程顺序应由 DOM 表达，不再用 flex order 制造视觉/阅读顺序错位");
   assert.match(chatPanelSource, /\{renderMessageBlocks\(\)\}[\s\S]{0,300}?<div className="msg-blocks">|className="msg-blocks">[\s\S]{0,60}?\{renderMessageBlocks\(\)\}/, "过程折叠与正文按输出顺序同列渲染");
   assert.match(widthStyles, /\.msg-main > \.msg-header \{ margin-bottom: 2px; order: -2; \}/, "标题应保持在最上方");
-  assert.match(widthStyles, /\.msg \.markdown-body \{ line-height: 1\.65; \}/, "对话正文行距应收紧");
+  // 规范 v2.0 §4：对话正文 14px / 行高 1.75（与 ZCode 同口径），不再压到 1.65。
+  assert.match(widthStyles, /\.msg \.markdown-body \{ font-size: 14px; line-height: 1\.75; \}/, "对话正文应为 14px / 1.75");
   assert.match(chatPanelSource, /待审批：\{approvalLabel\}/, "待审批应显示在输入栏");
   assert.match(chatPanelSource, /待回答：\{String\(ask\.question/, "待回答应显示在输入栏");
   assert.match(chatPanelSource, /\/api\/agent\/approval/, "输入栏可直接提交审批");
@@ -283,7 +286,7 @@ try {
   assert.match(chatPanelSource, /未被分组消费的提醒消息同样不渲染/, "渲染层应有提醒兜底过滤");
   assert.match(chatPanelSource, /const open = typeof override === "boolean" \? override : isLiveFold;/, "运行中的过程片段默认展开，其余收成一行摘要（用户点过按用户选择）");
   assert.match(chatPanelSource, /else if \(!isTaskLive && processWasLiveRef\.current\)[\s\S]{0,120}setProcessOpenMap\(\{\}\)/, "运行完成后统一收束过程卡");
-  assert.match(chatPanelSource, /const \[summaryOpen, setSummaryOpen\] = useState\(runIsLive\)/, "运行中展开、结束后收起总结");
+  assert.match(chatPanelSource, /const \[summaryOpen, setSummaryOpen\] = useState\(runIsLive \|\| hasSummaryText\)/, "运行中/有总结时默认展开，过程单独折叠");
   assert.match(serverSource, /function officeResults\(response\)/, "Excel 解析应兼容 Office CLI 结果结构");
   assert.match(serverSource, /s\.path \|\| `\/\$\{s\.name\}`/, "Excel 工作表读取应使用 DOM 路径");
   assert.match(serverSource, /ext === "xlsx" \|\| ext === "xls"/, "Excel 预览应同时识别 xlsx/xls");
@@ -391,7 +394,7 @@ try {
   assert.match(appSource, /const previewAutoOpen = appearance\.previewAutoOpen;/, "App 应消费自动打开预览策略");
   assert.match(appSource, /if \(previewAutoOpen === "never"\) return;/, "never 应从不自动打开");
   assert.match(appSource, /if \(previewAutoOpen === "deliverable"\) \{[\s\S]{0,200}?acceptanceStatus/, "deliverable 应只认通过验收的交付文件");
-  assert.match(appSource, /\}, \[activeTab, currentWorkspace, flushFileChanges, open, previewAutoOpen, previewOpen, tabs, threadId\]\)/, "策略变化、焦点守卫与刷新合并应立即生效（依赖数组）");
+  assert.match(appSource, /\}, \[activeCanvasTab\?\.kind, activeTab, currentWorkspace, flushFileChanges, open, previewAutoOpen, tabs, threadId\]\)/, "策略变化、焦点守卫与刷新合并应立即生效（依赖数组）");
 
   // 卡死防护：同源 HTTP/1.1 只有 6 个连接槽位，SSE 长期占位。
   // App 不再为"浏览器活跃"常驻第二条 /api/browser/stream，改由对话流的工具事件驱动。

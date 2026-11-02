@@ -9,11 +9,18 @@
 
 const RELOAD_AT_KEY = "oaw_chunk_reload_at";
 const RAPID_RELOAD_WINDOW_MS = 60_000;
-export const STALE_CHUNK_PATTERN = /dynamically imported module|Importing a module script failed|Loading chunk \d+ failed|Failed to fetch dynamically imported module|error loading dynamically imported module/i;
+export const STALE_CHUNK_PATTERN = /dynamically imported module|Importing a module script failed|Loading chunk \d+ failed|Failed to fetch dynamically imported module|error loading dynamically imported module|ChunkLoadError/i;
+// 构建后旧页面的懒加载模块缺失时，React.lazy 解析命名空间会抛
+// “Cannot read properties of undefined (reading 'default')”；
+// 只有 stack 指向构建产物 /assets/*.js 时才认定为分包问题，避免把普通组件 bug 当成刷新。
+const MODULE_DEFAULT_PATTERN = /Cannot read properties of undefined \(reading 'default'\)/;
+const ASSET_STACK_PATTERN = /\/assets\/[^)\s"'?]+\.js/;
 
 /** 该错误是否属于“分包已过期/加载失败”（而非组件自身逻辑错误）。 */
 export function isStaleChunkError(error) {
-  return STALE_CHUNK_PATTERN.test(String(error?.message || error || ""));
+  const message = String(error?.message || error || "");
+  if (STALE_CHUNK_PATTERN.test(message)) return true;
+  return MODULE_DEFAULT_PATTERN.test(message) && ASSET_STACK_PATTERN.test(String(error?.stack || ""));
 }
 
 /** 自动刷新一次以加载最新前端；返回 false 表示刚恢复过、本次不再刷新。 */

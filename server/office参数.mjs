@@ -100,10 +100,10 @@ export function collectReferencedPaths(args = []) {
     return REFERENCE_EXT.test(text);
   };
   const list = Array.isArray(args) ? args : [];
-  // 命令的目标文件（args[1]，如 `add 报告.docx / ...` 的 报告.docx）不是"引用"——
-  // 它是要被写入的目标，本身可能尚不存在（create 场景）。把它当引用会导致
-  // 预检误报"文件缺失"并阻断本该成功的命令。
-  const targetIndex = 1;
+  // 只有 create 的目标文件（args[1]）不是"引用"——它本来就尚不存在，当引用会把
+  // 预检误判成"文件缺失"并阻断 create。add/set/batch 的目标是既有文档，物化它
+  // 无害且历史契约要求把它算作引用（Review 报错修复回归测试依赖这一点）。
+  const targetIndex = String(list[0] || "").toLowerCase() === "create" ? 1 : -1;
   list.forEach((token, index) => {
     const text = String(token);
     if (index === targetIndex) return;

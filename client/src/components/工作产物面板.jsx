@@ -22,7 +22,39 @@ function isSuspectedArtifact(artifact) {
 // O-P4：原 EventStream 组件（tab === "events"）为不可达死代码，已整体移除；
 // 事件轨迹由「改动」页签的 Run 事件与子代理详情面板承接。
 
-function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", artifactScopePinned = false, onArtifactScopeChange, refreshToken = 0, onOpenFile }) {
+const COMPLETION_LABELS = { success: "已达成", partial: "部分完成", blocked: "受阻", failed: "失败" };
+
+function ArtifactSummaryCard({ run }) {
+  if (!run) return null;
+  const completion = run.completion && typeof run.completion === "object" ? run.completion : {};
+  const status = String(completion.status || run.status || "");
+  const summary = String(completion.summary || run.summary || "").trim();
+  const incomplete = Array.isArray(completion.incomplete) ? completion.incomplete.filter(Boolean).slice(0, 6) : [];
+  const blockers = Array.isArray(completion.blockers) ? completion.blockers.filter(Boolean).slice(0, 6) : [];
+  return (
+    <div className="artifact-run-summary" aria-label="任务摘要">
+      <div className="artifact-run-summary-head">
+        <span className="artifact-eyebrow">任务摘要</span>
+        <span className={`artifact-run-status ${status || "unknown"}`}>{COMPLETION_LABELS[status] || statusText[run.status] || "进行中"}</span>
+        {run.verificationStatus && <small>验证：{run.verificationStatus}</small>}
+      </div>
+      <p className="artifact-run-summary-text">{summary || "本轮尚未记录完成结论；任务结束后会在这里显示 complete_task 的结论。"}</p>
+      {incomplete.length > 0 && <div className="artifact-run-summary-list"><strong>未完成项</strong>{incomplete.map((item) => <span key={item}>{item}</span>)}</div>}
+      {blockers.length > 0 && <div className="artifact-run-summary-list warn"><strong>阻塞</strong>{blockers.map((item) => <span key={item}>{item}</span>)}</div>}
+    </div>
+  );
+}
+
+function ArtifactSegmentBar({ segment = "artifacts", linksCount = 0, onSegmentChange }) {
+  return (
+    <div className="artifact-segment-bar" role="tablist" aria-label="工作产物视图">
+      <button type="button" role="tab" aria-selected={segment !== "links"} className={segment !== "links" ? "active" : ""} onClick={() => onSegmentChange?.("artifacts")}>产物</button>
+      <button type="button" role="tab" aria-selected={segment === "links"} className={segment === "links" ? "active" : ""} onClick={() => onSegmentChange?.("links")}>链接{linksCount > 0 ? ` ${linksCount}` : ""}</button>
+    </div>
+  );
+}
+
+export function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", artifactScopePinned = false, onArtifactScopeChange, refreshToken = 0, onOpenFile, links = [], segment = "artifacts", onSegmentChange }) {
   const [runs, setRuns] = useState([]);
   const [published, setPublished] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -169,6 +201,16 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
     );
   };
 
+  if (segment === "links") {
+    return (
+      <div className="preview-artifact-panel artifact-workspace">
+        <ArtifactSegmentBar segment={segment} linksCount={links.length} onSegmentChange={onSegmentChange} />
+        <ArtifactSummaryCard run={latestRun} />
+        <LinksPanel links={links} />
+      </div>
+    );
+  }
+
   return (
     <div className="preview-artifact-panel artifact-workspace">
       <div className="artifact-workspace-head">
@@ -182,6 +224,8 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
         </div>
         <button className="btn-sm" onClick={refresh} disabled={loading} title="刷新产物"><Icon name="refresh" size={12} /> {loading ? "读取中…" : "刷新"}</button>
       </div>
+      <ArtifactSegmentBar segment={segment} linksCount={links.length} onSegmentChange={onSegmentChange} />
+      <ArtifactSummaryCard run={latestRun} />
       <div className="artifact-summary-grid">
         <div><strong>{entries.length}</strong><span>{artifactScope === "run" ? (artifactScopePinned ? "历史轮次产物" : "本轮产物") : "会话产物"}</span></div>
         <div title="仅统计：格式验收通过、所属任务成功结束、且尚未固定的文件"><strong>{readyCount}</strong><span>待固定</span></div>
@@ -244,7 +288,7 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
  * 改动页签（W3/C02 + C03）：“本轮”指一次 Run，不再跨轮聚合。
  * 默认看最新一轮；可在同一会话的运行列表里切换（会话历史独立展示）。
  */
-function RunChangesPanel({ workspace, projectId, currentSessionId, selectedRunId = "", refreshToken = 0, onOpenFile }) {
+export function RunChangesPanel({ workspace, projectId, currentSessionId, selectedRunId = "", refreshToken = 0, onOpenFile }) {
   const [pickedRunId, setPickedRunId] = useState(selectedRunId || "");
   const [runs, setRuns] = useState([]);
   const [latestRun, setLatestRun] = useState(null);
@@ -363,7 +407,7 @@ function RunChangesPanel({ workspace, projectId, currentSessionId, selectedRunId
 
 // v0.13.2：Links 页签只展示从助手消息提取的外部链接；去重在 ChatPanel 完成，
 // 这里只负责展示与打开/复制，不把网页内容当作可信指令执行。
-function LinksPanel({ links = [] }) {
+export function LinksPanel({ links = [] }) {
   const [copied, setCopied] = useState("");
   const copy = async (url) => {
     try {
@@ -409,11 +453,11 @@ function LinksPanel({ links = [] }) {
   );
 }
 
-export default function WorkProductPanel({ tab, clientId, threadId, workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", artifactScopePinned = false, onArtifactScopeChange, refreshToken = 0, onOpenFile, subagentBlock = null, links = [], children }) {
+export default function WorkProductPanel({ tab, clientId, threadId, workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", artifactScopePinned = false, onArtifactScopeChange, artifactSegment = "artifacts", onArtifactSegmentChange, refreshToken = 0, onOpenFile, subagentBlock = null, links = [], children }) {
   // B03：右栏页签 —— 预览 / 改动 / 产物 / 链接；subagent 为按需打开的「子代理详情」页
   if (tab === "subagent") return <子代理详情面板 block={subagentBlock} />;
   if (tab === "changes") return <RunChangesPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} selectedRunId={selectedRunId} refreshToken={refreshToken} onOpenFile={onOpenFile} />;
-  if (tab === "artifacts") return <ArtifactPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} selectedRunId={selectedRunId} artifactScope={artifactScope} artifactScopePinned={artifactScopePinned} onArtifactScopeChange={onArtifactScopeChange} refreshToken={refreshToken} onOpenFile={onOpenFile} />;
+  if (tab === "artifacts") return <ArtifactPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} selectedRunId={selectedRunId} artifactScope={artifactScope} artifactScopePinned={artifactScopePinned} onArtifactScopeChange={onArtifactScopeChange} refreshToken={refreshToken} onOpenFile={onOpenFile} links={links} segment={artifactSegment} onSegmentChange={onArtifactSegmentChange} />;
   if (tab === "links") return <LinksPanel links={links} />;
   return children;
 }
