@@ -29,6 +29,14 @@ export function readFlagDefault(name, defaultValue = true) {
   return defaultValue;
 }
 
+/**
+ * 读取一个显式关闭值（"0"/"off"/"false"/"no"）：用于"默认开、env 可退出"的开关。
+ * 统一走 readFlagDefault，保证「默认开、显式可退出」只有一处语义来源。
+ */
+function readOffFlag(name) {
+  return !readFlagDefault(name, true);
+}
+
 function readPositiveInt(name, fallback) {
   const raw = Number.parseInt(String(process.env?.[name] ?? ""), 10);
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
@@ -223,6 +231,33 @@ export const RUNTIME_FLAGS = Object.freeze({
   /** H4-5 观测导出 */
   observabilityExport: readFlag("OAW_OBSERVABILITY_EXPORT") || HARNESS_ALIGN,
 });
+
+/**
+ * Office 写作闸门的唯一判定（ADR 0012）。
+ *
+ * 背景：写作能力（模板路由 / 场景参数 / 版式令牌 / 规则闸门 / 澄清闸门 / 执行闸门）
+ * 在 2026-10-27～28 已完整落地，但启用条件是全局开关 `OAW_OFFICE_FORMAT`，出厂即关。
+ * 实测 run_05198175 证实：闸门断电时模型完全不知道存在编辑流水线与澄清闸门，
+ * 改用 officecli 裸命令试探，88 次工具调用 20 次失败（23%）、55 回合、0 产物。
+ *
+ * 因此把启用条件从"全局开关"收窄为"路由"：只在真正要写文档的场景通电，
+ * 非写作路由与基线逐字一致；`OAW_OFFICE_FORMAT=off` 显式退出即回退。
+ *
+ * @param {string} route 四路由之一：template / edit / generate / read
+ * @param {string} mode  任务模式：agent / chat / review
+ * @returns {boolean} 是否启用 Office 写作闸门
+ */
+export function officeGateActiveFor(route = "", mode = "agent") {
+  // 显式退出优先于任何路由判断（ADR 0012 §4 的回滚路径）。
+  if (readOffFlag("OAW_OFFICE_FORMAT")) return false;
+  const r = String(route || "").trim();
+  const m = String(mode || "agent").trim();
+  // 只有"要写文档"的路由才通电：模板写作与新生成。
+  if (r !== "template" && r !== "generate") return false;
+  // Chat 与 Review 是只读模式，任何情况下都不通电。
+  if (m === "chat" || m === "review") return false;
+  return true;
+}
 
 /** /api/status 下发形态：布尔与数值分开，前端只读布尔位。 */
 export function runtimeFlagsSnapshot() {

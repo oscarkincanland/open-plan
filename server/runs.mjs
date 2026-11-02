@@ -1462,11 +1462,14 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
  * R1：收尾判定必须以客观完成证据为准。agent 已经产出终稿（finalText /
  * assistant_final / agent_end）时，重启只是打断了收尾流程，不能把任务判成失败；
  * 否则用户会看到“活干完了、产物也有，但任务显示失败”。证据判定同时用于
- * 长期未收口（默认 6 小时）的 Run，避免 11 天悬挂只能等下一次重启清理。
+ * 长期未收口（默认 30 分钟）的 Run，避免长任务只能等下一次重启清理。
+ *
+ * 计划 2026-10-31-003 / T-08：阈值从 6 小时降到 30 分钟。实测写报告这类长任务
+ * 会跑 50+ 回合、跨越数十分钟，等 6 小时才收尾意味着用户长时间看到"执行中"。
  */
 const RECOVER_MAX_RUNNING_MS = Math.max(
-  30 * 60_000,
-  Number.parseInt(process.env.OAW_RUN_RECOVER_MAX_AGE_MS || String(6 * 60 * 60_000), 10) || 6 * 60 * 60_000,
+  5 * 60_000,
+  Number.parseInt(process.env.OAW_RUN_RECOVER_MAX_AGE_MS || String(30 * 60_000), 10) || 30 * 60_000,
 );
 
 function runCompletionEvidence(run) {

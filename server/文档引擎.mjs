@@ -382,9 +382,127 @@ export function canCreateNatively(args) {
   return null;
 }
 
-async function createNativeDocx(target) {
+/**
+ * 标准样式集（计划 2026-10-31-003 / N-04）。
+ *
+ * 背景：docx@9 默认只生成 Title/Heading1-6 等 16 个样式，**没有 Normal**。
+ * 实测 run_05198175 里模型先 `create` 文档、再用 `set --prop style=Normal` 正文，
+ * 于是报 "Style 'Normal' not found"；随后改用 `raw-set` 手写 styles.xml XPath，
+ * 连环失败 7 次并最终把 OOXML 写坏（Malformed XML）。
+ *
+ * 这里在建档时预置一套交通规划常用样式（正文/标题 1-4/标题/目录/页眉页脚），
+ * 让模型可以直接引用样式 id，不必手写 styles.xml。
+ */
+export const STANDARD_DOCX_STYLE_IDS = Object.freeze([
+  "Normal", "Heading1", "Heading2", "Heading3", "Heading4",
+  "Title", "TOC1", "TOC2", "Header", "Footer",
+]);
+
+/**
+ * docx@9 默认生成的样式 id（探针实测）。
+ *
+ * 关键：Heading1-6 / Title 等**已经存在**于默认样式集里。若把它们再写进
+ * `paragraphStyles`，styles.xml 会出现重复的 styleId，OfficeCLI 读文档时
+ * 直接抛 "An item with the same key has already been added. Key: Heading1"，
+ * 整份文档的 view issues / validate 全废（实测踩过）。
+ *
+ * 因此：内置样式走 `default.*` 覆盖（改的是同一份定义，不会重复），
+ * 只有默认集里没有的（Normal / TOC1 / TOC2 / Header / Footer）才用 paragraphStyles 新增。
+ */
+export const DOCX_BUILTIN_STYLE_IDS = Object.freeze([
+  "Title", "Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6",
+  "Strong", "ListParagraph", "Hyperlink", "FootnoteReference", "FootnoteText",
+  "FootnoteTextChar", "EndnoteReference", "EndnoteText", "EndnoteTextChar",
+]);
+
+/**
+ * 构建 docx 的 styles 配置。
+ *
+ * @param {object} [opts] { scene } 场景参数，决定字号/字体/行距
+ */
+export function buildStandardDocxStyles(opts = {}) {
+  const scene = typeof opts.scene === "string" ? getScene(opts.scene) : opts.scene || getScene("report");
+  const bodyPt = resolveFontSize(opts.bodyPt ?? scene?.font?.bodyPt, 12);
+  const h1Pt = resolveFontSize(opts.h1Pt ?? scene?.font?.h1Pt, 16);
+  const h2Pt = resolveFontSize(opts.h2Pt ?? scene?.font?.h2Pt, 14);
+  const h3Pt = resolveFontSize(opts.h3Pt ?? scene?.font?.h3Pt, 14);
+  const line = resolveLineSpacing(opts.line ?? scene?.spacing?.line, "normal");
+  const bodyFont = opts.bodyFont || scene?.font?.body || "SimSun";
+  const headingFont = opts.headingFont || scene?.font?.heading || "SimHei";
+  const firstLine = Number(opts.firstLine ?? scene?.spacing?.firstLine ?? 480) || 0;
+
+  const run = (font, pt, bold = false) => ({
+    font: { ascii: font, eastAsia: font, hAnsi: font },
+    size: pt.halfPoints,
+    bold,
+  });
+  const spacing = { line: line.line, lineRule: line.rule };
+  const smallRun = { font: { ascii: bodyFont, eastAsia: bodyFont, hAnsi: bodyFont }, size: bodyPt.halfPoints - 2 };
+
+  return {
+    // ---- 内置样式：覆盖 docx 的默认定义（不会产生重复 styleId）----
+    default: {
+      document: { run: run(bodyFont, bodyPt), paragraph: { spacing } },
+      title: {
+        run: run(headingFont, h1Pt, true),
+        paragraph: { alignment: "center", spacing: { before: 240, after: 240 } },
+      },
+      heading1: {
+        run: run(headingFont, h1Pt, true),
+        paragraph: { spacing: { ...spacing, before: 240, after: 120 }, outlineLevel: 0 },
+      },
+      heading2: {
+        run: run(headingFont, h2Pt, true),
+        paragraph: { spacing: { ...spacing, before: 200, after: 100 }, outlineLevel: 1 },
+      },
+      heading3: {
+        run: run(headingFont, h3Pt, true),
+        paragraph: { spacing: { ...spacing, before: 160, after: 80 }, outlineLevel: 2 },
+      },
+      heading4: {
+        run: run(headingFont, h3Pt, true),
+        paragraph: { spacing: { ...spacing, before: 140, after: 70 }, outlineLevel: 3 },
+      },
+    },
+    // ---- 默认集里没有的样式：新增 ----
+    paragraphStyles: [
+      {
+        id: "Normal", name: "Normal", basedOn: "Normal", next: "Normal", quickFormat: true,
+        run: run(bodyFont, bodyPt),
+        paragraph: { spacing, indent: firstLine ? { firstLine } : undefined },
+      },
+      {
+        id: "TOC1", name: "toc 1", basedOn: "Normal", next: "Normal",
+        run: run(bodyFont, bodyPt, true),
+        paragraph: { spacing, indent: {} },
+      },
+      {
+        id: "TOC2", name: "toc 2", basedOn: "Normal", next: "Normal",
+        run: run(bodyFont, bodyPt),
+        paragraph: { spacing, indent: { left: 420 } },
+      },
+      {
+        id: "Header", name: "header", basedOn: "Normal", next: "Normal",
+        run: smallRun,
+        paragraph: { alignment: "center", spacing, indent: {} },
+      },
+      {
+        id: "Footer", name: "footer", basedOn: "Normal", next: "Normal",
+        run: smallRun,
+        paragraph: { alignment: "center", spacing, indent: {} },
+      },
+    ],
+  };
+}
+
+async function createNativeDocx(target, opts = {}) {
   const { Document, Packer, Paragraph } = await import("docx");
-  const buffer = await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph("")] }] }));
+  const styles = opts.noStyles ? undefined : buildStandardDocxStyles(opts);
+  const doc = new Document({
+    ...(styles ? { styles } : {}),
+    sections: [{ children: [new Paragraph("")] }],
+  });
+  const buffer = await Packer.toBuffer(doc);
   await fs.promises.writeFile(target, buffer);
 }
 
@@ -643,7 +761,23 @@ export async function buildDocxFromBlocks(target, blocks = [], options = {}) {
       }
     : undefined;
 
-  const doc = new Document({ sections: [{ properties: sectionProperties, headers, footers, children }] });
+  // N-04：同样预置标准样式集——流水线产物也要能被 `set --prop style=Normal` 之类引用，
+  // 否则用户拿到成品后再让 Agent 精修时会重演"Style not found"。
+  const docStyles = options.noStyles ? undefined : buildStandardDocxStyles({
+    scene: scene || "report",
+    bodyPt: options.style?.bodyPt,
+    h1Pt: options.style?.headingPt,
+    h2Pt: scene?.font?.h2Pt,
+    h3Pt: scene?.font?.h3Pt,
+    line: options.style?.line,
+    firstLine: options.style?.firstLine,
+    bodyFont: options.style?.font,
+    headingFont: scene?.font?.heading,
+  });
+  const doc = new Document({
+    ...(docStyles ? { styles: docStyles } : {}),
+    sections: [{ properties: sectionProperties, headers, footers, children }],
+  });
   await fs.promises.mkdir(path.dirname(target), { recursive: true });
   await fs.promises.writeFile(target, await Packer.toBuffer(doc));
 
@@ -673,11 +807,23 @@ export async function createNativeOffice(args, { cwd = process.cwd() } = {}) {
   const target = resolveInWorkspace(spec.file, root);
   // 越界路径不做原生处理，交回 officecli（那里有工作区边界校验与报错语义）。
   if (!target) return null;
-  // 已存在文件语义归 officecli（原生只负责新建空文件）。
-  if (fs.existsSync(target)) return null;
+  const flags = (Array.isArray(args) ? args : []).map((item) => String(item).trim().toLowerCase());
+  // --force = 覆盖已存在文件。必须走原生，否则 CLI 建的文档没有预置样式集，
+  // 模型随后 set --prop style=Normal 会报 "Style 'Normal' not found"
+  // （实测 L3：pipeline 先建了同名产物，模型再 create --force 就回退到了 CLI）。
+  const force = flags.includes("--force") || flags.includes("-f");
+  // 已存在文件语义归 officecli（原生只负责新建空文件），除非显式 --force。
+  if (!force && fs.existsSync(target)) return null;
   await fs.promises.mkdir(path.dirname(target), { recursive: true });
-  if (spec.format === "docx") await createNativeDocx(target);
-  else if (spec.format === "xlsx") await createNativeXlsx(target);
+  if (spec.format === "docx") {
+    // N-04：默认预置标准样式集；--no-styles 显式退出（保留"空文档"语义）。
+    const noStyles = flags.includes("--no-styles");
+    const sceneArg = flags.find((item) => item.startsWith("--scene="));
+    await createNativeDocx(target, {
+      noStyles,
+      scene: sceneArg ? String(sceneArg).slice("--scene=".length) : "report",
+    });
+  } else if (spec.format === "xlsx") await createNativeXlsx(target);
   else await createNativePptx(target);
   return nativeCreateResult(args.map(String), spec.file, spec.format);
 }

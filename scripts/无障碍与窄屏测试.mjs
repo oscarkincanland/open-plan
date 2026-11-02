@@ -109,8 +109,8 @@ const 对比度 = (前景, 背景) => {
   return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 };
 /** 从样式表里取某个选择器块的变量表。 */
-function 主题变量(块选择器) {
-  const start = 样式.indexOf(块选择器);
+function 主题变量(块选择器, 起点 = 0) {
+  const start = 样式.indexOf(块选择器, 起点);
   assert.notEqual(start, -1, `样式表缺少 ${块选择器}`);
   const 结束 = 样式.indexOf("\n}", start);
   const 块 = 样式.slice(start, 结束 === -1 ? undefined : 结束);
@@ -228,6 +228,34 @@ console.log("\n▶ 对比度（按主题变量实际计算）");
   // 记录实测值，便于人工复核与后续调整
   const 最低 = 结果.reduce((min, item) => (item.值 < min.值 ? item : min), 结果[0]);
   console.log(`    实测最低：${最低.主题名} ${最低.名称} = ${最低.值.toFixed(2)}（阈值 ${最低.阈值}）`);
+});
+
+检查("--dim 在生效主题的各个底色上 ≥4.5（12px 次要信息 AA）", () => {
+  // 主题变量() 取的是第一个同名块；0.10 收敛层与皮肤块在其后，必须从收敛层起点再取一次。
+  const 收敛起点 = 样式.indexOf("0.10 收敛层");
+  assert.ok(收敛起点 > 0, "样式表缺少 0.10 收敛层");
+  const 主题 = [
+    ["默认暗色", 主题变量(":root {", 收敛起点)],
+    ["默认亮色", 主题变量('[data-theme="light"] {', 收敛起点)],
+    ["proma 暗色", 主题变量(':root[data-skin="proma"] {')],
+    ["proma 亮色", 主题变量(':root[data-skin="proma"][data-theme="light"] {')],
+    ["glass 暗色", 主题变量(':root[data-skin="glass"] {')],
+    ["glass 亮色", 主题变量(':root[data-skin="glass"][data-theme="light"] {')],
+  ];
+  const 底色 = ["--body-bg", "--panel-bg", "--panel2-bg", "--surface"];
+  const 结果 = [];
+  for (const [主题名, 变量] of 主题) {
+    assert.ok(变量["--dim"], `${主题名} 缺少 --dim`);
+    for (const bg of 底色) {
+      // glass 的面板底色是 rgba()，静态样式表无法确定叠底，已有单独人工复核。
+      if (!变量[bg] || !/^#[0-9a-fA-F]{6}$/.test(变量[bg])) continue;
+      const 值 = 对比度(变量["--dim"], 变量[bg]);
+      结果.push({ 主题名, bg, 值 });
+      assert.ok(值 + 0.05 >= 4.5, `${主题名} --dim on ${bg} 对比度 ${值.toFixed(2)} 低于 4.5`);
+    }
+  }
+  const 最低 = 结果.reduce((min, item) => (item.值 < min.值 ? item : min), 结果[0]);
+  console.log(`    --dim 实测最低：${最低.主题名} on ${最低.bg} = ${最低.值.toFixed(2)}`);
 });
 
 检查("用户气泡正文对比度达标（所有主题/皮肤）", () => {

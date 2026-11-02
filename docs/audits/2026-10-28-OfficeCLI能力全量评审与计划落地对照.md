@@ -220,3 +220,41 @@ npm run verify
 # E2E 事件（3005 的 .oaw）
 node -e "读取 .oaw/events/事件流.jsonl，筛 tool_gate_denied/pipeline_*/ask_user"
 ```
+
+---
+
+## 8. 计划 2026-10-31-003 落地对照（写作预设流程与防线启动）
+
+> 计划：[docs/plans/2026-10-31-003-Office写作预设流程与防线启动计划.md](../plans/2026-10-31-003-Office写作预设流程与防线启动计划.md)　决策：[0012](../决策记录/0012-Office写作闸门按路由自动启用.md)
+> 触发事件：实测 Run `run_05198175`（写 100 页规划文本）暴露 23% 工具失败率——防线代码在位但默认断电，模型改用 officecli 裸命令试探。
+
+| # | 功能 | 状态 | 落点 |
+|---|---|---|---|
+| N-01 | 闸门按路由自动启用 | ✅ 已落地 | `server/运行开关.mjs` `officeGateActiveFor`；`agent.mjs:4430` / `agent.mjs:1328` / `task.mjs:336` 三处收敛到单一判定 |
+| N-02 | 写作工具书 | ✅ 已落地 | `agent.mjs` officecli 工具描述（WRITING PLAYBOOK / STYLE BAN / KNOWN ERRORS）+ `task.mjs` `OFFICE_WRITING_PLAYBOOK` |
+| N-03 | 编辑流水线进入能力计划 | ✅ 已落地 | `task.mjs` `planTaskCapabilities` 声明 `editorial_pipeline`（preferred/native） |
+| N-04 | create 预置标准样式集 | ✅ 已落地 | `server/文档引擎.mjs` `buildStandardDocxStyles` / `STANDARD_DOCX_STYLE_IDS`；`office规范/officecli检查.mjs` `parseStyleNotFound` |
+| N-05 | 引用预检与物化 | ✅ 已落地 | `server/office参数.mjs` `collectReferencedPaths` 扩展 + `preflightOfficeReferences`；`agent.mjs` 发出 `OFFICE_REF_MISSING` |
+| N-06 | 预算受限收尾 | ✅ 已落地 | `server/运行预算.mjs` `enterRestrictedMode` / `evaluateRestrictedTool`；`agent.mjs` `enforceBudgetRestriction` 接 write/edit/bash/officecli/editorial_pipeline |
+| N-07 | Run 长期未收口阈值 | ✅ 已落地（缩减） | `server/runs.mjs` `RECOVER_MAX_RUNNING_MS` 6h → 30min。原计划设想的"启动清扫"已存在于 `recoverActiveRuns` + `reapStalledRuns`（30 秒周期），无需新增 |
+| N-08 | bash/WSL 预检 | ✅ 已落地 | 新增 `server/环境能力.mjs`；`agent.mjs` bash 入口返回 `bash_unavailable` |
+
+### 8.1 本轮修正的事实偏差
+
+计划 §1 的证据表基于 2026-10-31 23:05 的 Run 快照，其中两项在实施过程中被纠正：
+
+- **Run 终态并非"永挂 running"**：该 Run 于 23:15:34 正常收尾为 `completed`（产物 259KB docx、14 张图、100 页），`reapStalledRuns` 机制本来就健全。N-07 因此缩减为阈值调整。
+- **产物并非 0 登记**：artifacts 含 `规划文本编制说明与续写清单.md`（write-ledger 检出）。模型最终靠试错硬扛过去了——这反而印证了"防线断电时代价极高"。
+
+### 8.2 收口证据
+
+| 项 | 命令/证据 |
+|---|---|
+| 闸门通电 | `npm run test:office-gate-auto` 全绿（覆盖开启/退出/路由边界/工具书/环境预检） |
+| 样式预置 | `npm run test:office-styles` 全绿（含 `create` 产物 styles.xml 实测含 Normal 等 10 个标准样式） |
+| 引用预检 | `npm run test:office-ref-preflight` 全绿（含引号变体回归） |
+| 受限收尾 | `npm run test:budget-restrict` 全绿 |
+| CI 接入 | `.github/workflows/ci.yml` 新增 4 步（闸门通电 / 样式预置 / 引用预检 / 预算受限收尾） |
+| 全量回归 | `npm run verify` EXIT=0；CI 套件本地 32/37（5 个为会话前既有未提交改动导致的基线失败） |
+| L3 live 实测 | 应用内 Work 模式复跑「8页规划文本」六轮：澄清首问 1 次 ✅、editorial_pipeline 调用 2-5 次 ✅、raw-set 0 次 ✅、officecli help 0 次 ✅（基线 15）、产物进 artifacts ✅；工具失败 9-13 次 ⚠️（基线 20，阈值 3，剩余为模型侧输出截断与参数构造错误） |
+| L4 人工验收 | 产物 docx：封面/页眉/页脚页码域/目录域/H1×10+H2×48/3 张表齐备；`officecli validate` 零错误；样式集对照实验证明预置样式使提示数 24→20 |

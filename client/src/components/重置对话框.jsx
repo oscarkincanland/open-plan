@@ -9,7 +9,7 @@ import 提示气泡 from "./提示气泡.jsx";
  * temp    清空临时层：只清本次会话的临时可视化，不动正式层
  * baseline 恢复基线并清理：在 tree 基础上，把基线后新增的正式层移入 .trash
  *
- * 危险级别递增；baseline 必须输入项目名二次确认（ADR 0015）。
+ * 危险级别递增；baseline 必须输入项目名二次确认（ADR 0019）。
  */
 const LEVELS = [
   {

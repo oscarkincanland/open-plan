@@ -131,7 +131,12 @@ test("只读路由不声明 officecli", () => {
   assert.equal(p.routing.officecli, "not_needed");
   assert.equal(p.capabilities.some((c) => c.id === "officecli"), false);
 });
-test("officeFormat 默认 off", () => assert.equal(plan("写一个工可材料").routing.officeFormat, "off"));
+test("officeFormat 写作路由默认 auto（ADR 0012：按路由自动启用）", () => {
+  assert.equal(plan("写一个工可材料").routing.officeFormat, "auto");
+});
+test("officeFormat 非写作路由为 off", () => {
+  assert.equal(plan("看看这份文档").routing.officeFormat, "off");
+});
 test("routeReason 非空", () => assert.ok(plan("写一个工可材料").routeReason.length > 4));
 test("澄清结果随计划下发", () => assert.equal(typeof plan("帮我写个文档").clarification.shouldAsk, "boolean"));
 
@@ -149,7 +154,11 @@ test("只读任务不注入写作路由", () => {
 test("技能计数与 OfficeCLI 约束单一来源（O-28）", () => {
   const source = fs.readFileSync(path.join(ROOT, "server", "agent.mjs"), "utf8");
   assert.equal(source.includes("67 个办公"), false);
-  assert.ok(source.includes("localSkillCatalog().length"));
+  // 技能计数必须来自目录实况，不得写死数字：既接受直接调用形态，
+  // 也接受先取目录再取长度的形态（topSkillsPromptLine 的 catalog.length）。
+  const usesLiveCatalog = /localSkillCatalog\(\)\.length/.test(source)
+    || /const\s+catalog\s*=\s*localSkillCatalog\(\);[\s\S]{0,400}?catalog\.length/.test(source);
+  assert.ok(usesLiveCatalog, "技能计数必须来自 localSkillCatalog() 的实际长度");
   assert.equal((source.match(/ALWAYS operate on office documents/g) || []).length, 1);
 });
 

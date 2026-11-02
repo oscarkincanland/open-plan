@@ -5,8 +5,10 @@
  * 覆盖（文档管理规范 §8「不允许孤儿文档」）：
  *   1. 索引里的每条 ADR 链接都指向真实文件；
  *   2. 目录里的每份 ADR 都被索引收录；
- *   3. 没有 0 字节的 ADR（曾出现 fb4f07ca 把 0012 覆盖成空文件的事故）；
- *   4. 每份 ADR 有状态行，且"被替代"的记录指向存在的替代文档。
+ *   3. 没有 0 字节的 ADR（曾出现 fb4f07ca 把 0016 覆盖成空文件的事故）；
+ *   4. 每份 ADR 有状态行，且"被替代"的记录指向存在的替代文档；
+ *   5. ADR 编号唯一（曾出现两条分支各自占用 0012/0013/0014，Git 只在索引表报冲突，
+ *      同号不同文的 ADR 文件会静默并存，必须由本测试拦下）。
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -72,6 +74,19 @@ test("索引头部状态与更新日期齐全", () => {
   assert.match(indexSrc, /状态：/);
   assert.match(indexSrc, /更新：/);
   assert.match(indexSrc, /基线：/);
+});
+
+test("ADR 编号唯一（不允许同号不同文）", () => {
+  const byNumber = new Map();
+  for (const file of files) {
+    const number = file.slice(0, 4);
+    if (!byNumber.has(number)) byNumber.set(number, []);
+    byNumber.get(number).push(file);
+  }
+  const duplicated = [...byNumber.entries()]
+    .filter(([, list]) => list.length > 1)
+    .map(([number, list]) => `${number}: ${list.join("、")}`);
+  assert.deepEqual(duplicated, [], `以下 ADR 编号重复：${duplicated.join("；")}`);
 });
 
 console.log(failed ? "\n决策记录索引守护测试：存在失败" : "\n决策记录索引守护测试：全部通过");

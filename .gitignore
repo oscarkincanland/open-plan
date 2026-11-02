@@ -41,6 +41,9 @@ _tmp/
 _verify*.mjs
 _t.mjs
 _test*.mjs
+# 根目录一次性探测脚本与运行结果（不进入提交）
+/tmp-*
+/.tmp-*
 _fix_batch.json
 _review_comments*.json
 

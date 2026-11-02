@@ -53,9 +53,10 @@ assert.match(样式, /\.agent-brief-grid/, "知情信息应有样式");
 assert.match(对话面板, /const EMPTY_EXAMPLES = \{/, "应有按模式划分的空白态示例");
 assert.match(对话面板, /chat: \{[\s\S]*?全程不会修改文件/, "Chat 空白态应说明只读");
 assert.match(对话面板, /const emptyExample = EMPTY_EXAMPLES\[normalizeUiMode\(editMode\)\]/, "空白态应按当前模式取示例");
-// 空白态已抽到 欢迎卡片.jsx（v0.13.7 欢迎页卡片），模式标记由 mode 属性传入。
+// 空白态由「欢迎卡片」组件承担：模式标记与示例由 props 传入。
 assert.match(欢迎卡片, /className=\{`chat-empty mode-\$\{mode\}`\}/, "空白态应带模式标记");
-assert.match(对话面板, /<欢迎卡片[\s\S]{0,200}mode=\{normalizeUiMode\(editMode\)\}/, "欢迎卡片应按当前模式渲染");
+assert.match(对话面板, /<欢迎卡片[\s\S]{0,200}?mode=\{normalizeUiMode\(editMode\)\}/, "欢迎卡片应按当前模式渲染");
+assert.match(对话面板, /<欢迎卡片[\s\S]{0,300}?emptyExample=\{emptyExample\}/, "欢迎卡片应取当前模式的示例");
 assert.match(欢迎卡片, /chat-empty-example/, "示例应可点击填入输入框");
 {
   const chatBlock = 对话面板.slice(对话面板.indexOf("chat: {"), 对话面板.indexOf("agent: {"));
