@@ -15,7 +15,7 @@ import ChatTimeline from "./ChatTimeline.jsx";
 import QueueDock from "./QueueDock.jsx";
 import GoalBar from "./GoalBar.jsx";
 import AgentBrainGraph from "./AgentBrainGraph.jsx";
-import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
+import { 提取消息展示文本, 计算展示字符数, 计算权威文本缺口, 追加流式文本块 } from "./流式文本队列.js";
 import { completionLabel, formatDuration, formatTokenCount, reduceRunTrace, reduceTurnMetrics, resolveRunElapsedMs, runToolDetailText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, summarizeTurnMetrics, turnMetricsText, verificationLabel } from "../运行轨迹.js";
 import { associateRunMessages, findAssistantEntryByText, isInternalHarnessMessage, projectLegacyRunSummary, upsertRunSummaryMessage } from "../运行展示投影.js";
 import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, toolIdentity } from "../事件展示.js";
@@ -553,17 +553,7 @@ function formatMsgTime(ts) {
   return sameYear ? `${p(d.getMonth() + 1)}/${p(d.getDate())} ${hm}` : `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${hm}`;
 }
 
-// blocks 辅助：追加/合并文本块、思考块
-function appendTextBlock(blocks, text) {
-  const arr = [...blocks];
-  const last = arr[arr.length - 1];
-  if (last && last.type === "text") {
-    last.text = (last.text || "") + text;
-    return arr;
-  }
-  arr.push({ type: "text", text });
-  return arr;
-}
+// blocks 辅助：追加/合并思考块
 function appendAssistantMessageBoundary(blocks, messageId = "") {
   const arr = [...blocks];
   const last = arr[arr.length - 1];
@@ -1672,7 +1662,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       rememberDisplayedText(active.id, displayed + active.pending);
       patch(active.id, (m) => ({
         ...m,
-        blocks: appendTextBlock([...(m.blocks || [])], active.pending),
+        blocks: 追加流式文本块([...(m.blocks || [])], active.pending),
         status: active.completeWhenDrained ? (agentErrorRef.current ? "error" : "done") : m.status,
       }));
     }
@@ -1694,20 +1684,17 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       state.instant = isMotionReduced();
       const displayed = displayedTextRef.current.get(id) || "";
       if (text === displayed || text === state.fullText) return;
-      if (text.startsWith(state.fullText)) {
-        state.pending += text.slice(state.fullText.length);
-      } else if (text.startsWith(displayed)) {
-        // 动画状态可能已经在 agent_end 后清理，但消息气泡已经显示了前缀。
-        // 只排队缺失后缀，不能把最终全文再次追加到气泡末尾。
-        state.pending = text.slice(displayed.length);
-      } else if (displayed && text.includes(displayed)) {
-        // 权威全文包含已显示文本：只追加缺失后缀，绝不能先清空已显示内容。
-        // 多回合场景下权威全文不是累积文本的前缀，按包含关系判断即可。
-        state.pending += text.slice(text.indexOf(displayed) + displayed.length);
-      } else if (!state.fullText) {
+      // 缺口基准是「已入队文本」state.fullText（= 已揭示 + 待揭示）：
+      // 权威全文与它同粒度，用已揭示长度去裁剪会落到错误偏移。
+      const gap = 计算权威文本缺口(text, state.fullText);
+      if (gap.mode === "suffix") {
+        // 权威全文以已入队文本为前缀：只排队缺失后缀。
+        // 用赋值而非累加——缺口已是相对 fullText 的完整缺失段，累加会重复缓冲里的字符。
+        state.pending = gap.missing;
+      } else if (gap.mode === "replay") {
         // 气泡还没有任何已显示文本：允许从权威全文清空重播。
         // 断线重连或缺失 token 时宁可从最终文本重放，也不能保留截断回复。
-        state.pending = text;
+        state.pending = gap.missing;
         rememberDisplayedText(id, "");
         patch(id, (m) => {
           const blocks = [...(m.blocks || [])];
@@ -1717,7 +1704,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           return { ...m, blocks };
         });
       }
-      // 已有已显示文本但权威全文不包含它（多回合累积）：保留已显示内容、不追加、不清空。
+      // mode=none：已入队内容就是权威全文，不追加。
+      // mode=conflict：权威全文不包含已入队文本（多回合累积），保留已显示内容、不追加、不清空。
       state.fullText = text;
     } else {
       state.fullText += text;
@@ -1741,7 +1729,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         active.pending = active.pending.slice(count);
         rememberDisplayedText(id, (displayedTextRef.current.get(id) || "") + chunk);
         patch(id, (m) => {
-          const blocks = appendTextBlock([...(m.blocks || [])], chunk);
+          // 用追加流式文本块：尾部是工具卡时，若新文本与工具卡之前那段仍属同一句话，
+          // 并回原句而不是另起一段（否则同一句话在界面上会裂成两截）。
+          const blocks = 追加流式文本块([...(m.blocks || [])], chunk);
           return { ...m, blocks };
         });
       }
@@ -1756,6 +1746,30 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       }
     };
     if (!textRevealRafRef.current) textRevealRafRef.current = requestAnimationFrame(reveal);
+  }, [patch, rememberDisplayedText]);
+
+  /**
+   * 立即落定流式文本缓冲（工具边界让路用）。
+   *
+   * 打字机按 90 字/秒分帧揭示，tool_start 事件却同步推入工具卡。
+   * 若不先落定，缓冲里剩余的文字会在工具卡之后才被揭示——此时 blocks 尾部
+   * 已是工具卡，只能新开一块，同一句话在界面上就裂成几截（末段常只剩一两个字）。
+   * 这里先把缓冲落定在工具卡之前，句子保持完整。
+   */
+  const flushTextReveal = useCallback((id) => {
+    const state = textRevealRef.current;
+    if (!id || !state || state.id !== id || !state.pending.length) return;
+    if (textRevealRafRef.current) {
+      cancelAnimationFrame(textRevealRafRef.current);
+      textRevealRafRef.current = null;
+    }
+    const chunk = state.pending;
+    state.pending = "";
+    rememberDisplayedText(id, (displayedTextRef.current.get(id) || "") + chunk);
+    patch(id, (m) => {
+      const blocks = 追加流式文本块([...(m.blocks || [])], chunk);
+      return { ...m, blocks };
+    });
   }, [patch, rememberDisplayedText]);
 
   const finishTextReveal = useCallback((id) => {
@@ -1781,7 +1795,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           if (text || thinking) {
             patch(id, (m) => {
               let blocks = [...(m.blocks || [])];
-              if (text) blocks = appendTextBlock(blocks, text);
+              if (text) blocks = 追加流式文本块(blocks, text);
               if (thinking) blocks = appendThinkingBlock(blocks, thinking);
               return { ...m, blocks };
             });
@@ -2369,6 +2383,9 @@ case "runtime_connecting":
         setAgentPhase("子 Agent 正在处理只读子任务");
         if (!aid) aid = ensureAssistant();
         if (aid) {
+          // 子代理卡会插到文本之前，先把打字机缓冲里未落定的文字并回上一段文本块，
+          // 否则同一句话会被子代理卡切成两截。
+          flushTextReveal(aid);
           if (streamBufRef.current) flushNow(aid);
           const childId = data.childId || data.parentToolCallId || newId();
           const planned = type === "subagent_planned";
@@ -2509,6 +2526,8 @@ case "runtime_connecting":
         // P2-A：编辑流水线阶段条（§5.2）——planner→writer→formatter→evaluator 可折叠展示
         if (!aid) aid = ensureAssistant();
         if (aid) {
+          // 流水线卡会插到文本之前，先把打字机缓冲里未落定的文字并回上一段文本块。
+          if (type === "pipeline_started") flushTextReveal(aid);
           if (streamBufRef.current && type === "pipeline_started") flushNow(aid);
           patch(aid, (m) => {
             const blocks = [...(m.blocks || [])];
@@ -2551,13 +2570,16 @@ case "runtime_connecting":
       case "tool_start":
         if (data.name === "run_subagent") break;
         flushToolOutput();
+        if (!aid) aid = ensureAssistant();
+        // 工具卡要插到文本之前，先把打字机缓冲里未落定的文字并回上一段文本块：
+        // 否则同一句话会被工具卡切成两截（前半句在工具卡前，后半句在工具卡后）。
+        if (aid) flushTextReveal(aid);
         setAgentPhase(`调用工具：${data.name || "处理中"}`);
         // 浏览器"写操作类"工具开始执行时通知外层展开内置浏览器侧栏（O-P3 判定修正：
         // browser_close / browser_tabs / browser_snapshot 等查看或收尾动作不再把面板拉起）。
         // 这条通知替代了原先 App 常驻的 /api/browser/stream（只用它判断"浏览器活跃"），
         // 少一条长连接就少占一个同源连接槽位。
         if (BROWSER_PANEL_OPEN_TOOLS.has(String(data.name || ""))) onBrowserActivity?.();
-        if (!aid) aid = ensureAssistant();
         if (aid) {
           if (streamBufRef.current) flushNow(aid);
           patch(aid, (m) => {
@@ -2632,6 +2654,8 @@ case "runtime_connecting":
       case "ask_user":
         if (!aid) aid = ensureAssistant();
         if (aid) {
+          // 提问卡会插到文本之前，先把打字机缓冲里未落定的文字并回上一段文本块。
+          flushTextReveal(aid);
           if (streamBufRef.current) flushNow(aid);
           setBusy(true);
           setAgentPhase("等待你的回答");
@@ -2664,6 +2688,8 @@ case "runtime_connecting":
       case "tool_approval_request":
         if (!aid) aid = ensureAssistant();
         if (aid) {
+          // 审批卡会插到文本之前，先把打字机缓冲里未落定的文字并回上一段文本块。
+          flushTextReveal(aid);
           if (streamBufRef.current) flushNow(aid);
           setBusy(true);
           setAgentPhase("等待你的审批");
@@ -3200,7 +3226,7 @@ case "runtime_connecting":
       const { text, thinking } = buf;
       patch(id, (m) => {
         let blocks = [...(m.blocks || [])];
-        if (text) blocks = appendTextBlock(blocks, text);
+        if (text) blocks = 追加流式文本块(blocks, text);
         if (thinking) blocks = appendThinkingBlock(blocks, thinking);
         return { ...m, blocks };
       });

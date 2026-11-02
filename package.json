@@ -201,7 +201,8 @@
     "test:file-type-icons": "node scripts/文件类型图标测试.mjs",
     "test:image-paste": "node scripts/图片粘贴测试.mjs",
     "test:code-preview": "node scripts/源码预览测试.mjs",
-    "test:chat-layout": "node scripts/会话流排版回归测试.mjs"
+    "test:chat-layout": "node scripts/会话流排版回归测试.mjs",
+    "test:chat-text-split": "node scripts/会话流文本分块回归测试.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.1.0",
