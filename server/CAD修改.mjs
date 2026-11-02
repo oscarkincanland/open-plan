@@ -20,7 +20,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { decodeDxfText, dwgToDxfText, parseDxf, resolveDwgConverter } from "./CAD解析.mjs";
+import { decodeDxfText, dwgToDxfText, parseDxf, resolveOdaConverter } from "./CAD解析.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -279,7 +279,7 @@ export async function prepareCadEdit(absPath, ops = [], { outputPath = "" } = {}
     return { content: text, targetPath: outputPath || absPath, format: "dxf", changes, note: "" };
   }
   // DWG：能 ODA 回转则原格式写回；否则降级另存 -修改.dxf（AC2）
-  const converter = await resolveDwgConverter();
+  const converter = await resolveOdaConverter();
   if (converter?.kind === "oda") {
     const buffer = await convertDxfViaOda(converter.program, text, "dwg", path.basename(absPath, path.extname(absPath)));
     return { content: buffer, targetPath: outputPath || absPath, format: "dwg", changes, note: "" };

@@ -301,16 +301,23 @@ function round(v) {
 
 /* ==================== DWG 外部转换（AC2：降级链路） ==================== */
 
-let converterCache; // 进程内缓存：探测结果在整个生命周期内复用
+let converterCache; // 进程内缓存：读取探测结果在整个生命周期内复用
+let odaConverterCache; // 进程内缓存：ODA 回转探测（写回 DWG 用）
 
 /**
- * 探测 DWG→DXF 转换工具（非 npm 依赖，零新增依赖约束下的豁免通道）：
- * 1) OAW_DWG_CONVERTER 环境变量显式指定可执行文件路径；
- * 2) 项目内置便携包 bin/libredwg（免安装，下载后即可用）；
- * 3) PATH 中的 dwg2dxf（LibreDWG）或 ODAFileConverter；
+ * 探测 DXF→DWG 回转工具（仅 ODA 能写 DWG；LibreDWG 的 dxf2dwg 对块表兼容性差，不用于写回）：
+ * 1) OAW_DWG_CONVERTER 显式指定且确为 ODA；
+ * 2) 项目内置便携包 bin/oda（免安装，MSI 管理安装解包）；
+ * 3) PATH 中的 ODAFileConverter；
  * 4) Windows 常见安装目录 C:\Program Files\ODA\*\ODAFileConverter.exe。
- * 都找不到返回 null（调用方降级并提示安装），结果进程内缓存。
+ * 找不到返回 null（调用方降级另存 DXF）。
  */
+export async function resolveOdaConverter() {
+  if (odaConverterCache !== undefined) return odaConverterCache;
+  odaConverterCache = await detectOdaConverter();
+  return odaConverterCache;
+}
+
 export async function resolveDwgConverter() {
   if (converterCache !== undefined) return converterCache;
   converterCache = await detectConverter();
@@ -323,6 +330,8 @@ async function detectConverter() {
     if (fs.existsSync(explicit)) return kindOf(explicit);
     return null; // 显式配置了但不存在：视为未安装，不猜测
   }
+  const bundledOda = bundledOdaProgram();
+  if (bundledOda) return { kind: "oda", program: bundledOda };
   const bundled = path.join(PROJECT_DIR, "bin", "libredwg", process.platform === "win32" ? "dwg2dxf.exe" : "dwg2dxf");
   if (fs.existsSync(bundled)) return { kind: "libredwg", program: bundled };
   const finder = process.platform === "win32" ? "where" : "which";
@@ -331,6 +340,37 @@ async function detectConverter() {
       const { stdout } = await execFileAsync(finder, [name], { windowsHide: true, timeout: 5000 });
       const hit = stdout.split(/\r?\n/).map((s) => s.trim()).find((s) => s && fs.existsSync(s));
       if (hit) return kindOf(hit);
+    } catch { /* 未命中继续 */ }
+  }
+  if (process.platform === "win32") {
+    const odaRoot = "C:\\Program Files\\ODA";
+    try {
+      for (const dir of fs.readdirSync(odaRoot)) {
+        const exe = path.join(odaRoot, dir, "ODAFileConverter.exe");
+        if (fs.existsSync(exe)) return { kind: "oda", program: exe };
+      }
+    } catch { /* 目录不存在 */ }
+  }
+  return null;
+}
+
+function bundledOdaProgram() {
+  const exe = path.join(PROJECT_DIR, "bin", "oda", process.platform === "win32" ? "ODAFileConverter.exe" : "ODAFileConverter");
+  return fs.existsSync(exe) ? exe : null;
+}
+
+async function detectOdaConverter() {
+  const explicit = String(process.env?.OAW_DWG_CONVERTER || "").trim();
+  if (explicit) {
+    if (fs.existsSync(explicit) && kindOf(explicit).kind === "oda") return kindOf(explicit);
+  } else {
+    const bundled = bundledOdaProgram();
+    if (bundled) return { kind: "oda", program: bundled };
+    const finder = process.platform === "win32" ? "where" : "which";
+    try {
+      const { stdout } = await execFileAsync(finder, ["ODAFileConverter"], { windowsHide: true, timeout: 5000 });
+      const hit = stdout.split(/\r?\n/).map((s) => s.trim()).find((s) => s && fs.existsSync(s));
+      if (hit) return { kind: "oda", program: hit };
     } catch { /* 未命中继续 */ }
   }
   if (process.platform === "win32") {

@@ -6,11 +6,12 @@
  * 用法: node scripts/CAD解析测试.mjs（package.json: npm run test:cad）
  */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CAD_ENTITY_LIMIT, decodeDxfText, dwgToDxfText, parseDxf, resolveDwgConverter, summarizeCad } from "../server/CAD解析.mjs";
+import { CAD_ENTITY_LIMIT, decodeDxfText, dwgToDxfText, parseDxf, readCadDocument, resolveDwgConverter, resolveOdaConverter, summarizeCad } from "../server/CAD解析.mjs";
 import { applyCadEdit, CAD_EDIT_OPS, prepareCadEdit } from "../server/CAD修改.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -41,6 +42,8 @@ const cadViewerSource = read("client/src/components/CadViewer.jsx");
 const contextSource = read("server/context.mjs");
 const agentSource = read("server/agent.mjs");
 const taskSource = read("server/task.mjs");
+const cadSource = read("server/CAD解析.mjs");
+const editSource = read("server/CAD修改.mjs");
 test("cadPreview/cadAgent 注册且默认关（readFlag，非 readFlagWithDefault）", () => {
   assert.match(flagsSource, /cadPreview: readFlag\("OAW_CAD_PREVIEW"\)/);
   assert.match(flagsSource, /cadAgent: readFlag\("OAW_CAD_AGENT"\)/);
@@ -174,6 +177,16 @@ test("截断摘要带不完整提示", () => {
 });
 
 console.log("\n▶ DWG 转换探测（AC2 降级，环境容忍：本机是否装了转换器均可）");
+test("源码包含内置便携包探测（bin/libredwg，先于 PATH 与 ODA 目录）", () => {
+  assert.match(cadSource, /PROJECT_DIR = path\.resolve\(path\.dirname\(fileURLToPath\(import\.meta\.url\)\), "\.\."\)/);
+  assert.match(cadSource, /path\.join\(PROJECT_DIR, "bin", "libredwg"/);
+});
+test("写入链路使用 ODA 专用探测（读取转换器与写回转换器不混用）", () => {
+  assert.match(cadSource, /export async function resolveOdaConverter/);
+  assert.match(cadSource, /path\.join\(PROJECT_DIR, "bin", "oda"/);
+  assert.match(editSource, /resolveOdaConverter/);
+  assert.doesNotMatch(editSource, /resolveDwgConverter/);
+});
 let converter;
 try {
   converter = await resolveDwgConverter();
@@ -196,6 +209,19 @@ if (converter === undefined) {
     assert.ok(["libredwg", "oda", "unknown"].includes(converter.kind));
     assert.ok(fs.existsSync(converter.program), `程序应存在: ${converter.program}`);
   });
+  const bundled = path.join(root, "bin", "libredwg", process.platform === "win32" ? "dwg2dxf.exe" : "dwg2dxf");
+  const bundledOdaExe = path.join(root, "bin", "oda", process.platform === "win32" ? "ODAFileConverter.exe" : "ODAFileConverter");
+  if (fs.existsSync(bundledOdaExe) && !String(process.env.OAW_DWG_CONVERTER || "").trim()) {
+    test("内置 ODA 存在 → 读取探测优先命中 bin/oda（兼容性优先）", () => {
+      assert.equal(converter.kind, "oda");
+      assert.equal(converter.program, bundledOdaExe);
+    });
+  } else if (fs.existsSync(bundled) && !String(process.env.OAW_DWG_CONVERTER || "").trim()) {
+    test("内置 LibreDWG 存在 → 探测命中 bin/libredwg（免安装路径）", () => {
+      assert.equal(converter.kind, "libredwg");
+      assert.equal(converter.program, bundled);
+    });
+  }
 }
 
 console.log("\n▶ 预览链路接线（步骤 2 源码断言）");
@@ -305,6 +331,39 @@ test("prepareCadEdit 反例：非 CAD 扩展名抛错；空 ops 抛错", async (
     fs.rmSync(dxfTmp, { force: true });
   }
 });
+
+const bundledOda = path.join(root, "bin", "oda", process.platform === "win32" ? "ODAFileConverter.exe" : "ODAFileConverter");
+if (fs.existsSync(bundledOda)) {
+  test("ODA 探测：内置 bin/oda 命中且程序存在", async () => {
+    const oda = await resolveOdaConverter();
+    assert.equal(oda?.kind, "oda");
+    assert.equal(oda.program, bundledOda);
+    assert.ok(fs.existsSync(oda.program));
+  });
+  test("DWG 修改（ODA 可用）：原格式写回且文字回读生效", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oaw-cad-oda-"));
+    const inDir = path.join(dir, "in");
+    const outDir = path.join(dir, "out");
+    fs.mkdirSync(inDir);
+    fs.mkdirSync(outDir);
+    try {
+      fs.writeFileSync(path.join(inDir, "sample.dxf"), SAMPLE, "utf8");
+      execFileSync(bundledOda, [inDir, outDir, "ACAD2018", "DWG", "0", "1"], { windowsHide: true, timeout: 120000, stdio: "ignore" });
+      const produced = fs.readdirSync(outDir).find((f) => /\.dwg$/i.test(f));
+      assert.ok(produced, "ODA 未产出 DWG");
+      const r = await prepareCadEdit(path.join(outDir, produced), [{ type: "replace_text", find: "K12+300", replace: "K12+500" }]);
+      assert.equal(r.format, "dwg");
+      assert.ok(Buffer.isBuffer(r.content), "DWG 写回应为二进制 Buffer");
+      const resultPath = path.join(dir, "result.dwg");
+      fs.writeFileSync(resultPath, r.content);
+      const back = await readCadDocument(resultPath);
+      const texts = back.entities.filter((e) => e.type === "TEXT" || e.type === "MTEXT").map((e) => String(e.text));
+      assert.ok(texts.some((t) => t.includes("K12+500")), `回读文字未更新: ${texts.join(" | ")}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
 
 console.log("\n▶ Agent 读取/修改接线（步骤 3/4 源码断言）");
 test("context.mjs：SUPPORTED 与 @引用扩展名按 cadAgent 门控，提取失败返回可读错误", () => {
