@@ -146,8 +146,10 @@ await test("写作路由提示包含五步流程与样式禁令", () => {
   const { officeWritingHintFor } = { officeWritingHintFor: null };
   // officeWritingHint 不是导出项，通过 planTaskCapabilities 间接验证不了提示词；
   // 直接读源文件断言关键片段存在，避免提示词被静默删掉。
+  // 工具书现在是函数（不再是模块级常量）：complete_task 开关变化后提示词要跟着变，
+  // 所以不能是 import 时就固定下来的常量。
   const source = fs.readFileSync(path.join(ROOT, "server/task.mjs"), "utf8");
-  assert.ok(source.includes("OFFICE_WRITING_PLAYBOOK"), "缺少写作工具书常量");
+  assert.ok(source.includes("function officeWritingPlaybook()"), "缺少写作工具书");
   assert.ok(source.includes("editorial_pipeline"), "提示词未提到编辑流水线");
   assert.ok(source.includes("raw-set"), "缺少样式禁令");
   assert.ok(source.includes("write→add"), "缺少 write→add 成对写入提示");

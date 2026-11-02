@@ -126,6 +126,11 @@ export const agentNetworkSettingsSave = (settings = {}) =>
   api("/api/agent/network-settings", { method: "PATCH", body: JSON.stringify(settings) });
 
 // ---------- 联网搜索配置 ----------
+// 运行偏好（设置面板可切换的产品行为；服务端落盘，下一轮任务生效）。
+export const getRuntimePreferences = () => api("/api/runtime-preferences");
+export const saveRuntimePreferences = (patch = {}) =>
+  api("/api/runtime-preferences", { method: "PATCH", body: JSON.stringify(patch) });
+
 export const searchSettings = () => api("/api/search/settings");
 export const searchSettingsSave = (settings = {}) =>
   api("/api/search/settings", { method: "POST", body: JSON.stringify(settings) });

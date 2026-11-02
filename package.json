@@ -153,6 +153,8 @@
     "test:adr-index": "node scripts/决策记录索引守护测试.mjs",
     "test:spec-index": "node scripts/规范索引守护测试.mjs",
     "test:event-emission": "node scripts/事件发射点守护测试.mjs",
+    "test:completion-pref": "node scripts/完成偏好测试.mjs",
+
     "test:artifact-icon": "node scripts/产物图标测试.mjs",
 
     "test:cross-tab-quota": "node scripts/跨标签页流配额测试.mjs",

@@ -5,7 +5,7 @@ import { providerIdentity } from "../供应商标识.js";
 import { useTheme, SKINS } from "../theme.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
 import { ACTIVITY_DISPLAY_OPTIONS, ANSWER_DETAIL_OPTIONS, MARQUEE_COLORS, MARQUEE_SPEEDS, MARQUEE_STYLES, MOTION_LEVELS, PREVIEW_AUTO_OPEN_OPTIONS, useAppearance, useAppearanceSetter } from "../界面外观.js";
-import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentModelConfigs, agentNetworkSettings, agentNetworkSettingsSave, agentPlanApply, agentPlanDisconnect, agentPlanModels, agentPlans, agentProviderCatalog, agentSetDefaultModel, archiveProject, classifyProjects, createProject, deleteAgentModelConfig, fetchAgentModels, getPermissionRules, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, removePermissionRule, saveAgentModelConfig, searchSettings, searchSettingsSave, searchSettingsTest, updateProject, updateProjectSettings } from "../api.js";
+import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentModelConfigs, agentNetworkSettings, agentNetworkSettingsSave, agentPlanApply, agentPlanDisconnect, agentPlanModels, agentPlans, agentProviderCatalog, agentSetDefaultModel, archiveProject, classifyProjects, createProject, deleteAgentModelConfig, fetchAgentModels, getPermissionRules, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, removePermissionRule, getRuntimePreferences, saveRuntimePreferences, saveAgentModelConfig, searchSettings, searchSettingsSave, searchSettingsTest, updateProject, updateProjectSettings } from "../api.js";
 import { notifyError, askConfirm } from "./Feedback.jsx";
 
 /**
@@ -261,6 +261,9 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
 export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], defaultModel = "", activeModel = "", clientId = "", threadId = "", initialSection = "model", onModelChange, onModelsRefresh, onProjectUpdated, onProjectSelect }) {
   const { theme, setTheme, skin, setSkin } = useTheme();
   const [settingsSection, setSettingsSection] = useState("model");
+  // 运行偏好（服务端落盘，下一轮任务生效）：complete_task 显式完成声明默认关闭。
+  const [runtimePrefs, setRuntimePrefs] = useState({ completeTaskEnabled: false });
+  const [runtimePrefsSaving, setRuntimePrefsSaving] = useState(false);
   const appearance = useAppearance();
   const setAppearance = useAppearanceSetter();
   const [msgFontSize, setMsgFontSize] = useSetting("msgFontSize");
@@ -293,9 +296,35 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
   const [planMsg, setPlanMsg] = useState("");
   const [planApplying, setPlanApplying] = useState(false);
   const [providerDraft, setProviderDraft] = useState(() => providerDraftFromConfig());
-const [providerConfigMsg, setProviderConfigMsg] = useState("");
+  const [providerConfigMsg, setProviderConfigMsg] = useState("");
   const [providerConfigSaving, setProviderConfigSaving] = useState(false);
   const [modelsFetching, setModelsFetching] = useState(false);
+
+  // 运行偏好：读取一次当前值；开关改动立即落盘，下一轮任务生效。
+  useEffect(() => {
+    let cancelled = false;
+    getRuntimePreferences()
+      .then((data) => {
+        if (cancelled) return;
+        setRuntimePrefs({ completeTaskEnabled: Boolean(data?.preferences?.completeTaskEnabled) });
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const toggleCompleteTask = async (enabled) => {
+    setRuntimePrefsSaving(true);
+    setRuntimePrefs((value) => ({ ...value, completeTaskEnabled: enabled }));
+    try {
+      const data = await saveRuntimePreferences({ completeTaskEnabled: enabled });
+      setRuntimePrefs({ completeTaskEnabled: Boolean(data?.preferences?.completeTaskEnabled) });
+    } catch (error) {
+      setRuntimePrefs((value) => ({ ...value, completeTaskEnabled: !enabled }));
+      notifyError("保存运行偏好失败：" + (error?.message || "未知错误"));
+    } finally {
+      setRuntimePrefsSaving(false);
+    }
+  };
   const [probeLoading, setProbeLoading] = useState(false);
   const [probeMsg, setProbeMsg] = useState("");
   const [modelList, setModelList] = useState(models);
@@ -1238,6 +1267,18 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
         <div className="sp-row">
           <span className="sp-label">消息目录栏</span>
           <input type="checkbox" checked={showTimeline !== false} onChange={(e) => setShowTimeline(e.target.checked)} />
+        </div>
+        <div className="sp-row">
+          <span className="sp-label">显式完成声明</span>
+          <label className="sp-toggle-label" title="开启后要求 Agent 用 complete_task 显式声明成功/部分完成/受阻/失败；关闭时按任务终态推断，少一次模型收尾回合。">
+            <input
+              type="checkbox"
+              checked={!!runtimePrefs.completeTaskEnabled}
+              disabled={runtimePrefsSaving}
+              onChange={(event) => toggleCompleteTask(event.target.checked)}
+            />
+            <span>要求调用 complete_task（默认关闭）</span>
+          </label>
         </div>
       </div>
       </>}
