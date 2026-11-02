@@ -10,6 +10,8 @@
  * 不支持 BroadcastChannel/localStorage 的环境直接退化为原行为（每个标签页自连）。
  */
 
+import { getQuotaTabId } from "./标签页标识.js";
+
 const LEASE_KEY = "oaw_global_events_leader_v1";
 const CHANNEL_NAME = "oaw_global_events_v1";
 const LEASE_MS = 8000;
@@ -17,17 +19,8 @@ const HEARTBEAT_MS = 2500;
 const CHECK_MS = 3000;
 // 必须是“每标签页唯一、刷新后稳定”的 id。sessionStorage 在部分浏览器的
 // 新标签页场景会被克隆，不能作为唯一依据；window.name 按浏览上下文隔离。
-const TAB_ID = (() => {
-  try {
-    const existing = typeof window !== "undefined" ? String(window.name || "") : "";
-    if (existing.startsWith("oaw-tab-")) return existing;
-    const id = `oaw-tab-${globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`}`;
-    if (typeof window !== "undefined") window.name = id;
-    return id;
-  } catch {
-    return `oaw-tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  }
-})();
+// 标签页 id 的唯一来源是 标签页标识.js（跨标签页流配额.js 复用同一个 id）。
+const TAB_ID = getQuotaTabId();
 
 function readLease() {
   try {

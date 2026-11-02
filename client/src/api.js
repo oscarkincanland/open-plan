@@ -401,19 +401,11 @@ export function getClientId() {
  * 结果多标签页各开一组 SSE 把浏览器 6 个连接槽占满。
  * 这里用 sessionStorage 生成每标签页独立、刷新后仍稳定的 tabId，仅用于长连接键，
  * 不参与会话/游标身份，避免影响既有数据。
+ *
+ * 实现已迁到 标签页标识.js（跨标签页流配额.js 需要同一套标签页 id），
+ * 这里保留导出以免既有调用方改动。
  */
-export function getTabId() {
-  try {
-    let id = sessionStorage.getItem("oaw_tab_id");
-    if (!id) {
-      id = "tab-" + Math.random().toString(36).slice(2, 10);
-      sessionStorage.setItem("oaw_tab_id", id);
-    }
-    return id;
-  } catch {
-    return "tab-default";
-  }
-}
+export { getTabId } from "./标签页标识.js";
 
 // ---------- 知识库（本地索引 + IMA） ----------
 export const kbStatus = () => api("/api/kb/status");

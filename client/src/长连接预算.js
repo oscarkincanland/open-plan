@@ -10,9 +10,14 @@
  * 核心两条（对话流、全局事件流）声明为 essential：它们申请槽位时一定成功，
  * 必要时会顶掉优先级最低的可放弃流；面板类（浏览器帧流、记忆变更流）申请不到
  * 就保持"等待连接"，等有槽位空出来（subscribeStreams 通知）再重试。
+ *
+ * 跨标签页：MAX_STREAMS 是**每标签页**上限，多个标签页各自满额仍会占满浏览器的
+ * 同源连接池（6 槽），控制面请求（会话列表等）会排队到超时。总配额见 跨标签页流配额.js。
  */
 
-/** 同时存活的流上限：留出至少 3 个槽位给普通请求，控制面不会被饿死。 */
+import { GLOBAL_MAX_STREAMS, globalStreamCount, registerQuotaStream, unregisterQuotaStream, requestOthersReleaseOptional, onRemoteReleaseRequest, resetQuotaStreams } from "./跨标签页流配额.js";
+
+/** 同时存活的流上限（单标签页）：留出至少 3 个槽位给普通请求，控制面不会被饿死。 */
 export const MAX_STREAMS = 3;
 
 const streams = new Map();
@@ -111,8 +116,22 @@ export function acquireStream(kind, { essential = false, priority = 5, label = "
     note(victim.kind, "evict", `为必需流「${label || kind}」让位`);
     try { victim.close?.(); } catch {}
   }
+  // 跨标签页总配额：单标签页都还没满，但所有标签页加起来可能已经占满浏览器
+  // 同源连接池（6 槽）。实测占满 6 槽后 /api/sessions 会挂死满 8 秒才超时，
+  // 页面表现为"会话列表读取失败"。面板类流在这里让位；必需流永不拒绝。
+  const globalCount = globalStreamCount();
+  if (globalCount >= GLOBAL_MAX_STREAMS) {
+    if (!essential) {
+      note(kind, "denied", `跨标签页长连接预算已满（${globalCount}/${GLOBAL_MAX_STREAMS}）`);
+      return null;
+    }
+    // 必需流不拒绝（拒绝了对话就废了）：先让本标签页的可放弃流，再广播让其他标签页让。
+    const freedLocal = closeOptionalStreams(`为必需流「${label || kind}」跨标签页腾位`, { broadcast: false });
+    if (!freedLocal) requestOthersReleaseOptional(`为必需流「${label || kind}」腾位`);
+  }
   const key = `${kind}#${++seq}`;
   streams.set(key, { key, kind, label: label || kind, essential, priority, close: null, openedAt: Date.now() });
+  registerQuotaStream(key, { kind, essential, priority });
   const handle = {
     key,
     kind,
@@ -133,8 +152,11 @@ export function acquireStream(kind, { essential = false, priority = 5, label = "
 /**
  * 回收所有可放弃的流（控制面请求超时的救援动作）。
  * 返回被关闭的条数；essential 流不受影响。
+ *
+ * broadcast=true 时同时广播给其他标签页：占满连接池的往往不是本标签页，
+ * 只关本地的面板流可能腾不出槽位。
  */
-export function closeOptionalStreams(reason = "") {
+export function closeOptionalStreams(reason = "", { broadcast = true } = {}) {
   let closed = 0;
   for (const entry of [...streams.values()]) {
     if (entry.essential) continue;
@@ -143,6 +165,7 @@ export function closeOptionalStreams(reason = "") {
   }
   if (closed) note("optional", "reclaim", reason);
   publish();
+  if (broadcast) requestOthersReleaseOptional(reason);
   return closed;
 }
 
@@ -150,11 +173,17 @@ export function releaseStream(key) {
   const entry = streams.get(key);
   if (!entry) return false;
   streams.delete(key);
+  unregisterQuotaStream(key);
   note(entry.kind, "close");
   try { entry.close?.(); } catch {}
   publish();
   return true;
 }
+
+// 其他标签页请求让位时，本标签页也回收自己的可放弃流（面板类），把槽位还回连接池。
+onRemoteReleaseRequest((reason) => {
+  closeOptionalStreams(`其他标签页请求让位：${reason}`, { broadcast: false });
+});
 
 /** 订阅槽位变化：申请不到槽位的面板可以在这里等空位再重试。 */
 export function subscribeStreams(listener) {
@@ -188,6 +217,7 @@ export function resetStreams() {
   streams.clear();
   eventLog.length = 0;
   resetCursorGaps();
+  resetQuotaStreams();
   publish();
 }
 

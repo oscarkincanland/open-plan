@@ -153,6 +153,7 @@
     "test:adr-index": "node scripts/决策记录索引守护测试.mjs",
     "test:spec-index": "node scripts/规范索引守护测试.mjs",
     "test:event-emission": "node scripts/事件发射点守护测试.mjs",
+    "test:cross-tab-quota": "node scripts/跨标签页流配额测试.mjs",
     "test:event-archive": "node scripts/事件流归档测试.mjs",
     "test:event-replay": "node scripts/事件流回放窗口测试.mjs",
     "smoke:chat": "node scripts/聊天界面冒烟检查.mjs",
