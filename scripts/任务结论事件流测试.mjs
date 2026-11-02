@@ -110,12 +110,12 @@ test("内置工具清单全部映射到确定图标（无遗漏、无异常）",
   const names = [...toolsLine.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
   assert.ok(names.length >= 30, `工具清单应完整（实际 ${names.length} 项）`);
   const expected = {
-    read: "file", context_read: "file",
-    write: "edit", edit: "edit", review_source_apply: "edit",
+    read: "file", context_read: "file", cad_read: "file",
+    write: "edit", edit: "edit", review_source_apply: "edit", cad_edit: "edit",
     bash: "terminal", officecli: "doc",
     grep: "search", find: "search", ls: "search", web_search: "search", web_fetch: "search",
     kb_search: "book", kb_read: "book", skills_search: "book", skills_read: "book", memory_update: "book",
-    map_read: "map", map_datasets: "map", map_edit: "map", map_import: "map", map_analyze: "map", map_template: "map", map_save_analysis: "map", map_clear_analysis: "map",
+    map_read: "map", map_datasets: "map", map_edit: "map", map_import: "map", map_analyze: "map", map_template: "map", map_save_analysis: "map", map_clear_analysis: "map", map_screenshot: "map",
     review_copy: "shield", ask_user: "comment", todo: "list", complete_task: "check", run_subagent: "flow",
     // P2-A：编辑流水线与子代理同属编排类
     editorial_pipeline: "flow",

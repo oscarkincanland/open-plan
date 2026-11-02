@@ -162,23 +162,23 @@ console.log("\n▶ 产物检测：大工作区 / 无明确路径（P0 回归）"
     assert.equal(windowItem.source, "run-window", "只到工作区级的台账应按 run-window 归属");
     assert.equal(windowItem.confidence, "suspected", "run-window 是待确认，不能标成 confirmed");
     assert.notEqual(windowItem.source, "unattributed", "run-window 不应退化成未归属线索");
-    assert.equal(windowItem.autoDeliverable, true, "只有完全没有写入证据的差异才不得自动宣告交付");
+    assert.equal(windowItem.autoDeliverable, false, "run-window 是待确认，只有台账确认的写入才可自动宣告交付");
 
-    // 读取时统一口径：旧 Run 的 artifacts 固化过旧结论（unattributed），
-    // 但它的 touchedPaths 有 "." 证据 —— getRun 应把它重新标注为 run-window。
+    // 读取时统一口径：同一套证据（touchedPaths 的 "."）仍保持 run-window 归属。
     const legacy = getRun(windowRun.id);
     const legacyItem = (legacy?.artifacts || []).find((item) => item.path === "窗口内产物.md");
     assert.ok(legacyItem, "读取 Run 应返回该文件");
     assert.equal(legacyItem.source, "run-window", "读取时按同一套证据重新标注归属");
-    // 反证：把落盘数据改成旧的 unattributed，读取后仍会被纠正（模拟历史数据）。
+    // 反证：把落盘数据改成旧的 unattributed，读取时也不得追溯升级为 run-window，
+    // 否则旧的“疑似文件”会在读取时变成可交付产物。
     const legacyFile = path.join(runsDir(), `${windowRun.id}.json`);
     const raw = JSON.parse(fs.readFileSync(legacyFile, "utf8"));
     raw.artifacts = (raw.artifacts || []).map((item) => ({ ...item, source: "unattributed", autoDeliverable: false }));
     fs.writeFileSync(legacyFile, JSON.stringify(raw));
     const reloaded = getRun(windowRun.id);
     const reloadedItem = (reloaded?.artifacts || []).find((item) => item.path === "窗口内产物.md");
-    assert.equal(reloadedItem?.source, "run-window", "历史 Run 的产物归属应在读取时被纠正");
-    assert.equal(reloadedItem?.autoDeliverable, true, "纠正后应恢复可交付判定");
+    assert.equal(reloadedItem?.source, "unattributed", "历史 Run 的未归属线索不得在读取时升级");
+    assert.equal(reloadedItem?.autoDeliverable, false, "未归属线索仍不得自动交付");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
