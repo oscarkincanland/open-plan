@@ -41,6 +41,7 @@ import { PREVIEW_PREVIEW_MAX_BYTES, codeLanguageFor, isCodeExt, isTextExt, readT
 import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, CHANNEL_HISTORY_LIMIT } from "./事件协议.mjs";
 import * as searchModule from "./联网搜索.mjs";
 import * as runtimePreferences from "./运行偏好.mjs";
+import { clientBuildId } from "./客户端构建.mjs";
 import { nativeCapabilities, openWithDefaultApp, pickFiles, pickFolder, revealInFileManager, cancelActivePicker, activePickerInfo } from "./原生文件.mjs";
 import { DIFF_LIMITS, diffFileContents } from "./文件差异.mjs";
 import * as browserModule from "./内置浏览器.mjs";
@@ -361,6 +362,8 @@ app.get("/api/status", (req, res) => {
     officecli: path.basename(OFFICECLI),
     version: pkg.version,
     piPackageVersion: PI_PACKAGE_VERSION,
+    // 前端拿它与自己实际加载的入口脚本比对，判断页面是否还在跑旧构建。
+    clientBuild: clientBuildId(),
     host: HOST,
     authRequired: Boolean(API_TOKEN),
     platform: process.platform,

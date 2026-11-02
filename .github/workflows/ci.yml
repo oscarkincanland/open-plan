@@ -153,6 +153,9 @@ jobs:
       - name: 跨标签页长连接配额（全局满额时面板流让位，必需流不拒）
         run: node scripts/CI运行测试.mjs 跨标签页流配额测试
 
+      - name: 构建版本守卫（部署新构建后旧页面必须被提示刷新）
+        run: node scripts/CI运行测试.mjs 构建版本守卫测试
+
 
 
       - name: Office 写作闸门通电（ADR 0012 / 工具书 / 环境预检）

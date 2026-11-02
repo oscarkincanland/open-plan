@@ -39,6 +39,7 @@ import { mergeMapContext, normalizeMapView } from "./地图/地图上下文.js";
 import FeedbackHost, { notifyError, askConfirm } from "./components/Feedback.jsx";
 import 提示气泡 from "./components/提示气泡.jsx";
 import { initRuntimeFlags, flag, flagsReady } from "./运行开关.js";
+import { watchBuildChange } from "./构建版本.js";
 
 function historyReferences(text = "") {
   const refs = [];
@@ -582,6 +583,9 @@ export default function App() {
   // 失败时保留上一次可用数据并给出可重试的提示，而不是静默伪装成空结果。
   const [loadStatus, setLoadStatus] = useState({ files: "loading", sessions: "loading", projects: "loading", workspaces: "loading" });
   const [loadErrors, setLoadErrors] = useState({});
+  // 构建版本守卫：服务端换了新构建就提示刷新（dist 保留历史包，旧页面不会自己失效）。
+  const [staleBuild, setStaleBuild] = useState(null);
+  useEffect(() => watchBuildChange((info) => setStaleBuild(info)), []);
   const currentProject = projects.find((project) => sameWorkspacePath(project.rootPath, currentWorkspace)) || null;
 
   const canvasRestoreRef = useRef("");
@@ -2116,6 +2120,16 @@ export default function App() {
       <div className={`app ${canvasMaximized ? "canvas-maximized" : ""} ${browserFullscreen ? "browser-fullscreen" : ""} ${sidebarOpen ? "sidebar-expanded" : "sidebar-collapsed"}`}>
         <RefreshBloom />
         <FeedbackHost />
+        {/* 构建版本守卫：dist 保留历史 assets，已打开的页面不会自己失效，
+            部署新构建后必须主动提示，否则用户会一直跑旧代码并把"已修好"当成"没修"。 */}
+        {staleBuild && (
+          <div className="load-recovery" role="alert" title={`运行中：${staleBuild.running}\n服务端：${staleBuild.latest}`}>
+            <Icon name="refresh" size={14} />
+            <span>检测到新版本（本页仍在用旧构建），刷新后生效。</span>
+            <button className="btn-xs" onClick={() => window.location.reload()}>立即刷新</button>
+            <button className="btn-xs" onClick={() => setStaleBuild(null)}>稍后</button>
+          </div>
+        )}
         {loadFailureText && (
           <div
             className="load-recovery"
