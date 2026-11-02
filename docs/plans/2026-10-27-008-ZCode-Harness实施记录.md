@@ -1,19 +1,25 @@
 # ZCode Harness 对标实施记录
 
-> 状态：已完成（自动化验证通过，待用户验收）
+> 状态：已完成（自动化验证通过，待用户验收；2026-11-02 复评并修正数量与结论）
 > 基线：v0.13.2（develop）
-> 更新：2026-10-27
+> 更新：2026-11-02
 > 分支：`feature/zcode-harness-align`（基于 `develop` HEAD `2a5e6263`；`origin/main` 是其祖先，因此与 main 无分叉冲突）
 > 关联：[工程对照与修改计划](2026-10-27-004-ZCode-Harness工程对照与修改计划.md)、[对照测试与验收计划](2026-10-27-005-ZCode-Harness对照测试与验收计划.md)、[变更日志](../../变更日志.md)
 > 说明：本轮一次性完成计划的 H1–H4 代码与自动化测试；**未升版本号**，所有新能力默认关闭（`OAW_HARNESS_ALIGN` 可一键开启整族）。
+
+> **2026-11-02 收敛复评补记**：
+> 1. **"全绿"结论曾被推翻**：本记录写于 2026-10-27，当时 `npm run test:harness` 全绿；但 2026-10-29 之后陆续有 7 个工具（`map_layer_info`/`map_reset`/`map_project_create`/`browser_wait_for`/`browser_act`/`browser_extract`/`browser_select_option`）加入模式白名单而**未同步元数据表**，契约测试只做正向覆盖因而未报警，直到 2026-11-01 审计才暴露——`npm run test:harness` 当时已在第一个脚本失败。2026-11-02 已补齐元数据并加反向断言，`test:harness` 现全绿。
+> 2. **数量自相矛盾已统一**：本文 §1 原写"17 个模块/契约脚本"、§5.1 原写"18 个"，实际 `package.json` 的 `test:harness` 串了 **19 个**脚本；诊断 API 原写 8 个、§5.4 写 6 个，实际为 **7 个**（5 个 `/api/harness/*` + 2 个 `/api/runs/:id/workflow-*`）。本文已按实测统一。
+> 3. **部分能力是"部分落地"而非"通过"**：H2-1（模型选择 seam 未接真实回合、manifest 未进 prompt）、H2-3（段落 2/3 恒空）、H2-2（抽取 5 轮预算未强制）、H1-3（未接 Run 清理、字段名与文档不符、无 SHA-256）、H3-3（错误 envelope 只覆盖异常路径）、H3-4（configSource 开关未接业务分支）、H4-2（重放 API 不执行重跑）、H4-3（哈希不匹配不拦截加载）、H4-4（未接 todo）均为部分落地，缺口逐条写在 [005 §8 对照验收矩阵](2026-10-27-005-ZCode-Harness对照测试与验收计划.md) 与 [004 §9 追踪矩阵](2026-10-27-004-ZCode-Harness工程对照与修改计划.md)。
+> 4. **7 个事件已登记但无发射点**：`usage_recorded`、`memory_recall_started`、`hook_started`、`hook_finished`、`config_source_resolved`、`plugin_manifest_invalid`、`plan_persisted`。
 
 ---
 
 ## 1. 交付摘要
 
 - 新建分支 `feature/zcode-harness-align`，从 `develop` 当前 HEAD 拉出；`origin/main` 已在历史中（merge-base 为 `ed29cc2a`），不存在与 main 的版本分叉。
-- 新增 16 个 Harness 模块、19 个测试脚本、8 个诊断 API；修改 9 个既有模块完成接线。
-- `npm run test:harness` 全绿（含 17 个模块/契约脚本 + Harness API 冒烟）。
+- 新增 16 个 Harness 模块、19 个测试脚本、7 个诊断 API（5 个 `/api/harness/*` + 2 个 `/api/runs/:id/workflow-*`）；修改 9 个既有模块完成接线。
+- `npm run test:harness` 全绿（含 19 个模块/契约脚本 + Harness API 冒烟）。
 - `npm run verify` 全绿（全部 server 语法检查、Vite 构建、临时服务 API 冒烟）。
 - 受影响回归全绿：事件注册表/负载、能力契约、审批作用域、交互归属、执行句柄、子代理编排/归约、记忆准入、运行预算、运行轨迹、首字延迟、工作流契约、领域硬约束、产物、写锁。
 - 未升版本；Harness 相关改动已提交到 `feature/zcode-harness-align`，工作区原有未提交改动保持未暂存。
@@ -156,7 +162,7 @@ test:workflow-executor     ✓（Run 步骤 → journal → 重放计划）
 ```text
 OAW_HARNESS_ALIGN=1 npm run test:harness-api
   ✓ 服务可启动
-  ✓ 6 个诊断接口结构正常
+  ✓ 7 个诊断接口结构正常（5 个 /api/harness/* + 2 个 /api/runs/:id/workflow-*）
 
 隔离真实模型冒烟（临时数据目录，环境 MINIMAX_API_KEY，minimax-cn/MiniMax-M2.7）
   ✓ Chat：Run completed，最终文本 “OK”；context_sections_assembled / memory_recall_selected / stats 均出现
