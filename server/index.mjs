@@ -16,7 +16,7 @@ import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves } from "./runs.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves, startOwnerHeartbeat, stopOwnerHeartbeat } from "./runs.mjs";
 import { attachRunTimingMeta, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
@@ -31,12 +31,14 @@ import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
 import { listPublishedArtifacts, publishArtifact, inspectRunAcceptance, confirmArtifactAcceptance, rollbackPublishedArtifact } from "./成果管理.mjs";
 import { atomicWriteFile, atomicWriteJson, ensureDirectory, flushPendingFsync } from "./持久化工具.mjs";
 import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs";
+import { buildMapContextPatch } from "./session-map-context.mjs";
 import { listConnectors, getConnector, beginConnectorAuth, setConnectorStatus } from "./connectors.mjs";
 import * as projectManager from "./项目管理.mjs";
 import { listAgents, createAgent, updateAgent, deleteAgent } from "./智能体管理.mjs";
 import { writeWorkspaceFile, withWriteLockAsync } from "./写入协调.mjs";
 import { evaluateWorkspaceWrite, runRuntimeEvaluation } from "./运行评测.mjs";
 import { normalizeOfficeFailure, normalizeWorkspaceWriteError, workspaceWriteHttpStatus } from "./文件权限错误.mjs";
+import { PREVIEW_PREVIEW_MAX_BYTES, codeLanguageFor, isCodeExt, isTextExt, readTextPreview } from "./preview-types.mjs";
 import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, channelEvictionStatsSnapshot, CHANNEL_HISTORY_LIMIT } from "./事件协议.mjs";
 import * as searchModule from "./联网搜索.mjs";
 import { nativeCapabilities, openWithDefaultApp, pickFiles, pickFolder, revealInFileManager, cancelActivePicker, activePickerInfo } from "./原生文件.mjs";
@@ -440,6 +442,24 @@ async function readWorkbook(file, { lazy = false } = {}) {
 }
 
 // ---------- REST ----------
+// 请求诊断（只读计数）：多窗口轮询问题排查用，不改变任何响应内容。
+const requestStats = new Map();
+app.use((req, res, next) => {
+  const raw = String(req.path || "");
+  if (!raw.startsWith("/api/")) return next();
+  const route = raw.replace(/\/[0-9a-f]{8}-[0-9a-f-]{16,}/gi, "/:id").replace(/\/run_[^/]+/g, "/:runId");
+  if (requestStats.size > 500 && !requestStats.has(route)) requestStats.clear();
+  const started = process.hrtime.bigint();
+  const entry = requestStats.get(route) || { path: route, count: 0, totalMs: 0, maxMs: 0 };
+  requestStats.set(route, entry);
+  res.on("finish", () => {
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    entry.count += 1;
+    entry.totalMs += ms;
+    entry.maxMs = Math.max(entry.maxMs, ms);
+  });
+  next();
+});
 app.get("/api/status", (req, res) => {
   if (API_TOKEN && tokenMatches(req.query?.token)) setAuthCookie(res);
   res.json({
@@ -522,6 +542,13 @@ app.get("/api/diagnostics/streams", (_req, res) => {
   // 顺手清扫一次：诊断数据只反映真正存活的流。
   const swept = sweepServerStreams();
   res.json({ stats: serverStreamStats(), streams: listServerStreams(), swept });
+});
+
+app.get("/api/diagnostics/traffic", (_req, res) => {
+  const routes = [...requestStats.values()]
+    .map((entry) => ({ ...entry, avgMs: entry.count ? Math.round((entry.totalMs / entry.count) * 10) / 10 : 0 }))
+    .sort((a, b) => b.totalMs - a.totalMs);
+  res.json({ since: SERVICE_STARTED_AT, routes, uptimeSec: Math.round(process.uptime()) });
 });
 
 app.post("/api/diagnostics/streams/close", (req, res) => {
@@ -799,12 +826,86 @@ app.post("/api/map/projects", (req, res) => {
       project: req.body?.project,
       name: req.body?.name,
       baseProject: req.body?.baseProject || map.DEFAULT_PROJECT,
+      kind: req.body?.kind === "blank" ? "blank" : "copy",
+      description: req.body?.description,
     });
     res.status(201).json({ ok: true, project: created.config?.project, config: created.config, style: created.style, files: created.files || [] });
   } catch (e) {
     const status = ["MAP_PROJECT_INVALID", "MAP_PROJECT_EXISTS", "MAP_BASE_PROJECT_NOT_FOUND"].includes(e?.code) ? 409 : 500;
     res.status(status).json({ ok: false, error: e.message, code: e.code || "MAP_PROJECT_CREATE_FAILED" });
   }
+});
+
+// GIS 工程化：图层注册表 / 元数据 / 单层导出 / 基线 / 三级重置 / 操作日志
+app.get("/api/map/project/:name/layers", (req, res) => {
+  const registry = map.listLayerRegistry(req.params.name);
+  if (!registry) return res.status(404).json({ error: "project not found" });
+  res.json(registry);
+});
+
+// 项目文件树（地图面板文件树入口）：按文件夹搜索，跳过 tiles/.trash。
+app.get("/api/map/project/:name/tree", (req, res) => {
+  const tree = map.listProjectFiles(req.params.name, {
+    q: String(req.query.q || ""),
+    maxDepth: Number(req.query.maxDepth) || 4,
+    maxFiles: Number(req.query.maxFiles) || 500,
+  });
+  if (!tree) return res.status(404).json({ error: "project not found", code: "MAP_PROJECT_NOT_FOUND" });
+  res.json(tree);
+});
+
+app.patch("/api/map/project/:name/layer/:layerId", (req, res) => {
+  const result = map.updateLayerMeta(req.params.name, req.params.layerId, req.body || {});
+  if (!result) return res.status(404).json({ error: "layer not found" });
+  res.json(result);
+});
+
+app.post("/api/map/project/:name/layer/:layerId/export", (req, res) => {
+  const geojson = map.getLayer(req.params.name, req.params.layerId);
+  if (!geojson) return res.status(404).json({ error: "layer not found" });
+  const safeId = String(req.params.layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+  res.setHeader("Content-Type", "application/geo+json; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(safeId)}.geojson"`);
+  res.send(JSON.stringify(geojson));
+});
+
+app.post("/api/map/project/:name/layer/:layerId/replace", async (req, res) => {
+  try {
+    const result = await map.replaceLayer(req.params.name, req.params.layerId, req.body?.geojson, {
+      format: String(req.body?.format || "geojson"),
+    });
+    if (!result?.ok) return res.status(result?.error === "layer not found" ? 404 : 400).json(result || { error: "replace failed" });
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message, code: e.code || "MAP_LAYER_REPLACE_FAILED" });
+  }
+});
+
+app.get("/api/map/project/:name/baseline", (req, res) => {
+  const baseline = map.getBaseline(req.params.name);
+  if (!baseline) return res.status(404).json({ error: "baseline not found", code: "MAP_BASELINE_MISSING" });
+  res.json({ ok: true, baseline });
+});
+
+app.post("/api/map/project/:name/baseline", (req, res) => {
+  const baseline = map.setBaseline(req.params.name, { actor: "user" });
+  if (!baseline) return res.status(404).json({ error: "project not found" });
+  res.json({ ok: true, baseline });
+});
+
+app.post("/api/map/project/:name/reset", (req, res) => {
+  const level = String(req.body?.level || "tree");
+  const result = map.resetProject(req.params.name, level, { actor: "user" });
+  if (!result?.ok) return res.status(400).json(result || { error: "reset failed" });
+  res.json(result);
+});
+
+app.get("/api/map/project/:name/operations", (req, res) => {
+  const list = map.listOperations(req.params.name, {
+    layerId: String(req.query.layerId || ""),
+    limit: Number(req.query.limit) || 200,
+  });
+  res.json({ ok: true, operations: list });
 });
 
 app.get("/api/map/project", async (req, res) => {
@@ -1048,17 +1149,48 @@ app.get("/api/files", (req, res) => {
   }
   const { workspace, explicit, invalid } = resolveRequestWorkspace(req);
   if (explicit && !workspace) return res.status(409).json({ error: "unknown workspace", workspace: invalid });
-  const target = dir ? resolvePath(dir, workspace) : workspace;
-  if (dir && (!target || !fs.existsSync(target) || !fs.statSync(target).isDirectory())) return res.status(404).json({ error: "directory not found", workspace });
-  const files = listWorkspace(target).map((item) => {
-    if (item.isDir) return item;
-    const p = path.join(target, item.name);
-    try {
-      const st = fs.statSync(p);
-      return { ...item, mime: mimeForExt(item.ext), mtime: st.mtimeMs, version: `${st.size}:${st.mtimeMs}` };
-    } catch { return item; }
-  });
-  res.json({ files, dir, workspace });
+  try {
+    const target = dir ? resolvePath(dir, workspace) : workspace;
+    if (dir && !target) return res.status(404).json({ error: "directory not found", code: "FILES_NOT_FOUND", workspace });
+    if (dir) {
+      let isDir = false;
+      try {
+        isDir = fs.statSync(target).isDirectory();
+      } catch {}
+      if (!isDir) return res.status(404).json({ error: "directory not found", code: "FILES_NOT_FOUND", workspace });
+    }
+    // 目录本身瞬时不可读（外部盘/权限/文件抖动）时短重试一次；条目级消失由
+    // listWorkspace 直接跳过，不应该让整页列表失败。
+    let raw = null;
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        raw = listWorkspace(target);
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        const code = String(error?.code || "");
+        if (!["EPERM", "EACCES", "EBUSY", "EIO"].includes(code)) break;
+      }
+    }
+    if (lastError) throw lastError;
+    const files = raw.map((item) => {
+      if (item.isDir) return item;
+      // 使用 listWorkspace 已经拿到的 stat 结果，避免第二次 stat 再撞上同一竞态窗口。
+      return { ...item, mime: mimeForExt(item.ext), version: `${item.size}:${item.mtime}` };
+    });
+    res.json({ files, dir, workspace });
+  } catch (error) {
+    const code = String(error?.code || "");
+    const notFound = code === "ENOENT" || code === "ENOTDIR";
+    // 不能落到 Express 的 HTML 500：前端必须拿到可读错误码才能决定重试/回根目录。
+    return res.status(notFound ? 404 : 503).json({
+      error: notFound ? "directory not found" : "文件列表暂时不可用，请重试",
+      code: notFound ? "FILES_NOT_FOUND" : "FILES_TRANSIENT",
+      workspace,
+    });
+  }
 });
 
 app.get("/api/files/search", (req, res) => {
@@ -1291,14 +1423,22 @@ app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
       const wb = await readWorkbook(p, { lazy: RUNTIME_FLAGS.previewLazySheets });
       res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "xlsx", name: fileName, identity, ...wb });
-    } else if (["md", "markdown", "txt", "csv", "json"].includes(ext)) {
-      const content = fs.readFileSync(p, "utf8");
+    } else if (isTextExt(ext)) {
+      const preview = readTextPreview(p, PREVIEW_PREVIEW_MAX_BYTES);
+      if (preview.binary) return res.status(415).json({ error: "该文件看起来是二进制内容，无法作为文本预览" });
       res.setHeader("Cache-Control", "no-store, max-age=0");
-      res.json({ kind: "text", name: fileName, content, ext, identity });
+      res.json({ kind: "text", name: fileName, content: preview.text, ext, truncated: preview.truncated, size: preview.size, encoding: preview.encoding, identity });
     } else if (ext === "html" || ext === "htm") {
-      const content = fs.readFileSync(p, "utf8");
+      const preview = readTextPreview(p, PREVIEW_PREVIEW_MAX_BYTES);
+      if (preview.binary) return res.status(415).json({ error: "该文件看起来是二进制内容，无法作为网页预览" });
       res.setHeader("Cache-Control", "no-store, max-age=0");
-      res.json({ kind: "htmlfile", name: fileName, content, identity });
+      res.json({ kind: "htmlfile", name: fileName, content: preview.text, ext, truncated: preview.truncated, size: preview.size, encoding: preview.encoding, identity });
+    } else if (isCodeExt(ext)) {
+      // 源码只读预览：文本 + 语言标识，前端用 CodeViewer 渲染；不执行任何内容。
+      const preview = readTextPreview(p);
+      if (preview.binary) return res.status(415).json({ error: "该文件看起来是二进制内容，无法作为源码预览" });
+      res.setHeader("Cache-Control", "no-store, max-age=0");
+      res.json({ kind: "code", name: fileName, ext, language: codeLanguageFor(ext), content: preview.text, truncated: preview.truncated, size: preview.size, encoding: preview.encoding, identity });
     } else if (ext === "pdf") {
       res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "pdf", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/raw${cwdQuery}` });
@@ -1755,6 +1895,7 @@ app.post("/api/agent/model-configs", async (req, res) => {
     if (input.apiKey) await setApiKey(input.provider, input.apiKey);
     else if (input.clearApiKey) await removeApiKey(input.provider);
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({ ok: true, config: publicModelConfigs().find((item) => item.provider === input.provider) || null });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message, code: "MODEL_CONFIG_INVALID" });
@@ -1770,6 +1911,7 @@ app.delete("/api/agent/model-configs/:provider", async (req, res) => {
   writeModelsConfig({ ...config, providers });
   await removeApiKey(provider);
   piRuntimeManager.resetModelRuntime();
+  agentManager.invalidateModelCatalogCache();
   res.json({ ok: true, provider });
 });
 
@@ -2002,6 +2144,7 @@ app.post("/api/agent/provider-catalog/import", async (req, res) => {
       defaultModel = `${built.provider}/${target}`;
     }
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({
       ok: true,
       provider: built.provider,
@@ -2046,6 +2189,7 @@ app.post("/api/agent/default-model", (req, res) => {
   try {
     const saved = writeDefaultModel({ provider, model });
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({ ok: true, ...saved, defaultModel: `${saved.defaultProvider}/${saved.defaultModel}` });
   } catch (error) {
     res.status(500).json({ ok: false, error: String(error?.message || error), code: "DEFAULT_MODEL_FAILED" });
@@ -2114,6 +2258,7 @@ app.post("/api/agent/custom-provider", (req, res) => {
     delete nextProvider.apiKey;
     writeModelsConfig({ ...config, providers: { ...providers, [provider]: nextProvider } });
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({ ok: true, provider, model: `${provider}/${modelId}`, modelName: model.name, api, baseUrl });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message, code: "CUSTOM_PROVIDER_SAVE_FAILED" });
@@ -2298,6 +2443,16 @@ const SESSION_HEADER_BYTES = 65536;
 const SESSION_HEAD_SCAN_BYTES = 512 * 1024;
 const SESSION_CACHE_LIMIT = 800;
 const SESSION_META_STORE = path.join(PROJECT_DIR, ".oaw", "sessions-meta.json");
+// 会话列表热缓存：多标签/多窗口会同时轮询 /api/sessions，单次构建要扫描全部
+// 会话头与 Run 索引（实测 0.2–3.5s）。统一缓存 5s，避免 N 个窗口把同一份
+// 列表重复计算 N 次、把事件循环拖到健康检查超时。新建/改名/删除/置顶/冻结/
+// 分支会主动失效；地图视口（1.5s 写一次 header）不失效，允许最多 5s 滞后。
+const SESSIONS_LIST_CACHE_MS = Math.max(500, Number.parseInt(process.env.OAW_SESSIONS_LIST_CACHE_MS || "5000", 10) || 5000);
+let sessionsListCache = { at: 0, payload: null };
+function invalidateSessionsListCache() {
+  sessionsListCache = { at: 0, payload: null };
+}
+const SESSION_LIST_FIELDS = new Set(["label", "pinned", "frozen", "freezeReason", "projectId", "cwd", "parentSessionId", "agentId", "threadId"]);
 const sessionHeaderCache = new Map();
 const sessionMetaCache = new Map();
 const persistedSessionMeta = new Map();
@@ -2645,6 +2800,7 @@ app.post("/api/agent/plans/apply", async (req, res) => {
     const result = await planCatalog.applyPlan(req.body || {});
     if (!result.ok) return res.status(400).json(result);
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({ ...result, status: getConfigStatus() });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message, code: "PLAN_APPLY_FAILED" });
@@ -2656,6 +2812,7 @@ app.post("/api/agent/plans/disconnect", (req, res) => {
     const result = planCatalog.disconnectPlan(req.body || {});
     if (!result.ok) return res.status(400).json(result);
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json(result);
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message, code: "PLAN_DISCONNECT_FAILED" });
@@ -2677,6 +2834,7 @@ app.post("/api/agent/import-config", async (req, res) => {
     sessionTextCache.clear();
     sessionIdIndex.clear();
     piRuntimeManager.resetModelRuntime();
+    agentManager.invalidateModelCatalogCache();
     res.json({ ...result, sessions, status: getConfigStatus() });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message, code: "PI_IMPORT_FAILED" });
@@ -3258,6 +3416,9 @@ function buildSessionMeta(f, h, text, { truncated = false } = {}) {
     branchPurpose: h.branchPurpose || "",
     // v0.13.7 Agent 继承：会话 header 记录的智能体 id，供新建沿用与界面展示
     agentId: typeof h.agentId === "string" ? h.agentId : "",
+    // 地图会话绑定：项目名 + 视口（只存白名单字段，供初始页小地图与切回恢复）
+    mapProject: typeof h.mapProject === "string" ? h.mapProject : "",
+    mapView: h.mapView && typeof h.mapView === "object" ? h.mapView : null,
     created: h.created || "",
     title,
     hasUserMessage,
@@ -3317,7 +3478,8 @@ function updateSessionHeader(id, patch = {}) {
     lines[0] = JSON.stringify(next);
     atomicWriteFile(writable.fullPath, lines.join("\n"), "utf8");
     sessionTextCache.delete(writable.fullPath);
-    return { ok: true, header: next };
+    if (Object.keys(patch).some((key) => SESSION_LIST_FIELDS.has(key))) invalidateSessionsListCache();
+    return { ok: true, header: next, previous: header };
   } catch (error) {
     return { ok: false, status: 500, error: error.message };
   }
@@ -3748,6 +3910,7 @@ app.post("/api/sessions/:id/fork", (req, res) => {
     };
     const fileName = `${id}.jsonl`;
     atomicWriteFile(path.join(SESSIONS_DIR, fileName), [JSON.stringify(nextHeader), ...kept].join("\n") + "\n", "utf8");
+    invalidateSessionsListCache();
     res.json({ ok: true, id, fileName, parentSessionId: nextHeader.parentSessionId, cwd: nextHeader.cwd, threadId: id, label, projectId: nextHeader.projectId || null, sourceMessageId: sourceMessageId || null, entryCount: kept.length });
   } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
 });
@@ -3968,6 +4131,13 @@ app.get("/api/sessions", (req, res) => {
   const runStatusFilter = String(req.query.runStatus || "").trim();
   const pinnedFilter = req.query.pinned === undefined ? null : req.query.pinned === "true";
   const frozenFilter = req.query.frozen === undefined ? null : req.query.frozen === "true";
+  // 只有“无筛选、无分页”的热轮询走缓存；带 file/project/mode/limit 的查询保持实时。
+  const cacheable = !fileFilter && !projectFilter && !modeFilter && !runStatusFilter
+    && pinnedFilter === null && frozenFilter === null
+    && !req.query.limit && !req.query.cursor && !req.query.groupBy;
+  if (cacheable && sessionsListCache.payload && Date.now() - sessionsListCache.at <= SESSIONS_LIST_CACHE_MS) {
+    return res.json(sessionsListCache.payload);
+  }
   try {
     const files = listSessionFiles();
     const recentRuns = listRunSummaries({ limit: 200 });
@@ -4024,6 +4194,8 @@ app.get("/api/sessions", (req, res) => {
           parentSessionId: meta.parentSessionId,
           branchSourceMessageId: meta.branchSourceMessageId,
           branchPurpose: meta.branchPurpose,
+          mapProject: meta.mapProject || "",
+          mapView: meta.mapView || null,
           fileName: f.fileName,
           title,
           runStatus: latestRun?.status || "idle",
@@ -4065,12 +4237,14 @@ app.get("/api/sessions", (req, res) => {
       }
       groups = [...byKey.values()].map((group) => ({ ...group, count: group.sessions.length }));
     }
-    res.json({
+    const payload = {
       sessions: paged,
       total,
       ...(pageLimit > 0 ? { cursor, nextCursor } : {}),
       ...(groups ? { groups } : {}),
-    });
+    };
+    if (cacheable) sessionsListCache = { at: Date.now(), payload };
+    res.json(payload);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -4099,6 +4273,7 @@ app.post("/api/sessions", (req, res) => {
     };
     const fileName = id + ".jsonl";
     atomicWriteFile(path.join(SESSIONS_DIR, fileName), JSON.stringify(header) + "\n", "utf8");
+    invalidateSessionsListCache();
     res.json({ id, fileName, cwd: header.cwd, projectId: header.projectId, created, status: "idle", pinned: false, frozen: header.frozen });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -4290,6 +4465,8 @@ app.get("/api/sessions/:id", (req, res) => {
         label: header.label || "",
         pinned: Boolean(header.pinned),
         frozen: Boolean(header.frozen),
+        mapProject: typeof header.mapProject === "string" ? header.mapProject : "",
+        mapView: header.mapView && typeof header.mapView === "object" ? header.mapView : null,
         freezeReason: header.freezeReason || "",
         contextSnapshot: header.contextSnapshot || null,
         parentSessionId: header.parentSessionId || null,
@@ -4412,6 +4589,7 @@ app.post("/api/sessions/batch-delete", (req, res) => {
       skipped.push({ id, reason: error.message || "删除失败" });
     }
   }
+  if (deleted.length) invalidateSessionsListCache();
   res.json({ ok: true, deleted, skipped, missing });
 });
 
@@ -4422,6 +4600,7 @@ app.delete("/api/sessions/:id", (req, res) => {
   try {
     fs.unlinkSync(found.fullPath);
     sessionTextCache.delete(found.fullPath);
+    invalidateSessionsListCache();
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -4439,6 +4618,22 @@ app.post("/api/sessions/:id/pin", (req, res) => {
   const result = updateSessionHeader(req.params.id, { pinned: req.body?.pinned !== false });
   if (!result.ok) return res.status(result.status || 400).json(result);
   res.json({ ok: true, sessionId: req.params.id, pinned: Boolean(result.header.pinned) });
+});
+
+// 地图会话绑定：持久化当前地图项目与视口（初始页小地图、重启后切回恢复）。
+app.post("/api/sessions/:id/map-context", (req, res) => {
+  const patch = buildMapContextPatch(req.body || {});
+  if (patch.mapProject) {
+    const dir = map.projectDir(patch.mapProject);
+    if (!dir || !fs.existsSync(path.join(dir, "map.config.json"))) {
+      return res.status(400).json({ ok: false, error: "地图项目不存在", code: "MAP_PROJECT_NOT_FOUND" });
+    }
+  }
+  const result = updateSessionHeader(req.params.id, patch);
+  if (!result.ok) return res.status(result.status || 400).json({ ok: false, error: result.error || "not found" });
+  // 项目绑定变化要立即反映到列表（初始页小地图）；纯视口更新不失效，避免 1.5s 写一次 header 打穿缓存。
+  if (String(result.previous?.mapProject || "") !== String(result.header.mapProject || "")) invalidateSessionsListCache();
+  res.json({ ok: true, mapProject: result.header.mapProject || "", mapView: result.header.mapView || {} });
 });
 
 app.post("/api/sessions/:id/freeze", (req, res) => {
@@ -6265,6 +6460,8 @@ async function shutdownService(reason, exitCode = 0) {
   // 避免“服务正常关闭但最后一批数据未写”。
   try { flushPendingRunSaves(); } catch (error) { recordProcessFault("shutdown_run_flush_failed", error); }
   try { flushPendingFsync(); } catch (error) { recordProcessFault("shutdown_fsync_failed", error); }
+  // 清掉本实例的心跳文件：残留的"存活"记录会让别的实例误以为这些 Run 还在跑。
+  try { stopOwnerHeartbeat(); } catch (error) { recordProcessFault("shutdown_owner_heartbeat_failed", error); }
   if (httpServer) {
     await new Promise((resolve) => {
       let settled = false;
@@ -6312,12 +6509,20 @@ httpServer = app.listen(PORT, HOST, () => {
   });
   // R1：恢复必须在监听成功之后执行。端口被占的重复实例会在 listen 失败后退出，
   // 不能让它改写磁盘上的活跃 Run；同时把这段 IO 从启动关键路径移到可用之后。
-  try {
-    const recoveredRunIds = recoverActiveRuns();
-    if (recoveredRunIds.length) console.warn(`[runs] 已将 ${recoveredRunIds.length} 个中断前活动 Run 标记为 recovering，等待用户继续。`);
-  } catch (error) {
-    console.warn(`[runs] 恢复中断 Run 失败：${String(error?.message || error).slice(0, 200)}`);
+  // OAW_DISABLE_RECOVERY=1：仅测试/验证实例使用——测试实例不应改写任何 Run 的恢复状态。
+  if (process.env.OAW_DISABLE_RECOVERY === "1") {
+    console.warn("[runs] 已按 OAW_DISABLE_RECOVERY=1 跳过中断 Run 恢复。");
+  } else {
+    try {
+      const recoveredRunIds = recoverActiveRuns();
+      if (recoveredRunIds.length) console.warn(`[runs] 已将 ${recoveredRunIds.length} 个中断前活动 Run 标记为 recovering，等待用户继续。`);
+    } catch (error) {
+      console.warn(`[runs] 恢复中断 Run 失败：${String(error?.message || error).slice(0, 200)}`);
+    }
   }
+  // 本实例开始提供服务后才写心跳：只有真正在跑的实例才应被视为 Run 的存活 owner，
+  // 一次性脚本/测试进程即使创建过 Run 也不应阻止后续恢复。
+  startOwnerHeartbeat();
 });
 // SSE 连接由 15 秒 heartbeat 保活；关闭 Node 默认的请求/Socket 空闲超时，
 // 避免长文档任务超过默认时限后断流，而 Agent 实际仍在继续执行。

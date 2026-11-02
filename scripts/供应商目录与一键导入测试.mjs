@@ -445,5 +445,12 @@ try {
   try { fs.rmSync(temporaryRoot, { recursive: true, force: true }); } catch {}
 }
 
+场景("源码：模型目录短 TTL 缓存，凭据变更可失效", () => {
+  const agent = read("server/agent.mjs");
+  assert.match(agent, /MODEL_CATALOG_CACHE_MS/, "模型目录应有短 TTL 缓存");
+  assert.match(agent, /_buildModelCatalog/, "目录构建应拆到独立方法，便于缓存");
+  assert.match(agent, /invalidateModelCatalogCache\(\)/, "刷新/凭据变更应主动失效目录缓存");
+});
+
 console.log(failed ? "\n有失败项 ✗" : "\n全部通过 ✓");
 process.exit(failed ? 1 : 0);

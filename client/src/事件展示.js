@@ -342,7 +342,7 @@ const TOOL_IDENTITY_RULES = [
   [/^(grep|find|ls|glob)$/i, "search"],
   [/^(kb_search|kb_read|memory_update|skills_search|skills_read)$/i, "book"],
   [/^(read|context_read|cad_read)$/i, "file"],
-  [/^(map_read|map_datasets|map_edit|map_import|map_analyze|map_template|map_save_analysis|map_clear_analysis|map_screenshot)$/i, "map"],
+  [/^(map_read|map_datasets|map_edit|map_import|map_analyze|map_template|map_save_analysis|map_clear_analysis|map_screenshot|map_layer_info|map_reset|map_project_create)$/i, "map"],
   [/^(write|edit|review_source_apply|cad_edit)$/i, "edit"],
   [/^officecli$/i, "doc"],
   [/^(bash|terminal|shell)$/i, "terminal"],

@@ -264,9 +264,10 @@ await test("契约：新工具已登记（agent 定义 + 三处白名单 + task 
   for (const name of names) {
     assert.match(agent, new RegExp(`name: "${name}"`), `agent 缺少工具定义 ${name}`);
     assert.match(task, new RegExp(`"${name}"`), `task 白名单缺少 ${name}`);
-    const quoted = (agent.match(new RegExp(`"${name}"`, "g")) || []).length;
-    assert.ok(quoted >= 2, `tools/setActiveTools 白名单应包含 ${name}（实际 ${quoted} 处字符串）`);
   }
+  // 工具白名单已收敛到 task.mjs 的单一事实源（agent.mjs 只保留 sessionToolNames 派生），
+  // 不再要求 agent.mjs 里出现第二份硬编码清单。
+  assert.match(agent, /const sessionToolNames = \[\.\.\.allModeToolNames\(\)/, "agent 的工具全集应派生自 allModeToolNames");
   for (const toolVar of ["browserWaitForTool", "browserActTool", "browserExtractTool", "browserSelectOptionTool"]) {
     assert.match(agent, new RegExp(toolVar), `customTools 缺少 ${toolVar}`);
   }
@@ -301,8 +302,8 @@ await test("agent / task / index / 前端已接入浏览器能力", () => {
   assert.match(panel, /queueBrowserInput/, "浏览器输入事件必须经过串行队列");
   assert.match(panel, /action: "resize"/, "浏览器面板尺寸变化需要同步给 CDP viewport");
   assert.match(fs.readFileSync(path.join(ROOT, "client", "src", "styles.css"), "utf8"), /object-fit: contain/);
-  assert.match(app, /setBrowserPanelOpen\(true\)/, "浏览器活动应自动打开独立侧栏");
-  assert.match(app, /canvas-tab-browser/, "浏览器应为独立可伸缩侧栏（v0.13 布局重构后挂画布槽位 canvas-tab-browser，宽度由 --browser-w 驱动）");
+  assert.match(app, /openCanvasView\("browser"\)/, "浏览器活动应打开浏览器标签");
+  assert.match(app, /const browserOpen = canvasTabs\.some\(\(tab\) => tab\.kind === "browser"\)/, "浏览器标签存在性由画布标签推导");
   assert.doesNotMatch(app, /setPreviewTab\("browser"\)/, "浏览器不应再作为工作产物页签");
   // 标签页 UI 与文档按 cwd 打开（产物跨工作区）
   assert.match(panel, /action: "tab_switch"/);
@@ -352,7 +353,7 @@ await test("Run 轮次走新路径（已转正），组件与样式齐备", () =
   assert.match(artifact, /product-card-main/, "本轮产物应恢复既有 product-card 行格式");
   assert.match(artifact, /在产物面板查看/, "本轮产物应保留产物面板入口");
   assert.match(styles, /--msg-content-max: min\(100%, 760px\)/, "内容列宽令牌应统一为 760px");
-  assert.match(styles, /--chat-gutter: clamp\(12px, 2vw, 28px\)/, "会话列留白应随窗口自适应");
+  assert.match(styles, /--chat-gutter: clamp\(16px, 4vw, 40px\)/, "会话列留白应随窗口自适应");
   assert.match(styles, /\.center-chat-slot \.chat-compose > \.task-card \{[^}]*width: 100%/, "任务卡应与输入框同宽");
   assert.match(chat, /runId: activeRunIdRef\.current \|\| null/, "运行气泡创建时应带上 runId 锚点");
   assert.match(chat, /activeRunIdRef\.current = admittedRunId/, "run_admitted 到达时应同步运行锚点，避免退回旧过程卡");

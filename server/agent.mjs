@@ -49,7 +49,7 @@ import { importLocalPiSessionFile, readCredentials, readModelsConfig, readModels
 import { resolveReferences, readReference, contextSummary } from "./context.mjs";
 import { recordRunEvent, updateRunTodo, getRun, isRunTerminal } from "./runs.mjs";
 import { markRunTiming, attachRunTimingSpans } from "./首字延迟.mjs";
-import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode, routeTaskIntent } from "./task.mjs";
+import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode, routeTaskIntent, allModeToolNames } from "./task.mjs";
 import { classifyToolCall, isReadonlyBash, isMutatingOfficecli } from "./office规范/执行闸门.mjs";
 import { probeBashAvailability, bashUnavailableError, bashWorkspaceRule, resolveBashShell } from "./environment-capabilities.mjs";
 
@@ -85,6 +85,7 @@ import {
   releaseWriteLock,
   resolveReadablePath,
   stageWrite,
+  stageWriteWithRetry,
   stagedAccess,
   writeWorkspaceFile,
 } from "./写入协调.mjs";
@@ -664,6 +665,9 @@ const MODEL_FIRST_EVENT_TIMEOUT_MS = Math.max(10000, Number.parseInt(process.env
 // 首个事件之后仍可能出现供应商流中途静默；工具正在执行时不计入该保护，
 // 避免长时间 Office/脚本任务被误中止。可通过环境变量按供应商特性调整。
 const MODEL_IDLE_TIMEOUT_MS = Math.max(30000, Number.parseInt(process.env.OAW_MODEL_IDLE_TIMEOUT_MS || "120000", 10) || 120000);
+// 模型目录缓存：/api/models 会被每个窗口每 60s 轮询一次；目录/可用性探测
+// 单次可达数百毫秒到数秒，缓存放大多窗口场景并避免把事件循环拖满。
+const MODEL_CATALOG_CACHE_MS = Math.max(5000, Number.parseInt(process.env.OAW_MODEL_CATALOG_CACHE_MS || "30000", 10) || 30000);
 // ask_user 阻塞等待用户回答的时间窗口：到期后按专业判断继续。
 // 默认 60 分钟（2026-10-19 用户决策：拉长等待、减少超时后瞎猜），OAW_ASK_TIMEOUT_MS 可调。
 // 前端凭事件里的 expiresAt 把卡片置为"已超时"；超时/回答都会补发 ask_expired / ask_answered
@@ -1352,7 +1356,7 @@ class AgentManager extends EventEmitter {
               "- **Word 批注**: 先用 `officecli get <file> /body --depth 3 --json` 或 `query <file> paragraph --json` 找到真实段落路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"批注内容\\\" --json` 写入；一次 get 只传一个 DOM 路径，完成后用 `query <file> comment --json` 回读校验。若错误明确为 sharing violation 或另一个进程占用，再提示关闭 WPS/Word/OfficeCLI 预览；若是 Access denied、is denied、EPERM 或 EACCES，应说明服务进程缺少系统写权限，不要尝试绕过沙箱。",
               "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入 `.agent-context.md` 中的「当前工作区」绝对路径，禁止写入项目目录。否则产物不会被前端检测到。",
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
-              "- **地图（GIS）**: 地图项目位于 `当前工作区/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。若改了 layers/*.geojson 数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
+              "- **地图（GIS）**: 地图项目位于 `当前工作区/maps/{project}/`（当前任务指定 `mapProject` 时一律使用任务项目；缺省才回退 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。若改了 layers/*.geojson 数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
               "- **地图分析**: 用户说“在义乌生成热力图/等时圈”、要求 OD 期望线或公交分析时，优先使用 map_analyze 生成并显示临时结果；结果明确标记演示数据，用户确认后再保存为正式图层。",
               "- **主动询问（默认不问）**: 默认按专业判断直接执行；信息缺失时采用合理默认值（修改类默认判断改哪一段、改成什么、是否保留原格式），并在结论中写明假设。**不要**为了“信息完整”调用 ask_user，任务收尾阶段更不得询问。只有遇到无法继续的硬阻塞（文件被占用、原文受保护、权限缺失），或用户明确要求先确认时，才调用 ask_user，并把相关问题合并到一次。**禁止请示式提问**（「需要我继续吗」「下一步怎么走」）——直接继续，或在结论里给出可选项。用户已回答过的信息不得再问。",
               "- **模板优先（重要）**: 用户要求写工可/可研/规划/汇报/交评/预可/选址/物流园区/年度报告等交通规划文体时，先用 read 读取 `" + PROJECT_DIR + "/templates/traffic-material/` 下对应模板（14 个），按其章节骨架、必备图表与格式规则写作；不要凭记忆自造结构。注意模板在项目目录而不在当前工作区，必须用这个绝对路径。",
@@ -1542,7 +1546,7 @@ class AgentManager extends EventEmitter {
             entry, tool: "write", input: String(absolutePath || ""),
             runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
           });
-          return stageWrite({ ...ctx, targetPath: absolutePath, content, onEvent: writeEvent });
+          return stageWriteWithRetry({ ...ctx, targetPath: absolutePath, content, onEvent: writeEvent });
         },
       },
     });
@@ -1563,7 +1567,7 @@ class AgentManager extends EventEmitter {
           assertReviewWriteAllowed(absolutePath, "edit");
           enforceOfficeGate("edit", { path: absolutePath });
           enforceBudgetRestriction(entry, "edit", { mutating: true });
-          return stageWrite({ ...activeWriteContext("edit"), targetPath: absolutePath, content, onEvent: writeEvent });
+          return stageWriteWithRetry({ ...activeWriteContext("edit"), targetPath: absolutePath, content, onEvent: writeEvent });
         },
       },
     });
@@ -2478,9 +2482,9 @@ execute: async (_toolCallId, params) => {
       name: "map_read",
       label: "地图读取",
       description:
-        "读取地图项目（默认 zhejiang-map 浙江省交通地图）的配置、图层清单与当前样式。用户在地图模式下询问地图状态/图层/样式时使用。返回：项目中心/缩放/底图、图层文件列表（id/名称/类型/归属）、样式图层（显隐/颜色/线宽/透明度）。只返回共享数据集与当前工作区自有的图层。",
+        "读取地图项目（默认使用当前任务的地图项目；未指定任务项目时回退 zhejiang-map 浙江省交通地图）的配置、图层清单与当前样式。用户在地图模式下询问地图状态/图层/样式时使用。返回：项目中心/缩放/底图、图层文件列表（id/名称/类型/归属）、样式图层（显隐/颜色/线宽/透明度）。只返回共享数据集与当前工作区自有的图层。",
       parameters: Type.Object({
-        project: Type.Optional(Type.String({ description: "项目名，默认 zhejiang-map" })),
+        project: Type.Optional(Type.String({ description: "项目名；缺省使用当前任务的地图项目，最终回退 zhejiang-map" })),
       }),
       execute: async (_toolCallId, params) => {
         const map = await import("./map.mjs");
@@ -2527,7 +2531,7 @@ execute: async (_toolCallId, params) => {
         + "不写前缀时按 id 处理。共享数据集改样式需用户逐次授权；本工作区自有图层可直接改。\n"
         + "修改前建议先 map_read 或 map_datasets 查看现有图层。",
       parameters: Type.Object({
-        project: Type.Optional(Type.String({ description: "项目名，默认 zhejiang-map" })),
+        project: Type.Optional(Type.String({ description: "项目名；缺省使用当前任务的地图项目，最终回退 zhejiang-map" })),
         action: Type.Union([
           Type.Literal("setVisibility"),
           Type.Literal("setPaint"),
@@ -2574,6 +2578,23 @@ execute: async (_toolCallId, params) => {
               seen.add(item.id);
               matched.push(item);
             }
+          }
+        }
+
+        // 锁定图层对 Agent 只读：用户在图层属性里锁定后，任何样式改写都直接拒绝。
+        const cfgFile = path.join(dir, "map.config.json");
+        let lockedIds = new Set();
+        try {
+          const cfg = map.normalizeConfig(name, JSON.parse(fs.readFileSync(cfgFile, "utf8"))).config;
+          lockedIds = new Set((cfg.layers || []).filter((l) => l.locked).map((l) => String(l.id)));
+        } catch { /* 配置不可读时按未锁定处理 */ }
+        if (params.action !== "add") {
+          const blocked = matched.filter((l) => lockedIds.has(String(l.id)));
+          if (blocked.length) {
+            return {
+              content: [{ type: "text", text: `图层已锁定，Agent 不得修改：${blocked.map((l) => l.id).join("、")}。请让用户在图层属性中解除锁定。` }],
+              details: { locked: blocked.map((l) => l.id) },
+            };
           }
         }
 
@@ -2675,7 +2696,7 @@ execute: async (_toolCallId, params) => {
         "把工作区中的 GeoJSON 文件导入为地图图层。默认作为临时图层直接上屏（不写项目文件、免审批，适合演示/分析/中间产物；地图「清除」按钮或刷新即可移除，样式重载自动重放）；要长期保留传 transient:false 落盘为正式图层（自动生成矢量瓦片，走审批）。参数 file 为相对工作区根目录的路径。",
       parameters: Type.Object({
         file: Type.String({ description: "相对工作区的 GeoJSON 文件路径，如 maps_data/highways.geojson" }),
-        project: Type.Optional(Type.String({ description: "项目名，默认 zhejiang-map" })),
+        project: Type.Optional(Type.String({ description: "项目名；缺省使用当前任务的地图项目，最终回退 zhejiang-map" })),
         layerId: Type.Optional(Type.String({ description: "图层 id（字母数字下划线），默认取文件名" })),
         transient: Type.Optional(Type.Boolean({ description: "默认 true=临时图层（直接上屏不落盘）；false=正式图层（写入项目并生成瓦片，需审批）" })),
       }),
@@ -2693,14 +2714,23 @@ execute: async (_toolCallId, params) => {
           return { content: [{ type: "text", text: `文件不存在: ${rel}` }], details: {} };
         }
         const name = params.project || entry.task?.mapProject || map.DEFAULT_PROJECT;
+        const fallbackId = path.basename(rel, path.extname(rel)).replace(/[^a-zA-Z0-9_-]/g, "_") || "layer";
+        const layerId = (params.layerId || fallbackId).replace(/[^a-zA-Z0-9_-]/g, "_");
+        // 覆盖导入同样受图层锁约束；新增图层（id 不存在）不受影响。
+        try {
+          const cfgPath = path.join(map.projectDir(name), "map.config.json");
+          const cfg = map.normalizeConfig(name, JSON.parse(fs.readFileSync(cfgPath, "utf8"))).config;
+          const locked = (cfg.layers || []).find((l) => String(l.id) === layerId && l.locked);
+          if (locked) {
+            return { content: [{ type: "text", text: `图层 ${layerId} 已锁定，Agent 不得覆盖。请让用户在图层属性中解除锁定。` }], details: {} };
+          }
+        } catch { /* 项目配置不可读时按未锁定处理 */ }
         // 导入会同时更新当前地图项目的 GeoJSON、配置、样式和瓦片；以项目目录
         // 作为本 Run 的归属边界，不能把输入源文件误算成产物。
         let geojson;
         try { geojson = JSON.parse(fs.readFileSync(fp, "utf8")); } catch {
           return { content: [{ type: "text", text: `不是合法的 GeoJSON: ${rel}` }], details: {} };
         }
-        const fallbackId = path.basename(rel, path.extname(rel)).replace(/[^a-zA-Z0-9_-]/g, "_") || "layer";
-        const layerId = (params.layerId || fallbackId).replace(/[^a-zA-Z0-9_-]/g, "_");
         // 临时图层工作流（用户批准默认临时）：transient !== false 时**不落盘、免审批**，
         // 经 map_action 在前端注册为临时层（样式重载自动重放；清除按钮/刷新即可移除）。
         // 正式落盘需显式 transient:false（走审批 + 瓦片重建）。
@@ -2727,6 +2757,15 @@ execute: async (_toolCallId, params) => {
           }
           writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}`, kind: "map_import" });
           const imported = await map.importLayer(name, layerId, geojson);
+          // agent 导入也记入项目生成内容清单（数据文件仍在 layers/）。
+          map.appendAgentManifest(name, {
+            action: "import",
+            runId: ctx.runId,
+            sessionId: String(entry.sessionId || entry.task?.sessionId || ""),
+            layerId,
+            title: rel,
+            paths: [`maps/${name}/layers/${layerId}.geojson`],
+          });
           // 标注归属：导入的图层属于当前工作区（共享数据集内的 id 不会被改写）。
           const repo = await import("./图层仓库.mjs");
           repo.markLayerOwnership(name, layerId, { workspace: String(ws || entry.workspace || "") });
@@ -2805,6 +2844,117 @@ execute: async (_toolCallId, params) => {
       },
     });
 
+    // 读取图层工程元数据（只读）：来源、要素数、范围、锁定、基线归属、最近操作。
+    const mapLayerInfoTool = defineTool({
+      name: "map_layer_info",
+      label: "图层工程信息",
+      description:
+        "读取地图项目的图层注册表与工程元数据（只读）。返回每个图层的来源、格式、要素数、范围、锁定状态、是否基线图层、更新时间，以及最近操作日志。用户问「这个图层从哪来的 / 有多少要素 / 为什么不能改」时使用。",
+      parameters: Type.Object({
+        project: Type.Optional(Type.String({ description: "项目名，默认当前地图项目" })),
+        layerId: Type.Optional(Type.String({ description: "只看某个图层" })),
+        operationsLimit: Type.Optional(Type.Number({ description: "最近操作条数，默认 10，最多 50" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const map = await import("./map.mjs");
+        const name = String(params.project || entry.task?.mapProject || map.DEFAULT_PROJECT);
+        const registry = map.listLayerRegistry(name);
+        if (!registry) return { content: [{ type: "text", text: `项目不存在或没有注册表：${name}` }], details: {} };
+        const wanted = String(params.layerId || "");
+        const layers = (registry.layers || []).filter((l) => !wanted || String(l.id) === wanted);
+        const lines = [
+          `项目：${registry.project}（schema v${registry.schemaVersion}，${registry.crs}）`,
+          `基线时间：${registry.baselineAt || "未设置"}；图层 ${registry.counts?.layers ?? 0}，要素 ${registry.counts?.features ?? 0}，锁定 ${registry.counts?.locked ?? 0}`,
+        ];
+        for (const l of layers) {
+          const src = l.source || {};
+          lines.push(`- ${l.id}（${l.name}·${l.type}）${l.locked ? " 已锁定" : ""}${l.inBaseline ? " 基线层" : " 基线后新增"}`);
+          lines.push(`    来源 ${src.kind || "?"}${src.format ? `/${src.format}` : ""}${src.path ? ` · ${src.path}` : ""}；要素 ${l.stats?.features ?? "?"}；范围 ${l.stats?.bbox ? l.stats.bbox.map((n) => Number(n).toFixed(4)).join(",") : "?"}`);
+          lines.push(`    更新 ${l.updatedAt || "?"}`);
+        }
+        const limit = Math.max(1, Math.min(50, Number(params.operationsLimit) || 10));
+        const ops = map.listOperations(name, { layerId: wanted, limit });
+        if (ops.length) {
+          lines.push("", `最近操作（${ops.length}）：`);
+          for (const op of ops) lines.push(`- ${op.ts} ${op.actor} ${op.action}${op.layerId ? ` ${op.layerId}` : ""}`);
+        }
+        return { content: [{ type: "text", text: lines.join("\n") }], details: { project: name, layers: layers.length } };
+      },
+    });
+
+    // 三级重置（Work，需审批）：tree / temp / baseline。
+    const mapResetTool = defineTool({
+      name: "map_reset",
+      label: "重置地图图层",
+      description:
+        "按项目基线重置地图图层树。level=tree 恢复基线顺序/分组/显隐/透明度/样式并保留新层；level=temp 清空本次会话临时层；level=baseline 恢复基线并把基线后新增的正式层移入回收站（.trash）。写操作，需用户审批。",
+      parameters: Type.Object({
+        level: Type.Union([Type.Literal("tree"), Type.Literal("temp"), Type.Literal("baseline")]),
+        project: Type.Optional(Type.String({ description: "项目名，默认当前地图项目" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const map = await import("./map.mjs");
+        const name = String(params.project || entry.task?.mapProject || map.DEFAULT_PROJECT);
+        const level = ["tree", "temp", "baseline"].includes(params.level) ? params.level : "tree";
+        const ctx = activeWriteContext("map_reset");
+        await requireToolApproval({
+          entry, tool: "map_reset", input: `${level} maps/${name}`,
+          runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+        });
+        const result = await withWorkspaceWriteLock(ctx, "map_reset", async () => map.resetProject(name, level, { actor: "agent" }));
+        if (!result?.ok) return { content: [{ type: "text", text: `重置失败：${result?.error || "未知错误"}` }], details: {} };
+        emitChannelSafe(entry, "file_changed", { files: [`maps/${name}/map.config.json`, `maps/${name}/style.json`] });
+        const removed = Array.isArray(result.removed) ? result.removed.length : 0;
+        return {
+          content: [{ type: "text", text: level === "temp"
+            ? "已清空临时层（前端同时移除画布临时可视化），正式图层未受影响。"
+            : `已执行 ${level} 重置：恢复 ${result.restored ?? 0} 个基线图层${removed ? `，移除 ${removed} 个新增层（已入 .trash）` : ""}。` }],
+          details: { level, restored: result.restored, removed },
+        };
+      },
+    });
+
+    // 创建空白/复制项目（Work，需审批）。
+    const mapProjectCreateTool = defineTool({
+      name: "map_project_create",
+      label: "新建地图项目",
+      description:
+        "创建新的地图项目。kind=blank 创建只含底图的空白工程（AI 画布从零做图）；kind=copy 复用基础项目的路网样式源。创建后项目自动写基线。写操作，需用户审批。",
+      parameters: Type.Object({
+        project: Type.String({ description: "项目标识（英文/数字/下划线/短横线，1-64 位）" }),
+        name: Type.Optional(Type.String({ description: "项目显示名" })),
+        kind: Type.Optional(Type.Union([Type.Literal("blank"), Type.Literal("copy")])),
+        baseProject: Type.Optional(Type.String({ description: "kind=copy 时的基础项目，缺省 zhejiang-map" })),
+        description: Type.Optional(Type.String({ description: "项目说明" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const map = await import("./map.mjs");
+        const id = String(params.project || "").trim();
+        const kind = params.kind === "blank" ? "blank" : "copy";
+        const ctx = activeWriteContext("map_project_create");
+        await requireToolApproval({
+          entry, tool: "map_project_create", input: `${kind} ${id}`,
+          runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+        });
+        try {
+          const created = map.createProject({
+            project: id,
+            name: params.name,
+            kind,
+            baseProject: params.baseProject || map.DEFAULT_PROJECT,
+            description: params.description,
+          });
+          emitChannelSafe(entry, "file_changed", { files: [`maps/${id}/map.config.json`] });
+          return {
+            content: [{ type: "text", text: `已创建${kind === "blank" ? "空白 AI 画布" : "地图项目"}「${created.config?.name || id}」（${id}）。请在地图项目菜单中切换到该项目后继续。` }],
+            details: { project: id, kind },
+          };
+        } catch (e) {
+          return { content: [{ type: "text", text: `创建失败：${e.message}` }], details: { code: e.code } };
+        }
+      },
+    });
+
     const mapAnalyzeTool = defineTool({
       name: "map_analyze",
       label: "地图分析结果",
@@ -2820,7 +2970,7 @@ execute: async (_toolCallId, params) => {
           Type.Literal("bbox_clip"),
         ]),
         region: Type.Optional(Type.String({ description: "区域名称，如义乌市、金华市、新昌县" })),
-        project: Type.Optional(Type.String({ description: "地图项目名，默认 zhejiang-map" })),
+        project: Type.Optional(Type.String({ description: "地图项目名；缺省使用当前任务的地图项目，最终回退 zhejiang-map" })),
         count: Type.Optional(Type.Number({ description: "演示点数量，默认 36，最多 120" })),
         dataSource: Type.Optional(Type.String({ description: "数据源适配器 id（如 local-file / bundled-xinchang）；给出时优先用它出图，忽略演示数据" })),
         path: Type.Optional(Type.String({ description: "dataSource=local-file 时的文件路径；空间分析（buffer/spatial_filter/bbox_clip）时必填，指向工作区内的 GeoJSON（相对路径）" })),
@@ -3031,6 +3181,16 @@ execute: async (_toolCallId, params) => {
           writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${project}`, kind: "map_save_analysis" });
           await map.importLayer(project, layerId, action.geojson);
           if (action.lines) await map.importLayer(project, `${layerId}-lines`, action.lines);
+          // agent 生成内容清单：分析数据仍在 layers/（地图引擎读取），
+          // manifest 只记录生成来源与路径，避免复制大文件。
+          map.appendAgentManifest(project, {
+            action: "analysis",
+            runId: ctx.runId,
+            sessionId: String(entry.sessionId || entry.task?.sessionId || ""),
+            layerId,
+            title: action.title || "",
+            paths: wrote.filter((item) => item.includes("/layers/")),
+          });
           // 标注归属：分析结果保存后属于当前工作区，前端「我的图层」分组可见。
           const repo = await import("./图层仓库.mjs");
           const owner = String(entry.workspace || "");
@@ -3064,7 +3224,7 @@ execute: async (_toolCallId, params) => {
       description:
         "对地图项目的当前配置视图截图并保存 PNG，返回图片绝对路径。生成/修改图层或样式之后用它自查视觉效果（线宽/配色/标注/压盖）：用 read 工具查看该图片，不满意就继续用 map_edit 调整。需要支持图片的模型才能真正「看图」。",
       parameters: Type.Object({
-        project: Type.Optional(Type.String({ description: "项目名，默认 zhejiang-map" })),
+        project: Type.Optional(Type.String({ description: "项目名；缺省使用当前任务的地图项目，最终回退 zhejiang-map" })),
         width: Type.Optional(Type.Number({ description: "截图宽度 px，默认 1280（400-2400）" })),
         height: Type.Optional(Type.Number({ description: "截图高度 px，默认 800（300-1600）" })),
       }),
@@ -3586,7 +3746,7 @@ execute: async (_toolCallId, params) => {
                 } finally {
                   if (bubbleBlocked) emitChild("subagent_unblocked", { status: "running", kind: "approval", tool: "write", target: String(target || "").slice(0, 300) });
                 }
-                return stageWrite({ ...ctx, targetPath: target, content, onEvent: writeEvent });
+                return stageWriteWithRetry({ ...ctx, targetPath: target, content, onEvent: writeEvent });
               },
             },
           });
@@ -3598,7 +3758,7 @@ execute: async (_toolCallId, params) => {
                 return fs.promises.access(target, fs.constants.R_OK);
               },
               readFile: async (absolutePath) => fs.promises.readFile(resolveSubagentWritablePath(absolutePath)),
-              writeFile: async (absolutePath, content) => stageWrite({ ...activeWriteContext("edit"), targetPath: resolveSubagentWritablePath(absolutePath), content, onEvent: writeEvent }),
+              writeFile: async (absolutePath, content) => stageWriteWithRetry({ ...activeWriteContext("edit"), targetPath: resolveSubagentWritablePath(absolutePath), content, onEvent: writeEvent }),
             },
           });
           const childCustomTools = [childReadTool, ...[childWriteTool, childEditTool, effRoleSpec.readOnly ? null : officeTool].filter(Boolean)];
@@ -3978,6 +4138,9 @@ execute: async (_toolCallId, params) => {
       },
     });
     const writableSessionPath = materializeSessionPath(options.sessionPath);
+    // 会话可激活工具全集：模式白名单的唯一来源是 server/task.mjs，这里只动态追加
+    // run_subagent（按会话注入）与 MCP / Pi 扩展工具。禁止再在本文件维护第二份工具名清单。
+    const sessionToolNames = [...allModeToolNames(), "run_subagent", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames];
     let session;
     let sessionManager;
     try {
@@ -3989,17 +4152,17 @@ execute: async (_toolCallId, params) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, mapScreenshotTool, cadReadTool, cadEditTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, browserWaitForTool, browserActTool, browserExtractTool, browserSelectOptionTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
-        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_datasets", "map_edit", "map_import", "map_analyze", "map_template", "map_save_analysis", "map_clear_analysis", "map_screenshot", "cad_read", "cad_edit", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "browser_wait_for", "browser_act", "browser_extract", "browser_select_option", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames],
+        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapLayerInfoTool, mapResetTool, mapProjectCreateTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, mapScreenshotTool, cadReadTool, cadEditTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, browserWaitForTool, browserActTool, browserExtractTool, browserSelectOptionTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
+        tools: sessionToolNames,
       }));
     } catch (error) {
       piRuntimeManager.markFailure(runtimeRecord.runtimeId, error, { recovering: true, reason: "session_create_failed" });
       throw error;
     }
     // 显式激活全部自定义工具（pi SDK 仅激活 tools 白名单中的工具，customTools 需手动激活，
-    // 否则 kb_search/map_read/ask_user 等对模型不可见）
+    // 否则 kb_search/map_read/ask_user 等对模型不可见）。工具全集同 sessionToolNames，不再另列清单。
     try {
-      piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), "ask_user", "officecli", "review_copy", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "cad_read", "cad_edit", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "browser_wait_for", "browser_act", "browser_extract", "browser_select_option", "run_subagent", "editorial_pipeline", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames]);
+      piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), ...sessionToolNames]);
     } catch {}
 
     // event channel with history for SSE replay
@@ -5491,7 +5654,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         bashWorkspaceRule(),
         "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区（绝对路径见上），禁止写入项目目录。否则产物不会被前端检测到。",
         "- **临时文件**: 中间工作文件（脚本、JSON 片段、解包目录、备份等）请集中放在工作区内以点开头的临时目录（如 `.work/`），并在任务收尾时删除；不要把中间文件留在用户的工作区里（用户目录只应留交付产物）。",
-        "- **地图（GIS）**: 地图项目位于 `" + ws + "/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图）。用户在地图模式下对话时用 map_read/map_edit/map_import 工具。",
+        "- **地图（GIS）**: 地图项目位于 `" + ws + "/maps/{project}/`（当前任务指定 mapProject 时一律使用任务项目；缺省才回退 zhejiang-map 浙江省交通地图）。用户在地图模式下对话时用 map_read/map_edit/map_import 工具。",
         "",
         "## 当前工作文件（用户正在查看/编辑的文档）",
         file ? `- 当前工作文件: ${file}` : "- 当前没有打开文档",
@@ -5768,7 +5931,22 @@ const result = await piRuntimeManager.probeModel(model, options);
     return candidate.id;
   }
 
-async listModelCatalog() {
+async listModelCatalog({ maxAgeMs = MODEL_CATALOG_CACHE_MS } = {}) {
+    // 目录/可用性探测（mr.getAvailable）单次可达数百毫秒到数秒：多窗口每 60s
+    // 轮询 /api/models 会把它重复成事件循环的主要负载。这里做短 TTL 缓存，
+    // 模型刷新/凭据变更时显式失效。
+    const cached = this._modelCatalogCache;
+    if (cached && Date.now() - cached.at < maxAgeMs) return cached.value;
+    const value = await this._buildModelCatalog();
+    this._modelCatalogCache = { at: Date.now(), value };
+    return value;
+  }
+
+  invalidateModelCatalogCache() {
+    this._modelCatalogCache = null;
+  }
+
+  async _buildModelCatalog() {
     const mr = await this.modelRuntime();
     const providers = localModelProviders();
     const stored = localStoredModels(providers);
@@ -5829,6 +6007,7 @@ async listModelCatalog() {
   /** 重新扫描模型：重置 ModelRuntime 缓存并重新构建（模型配置变更后调用） */
   async refreshModels() {
     piRuntimeManager.resetModelRuntime();
+    this.invalidateModelCatalogCache();
     const mr = await this.modelRuntime();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
@@ -5863,6 +6042,7 @@ export async function setApiKey(provider, key) {
   auth[provider] = { type: "api_key", key: String(key).trim() };
   writeCredentials(auth);
   clearInvalidCredential(provider);
+  agentManager.invalidateModelCatalogCache();
   try {
     const mr = await agentManager.modelRuntime();
     await mr.setRuntimeApiKey(provider, String(key).trim(), { allowNetwork: false });
@@ -5877,6 +6057,7 @@ export async function removeApiKey(provider) {
   writeCredentials(auth);
   clearInvalidCredential(provider);
   piRuntimeManager.resetModelRuntime();
+  agentManager.invalidateModelCatalogCache();
   return { ok: true, providers: Object.keys(auth) };
 }
 

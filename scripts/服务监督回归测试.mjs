@@ -19,6 +19,7 @@ assert.deepEqual(restartDelayFor({ uptimeMs: 5_000, rapidFailures: 0 }), { failu
 assert.deepEqual(restartDelayFor({ uptimeMs: 31_000, rapidFailures: 4 }), { failures: 0, delayMs: 3_000 }, "稳定运行后清空快速崩溃计数");
 assert.deepEqual(restartDelayFor({ uptimeMs: 5_000, rapidFailures: 4 }), { failures: 5, delayMs: 30_000 }, "连续快速崩溃应退避，避免重启风暴");
 assert.match(supervisor, /HEALTH_FAILURE_LIMIT = 3/);
+assert.match(supervisor, /HEALTH_TIMEOUT_MS = 10_000/, "健康检查超时应高于控制面 8s 超时，避免高峰误判卡住");
 assert.match(supervisor, /STARTUP_GRACE_MS = 180_000/);
 assert.match(server, /closeAllConnections/);
 assert.match(server, /process\.on\("uncaughtException"/);
@@ -30,5 +31,10 @@ assert.equal(shouldSkipForResume({ now: 200_000, lastCheckAt: 0, intervalMs: 15_
 assert.match(supervisor, /shouldSkipForResume\(\{ now, lastCheckAt: previousCheckAt \}\)/);
 assert.match(supervisor, /process\.argv\.includes\("--status"\)/);
 assert.equal(pkg.scripts["service:status"], "node scripts/服务监督.mjs --status", "应提供只读状态探测命令");
+// 监督器单实例：重复 npm start 不再拉起第二个监督器（避免端口竞争与重启窗口内的连接失败）
+assert.match(supervisor, /const SUPERVISOR_LOCK_FILE/);
+assert.match(supervisor, /acquireSupervisorLock\(\)/);
+assert.match(supervisor, /已有监督器在运行/);
+assert.match(supervisor, /process\.once\("exit", releaseSupervisorLock\)/);
 
 console.log("macOS/跨平台服务监督回归：通过");

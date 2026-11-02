@@ -27,6 +27,18 @@ function safeRunId(runId) {
 
 function now() { return new Date().toISOString(); }
 
+/**
+ * 写锁等待上限（毫秒）。默认 20 秒；可用 OAW_WRITE_LOCK_TIMEOUT_MS 调整。
+ * 取值 0 表示不等待，冲突立即失败。
+ */
+function writeLockTimeoutMs() {
+  const raw = process.env.OAW_WRITE_LOCK_TIMEOUT_MS;
+  if (raw === undefined || raw === null || String(raw).trim() === "") return 20000;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return 20000;
+  return value;
+}
+
 function lockKey(target) {
   const resolved = path.resolve(target);
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
@@ -249,13 +261,41 @@ export function acquireWriteLock({ workspace, targetPath, runId, threadId = null
  * “文件正在被其他任务修改”）。现在工具侧改为“用完即放”，并发时的重叠通常只有秒级，
  * 这里用短退避重试把冲突变成“稍等一下”，超过上限才按原错误抛出。
  */
-export async function acquireWriteLockWithRetry(options = {}, { timeoutMs = 20000, intervalMs = 350 } = {}) {
+export async function acquireWriteLockWithRetry(options = {}, { timeoutMs = writeLockTimeoutMs(), intervalMs = 350, onWait = null } = {}) {
   const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  const startedAt = Date.now();
+  let attempts = 0;
   for (;;) {
+    attempts += 1;
     try {
-      return acquireWriteLock(options);
+      const token = acquireWriteLock(options);
+      token.waitedMs = Date.now() - startedAt;
+      token.attempts = attempts;
+      return token;
     } catch (error) {
-      if (error?.code !== "WRITE_CONFLICT" || Date.now() >= deadline) throw error;
+      if (error?.code !== "WRITE_CONFLICT") throw error;
+      const waitedMs = Date.now() - startedAt;
+      if (Date.now() >= deadline) {
+        // 超时前把等待过程写进 details：调用方（模型）据此知道是"别的任务在写"，
+        // 可以选择等待或换路径，而不是当成不可恢复的失败。
+        error.details = {
+          ...(error.details || {}),
+          retryable: true,
+          attempts,
+          waitedMs,
+          ownerRunId: error.details?.ownerRunId || null,
+          ownerThreadId: error.details?.ownerThreadId || null,
+          ownerKind: error.details?.ownerKind || null,
+          lockedAt: error.details?.lockedAt || null,
+        };
+        if (typeof onWait === "function") {
+          try { onWait({ attempts, waitedMs, error }); } catch {}
+        }
+        throw error;
+      }
+      if (typeof onWait === "function") {
+        try { onWait({ attempts, waitedMs, error }); } catch {}
+      }
       const wait = intervalMs + Math.random() * 250;
       await new Promise((resolve) => { setTimeout(resolve, wait); });
     }
@@ -354,29 +394,7 @@ export function stageWrite({ runId, workspace, targetPath, content, threadId = n
   let token;
   try {
     token = acquireWriteLock({ workspace: root, targetPath: target, runId, threadId, kind });
-    emitWriteEvent(onEvent, "write_started", data);
-    emitWriteEvent(onEvent, "write_locked", data);
-    const stagedPath = path.resolve(info.stagingDir, relative);
-    if (!isInside(info.stagingDir, stagedPath)) throw new Error("临时产物路径非法");
-    atomicWriteFile(stagedPath, content, "utf8");
-    const { manifest } = loadManifest(runId);
-    const previous = manifest.files.find((item) => item.path === relative);
-    const entry = {
-      path: relative,
-      stagedPath: path.relative(info.runDir, stagedPath).replace(/\\/g, "/"),
-      status: fs.existsSync(target) ? "modified" : "added",
-      kind,
-      runId: safeRunId(runId),
-      threadId: threadId || null,
-      stagedAt: now(),
-      writes: Number(previous?.writes || 0) + 1,
-      size: Buffer.isBuffer(content) ? content.length : Buffer.byteLength(String(content), "utf8"),
-    };
-    manifest.files = [...manifest.files.filter((item) => item.path !== relative), entry];
-    manifest.updatedAt = now();
-    saveManifest(info, manifest);
-    emitWriteEvent(onEvent, "artifact_staged", { ...data, stagedPath: entry.stagedPath, status: entry.status, size: entry.size });
-    return { ok: true, ...entry, target };
+    return stageWriteLocked({ info, data, root, target, relative, content, runId, threadId, kind, onEvent });
   } catch (error) {
     emitWriteEvent(onEvent, "write_rejected", { ...data, code: error?.code || "WRITE_FAILED", message: String(error?.message || error) });
     throw error;
@@ -384,6 +402,71 @@ export function stageWrite({ runId, workspace, targetPath, content, threadId = n
     // Run 结束前故意不释放锁，避免同一 Run 的临时产物和其他 Run 交错发布。
     void token;
   }
+}
+
+/**
+ * 带退避重试的暂存写入。
+ *
+ * 背景：write/edit 工具此前直接取锁，撞上另一个任务的工作区级锁（bash/地图工具）
+ * 会在 2ms 内立刻失败（实测压力测试中 C 任务因此丢掉一次写入），
+ * 模型只能自己重试。改为先按短退避等待锁可用，等不到再按 WRITE_CONFLICT 报错，
+ * 并在错误 details 里给出 owner 与等待时长，便于模型判断"稍等"还是"换路径"。
+ *
+ * 锁语义与 stageWrite 一致：锁持有到 Run 结束（由 releaseRunLocks 释放）。
+ */
+export async function stageWriteWithRetry({ runId, workspace, targetPath, content, threadId = null, kind = "agent", onEvent } = {}, { timeoutMs, intervalMs = 350, onWait = null } = {}) {
+  const { root, target, relative } = validateTarget(workspace, targetPath, { allowWorkspaceRoot: false });
+  if (!relative) throw new Error("不能把工作区根目录作为文件写入目标");
+  if (isProtectedMemoryTarget(root, target) && !["attachment", "memory_approval"].includes(kind)) {
+    const error = new Error("长期记忆必须通过 memory_update 建议并经用户审核，不能使用普通文件写入工具");
+    error.code = "MEMORY_WRITE_REQUIRES_PROPOSAL";
+    throw error;
+  }
+  const info = stageInfo(runId);
+  const data = eventData({ runId: safeRunId(runId), workspace: root, target, relative, kind, threadId });
+  let token;
+  try {
+    token = await acquireWriteLockWithRetry({ workspace: root, targetPath: target, runId, threadId, kind }, { timeoutMs, intervalMs, onWait });
+    return stageWriteLocked({ info, data, root, target, relative, content, runId, threadId, kind, onEvent });
+  } catch (error) {
+    emitWriteEvent(onEvent, "write_rejected", {
+      ...data,
+      code: error?.code || "WRITE_FAILED",
+      message: String(error?.message || error),
+      ...(error?.details || {}),
+    });
+    throw error;
+  } finally {
+    // 与 stageWrite 一致：锁持有到 Run 结束。
+    void token;
+  }
+}
+
+/** 已持有写锁时的暂存写入主体。 */
+function stageWriteLocked({ info, data, root, target, relative, content, runId, threadId, kind, onEvent }) {
+  emitWriteEvent(onEvent, "write_started", data);
+  emitWriteEvent(onEvent, "write_locked", data);
+  const stagedPath = path.resolve(info.stagingDir, relative);
+  if (!isInside(info.stagingDir, stagedPath)) throw new Error("临时产物路径非法");
+  atomicWriteFile(stagedPath, content, "utf8");
+  const { manifest } = loadManifest(runId);
+  const previous = manifest.files.find((item) => item.path === relative);
+  const entry = {
+    path: relative,
+    stagedPath: path.relative(info.runDir, stagedPath).replace(/\\/g, "/"),
+    status: fs.existsSync(target) ? "modified" : "added",
+    kind,
+    runId: safeRunId(runId),
+    threadId: threadId || null,
+    stagedAt: now(),
+    writes: Number(previous?.writes || 0) + 1,
+    size: Buffer.isBuffer(content) ? content.length : Buffer.byteLength(String(content), "utf8"),
+  };
+  manifest.files = [...manifest.files.filter((item) => item.path !== relative), entry];
+  manifest.updatedAt = now();
+  saveManifest(info, manifest);
+  emitWriteEvent(onEvent, "artifact_staged", { ...data, stagedPath: entry.stagedPath, status: entry.status, size: entry.size });
+  return { ok: true, ...entry, target };
 }
 
 function stagedPathFor(runId, workspace, targetPath) {

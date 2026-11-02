@@ -10,6 +10,7 @@
  */
 
 const TRUTHY = new Set(["1", "true", "on", "yes"]);
+const FALSY = new Set(["0", "false", "off", "no"]);
 
 function readFlag(name) {
   const raw = String(process.env?.[name] ?? "").trim().toLowerCase();
@@ -27,6 +28,18 @@ function readFlagWithDefault(name, fallback) {
 function readOffFlag(name) {
   const raw = String(process.env?.[name] ?? "").trim().toLowerCase();
   return raw === "0" || raw === "off" || raw === "false" || raw === "no";
+}
+
+/**
+ * 默认开启的开关：未设置环境变量时返回 defaultValue；
+ * 显式 0/false/off 关闭，显式 1/true/on 开启，其它值回落默认值。
+ */
+export function readFlagDefault(name, defaultValue = true) {
+  const raw = String(process.env?.[name] ?? "").trim().toLowerCase();
+  if (!raw) return defaultValue;
+  if (TRUTHY.has(raw)) return true;
+  if (FALSY.has(raw)) return false;
+  return defaultValue;
 }
 
 function readPositiveInt(name, fallback) {
@@ -113,22 +126,22 @@ export const RUNTIME_FLAGS = Object.freeze({
   agentBusyWatchdogMs: readPositiveInt("OAW_BUSY_WATCHDOG_MS", 15 * 60 * 1000),
   /** 会话恢复 A2：恢复遇忙时前端自动等待任务结束后重试（默认关） */
   resumeAutoRetry: readFlag("OAW_RESUME_AUTO_RETRY"),
-  /** GIS G1：空间分析算子（buffer/spatial_filter/bbox_clip）——用户批准默认开（agent 一句话即可出图，无需手搓脚本）；OAW_SPATIAL_ANALYSIS=0 显式关闭 */
-  spatialAnalysis: readFlagWithDefault("OAW_SPATIAL_ANALYSIS", true),
-  /** GIS G8：地图分析报告一键成文（/api/map/report + 面板按钮，默认关） */
-  mapReport: readFlag("OAW_MAP_REPORT"),
-  /** GIS G7：批量导出队列（多项目×多图层×多尺寸×PNG/PDF，默认关；PDF/截图复用 B4 底座） */
-  mapExport: readFlag("OAW_MAP_EXPORT"),
+  /** GIS G1：空间分析算子（buffer/spatial_filter/bbox_clip，默认关） */
+  spatialAnalysis: readFlag("OAW_SPATIAL_ANALYSIS"),
+  /** GIS G8：地图分析报告一键成文（/api/map/report + 面板按钮，默认开启；OAW_MAP_REPORT=0 关闭） */
+  mapReport: readFlagDefault("OAW_MAP_REPORT", true),
+  /** GIS G7：批量导出队列（多项目×多图层×多尺寸×PNG/PDF，默认开启；OAW_MAP_EXPORT=0 关闭） */
+  mapExport: readFlagDefault("OAW_MAP_EXPORT", true),
   /** GIS G2：外部数据适配器（live-traffic-api / sql-database，默认关） */
   dataAdapters: readFlag("OAW_DATA_ADAPTERS"),
   /** GIS G3：高德 MCP 桥（mcp.amap.com 官方 ?key= 协议豁免 + 预置模板，默认关） */
   amapMcpBridge: readFlag("OAW_AMAP_MCP_BRIDGE"),
-  /** GIS G9：地图项目打包 zip 归档导出（默认关） */
-  mapPack: readFlag("OAW_MAP_PACK"),
-  /** GIS G5：场景化分析模板——用户批准默认开（OD 期望线一步成图，替代手搓 60 步）；OAW_MAP_TEMPLATES=0 显式关闭 */
-  mapTemplates: readFlagWithDefault("OAW_MAP_TEMPLATES", true),
-  /** GIS G10-v1：视图书签（视角收藏与一键恢复，默认关） */
-  mapBookmarks: readFlag("OAW_MAP_BOOKMARKS"),
+  /** GIS G9：地图项目打包 zip 归档导出（默认开启；OAW_MAP_PACK=0 关闭） */
+  mapPack: readFlagDefault("OAW_MAP_PACK", true),
+  /** GIS G5：场景化分析模板（v1 仅 OD 通勤分析，默认开启；OAW_MAP_TEMPLATES=0 关闭） */
+  mapTemplates: readFlagDefault("OAW_MAP_TEMPLATES", true),
+  /** GIS G10-v1：视图书签（视角收藏与一键恢复，默认开启；OAW_MAP_BOOKMARKS=0 关闭） */
+  mapBookmarks: readFlagDefault("OAW_MAP_BOOKMARKS", true),
   /** 会话恢复 A4：运行中刷新恢复（冷启动探测 LIVE Run + Run 起点整段回放 + 恢复内容新建气泡，默认关） */
   replayRecover: readFlag("OAW_REPLAY_RECOVER"),
   /** 地图自检截图：map_screenshot 工具（agent 对地图当前视图截图并用视觉自查样式，默认关） */

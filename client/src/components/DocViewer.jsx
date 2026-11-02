@@ -11,8 +11,11 @@ import PptxViewer from "./PptxViewer.jsx";
 import ImageViewer from "./ImageViewer.jsx";
 import CommentMarker from "./CommentMarker.jsx";
 import Icon from "./Icon.jsx";
+import CodeViewerBoundary from "./CodeViewerBoundary.jsx";
 import { previewCapability } from "../预览能力.js";
 
+// 源码查看器按需加载：CodeMirror 与语言包只在打开代码文件时才进入页面。
+const CodeViewer = React.lazy(() => import("./CodeViewer.jsx"));
 const ICONS = { docx: "doc", xlsx: "xls", xls: "xls", pptx: "ppt", md: "md", html: "html", htm: "html", txt: "txt", pdf: "pdf", png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", bmp: "image", svg: "image", avif: "image" };
 const ANNO_SAVE_DEBOUNCE = 800;
 
@@ -85,7 +88,7 @@ function selectionToContainerCoords(iframe, range) {
 }
 
 // 单文件内容渲染
-function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext }) {
+function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext, onDirtyChange }) {
   const [watchUrl, setWatchUrl] = useState(null);
   const [watchLoading, setWatchLoading] = useState(false);
   const [watchErr, setWatchErr] = useState("");
@@ -108,7 +111,10 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
   const iframeReadyRef = useRef(false);
   const saveTimerRef = useRef(null);
   const lastSavedJsonRef = useRef("[]");
-  const capability = previewCapability(doc?.ext);
+  // 预览/源码切换：只对文本类（Markdown/文本/HTML/代码）有意义，切文件时复位。
+  const [sourceMode, setSourceMode] = useState(false);
+  const [codeRetry, setCodeRetry] = useState(0);
+  const capability = previewCapability(doc?.ext, { code: doc?.kind === "code" });
 
   // 文件身份：所有预览请求都显式带同一份 { cwd, relativePath, revision }。
   const identity = useMemo(
@@ -116,6 +122,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
     [doc?.identity, doc?.name],
   );
   const docKey = `${identity.workspaceId}::${identity.relativePath}`;
+  useEffect(() => { setSourceMode(false); setCodeRetry(0); }, [docKey, doc?.kind]);
   const urls = useMemo(() => buildDocUrls(identity), [identity.workspaceId, identity.relativePath, identity.revision]);
   // 渲染 generation：切文件时递增，旧请求（即使已完成）的结果直接丢弃。
   const generationRef = useRef(0);
@@ -195,7 +202,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
     abortMapRef.current.clear();
     // text / xlsx / htmlfile / cad 的内容已随 open 响应返回并经身份核对，可直接 ready；
     // 其余格式（docx/pptx/pdf/html）还要经过渲染或 iframe 加载，先置 loading。
-    const localReady = doc?.kind === "text" || doc?.kind === "xlsx" || doc?.kind === "htmlfile" || doc?.kind === "cad";
+    const localReady = doc?.kind === "text" || doc?.kind === "code" || doc?.kind === "xlsx" || doc?.kind === "htmlfile" || doc?.kind === "cad";
     setPreviewState(localReady ? PREVIEW_STATE.READY : PREVIEW_STATE.LOADING);
     setPreviewErr("");
     setWatchUrl(null);
@@ -557,6 +564,14 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
         {doc.kind === "htmlfile" && <span className="badge">HTML 页面</span>}
         {doc.kind === "pdf" && <span className="badge">PDF</span>}
         {doc.kind === "text" && <span className="badge">{doc.ext === "md" || doc.ext === "markdown" ? "Markdown" : "文本"}</span>}
+        {doc.kind === "code" && <span className="badge">源码 · {doc.language || doc.ext || "text"}</span>}
+        {(doc.kind === "text" || doc.kind === "htmlfile") && (
+          <div className="doc-viewmode" role="group" aria-label="预览方式">
+            <button type="button" className={`btn-sm ${sourceMode ? "" : "active"}`} onClick={() => setSourceMode(false)}>预览</button>
+            <button type="button" className={`btn-sm ${sourceMode ? "active" : ""}`} onClick={() => setSourceMode(true)}>源码</button>
+          </div>
+        )}
+        {doc.truncated && <span className="badge ws-hint" title="文件超过预览上限，仅显示前一部分；可用系统应用打开完整文件">已截断</span>}
         {isHtmlKind && !isOfficePreview && (
           <button
             className={`btn-sm oa-anno-toggle ${annoMode ? "active" : ""}`}
@@ -605,8 +620,27 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
         </div>
       )}
       <div className="docview-body">
+        {doc.kind === "code" && (
+          <CodeViewerBoundary key={`${docKey}:code:${codeRetry}`} onRetry={() => setCodeRetry((value) => value + 1)}>
+            <React.Suspense fallback={<div className="code-viewer-loading" role="status">正在加载源码…</div>}>
+              <CodeViewer content={doc.content} language={doc.language} fileName={doc.name} truncated={doc.truncated} />
+            </React.Suspense>
+          </CodeViewerBoundary>
+        )}
+        {sourceMode && (doc.kind === "text" || doc.kind === "htmlfile") && (
+          <CodeViewerBoundary key={`${docKey}:source:${codeRetry}`} onRetry={() => setCodeRetry((value) => value + 1)}>
+            <React.Suspense fallback={<div className="code-viewer-loading" role="status">正在加载源码…</div>}>
+              <CodeViewer
+                content={doc.content}
+                language={doc.kind === "htmlfile" ? "html" : (doc.ext === "md" || doc.ext === "markdown" ? "markdown" : "text")}
+                fileName={doc.name}
+                truncated={doc.truncated}
+              />
+            </React.Suspense>
+          </CodeViewerBoundary>
+        )}
         {doc.kind === "html" && doc.ext === "docx" && (
-          <DocxViewer name={doc.name} revision={doc.previewRevision} identity={identity} onPreviewState={setPreviewState} onPreviewError={setPreviewErr} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} />
+          <DocxViewer name={doc.name} revision={doc.previewRevision} identity={identity} onPreviewState={setPreviewState} onPreviewError={setPreviewErr} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} onDirtyChange={onDirtyChange} />
         )}
         {doc.kind === "html" && doc.ext === "pptx" && (
           <PptxViewer name={doc.name} revision={doc.previewRevision} identity={identity} onPreviewState={setPreviewState} onPreviewError={setPreviewErr} />
@@ -710,9 +744,9 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
             />
           </div>
         )}
-        {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} truncated={doc.truncated} maxRows={doc.maxRows} officeHtmlUrl={urls.html} lazySheets={doc.lazySheets} sheetBase={urls?.sheetBase || ""} />}
+        {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} truncated={doc.truncated} maxRows={doc.maxRows} officeHtmlUrl={urls.html} lazySheets={doc.lazySheets} sheetBase={urls?.sheetBase || ""} onDirtyChange={onDirtyChange} />}
         {doc.kind === "cad" && <CadViewer doc={doc} />}
-        {doc.kind === "htmlfile" && (
+        {doc.kind === "htmlfile" && !sourceMode && (
           <div className="docframe-container">
             <iframe
               ref={htmlFrameRef}
@@ -798,7 +832,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
             )}
           </div>
         )}
-        {doc.kind === "text" && (
+        {doc.kind === "text" && !sourceMode && (
           <div className="mdview-container">
             <MarkdownToc content={doc.content} targetRef={mdContentRef} />
             <div className="mdview" ref={mdContentRef}>
@@ -821,9 +855,10 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
   );
 }
 
-export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTab, onOpenFile, loading, onSendToAgent, onInsertContext }) {
+export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTab, onOpenFile, loading, onSendToAgent, onInsertContext, hideTabBar = false, onDirtyChange }) {
   // activeTab 是标签 id（工作区 + 相对路径），兼容旧数据仍可能传文件名。
   const doc = tabs.find((t) => (t.id || t.name) === activeTab) || null;
+  useEffect(() => { onDirtyChange?.(false); }, [doc?.id, onDirtyChange]);
   const tabId = (t) => t.id || t.name;
   // 标签副标题：不同工作区的同名文件用工作区末段提示，便于区分。
   const workspaceHint = (t) => {
@@ -845,8 +880,8 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
 
   return (
     <div className="docview">
-      {/* 文件 tab 栏（类似浏览器标签页） */}
-      {tabs.length > 0 && (
+      {/* 文件 tab 栏（类似浏览器标签页）；画布模式把标签提升到画布顶部时隐藏 */}
+      {!hideTabBar && tabs.length > 0 && (
         <div className="doc-tabs">
           {tabs.map((t) => (
             <div
@@ -895,7 +930,7 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
           </div>
         </div>
       ) : (
-        <DocContent doc={doc} loading={loading} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} />
+        <DocContent doc={doc} loading={loading} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} onDirtyChange={onDirtyChange} />
       )}
     </div>
   );

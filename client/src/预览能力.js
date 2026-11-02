@@ -61,7 +61,16 @@ export const PREVIEW_CAPABILITIES = Object.freeze({
 
 const UNKNOWN_CAPABILITY = Object.freeze({ level: "unknown", label: "未知格式", detail: "该格式没有登记预览能力。", editable: "只读" });
 
-export function previewCapability(ext) {
+/** 源码文件统一能力：只读、不执行、支持行号/高亮/搜索。 */
+export const CODE_CAPABILITY = Object.freeze({
+  level: "full",
+  label: "源码 · 只读",
+  detail: "只读源码视图：行号、语法高亮、搜索与复制；不执行代码、不写回文件。",
+  editable: "只读",
+});
+
+export function previewCapability(ext, { code = false } = {}) {
+  if (code) return CODE_CAPABILITY;
   const key = String(ext || "").toLowerCase().replace(/^\./, "");
   return PREVIEW_CAPABILITIES[key] || UNKNOWN_CAPABILITY;
 }

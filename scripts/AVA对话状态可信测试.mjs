@@ -58,7 +58,7 @@ test("send 的压缩守卫位于实际构造消息之前", () => {
 test("空闲态发送按钮在压缩中禁用", () => {
   assert.match(
     chatPanel,
-    /disabled=\{frozen \|\| compacting \|\| !hasDraft\}/,
+    /disabled=\{[^}]*frozen[^}]*compacting[^}]*!hasDraft[^}]*\}/,
     "空闲发送按钮应同时受 frozen、compacting、hasDraft 约束",
   );
   assert.match(chatPanel, /正在压缩上下文，请稍候/, "按钮 title 应说明压缩中不可发送");
@@ -67,7 +67,7 @@ test("空闲态发送按钮在压缩中禁用", () => {
 test("运行中排队/立即/注入按钮在压缩中禁用", () => {
   assert.match(
     chatPanel,
-    /pending-send-btn"[\s\S]{0,160}disabled=\{compacting\}/,
+    /pending-send-btn"[\s\S]{0,160}disabled=\{[^}]*compacting[^}]*\}/,
     "运行中待发送按钮应受 compacting 约束",
   );
 });

@@ -60,7 +60,8 @@ add([
   meta("grep", { ...READ, resultBudget: budget(30 * KB, "head", "truncate") }),
   meta("find", { ...READ, resultBudget: budget(30 * KB, "head", "truncate") }),
   meta("ls", { ...READ, resultBudget: budget(30 * KB, "head", "truncate") }),
-  meta("glob", { ...READ, resultBudget: budget(30 * KB, "head", "truncate") }),
+  // 注：曾登记过 glob，但项目与 Pi SDK 都没有该工具实现，也不在任何模式白名单里，
+  // 属于"有元数据却调不到"的遗留条目，已移除（2026-11-01 收敛）。
 
   // ---- 交互 ----
   meta("ask_user", {
@@ -100,6 +101,25 @@ add([
   meta("map_analyze", { ...READ, resultBudget: budget(30 * KB, "head", "artifact") }),
   meta("map_clear_analysis", { ...READ, sideEffectScope: "session" }),
   meta("map_datasets", { ...READ }),
+  // 图层工程信息：只读（读图层注册表与工程元数据）。
+  meta("map_layer_info", { ...READ, resultBudget: budget(30 * KB, "head", "artifact") }),
+  meta("map_screenshot", {
+    readOnly: false,
+    destructive: false,
+    sideEffectScope: "workspace",
+    riskLevel: "low",
+    resultBudget: budget(30 * KB, "head", "artifact"),
+  }),
+
+  // ---- CAD ----
+  meta("cad_read", { ...READ, resultBudget: budget(30 * KB, "head", "artifact") }),
+  meta("cad_edit", {
+    readOnly: false,
+    destructive: true,
+    sideEffectScope: "workspace",
+    riskLevel: "high",
+    needsApproval: true,
+  }),
 
   // ---- 文档 ----
   meta("officecli", {
@@ -202,6 +222,28 @@ add([
     denyPriority: 90,
     resultBudget: budget(8 * KB, "head", "truncate"),
   }),
+  // 重置图层树：level=baseline 会把基线后新增的正式层移入回收站，属破坏性写操作。
+  meta("map_reset", {
+    readOnly: false,
+    destructive: true,
+    sideEffectScope: "workspace",
+    riskLevel: "high",
+    needsApproval: true,
+    patternSource: "input",
+    denyPriority: 90,
+    resultBudget: budget(8 * KB, "head", "truncate"),
+  }),
+  // 新建地图项目：写操作，需用户审批。
+  meta("map_project_create", {
+    readOnly: false,
+    destructive: false,
+    sideEffectScope: "workspace",
+    riskLevel: "medium",
+    needsApproval: true,
+    patternSource: "input",
+    denyPriority: 70,
+    resultBudget: budget(8 * KB, "head", "truncate"),
+  }),
 
   // ---- 任务与记忆 ----
   meta("todo", {
@@ -258,6 +300,15 @@ add([
   meta("browser_tabs", { readOnly: false, destructive: false, sideEffectScope: "network", riskLevel: "low" }),
   meta("browser_back", { readOnly: false, destructive: false, sideEffectScope: "network", riskLevel: "low" }),
   meta("browser_close", { readOnly: false, destructive: false, sideEffectScope: "network", riskLevel: "low" }),
+  // ---- 内置浏览器原子工具族（Proma 对标 opt-in）----
+  // browser_wait_for：只观察页面状态，不执行脚本，不改页面。
+  meta("browser_wait_for", { readOnly: true, sideEffectScope: "none", riskLevel: "low", resultBudget: budget(16 * KB, "head", "truncate") }),
+  // browser_act：点击并等待，与 browser_click 同语义。
+  meta("browser_act", { readOnly: false, destructive: false, sideEffectScope: "network", riskLevel: "medium" }),
+  // browser_extract：抽取页面正文/区域文本，与 browser_snapshot 同语义。
+  meta("browser_extract", { readOnly: true, sideEffectScope: "none", riskLevel: "low", resultBudget: budget(16 * KB, "head", "truncate") }),
+  // browser_select_option：操作原生 select，与 browser_click 同语义。
+  meta("browser_select_option", { readOnly: false, destructive: false, sideEffectScope: "network", riskLevel: "medium" }),
 ]);
 
 const UNKNOWN = Object.freeze({

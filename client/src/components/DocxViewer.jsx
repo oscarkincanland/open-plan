@@ -102,7 +102,7 @@ const HEADING_OPTIONS = [
 ];
 const ZOOM_LEVELS = [50, 75, 100, 125, 150, 200];
 
-export default function DocxViewer({ name, revision = 0, identity, onPreviewState, onPreviewError, onInsertContext, onSendToAgent }) {
+export default function DocxViewer({ name, revision = 0, identity, onPreviewState, onPreviewError, onInsertContext, onSendToAgent, onDirtyChange }) {
   const hostRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -150,6 +150,8 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
     window.addEventListener("mouseup", onUp);
   };
   const [dirty, setDirty] = useState(false);
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
   const [comments, setComments] = useState([]);
   const [activeComment, setActiveComment] = useState(null);
   const [zoom, setZoom] = useState(100); // 缩放比例

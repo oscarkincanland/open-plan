@@ -63,6 +63,8 @@ export default function LayerPanel({
   layerViews = [], tempLayers = [],
   onTransientToggle, onTransientLocate, onTransientRemove, onTransientPaint,
   onArchiveLayer, onLayerVersions, onRestoreVersion,
+  onToggleTempLayer, onClearTempLayer, onSaveTempLayer, onClearAllTemp,
+  onOpenLayerProps,
 }) {
   const [collapsed, setCollapsed] = useState({});          // 组折叠
   const [expanded, setExpanded] = useState({});            // 图层图例展开
@@ -326,6 +328,7 @@ export default function LayerPanel({
         className={`lp-row ${isSelected ? "active" : ""} ${isDrag ? "dragging" : ""} ${shared ? "lp-row-shared" : ""}`}
         draggable
         onClick={() => onSelect(id)}
+        onDoubleClick={() => onOpenLayerProps?.(id)}
         onContextMenu={(e) => openCtx(e, id)}
         onDragStart={(e) => {
           dragIdRef.current = id;
@@ -338,7 +341,7 @@ export default function LayerPanel({
         onDrop={(e) => { e.preventDefault(); e.stopPropagation(); handleDrop(e, id); }}
         onDragEnd={clearDrag}
       >
-        <label className="lp-eye" onClick={(e) => e.stopPropagation()} title={vis ? "隐藏" : "显示"}>
+        <label className="lp-eye" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()} title={vis ? "隐藏" : "显示"}>
           <input type="checkbox" checked={vis} onChange={() => onToggleLayer(id)} />
         </label>
         <span className="lp-symbol"><LegendSymbol styleType={stype} paint={paint} /></span>
@@ -348,12 +351,17 @@ export default function LayerPanel({
             autoFocus
             defaultValue={editing.name}
             onClick={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
             onBlur={(e) => { onRenameLayer(id, e.target.value.trim() || meta?.name || id); setEditing(null); }}
             onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") setEditing(null); }}
           />
         ) : (
-          <span className="lp-row-name" title={lockTitle || id} onDoubleClick={(e) => { e.stopPropagation(); setEditing({ layerId: id, name: meta?.name || id }); }}>
+          <span
+            className="lp-row-name"
+            title={lockTitle || id}
+          >
             {shared && <span className="lp-row-lock" title={lockTitle}><Icon name="lock" size={12} /></span>}
+            {meta?.locked && !shared && <span className="lp-row-lock" title="图层已锁定：Agent 不得修改"><Icon name="lock" size={12} /></span>}
             {meta?.name || id}
             <span className="lp-row-type">{TYPE_NAMES[meta?.type] || meta?.type || "?"}</span>
           </span>
@@ -362,12 +370,13 @@ export default function LayerPanel({
           className={`lp-caret-btn ${expanded[id] ? "open" : ""}`}
           title="图例 / 信息"
           onClick={(e) => { e.stopPropagation(); toggleLegend(id); }}
+          onDoubleClick={(e) => e.stopPropagation()}
         >
           <Icon name="chevronDown" size={12} />
         </button>
       </div>
     );
-  }, [cfg, layerPaint, layerStyleType, layerVisible, selected, dragId, isSharedLayer, editableOf, openCtx, handleDrop, clearDrag, onSelect, onToggleLayer, onRenameLayer, expanded, toggleLegend]);
+  }, [cfg, layerPaint, layerStyleType, layerVisible, selected, dragId, isSharedLayer, editableOf, openCtx, handleDrop, clearDrag, onSelect, onToggleLayer, onRenameLayer, expanded, toggleLegend, onOpenLayerProps]);
 
   return (
     <div className="lp" ref={panelRef}>
@@ -456,6 +465,18 @@ export default function LayerPanel({
               <span className="lp-caret-spacer" />
               <span className="lp-group-name"><Icon name="star" size={12} /> 临时层</span>
               <span className="lp-group-count">{tempLayers.length}</span>
+              {onClearAllTemp && (
+                <提示气泡 label="清除全部临时层">
+                  <button
+                    className="lp-op"
+                    type="button"
+                    aria-label="清除全部临时层"
+                    onClick={(e) => { e.stopPropagation(); onClearAllTemp(); }}
+                  >
+                    <Icon name="trash" size={12} />
+                  </button>
+                </提示气泡>
+              )}
             </div>
             {!collapsed.__temp__ && (
               <div className="lp-group-body">
@@ -531,12 +552,38 @@ export default function LayerPanel({
                     </div>
                   ) : (
                     <div key={item.key} className="lp-row lp-row-temp" title="临时可视化，不写入项目">
-                      <span className="lp-eye-spacer" />
+                      <label className="lp-eye" onClick={(e) => e.stopPropagation()} title={item.visible ? "隐藏临时层" : "显示临时层"}>
+                        <input type="checkbox" checked={item.visible !== false} onChange={() => onToggleTempLayer?.(item)} />
+                      </label>
                       <span className="lp-symbol lp-symbol-temp"><Icon name="star" size={12} /></span>
                       <span className="lp-row-name">
                         {item.label}
                         <span className="lp-row-type">未保存</span>
                       </span>
+                      {item.persistable && onSaveTempLayer && (
+                        <提示气泡 label="保存为正式图层">
+                          <button
+                            className="lp-op"
+                            type="button"
+                            aria-label="保存为正式图层"
+                            onClick={(e) => { e.stopPropagation(); onSaveTempLayer(item); }}
+                          >
+                            <Icon name="download" size={12} />
+                          </button>
+                        </提示气泡>
+                      )}
+                      {onClearTempLayer && (
+                        <提示气泡 label="清除该临时层">
+                          <button
+                            className="lp-op danger"
+                            type="button"
+                            aria-label="清除该临时层"
+                            onClick={(e) => { e.stopPropagation(); onClearTempLayer(item); }}
+                          >
+                            <Icon name="trash" size={12} />
+                          </button>
+                        </提示气泡>
+                      )}
                     </div>
                   )
                 ))}
@@ -618,6 +665,7 @@ export default function LayerPanel({
       {/* 右键菜单 */}
       {ctx && (
         <div className="lp-ctx" style={{ left: ctx.x, top: ctx.y }} onClick={(e) => e.stopPropagation()}>
+          <button onClick={ctxAction(() => onOpenLayerProps?.(ctx.layerId))}><Icon name="info" size={12} /> 图层属性 / 元数据</button>
           <button onClick={ctxAction(() => onOpenAttribute(ctx.layerId))}><Icon name="list" size={12} /> 属性表</button>
           <button onClick={ctxAction(() => onZoomToLayer(ctx.layerId))}><Icon name="locate" size={12} /> 缩放到图层</button>
           <button onClick={ctxAction(() => setEditing({ layerId: ctx.layerId, name: cfg?.layers?.find((l) => l.id === ctx.layerId)?.name || ctx.layerId }))}>

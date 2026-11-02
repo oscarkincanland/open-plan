@@ -47,10 +47,11 @@ function sheetToGridKey(sheetData) {
   return rows;
 }
 
-export default function ExcelGrid({ name, sheets, grids, truncated, maxRows, officeHtmlUrl = "", lazySheets = false, sheetBase = "" }) {
+export default function ExcelGrid({ name, sheets, grids, truncated, maxRows, officeHtmlUrl = "", lazySheets = false, sheetBase = "", onDirtyChange }) {
   const hostRef = useRef(null);
   const [spread, setSpread] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
   const [msg, setMsg] = useState("");
   // 网格只承载“单元格值”；公式/样式/合并单元格由 OfficeCLI HTML 只读预览补足。
   const [officeMode, setOfficeMode] = useState(false);
@@ -66,6 +67,8 @@ export default function ExcelGrid({ name, sheets, grids, truncated, maxRows, off
   activeSheetRef.current = activeSheet;
   // 保存时记录每个 sheet 的初始数据
   const initialRef = useRef({});
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   // 换文件即弃缓存：网格缓存/活动表/截断提示都跟当前文件走（声明在种缓存 effect 之前，先执行）
   useEffect(() => {
@@ -83,6 +86,7 @@ export default function ExcelGrid({ name, sheets, grids, truncated, maxRows, off
       view: { height: () => Math.max(200, hostRef.current?.clientHeight - 40) },
     });
     setSpread(s);
+    if (typeof s.change === "function") s.change(() => setDirty(true));
     return () => { if (typeof s.destroy === "function") try { s.destroy(); } catch {} };
   }, [hasSheets]);
 
@@ -104,6 +108,7 @@ export default function ExcelGrid({ name, sheets, grids, truncated, maxRows, off
     }
     spread.loadData(allSheets);
     if (typeof spread.change === "function") spread.change(() => {});
+    setDirty(false);
   }, [spread, hasSheets, sheetNames, grids, isLazy]);
 
   // 懒加载：按需取回单表网格（缓存命中不重复请求；快照开关未开启时本组件不会收到 lazySheets）
@@ -203,6 +208,7 @@ export default function ExcelGrid({ name, sheets, grids, truncated, maxRows, off
         await saveCells(name, sname, cells);
       }
       setMsg(`已保存 ${total} 个单元格`);
+      setDirty(false);
       // 更新初始数据
       for (const sd of allData) {
         initialRef.current[sd.name] = sheetToGridKey(sd);

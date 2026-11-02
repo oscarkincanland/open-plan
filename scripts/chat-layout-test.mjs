@@ -238,10 +238,12 @@ await test("工作区切换失败中止历史加载", () => {
 
 console.log("\n▶ 右栏与令牌");
 
-await test("右栏 max-width 与 Resizer 上限（680）一致", () => {
-  const rule = styles.match(/^\.app-preview-slot \{[^}]*\}/m)?.[0] || "";
-  assert.match(rule, /max-width: 680px/, "应与 App.jsx 里 Resizer 的 max(680) 一致");
-  assert.match(app, /cssVar="--preview-w"/);
+await test("画布宽度上限与 Resizer 一致（320–760）", () => {
+  const rule = [...styles.matchAll(/^\.app-canvas-slot \{[^}]*\}/gm)]
+    .map((item) => item[0])
+    .find((item) => item.includes("max-width")) || "";
+  assert.match(rule, /max-width: min\(760px, 56vw\)/, "画布宽度上限应与 Resizer 的 max(760) 对齐");
+  assert.match(app, /cssVar="--canvas-w"/);
 });
 
 await test("--chat-w 标注了真实作用域", () => {
@@ -345,9 +347,10 @@ await test("行内代码回到正文色，绿色只留给图标与状态", () =>
 
 await test("对话内容列统一 760px，留白随窗口收窄（对齐预览面板）", () => {
   assert.match(styles, /--msg-content-max: min\(100%, 760px\)/, "内容列宽应为 760px");
-  assert.match(styles, /--chat-gutter: clamp\(12px, 2vw, 28px\)/, "左右留白应在 12–28px 自适应");
+  assert.match(styles, /--chat-content-w: 760px/, "对话内容列令牌应为 760px");
+  assert.match(styles, /--chat-gutter: clamp\(16px, 4vw, 40px\)/, "左右留白应在 16–40px 自适应");
   assert.match(styles, /\.center-chat-slot \.chat-compose > \.task-card \{[^}]*width: 100%/, "任务卡应与输入框同宽");
-  assert.match(styles, /\.center-chat-slot \.chat-input \{[^}]*width: min\(var\(--msg-content-max\)/, "输入框应与消息列同宽");
+  assert.match(styles, /\.center-chat-slot \.chat-input \{[^}]*width: min\(100% - 2 \* var\(--chat-gutter\), var\(--chat-content-w\)\)/, "输入框应与消息列同宽");
 });
 
 console.log(failed ? "\n✗ 会话流排版回归存在失败项\n" : "\n✓ 会话流排版回归全部通过\n");
