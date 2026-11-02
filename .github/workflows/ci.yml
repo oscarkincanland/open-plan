@@ -156,6 +156,9 @@ jobs:
       - name: 构建版本守卫（部署新构建后旧页面必须被提示刷新）
         run: node scripts/CI运行测试.mjs 构建版本守卫测试
 
+      - name: 会话加载 TDZ（不得先用后声明 / 历史优先显示 / 失败带堆栈）
+        run: node scripts/CI运行测试.mjs 会话加载TDZ回归测试
+
 
 
       - name: Office 写作闸门通电（ADR 0012 / 工具书 / 环境预检）

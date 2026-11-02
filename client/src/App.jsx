@@ -1491,6 +1491,11 @@ export default function App() {
         return { ok: false, error };
       }
     })();
+    // 恢复结果要在"历史已显示、但还没 await 到 resume"的窗口里也能读到，所以用这个
+    // 落地标记观察它：结算后写入，null 表示"还不知道"。
+    // 不能在 await 之前直接读下面的 resumeResult —— 那是后面才声明的 const，会踩 TDZ
+    // （2026-11-02 的"加载会话失败: Cannot access 'Yn' before initialization"就是它）。
+    let resumeSettled = null;
     const resumePromise = resumeAgentThread(clientId, conversationId, session.id, resumedWorkspace)
       .then(() => ({ ok: true }))
       .catch((e) => {
@@ -1498,6 +1503,10 @@ export default function App() {
         // 必须带上 code/detail：前端据此区分「忙，等任务结束后自动重试」与「彻底失败」，
         // 丢掉后 SESSION_BUSY 分支永远不触发，只能显示一句没用的只读提示。
         return { ok: false, error: e.message || "恢复失败", code: e.code || "", detail: e.detail || null };
+      })
+      .then((result) => {
+        resumeSettled = result;
+        return result;
       });
     setUnreadByThread((prev) => {
       if (!prev[conversationId]) return prev;
@@ -1517,12 +1526,14 @@ export default function App() {
       // 历史已到：立即切换并显示，不再等 resume；输入/SSE 等 agentReady。
       setAgentReady(false);
       // 恢复失败时仍展示历史，但明确标注为只读并提供重试，避免用户误以为可以继续对话。
-      setSessionResumeError(resumeResult?.ok ? null : {
+      // 这里不等 resume（历史优先显示）：只知道"已经结算"的结果；还没结算就留空，
+      // 由下方 await resumePromise 之后统一写入真实结果。
+      setSessionResumeError(resumeSettled && !resumeSettled.ok ? {
         sessionId: session.id,
-        message: resumeResult?.error || "Agent 会话恢复失败",
-        code: resumeResult?.code || "",
-        detail: resumeResult?.detail || null,
-      });
+        message: resumeSettled.error || "Agent 会话恢复失败",
+        code: resumeSettled.code || "",
+        detail: resumeSettled.detail || null,
+      } : null);
       setCurrentSessionId(session.id);
       setThreadId(conversationId);
       // 恢复该会话记录的地图项目与视口（header 由 /api/sessions 列表或详情带回）。
@@ -1608,6 +1619,12 @@ export default function App() {
         }
       }
     } catch (e) {
+      // 只把 message 交给 toast，堆栈就丢了——排查 TDZ / 引用错误时完全没法定位。
+      // 这里额外把完整错误打到控制台（含堆栈），并留一个可读的全局快照供诊断。
+      try {
+        console.error("[会话加载]", e);
+        window.__oawLastSessionError = { message: e?.message, stack: e?.stack, at: Date.now() };
+      } catch {}
       if (loadSeq === sessionLoadSeqRef.current) notifyError("加载会话失败: " + e.message);
     } finally {
       // 无论成功/失败都结束骨架屏（成功路径已提前置 false，这里兜住提前 return 与异常）。

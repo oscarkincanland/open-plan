@@ -155,6 +155,7 @@
     "test:event-emission": "node scripts/事件发射点守护测试.mjs",
     "test:completion-pref": "node scripts/完成偏好测试.mjs",
     "test:build-guard": "node scripts/构建版本守卫测试.mjs",
+    "test:session-load-tdz": "node scripts/会话加载TDZ回归测试.mjs",
 
     "test:artifact-icon": "node scripts/产物图标测试.mjs",
 
