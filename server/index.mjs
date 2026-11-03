@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { listWorkspace, searchWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace, isInside } from "./workspace.mjs";
+import { computeChatWindowStart } from "./会话窗口.mjs";
 import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, queryComments, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
 import { getApprovalMode, listPendingApprovals, listPermissionRules, removeUserRule, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
 import { agentManager, classifyAgentError, getCredentialErrors, isAbortLikeError, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
@@ -4244,7 +4245,10 @@ app.get("/api/sessions/:id", (req, res) => {
     const historyEnd = Number.isFinite(requestedBefore)
       ? Math.max(0, Math.min(entries.length, requestedBefore))
       : entries.length;
-    const historyStart = chatView ? Math.max(0, historyEnd - chatLimit) : 0;
+    // 2026-11-03 实测修复：窗口按「消息条数」裁剪（见 server/会话窗口.mjs
+    // 顶部说明）。一个 7 分钟的多工具 Run 有几十条 toolResult，按原始条目
+    // slice 会把本轮 user 提问挤出窗口；纯函数抽到模块便于回归测试。
+    const historyStart = chatView ? computeChatWindowStart(entries, historyEnd, chatLimit) : 0;
     const chatEntries = chatView ? entries.slice(historyStart, historyEnd) : entries;
     const responseEntries = chatView ? chatEntries.map(compactSessionEntryForChat) : entries;
 
