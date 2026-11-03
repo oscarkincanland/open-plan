@@ -61,15 +61,15 @@ await test("进入地图模式，对话栏宽度收紧且带地图状态行", as
   await page.locator(".sidebar-capabilities button", { hasText: "地图" }).first().click({ timeout: 15000 });
   await page.waitForSelector(".mp-topbar", { timeout: 30000 });
 
-  // 对话栏（全局单实例挂在地图槽位）
-  await page.waitForSelector(".app-chat-slot.map", { timeout: 20000 });
+  // 对话栏（全局单实例常驻主对话槽位，地图模式用 CSS 固定到右侧）
+  await page.waitForSelector(".center-chat-slot.map-mode", { timeout: 20000 });
   const width = await page.evaluate(() => {
-    const el = document.querySelector(".app-chat-slot.map");
+    const el = document.querySelector(".center-chat-slot.map-mode");
     return el ? Math.round(el.getBoundingClientRect().width) : 0;
   });
   assert.ok(width >= 300 && width <= 400, `地图对话栏宽度应在 300–400（默认 360），实际 ${width}`);
   // 紧凑类
-  const compact = await page.locator(".app-chat-slot.map .chat-compact").count();
+  const compact = await page.locator(".center-chat-slot.map-mode .chat-compact").count();
   assert.ok(compact > 0, "地图模式对话栏应带 chat-compact（紧凑）");
 });
 
@@ -87,7 +87,7 @@ await test("顶部显示地图项目与视口（H3）", async () => {
 console.log("\n▶ H2 拖动分隔条仍可调整");
 
 await test("拖拽后宽度变化且被限制在 300–620", async () => {
-  const before = await page.evaluate(() => Math.round(document.querySelector(".app-chat-slot.map").getBoundingClientRect().width));
+  const before = await page.evaluate(() => Math.round(document.querySelector(".center-chat-slot.map-mode").getBoundingClientRect().width));
   const resizer = page.locator(".map-chat-resizer");
   const box = await resizer.boundingBox();
   assert.ok(box, "应存在拖拽条");
@@ -96,7 +96,7 @@ await test("拖拽后宽度变化且被限制在 300–620", async () => {
   await page.mouse.move(box.x + box.width / 2 - 120, box.y + 200, { steps: 8 });
   await page.mouse.up();
   await page.waitForTimeout(400);
-  const after = await page.evaluate(() => Math.round(document.querySelector(".app-chat-slot.map").getBoundingClientRect().width));
+  const after = await page.evaluate(() => Math.round(document.querySelector(".center-chat-slot.map-mode").getBoundingClientRect().width));
   assert.ok(after > before, `向右拖拽应加宽（${before} → ${after}）`);
   assert.ok(after <= 640, `不应超过上限（实际 ${after}）`);
 });
@@ -128,23 +128,95 @@ await test("Chat 模式点保存 → 就地提示需切 Work（H5）", async () 
 console.log("\n▶ H7 退出地图回到主对话：对话栏连续可用");
 
 await test("返回主对话后对话栏仍在且可用（无重复消息）", async () => {
-  const before = await page.locator(".msg").count();
+  const before = await page.locator(".center-chat-slot.map-mode .msg").count();
   await page.locator(".mp-topbar .mp-exit").click();
   await page.waitForTimeout(1500);
 
-  // 对话栏仍在（全局单实例），输入框与发送键可用
+  // 对话栏仍在（同一常驻实例），输入框与发送键可用
   assert.ok(await page.locator(".chat").count() > 0, "返回后对话栏应仍在");
   assert.ok(await page.locator(".center-chat-slot .chat").count() > 0, "应回到主对话槽位");
-  const after = await page.locator(".msg").count();
-  // 不重复：返回不应把消息复制一遍
-  assert.ok(after <= before + 1, `返回不应产生重复消息（${before} → ${after}）`);
+  assert.equal(await page.locator(".center-chat-slot.map-mode").count(), 0, "退出地图应移除 map-mode");
+  const after = await page.locator(".center-chat-slot .msg").count();
+  // 同一实例：返回不应把消息复制一遍，也不应丢失本地消息
+  assert.equal(after, before, `返回不应改变消息数量（${before} → ${after}）`);
 
-  // 已知边界（既有结构，非阶段 4 引入）：地图模块与主对话是两个挂载点
-  // （.app-chat-slot.map / .center-chat-slot），切换会重新挂载对话栏，
-  // 服务端已持久化的历史会重新水合，而"仅本地"的系统提示（如 map_action 的
-  // 一次性 toast）不保留。真实对话消息不受影响。
   const welcome = await page.locator(".center-chat-slot").innerText();
   assert.ok(welcome.length > 0, "主对话区域应有内容");
+});
+
+console.log("\n▶ H8/H9 地图往返连续性与对话栏对齐");
+
+await test("进入地图不重建对话栏：消息与 AGENTS 提示完全保留", async () => {
+  await page.waitForSelector(".center-chat-slot", { timeout: 15000 });
+  const readMessages = (selector) => page.evaluate((sel) => [...document.querySelectorAll(sel)].map((el) => ({
+    text: (el.innerText || "").replace(/\s+/g, " ").trim().slice(0, 160),
+    system: el.classList.contains("system"),
+  })), selector);
+  const before = await readMessages(".center-chat-slot .msg");
+  assert.ok(before.length > 0, "进入地图前主对话应至少有一条消息（AGENTS 提示）");
+  const agentsBefore = before.filter((item) => item.text.includes("已加载工作区指令")).length;
+
+  const toolsTab = page.locator("button", { hasText: "能力" }).first();
+  if (await toolsTab.count()) await toolsTab.click().catch(() => {});
+  await page.locator(".sidebar-capabilities button", { hasText: "地图" }).first().click({ timeout: 15000 });
+  await page.waitForSelector(".center-chat-slot.map-mode", { timeout: 20000 });
+  await page.waitForTimeout(800);
+
+  const after = await readMessages(".center-chat-slot.map-mode .msg");
+  assert.deepEqual(after, before, "进入地图不应卸载/重建对话栏，消息列表应完全一致");
+  const agentsAfter = after.filter((item) => item.text.includes("已加载工作区指令")).length;
+  assert.equal(agentsAfter, agentsBefore, "AGENTS.md 提示不应因重挂而重复");
+});
+
+await test("地图对话栏消息/输入区左缘对齐且隐藏历史/标题行", async () => {
+  const box = await page.evaluate(() => {
+    const root = document.querySelector(".center-chat-slot.map-mode");
+    const msg = root?.querySelector(".chat-body > .msg .msg-main") || root?.querySelector(".chat-body > .msg");
+    const compose = root?.querySelector(".chat-compose");
+    const input = root?.querySelector(".chat-input");
+    const hist = root?.querySelector(".chat-hist");
+    const head = root?.querySelector(".chat-head");
+    return {
+      hasRoot: Boolean(root),
+      hasMessage: Boolean(msg),
+      msgLeft: msg ? msg.getBoundingClientRect().left : null,
+      composeLeft: compose ? compose.getBoundingClientRect().left : null,
+      inputLeft: input ? input.getBoundingClientRect().left : null,
+      histDisplay: hist ? getComputedStyle(hist).display : "none",
+      headDisplay: head ? getComputedStyle(head).display : "none",
+    };
+  });
+  assert.ok(box.hasRoot && box.hasMessage, "地图对话栏与消息应存在");
+  assert.ok(Math.abs(box.msgLeft - box.composeLeft) <= 1, `消息左缘应与输入区对齐（${box.msgLeft} vs ${box.composeLeft}）`);
+  assert.ok(Math.abs(box.inputLeft - box.composeLeft) <= 1, `输入框左缘应与任务区对齐（${box.inputLeft} vs ${box.composeLeft}）`);
+  assert.equal(box.histDisplay, "none", "地图对话栏不应显示历史抽屉行");
+  assert.equal(box.headDisplay, "none", "地图对话栏不应显示标题行");
+});
+
+await test("退出地图后预览自动打开，并在地图文件变更时热刷新 style", async () => {
+  const mapProjectId = (await page.locator(".chat-map-status .cms-project").innerText()).trim();
+  assert.ok(mapProjectId, "地图状态行应显示当前项目标识");
+  await page.locator(".mp-topbar .mp-exit").click();
+  await page.waitForSelector(".mini-map", { timeout: 20000 });
+  const projectName = await page.locator(".mini-map-head strong").innerText();
+  assert.ok(projectName.trim().length > 0, "预览应显示当前地图项目");
+  // 等预览地图完成首屏样式加载，避免把初始 style 请求当成热刷新证据。
+  await page.waitForSelector(".mini-map-canvas canvas", { timeout: 20000 });
+  await page.waitForTimeout(1200);
+
+  const styleRequests = [];
+  page.on("request", (req) => {
+    if (req.url().includes("/style.json")) styleRequests.push(req.url());
+  });
+  await page.evaluate((project) => {
+    window.__oawChatEvents?.handle?.({
+      type: "file_changed",
+      data: { files: [`maps/${project}/style.json`] },
+    });
+  }, mapProjectId);
+  await page.waitForTimeout(1500);
+  assert.ok(styleRequests.length > 0, "地图文件变更后预览应重新请求 style.json");
+  assert.ok(styleRequests.some((url) => url.includes(`/${mapProjectId}/style.json`)), `应命中当前项目 ${mapProjectId} 的 style.json，实际：${styleRequests.slice(0, 3).join(" | ")}`);
 });
 
 await test("页面无 JS 错误", () => {

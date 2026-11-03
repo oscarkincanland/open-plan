@@ -171,6 +171,7 @@ export default function MapPanel({
   onExit, onOpenFile,
   clientId, threadId, workspace = "", models, defaultModel, onAgentEnd, onNewSession, historyMessages, sessions, currentSessionId, onSelectSession,
   onSessionChange, onRefreshSessions, onFocusRun, hideChat = false, chatVisible = true, onToggleChat, bridgeRef, onViewportChange, onProjectChange,
+  mapContext = null, onMapChanged,
   // 对话模式：地图里的查询（Chat）与分析总结可直接用，新增/修改图层需要 Work。
   // 用户不必返回主对话切换——这正是此前"在地图里说画热力图却做不出来"的成因之一。
   conversationMode = "chat", onModeChange,
@@ -543,9 +544,13 @@ export default function MapPanel({
   // 保存 style.json 并热更新地图
   const saveStyle = useCallback(async (nextStyle) => {
     setStyle(nextStyle);
-    try { await mapSaveStyle(project, nextStyle); } catch (e) { flash("保存样式失败: " + e.message); }
+    try {
+      await mapSaveStyle(project, nextStyle);
+      // 手工保存样式后通知 App 刷新会话地图预览（回到主界面时立即可见）。
+      onMapChanged?.(project);
+    } catch (e) { flash("保存样式失败: " + e.message); }
     mapRef.current?.reloadStyle();
-  }, [project, flash]);
+  }, [project, flash, onMapChanged]);
 
   // 临时层清单：从地图实例读"画面上真实存在的临时可视化"。
   // 这些图层不在 style.json 里，属于本次会话；此处只做展示，不参与写入。
@@ -768,11 +773,12 @@ export default function MapPanel({
       await mapImportLayer(project, newId, g);
       await loadProject(project);
       mapRef.current?.reloadStyle();
+      onMapChanged?.(project);
       flash(`已复制图层 ${layerId} → ${newId}`);
     } catch (e) {
       flash("复制失败: " + e.message);
     }
-  }, [project, loadProject, flash]);
+  }, [project, loadProject, flash, onMapChanged]);
 
   // 拖拽排序：把 layerId 移到 targetId 的位置
   const moveLayerTo = useCallback((layerId, targetId) => {
@@ -1117,7 +1123,10 @@ export default function MapPanel({
       };
       setStyle(nextStyle);
       mapSaveStyle(project, nextStyle)
-        .then(() => mapRef.current?.syncStyleHash?.())
+        .then(() => {
+          mapRef.current?.syncStyleHash?.();
+          onMapChanged?.(project);
+        })
         .catch((e) => flash("保存底图选择失败: " + e.message));
     }
     setCfg((prev) => {
@@ -2252,6 +2261,7 @@ export default function MapPanel({
             onLayerTilesChanged={async (layerIds = []) => {
               await loadProject(project);
               await mapRef.current?.reloadStyle?.();
+              onMapChanged?.(project);
               if (layerIds[0]) await zoomToLayer(layerIds[0]);
             }}
             onDrillDown={(d) => {
@@ -2349,7 +2359,9 @@ export default function MapPanel({
               workspace={workspace}
               onFileChanged={handleFileChanged}
               onMapAction={handleMapAction}
-              currentDoc={`地图项目:${project}`}
+              currentDoc={null}
+              mapContext={mapContext}
+              mapProject={project}
               models={models}
               defaultModel={defaultModel}
               onAgentEnd={handleAgentEnd}

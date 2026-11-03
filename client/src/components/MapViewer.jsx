@@ -57,7 +57,7 @@ function setBasemapVisibility(map, ids, desired) {
  * - 导出 PNG / 导入 GeoJSON+SHP（外部 ref API）
  */
 const MapViewer = forwardRef(function MapViewer(
-  { project = "zhejiang-map", config, onConfigChange, onBasemapResolved, onLayerTilesChanged, onDrillDown, onViewportChange, readOnly = false, initialView = null },
+  { project = "zhejiang-map", config, onConfigChange, onBasemapResolved, onLayerTilesChanged, onDrillDown, onViewportChange, readOnly = false, initialView = null, reloadToken = 0 },
   ref
 ) {
   const containerRef = useRef(null);
@@ -704,6 +704,27 @@ const MapViewer = forwardRef(function MapViewer(
     });
   }, []);
 
+  /** 热更新：agent 修改 style.json 后调用；保留相机，不重挂地图。 */
+  const reloadStyleNow = useCallback(async () => {
+    try {
+      const res = await fetch(STYLE_PATH(project));
+      const text = await res.text();
+      styleHashRef.current = styleHash(text);
+      const style = JSON.parse(text);
+      applyStyle(style);
+      return true;
+    } catch { return false; }
+  }, [applyStyle, project]);
+  // 只读小地图不轮询 style，但地图正式文件变更时仍需显式热更新：
+  // reloadToken 由上层（App → MiniMapPreview/MapPanel）递增，避免整块地图重挂。
+  const appliedReloadTokenRef = useRef(reloadToken);
+  useEffect(() => {
+    if (!loaded || !reloadToken) return;
+    if (appliedReloadTokenRef.current === reloadToken) return;
+    appliedReloadTokenRef.current = reloadToken;
+    void reloadStyleNow();
+  }, [loaded, reloadToken, reloadStyleNow]);
+
   // 外部命令（MapPanel 调用）
   useImperativeHandle(ref, () => ({
     getMap: () => mapRef.current,
@@ -715,16 +736,7 @@ const MapViewer = forwardRef(function MapViewer(
       return { center: [c.lng, c.lat], zoom: map.getZoom(), bounds: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] };
     },
     /** 热更新：agent 修改 style.json 后调用 */
-    reloadStyle: async () => {
-      try {
-        const res = await fetch(STYLE_PATH(project));
-        const text = await res.text();
-        styleHashRef.current = styleHash(text);
-        const style = JSON.parse(text);
-        applyStyle(style);
-        return true;
-      } catch { return false; }
-    },
+    reloadStyle: reloadStyleNow,
     /** 持久化样式后只更新轮询游标，不触发一次完整的 MapLibre setStyle。 */
     syncStyleHash: async () => {
       try {
@@ -1153,7 +1165,7 @@ const MapViewer = forwardRef(function MapViewer(
       map.on("click", onClick);
       drawModeRef.current = true;
     },
-  }), [applyStyle, project]);
+  }), [applyStyle, project, reloadStyleNow]);
 
   // 导入文件：GeoJSON 直传；SHP 用 shpjs 解析后上传
   const handleImportFiles = useCallback(async (files) => {

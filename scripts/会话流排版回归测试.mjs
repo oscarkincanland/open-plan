@@ -55,6 +55,14 @@ await test("正文是页面主体：14px / 1.75 / --text", () => {
   assert.match(styles, /\.sum-body \.markdown-body \{[^}]*?font-size: 14px;[^}]*?line-height: 1\.75;[^}]*?color: var\(--text\)/);
 });
 
+await test("地图紧凑对话栏单独收紧 Markdown 排版", () => {
+  assert.match(styles, /\.center-chat-slot\.map-mode \.markdown-body,[\s\S]{0,260}?font-size: 13px;[\s\S]{0,80}?line-height: 1\.65;/);
+  assert.match(styles, /\.center-chat-slot\.map-mode \.markdown-body p \{ margin: 6px 0; \}/);
+  assert.match(styles, /\.center-chat-slot\.map-mode \.markdown-body li \{ margin: 3px 0; \}/);
+  assert.match(styles, /\.center-chat-slot\.map-mode \.chat-body \{[\s\S]{0,80}?gap: 12px;/);
+  assert.match(styles, /\.center-chat-slot\.map-mode \.run-result-grid \{ gap: 6px 14px; \}/);
+});
+
 console.log("\n▶ 横向滚动修复");
 
 await test(".efn-item 声明 min-width: 0（grid 子项可收缩）", () => {

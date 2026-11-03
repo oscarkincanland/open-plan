@@ -304,21 +304,6 @@ body.resizing { cursor: col-resize; user-select: none; }
   min-height: 0;
 }
 .app-chat-slot > .chat { width: 100%; max-width: none; min-width: 0; height: 100%; }
-.app-chat-slot.map {
-  position: fixed;
-  z-index: 220;
-  /* 地图模式下对话栏从视口顶部开始，填掉工具栏右侧的空白列。 */
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: var(--map-chat-w);
-  min-width: 300px;
-  max-width: 620px;
-  height: auto;
-  flex: none;
-  border-left: 1px solid var(--border);
-  box-shadow: -10px 0 26px rgba(0, 0, 0, .2);
-}
 .map-chat-resizer {
   position: fixed;
   z-index: 230;
@@ -6417,8 +6402,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   align-items: center;
   justify-content: center;
   width: 28px;
-  height: 28px;
-  background: none;
+  height: 28px;  background: none;
   border: 1px solid transparent;
   border-radius: 6px;
   color: var(--muted);
@@ -6462,7 +6446,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .model-pop { left: auto; right: 0; }
 /* 地图模式下对话栏是 fixed 覆盖层（overflow hidden），弹层改用视口定位避免被裁剪穿模 */
-.app-chat-slot.map .ct-pop {
+.center-chat-slot.map-mode .ct-pop {
   position: fixed;
   left: auto;
   right: 12px;
@@ -9722,18 +9706,44 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .tool-detail,
 .tool-code,
 .execution-flow-detail { min-width: 0; max-width: 100%; }
-.app-chat-slot.map,
-.app-chat-slot.map > .chat,
-.app-chat-slot.map .chat-stream-shell,
-.app-chat-slot.map .chat-body { min-width: 0; max-width: 100%; }
-.app-chat-slot.map { overflow: hidden; }
-.app-chat-slot.map .flow-markdown,
-.app-chat-slot.map .flow-stream-text,
-.app-chat-slot.map .markdown-body,
-.app-chat-slot.map .msg-text { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
-.app-chat-slot.map .chat-input { max-width: 100%; box-sizing: border-box; }
+/* 地图模式：ChatPanel 常驻主对话槽位，用 fixed 定位到右侧。
+   不能再把同一个 ChatPanel 搬到第二个父容器——React 会卸载重建，
+   本地消息、SSE 游标与运行态会全部丢失，重连回放只会重建孤立总结卡。 */
+.center-chat-slot.map-mode {
+  position: fixed;
+  z-index: 220;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--map-chat-w);
+  min-width: 300px;
+  max-width: 620px;
+  height: auto;
+  flex: none;
+  border-left: 1px solid var(--border);
+  box-shadow: -10px 0 26px rgba(0, 0, 0, .2);
+  background: var(--panel-bg);
+  overflow: hidden;
+  visibility: visible;
+}
+.center-chat-slot.map-mode.map-chat-hidden { display: none; }
+/* 地图覆盖时隐藏主布局其它区域：既避免隐藏元素仍可聚焦，也让对话槽位保持唯一可见层。 */
+.app.map-module-active > .sidebar,
+.app.map-module-active > .app-canvas-slot,
+.app.map-module-active .center-content > :not(.center-chat-slot) {
+  visibility: hidden;
+}
+.center-chat-slot.map-mode,
+.center-chat-slot.map-mode > .chat,
+.center-chat-slot.map-mode .chat-stream-shell,
+.center-chat-slot.map-mode .chat-body { min-width: 0; max-width: 100%; }
+.center-chat-slot.map-mode .flow-markdown,
+.center-chat-slot.map-mode .flow-stream-text,
+.center-chat-slot.map-mode .markdown-body,
+.center-chat-slot.map-mode .msg-text { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.center-chat-slot.map-mode .chat-input { max-width: 100%; box-sizing: border-box; }
 /* 地图窄栏仍复用同一套 ChatPanel，但工具栏不能按中心栏的单行宽度排版。 */
-.app-chat-slot.map .chat-toolbar {
+.center-chat-slot.map-mode .chat-toolbar {
   max-width: 100%;
   box-sizing: border-box;
   flex-wrap: wrap;
@@ -9741,26 +9751,104 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   gap: 2px;
   overflow: hidden;
 }
-.app-chat-slot.map .chat-toolbar-spacer,
-.app-chat-slot.map .chat-toolbar > .ct-sep { display: none; }
-.app-chat-slot.map .chat-toolbar .ct-btn {
+.center-chat-slot.map-mode .chat-toolbar-spacer,
+.center-chat-slot.map-mode .chat-toolbar > .ct-sep { display: none; }
+.center-chat-slot.map-mode .chat-toolbar .ct-btn {
   min-width: 26px;
   width: 26px;
   height: 27px;
   padding: 0 4px;
 }
-.app-chat-slot.map .toolbar-agent-group {
+.center-chat-slot.map-mode .toolbar-agent-group {
   flex: 1 1 100%;
   min-width: 0;
   order: 3;
 }
-.app-chat-slot.map .toolbar-agent-group .model-control-wrap,
-.app-chat-slot.map .toolbar-agent-group .model-control-trigger {
+.center-chat-slot.map-mode .toolbar-agent-group .model-control-wrap,
+.center-chat-slot.map-mode .toolbar-agent-group .model-control-trigger {
   min-width: 0;
   max-width: 100%;
 }
-.app-chat-slot.map .toolbar-agent-group .model-control-wrap { flex: 1 1 auto; }
-.app-chat-slot.map .toolbar-agent-group .model-control-trigger { width: 100%; }
+.center-chat-slot.map-mode .toolbar-agent-group .model-control-wrap { flex: 1 1 auto; }
+.center-chat-slot.map-mode .toolbar-agent-group .model-control-trigger { width: 100%; }
+
+/* 紧凑对齐：消息、任务卡、本轮目标、输入框共用同一条内容列。
+   中心栏的 34px/28px 留白、头像外置与 720px 内容列在 300–620px 的地图窄栏里都不适用。 */
+.center-chat-slot.map-mode .chat-body {
+  padding: 12px 12px 10px;
+  gap: 12px;
+  min-height: 120px;
+}
+.center-chat-slot.map-mode .chat-body > .msg,
+.center-chat-slot.map-mode .chat-body > .chat-load-older,
+.center-chat-slot.map-mode .chat-body > .chat-history-window-note {
+  width: 100%;
+  max-width: 100%;
+  margin-left: 0;
+  margin-right: 0;
+}
+.center-chat-slot.map-mode .msg { gap: 0; }
+.center-chat-slot.map-mode .msg > .avatar { display: none; }
+.center-chat-slot.map-mode .msg.system.summary-msg { padding-left: 0; }
+.center-chat-slot.map-mode .msg-main { width: 100%; max-width: 100%; }
+.center-chat-slot.map-mode .msg.user .msg-main { max-width: min(88%, 100%); }
+.center-chat-slot.map-mode .msg.user .bubble { max-width: 100%; }
+.center-chat-slot.map-mode .chat-compose {
+  width: auto;
+  margin: 0 12px 12px;
+  transform: none;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex-shrink: 0;
+}
+.center-chat-slot.map-mode .chat-compose > .task-card {
+  width: 100%;
+  max-width: 100%;
+  margin: 0 0 6px;
+}
+.center-chat-slot.map-mode .chat-compose > .task-card .task-body {
+  width: min(100%, calc(var(--map-chat-w) - 24px));
+}
+.center-chat-slot.map-mode .chat-input {
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  box-sizing: border-box;
+}
+.center-chat-slot.map-mode .chat-input textarea { padding: 8px 10px; }
+.center-chat-slot.map-mode .chat-stream-shell { padding: 0; }
+/* 半透明顶栏在窄栏里会像浮层压住消息；地图模式给输入区实色与下边框。 */
+.center-chat-slot.map-mode .chat-input {
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--border);
+}
+
+/* 结论排版：地图窄栏单独收紧，主界面保持 14px / 1.75 不变。 */
+.center-chat-slot.map-mode .markdown-body,
+.center-chat-slot.map-mode .flow-markdown .markdown-body,
+.center-chat-slot.map-mode .sum-body .markdown-body {
+  font-size: 13px;
+  line-height: 1.65;
+}
+.center-chat-slot.map-mode .flow-stream-text {
+  font-size: 13px;
+  line-height: 1.65;
+}
+.center-chat-slot.map-mode .markdown-body p { margin: 6px 0; }
+.center-chat-slot.map-mode .markdown-body ul,
+.center-chat-slot.map-mode .markdown-body ol { margin: 6px 0; padding-left: 18px; }
+.center-chat-slot.map-mode .markdown-body li { margin: 3px 0; }
+.center-chat-slot.map-mode .markdown-body h1,
+.center-chat-slot.map-mode .markdown-body h2 { margin: 14px 0 6px; font-size: 16px; }
+.center-chat-slot.map-mode .markdown-body h3,
+.center-chat-slot.map-mode .markdown-body h4,
+.center-chat-slot.map-mode .markdown-body h5,
+.center-chat-slot.map-mode .markdown-body h6 { margin: 10px 0 4px; font-size: 14px; }
+.center-chat-slot.map-mode .sum-block { margin: 8px 0 2px; }
+.center-chat-slot.map-mode .msg + .msg { margin-top: 0; }
+.center-chat-slot.map-mode .run-result { padding: 8px 10px; }
+.center-chat-slot.map-mode .run-result-grid { gap: 6px 14px; }
 
 /* ================= Open Plan 磨玻璃工作台 =================
  * 以图二的柔和彩色光晕为灵感，但不把 Logo 做成宽大的位图背景；
@@ -10015,6 +10103,13 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 @keyframes session-pulse {
   0%, 100% { opacity: .55; box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent); }
   50% { opacity: 1; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
+}
+/* 项目卡「最近会话」行：运行中的行与侧栏会话项同款呼吸（2026-11-03-001 P0-3）。
+   此前只有静态底色 + warning 圆点，多任务并行时用户反馈“动画跟不上节奏”。 */
+.project-session-row.is-running .project-session-open > i[data-status="running"],
+.project-session-row:has(.marquee.is-active) .project-session-open > i[data-status="running"] {
+  background: var(--accent);
+  animation: session-pulse 1.9s ease-in-out infinite;
 }
 /* 左侧栏「最近会话」行：同样给运行中的行留出间隔与高亮 */
 .project-session-row {

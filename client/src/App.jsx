@@ -411,6 +411,8 @@ export default function App() {
   const objectsOpen = canvasTabs.some((tab) => tab.kind === "objects");
   const workflowsOpen = canvasTabs.some((tab) => tab.kind === "workflows");
   const mapPreviewTab = canvasTabs.find((tab) => tab.kind === "mapPreview") || null;
+  // 地图文件（agent 写入/用户保存）变更时递增；只影响预览刷新，不重挂 MapViewer。
+  const [mapPreviewRevision, setMapPreviewRevision] = useState(0);
   // 文件树抽屉只服务文档/产物/改动；切到浏览器/对象/工作流/地图预览时自动收起，切回允许的标签再恢复。
   const canvasSideVisible = canvasSideOpen && sideDrawerAllowed(activeCanvasTab?.kind);
   const canvasSideOpenRef = useRef(canvasSideOpen);
@@ -489,6 +491,11 @@ export default function App() {
   const [mapContexts, setMapContexts] = useState({});
   const currentMapContext = mapContexts[threadId] || null;
   const currentMapProject = currentMapContext?.mapProject || "zhejiang-map";
+  // 主界面只要会话已绑定地图，也必须把项目/视口交给 Agent；否则地图工具会回退
+  // zhejiang-map，预览里的项目永远收不到改动。地图模块保留默认项目兜底。
+  const boundMapProject = activeModule === "map"
+    ? currentMapProject
+    : String(currentMapContext?.mapProject || "");
   // 地图会话持久化：记录上次成功写入的 payload，避免每 30s 刷新重复写 header。
   const mapPersistRef = useRef({ last: "" });
 
@@ -662,6 +669,9 @@ export default function App() {
   const restoredRef = useRef(false); // 界面状态恢复标记（避免重复/过早保存）
   const sessionsRef = useRef([]);
   const sessionsRefreshRef = useRef(null);
+  // 刷新在飞又收到 Run 事件时的补刷标记与复用 promise（多任务运行动画跟随）。
+  const sessionsRefreshPendingRef = useRef(false);
+  const sessionsRefreshRequeuedPromiseRef = useRef(null);
   const projectsRefreshRef = useRef(null);
   const eventRefreshTimerRef = useRef(null);
   const eventBatchTimerRef = useRef(null);
@@ -949,10 +959,15 @@ export default function App() {
   useEffect(() => { filesRef.current = files; }, [files]);
 
   const refreshSessions = useCallback(async () => {
-    if (sessionsRefreshRef.current) return sessionsRefreshRef.current;
-    setScopeStatus("sessions", "loading");
+    // 多任务并行时多个 Run 事件可能挨着到达：请求在飞又收到新事件时，
+    // 结束后必须再刷一次，否则单飞复用了包含旧 runStatus 的快照
+    // （2026-11-03-001 P0-3：会话栏动画“跟不上节奏”的一半根因）。
+    if (sessionsRefreshRef.current) {
+      sessionsRefreshPendingRef.current = true;
+      return sessionsRefreshRequeuedPromiseRef.current || sessionsRefreshRef.current;
+    }
     const request = listSessions()
-      .then((data) => {
+      .then(async (data) => {
         const next = data.sessions || [];
         setSessions(next);
         setScopeStatus("sessions", "ready");
@@ -966,9 +981,20 @@ export default function App() {
         return null;
       });
     sessionsRefreshRef.current = request;
-    try { return await request; }
+    try {
+      const result = await request;
+      // 在飞期间又收到 Run 事件：立即补一次刷新，保证新任务的状态能落到列表里。
+      if (sessionsRefreshPendingRef.current) {
+        sessionsRefreshPendingRef.current = false;
+        const requeued = refreshSessions();
+        sessionsRefreshRequeuedPromiseRef.current = requeued;
+        try { return await requeued; } finally { sessionsRefreshRequeuedPromiseRef.current = null; }
+      }
+      return result;
+    }
     finally {
       if (sessionsRefreshRef.current === request) sessionsRefreshRef.current = null;
+      sessionsRefreshPendingRef.current = false;
     }
   }, [setScopeError, setScopeStatus]);
 
@@ -1021,7 +1047,10 @@ export default function App() {
           eventNoticeKeysRef.current.add(noticeKey);
           setUnreadByThread((prev) => ({ ...prev, [thread]: (prev[thread] || 0) + 1 }));
         }
-        if (["run_finished", "run_recovered", "run_cancel_requested", "agent_error"].includes(event.type)) {
+        // 会话栏/项目卡的运行动画必须跟着 Run 状态走（2026-11-03-001 P0-3）：
+        // 此前只在 run_finished 等结束事件刷新，2–3 个任务并行时“刚开始”的
+        // 会话一直显示旧状态（绿色完成点），用户反馈“动画跟不上节奏”。
+        if (["run_started", "run_admitted", "agent_started", "agent_queued", "run_finished", "run_recovered", "run_cancel_requested", "agent_error"].includes(event.type)) {
           // 新一轮开始前恢复"浏览器侧栏可自动展开"：用户上一轮手动关掉的状态不跨轮传递。
           if (event.type === "run_finished") browserAutoOpenBlockedRef.current = false;
           // 后台 Run 结束后历史缓存必须失效：否则切回该会话会先显示上一轮旧消息。
@@ -1208,6 +1237,36 @@ export default function App() {
     }, 1500);
     return () => window.clearTimeout(timer);
   }, [currentSessionId, currentMapContext]);
+
+  // 预览标签跟随当前会话的地图项目：只更新 payload，不激活标签、不抢占已有画布。
+  // 会话解绑时关闭预览；空画布且已绑定项目时自动打开（与选择会话的既有策略一致）。
+  useEffect(() => {
+    // 新会话在落盘 header 之前 currentSessionId 可能为空，但视口上报已经能确定
+    // 当前线程的地图项目；预览仍应打开，因此会话键回退到 threadId。
+    const sessionKey = currentSessionId || threadId;
+    if (!sessionKey) return;
+    const project = String(currentMapContext?.mapProject || "");
+    const openTabs = canvasTabsRef.current || [];
+    const preview = openTabs.find((tab) => tab.kind === "mapPreview") || null;
+    if (!project) {
+      if (!preview) return;
+      setCanvasTabs((prev) => prev.filter((tab) => tab.kind !== "mapPreview"));
+      setCanvasActiveId((prev) => (prev === "view:mapPreview" ? "" : prev));
+      return;
+    }
+    if (preview) {
+      const previewSession = String(preview.payload?.sessionId || "");
+      if (previewSession && previewSession !== String(currentSessionId || "") && previewSession !== String(threadId || "")) return;
+      if (String(preview.payload?.project || "") === project) return;
+      setCanvasTabs((prev) => prev.map((tab) => (tab.kind === "mapPreview"
+        ? { ...tab, payload: { ...tab.payload, project, sessionId: sessionKey } }
+        : tab)));
+      return;
+    }
+    if (activeModule === "map") return;
+    if (openTabs.length > 0) return;
+    openCanvasView("mapPreview", { project, view: currentMapContext, sessionId: sessionKey });
+  }, [currentSessionId, threadId, currentMapContext?.mapProject, activeModule, openCanvasView]);
 
   useEffect(() => {
     refreshFiles();
@@ -1853,7 +1912,28 @@ export default function App() {
     if (!fileChangeTimerRef.current) {
       fileChangeTimerRef.current = window.setTimeout(flushFileChanges, 500);
     }
-  }, [flushFileChanges]);
+    // 地图正式文件：agent 写 style/config/layers 后要同时驱动会话绑定与预览刷新。
+    // 只在当前会话尚未绑定项目时自动绑定；已有绑定时不因 agent 操作其它项目而误切。
+    const changedMapProjects = new Set();
+    for (const path of paths) {
+      const match = path.match(/^maps\/([A-Za-z0-9_-]+)\//);
+      if (match) changedMapProjects.add(match[1]);
+    }
+    if (!changedMapProjects.size) return;
+    const boundProject = String(currentMapContext?.mapProject || "");
+    const previewProject = String(mapPreviewTab?.payload?.project || "");
+    if (!boundProject) {
+      const projects = [...changedMapProjects];
+      const nextProject = projects.includes(previewProject) ? previewProject : projects[0];
+      setMapContexts((prev) => {
+        if (String(prev[threadId]?.mapProject || "")) return prev;
+        return { ...prev, [threadId]: mergeMapContext(prev[threadId], { mapProject: nextProject }) };
+      });
+    }
+    if (!previewProject || changedMapProjects.has(previewProject) || !boundProject) {
+      setMapPreviewRevision((value) => value + 1);
+    }
+  }, [flushFileChanges, currentMapContext, mapPreviewTab, threadId]);
 
   // 暴露 refreshSessions 给 ChatPanel（agent_end 时刷新）
   const handleAgentEnd = useCallback(() => {
@@ -2093,9 +2173,12 @@ export default function App() {
         mapBridgeRef.current?.onFileChanged?.(changed);
       }}
       onMapAction={(action) => mapBridgeRef.current?.onMapAction?.(action)}
-       currentDoc={activeModule === "map" ? `地图项目:${currentMapProject}` : current?.name}
-       mapContext={activeModule === "map" ? currentMapContext : null}
-       mapProject={activeModule === "map" ? currentMapProject : null}
+       // 地图项目不是“打开的文件”；不要再把「地图项目:x」塞进 currentDoc，
+       // 否则提示词会同时出现伪文件与地图上下文，模型可能先尝试读取不存在的文件。
+       // 地图模式下也不把画布里恰好打开的业务文档带进地图任务。
+       currentDoc={activeModule === "map" ? null : current?.name}
+       mapContext={boundMapProject ? currentMapContext : null}
+       mapProject={boundMapProject || null}
       models={models}
       defaultModel={defaultModel}
       selectedModel={selectedModel}
@@ -2140,7 +2223,7 @@ export default function App() {
 
   return (
     <AppErrorBoundary>
-      <div className={`app ${canvasMaximized ? "canvas-maximized" : ""} ${browserFullscreen ? "browser-fullscreen" : ""} ${sidebarOpen ? "sidebar-expanded" : "sidebar-collapsed"}`}>
+      <div className={`app ${canvasMaximized ? "canvas-maximized" : ""} ${browserFullscreen ? "browser-fullscreen" : ""} ${sidebarOpen ? "sidebar-expanded" : "sidebar-collapsed"} ${activeModule === "map" ? "map-module-active" : ""}`}>
         <RefreshBloom />
         <FeedbackHost />
         {/* 构建版本守卫：dist 保留历史 assets，已打开的页面不会自己失效，
@@ -2233,17 +2316,14 @@ export default function App() {
             chatVisible={mapChatVisible}
             onToggleChat={() => setMapChatVisible((value) => !value)}
             bridgeRef={mapBridgeRef}
+            mapContext={currentMapContext}
+            onMapChanged={() => setMapPreviewRevision((value) => value + 1)}
             initialProject={currentMapProject}
             onViewportChange={(context) => setMapContexts((prev) => ({ ...prev, [threadId]: mergeMapContext(prev[threadId], context) }))}
             // 阶段 2：可视面板的"交给 Agent"把意图填进全局对话栏输入框（复用同一实例，消息流连续）
             insertChatText={insertChatText}
           />
           </DeferredModule>
-        )}
-        {activeModule === "map" && mapChatVisible && (
-          <div className="app-chat-slot map">
-            {sharedChatPanel}
-          </div>
         )}
         {activeModule === "map" && mapChatVisible && (
           <Resizer
@@ -2254,7 +2334,10 @@ export default function App() {
             cssVar="--map-chat-w"
           />
         )}
-        {!["knowledge", "templates", "map"].includes(activeModule) && (
+        {/* 地图模式保留主布局挂载：对话面板必须常驻，否则进入/退出地图会卸载 ChatPanel，
+            本地消息、SSE 游标与运行态全部丢失，服务端回放只会重建孤立总结卡。
+            地图覆盖层由 .mp 负责遮罩，对话槽位在地图模式下用 CSS 固定到右侧。 */}
+        {!["knowledge", "templates"].includes(activeModule) && (
         <>
         {sidebarOpen && (
           <>
@@ -2575,7 +2658,7 @@ export default function App() {
             {/* 对话面板常驻挂载：设置/成果/任务中心是覆盖在上面的浮层（.module-view），
                 不能用 !activeModule 把会话流卸载——卸载会丢掉全部本地状态，
                 回到对话时整段会话要重新水合（表现为"变样"、底部工具条图标闪烁重载）。 */}
-            <div className="center-chat-slot">{sharedChatPanel}</div>
+            <div className={`center-chat-slot${activeModule === "map" ? " map-mode" : ""}${activeModule === "map" && !mapChatVisible ? " map-chat-hidden" : ""}`}>{sharedChatPanel}</div>
           </div>
         </div>
         {canvasOpen && (
@@ -2673,6 +2756,7 @@ export default function App() {
                         project={mapPreviewTab.payload?.project || currentMapProject}
                         view={mapPreviewTab.payload?.view || null}
                         height="100%"
+                        refreshToken={mapPreviewRevision}
                         onOpen={() => setActiveModule("map")}
                       />
                     </div>

@@ -122,6 +122,40 @@ test("Agent 提示词与描述以当前任务项目为准", () => {
   assert.ok(!agent.includes('description: "项目名，默认 zhejiang-map"'), "参数描述不应再写死默认项目");
 });
 
+test("主界面绑定地图的会话也注入地图上下文", () => {
+  const app = read("client/src/App.jsx");
+  assert.match(app, /const boundMapProject = activeModule === "map"[\s\S]{0,200}?currentMapContext\?\.mapProject/, "应区分地图模块与主界面绑定项目");
+  assert.match(app, /mapContext=\{boundMapProject \? currentMapContext : null\}/, "主界面绑定项目时也应传 mapContext");
+  assert.match(app, /mapProject=\{boundMapProject \|\| null\}/, "主界面绑定项目时也应传 mapProject");
+  assert.ok(!app.includes("currentDoc={activeModule === \"map\" ? `地图项目:${currentMapProject}`"), "不应再把地图项目当伪文件名");
+});
+
+test("对话面板常驻主槽位，地图模式只做 CSS 定位", () => {
+  const app = read("client/src/App.jsx");
+  assert.ok(!app.includes('className="app-chat-slot map"'), "不应再把 ChatPanel 搬到第二个父容器");
+  assert.match(app, /center-chat-slot\$\{activeModule === "map" \? " map-mode" : ""\}/, "地图模式应给主对话槽位加 map-mode");
+  assert.match(app, /!\["knowledge", "templates"\].includes\(activeModule\)/, "地图模式应保留主布局挂载");
+  const styles = read("client/src/styles.css");
+  assert.match(styles, /\.center-chat-slot\.map-mode \{[\s\S]{0,240}?position: fixed/, "地图模式对话栏应 fixed 定位");
+  assert.match(styles, /\.center-chat-slot\.map-mode \.msg > \.avatar \{ display: none; \}/, "地图紧凑栏应隐藏头像以对齐输入区");
+  assert.match(styles, /\.app\.map-module-active \.center-content > :not\(\.center-chat-slot\)/, "地图模式应隐藏主布局其它区域");
+});
+
+test("预览支持正式文件变更后的热刷新", () => {
+  const app = read("client/src/App.jsx");
+  const mini = read("client/src/components/MiniMapPreview.jsx");
+  const viewer = read("client/src/components/MapViewer.jsx");
+  const panel = read("client/src/components/MapPanel.jsx");
+  assert.match(app, /changedMapProjects/, "handleFileChanged 应解析 maps/<project>/ 路径");
+  assert.match(app, /setMapPreviewRevision\(\(value\) => value \+ 1\)/, "地图文件变更应递增预览刷新令牌");
+  assert.match(mini, /refreshToken = 0/, "MiniMapPreview 应接受 refreshToken");
+  assert.match(mini, /\[project, refreshToken\]/, "config 拉取应随 refreshToken 重跑");
+  assert.match(mini, /reloadToken=\{refreshToken\}/, "MapViewer 应收到 reloadToken");
+  assert.match(viewer, /const reloadStyleNow = useCallback/, "MapViewer 应抽出 reloadStyleNow");
+  assert.match(viewer, /appliedReloadTokenRef/, "MapViewer 应按 reloadToken 热更新且只应用一次");
+  assert.match(panel, /onMapChanged\?\.\(project\)/, "手工保存样式后应通知 App 刷新预览");
+});
+
 console.log("▶ 项目文件树与 agent 归档");
 const PROJECT = `probe-bind-${Date.now().toString(36)}`;
 const WORKSPACE = path.join(ROOT, "office-workspace");
