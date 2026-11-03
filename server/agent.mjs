@@ -1096,6 +1096,9 @@ class AgentManager extends EventEmitter {
     // 单飞锁避免两个 Pi Runtime 互相覆盖，导致新事件通道被替换。
     this.resumePromises = new Map();
     this.recoveryPromises = new Map();
+    // runId -> agentEntry key：中断（执行句柄.中断）在只剩 runId 的场景下反向定位 entry，
+    // 弥补 resolveLiveEntry 在链路清空/键漂移时的空命中（计划 2026-11-03-001 P0-4）。
+    this.runEntryKeys = new Map();
     this.startBusyWatchdog();
   }
 
@@ -1134,6 +1137,7 @@ class AgentManager extends EventEmitter {
       busy: Boolean(entry.busy),
       compacting: Boolean(entry.compacting),
       queuedCount: entry.queuedCount || 0,
+      chainDepth: entry.chainDepth || 0,
       activeRunId: entry.activeRunId || null,
       lastPiEventAt: entry.lastPiEventAt || null,
       busyForMs: entry.busyStartedAt ? now - entry.busyStartedAt : null,
@@ -1146,6 +1150,55 @@ class AgentManager extends EventEmitter {
     const ask = this.pendingAsks.get(clientId);
     if (ask) this.pendingAsks.delete(clientId);
     return ask;
+  }
+
+  /** 当前仍存活的待答问题载荷（只认内存：重启后残留的 pending 记录没有 agent 在等）。 */
+  pendingAsk(clientId = "") {
+    const resolver = this.pendingAsks.get(clientId);
+    const payload = resolver?.payload || null;
+    if (!payload) return null;
+    const expiresAt = Number(Date.parse(String(payload.expiresAt || ""))) || 0;
+    if (expiresAt && expiresAt <= Date.now()) return null;
+    return payload;
+  }
+
+  /** 当前仍存活的待答问题列表；key 为空时返回全部会话。 */
+  pendingAskList(clientId = "") {
+    const items = [];
+    for (const [key, resolver] of this.pendingAsks) {
+      if (clientId && key !== clientId) continue;
+      const payload = resolver?.payload || null;
+      if (!payload) continue;
+      const expiresAt = Number(Date.parse(String(payload.expiresAt || ""))) || 0;
+      if (expiresAt && expiresAt <= Date.now()) continue;
+      items.push(payload);
+    }
+    return items;
+  }
+
+  /**
+   * 结算一个待答问题。
+   *
+   * 取消/插话时不能只打 cancelRequested：ask_user 是阻塞 Promise，Pi 的
+   * session.abort() 唤不醒它，工具会一直等到 5 分钟超时，promptChain 随之
+   * 被堵住。这里主动回填一段让模型收尾的回答，并把持久化记录改成 cancelled，
+   * 刷新后不会再出现一张点不动的提问卡。
+   */
+  settlePendingAsk(clientId, { status = "cancelled", answer = "" } = {}) {
+    const key = String(clientId || "").trim();
+    if (!key) return false;
+    const resolver = this.pendingAsks.get(key);
+    if (!resolver) {
+      // 没有内存 resolver 时仍收口持久化记录（例如服务重启后的残留 pending），
+      // 避免文件里长期挂着一张已经没人等待的提问。
+      try { resolvePendingAsk(key, String(answer || ""), status); } catch {}
+      return false;
+    }
+    this.pendingAsks.delete(key);
+    try { resolver(String(answer || "")); } catch {}
+    // resolver 内部会按 answered 落盘；这里覆盖成取消/作废状态。
+    try { resolvePendingAsk(key, String(answer || ""), status); } catch {}
+    return true;
   }
 
   submitAnswer(clientId, answer) {
@@ -1242,7 +1295,7 @@ class AgentManager extends EventEmitter {
       // 工作区归属校验：同一 client::thread 不允许静默跨工作区复用运行时，
       // 否则会串会话、工具根目录、记忆和资源加载器。
       if (requested && existing.workspace && requested !== existing.workspace) {
-        if (existing.busy || existing.compacting || existing.queuedCount > 0) {
+        if (existing.busy || existing.compacting || existing.queuedCount > 0 || (existing.chainDepth || 0) > 0) {
           const error = new Error("当前会话正在其他工作区的任务中执行，请等待完成或先取消任务");
           error.code = "WORKSPACE_BUSY";
           throw error;
@@ -1672,8 +1725,15 @@ class AgentManager extends EventEmitter {
       parameters: Type.Object({
         args: Type.String({ description: "officecli command arguments (single string)" }),
       }),
-execute: async (_toolCallId, params) => {
+execute: async (_toolCallId, params, signal) => {
         const { runOfficecli, validateOfficecliArgs } = await import("./office.mjs");
+        // Pi 在工具执行入口传入 Run 级 AbortSignal；officecli 是独立进程，
+        // 必须把 signal 透传给 runOfficecli 才能在用户中断时真正杀掉子进程（2026-11-03-001 P0-4）。
+        if (signal?.aborted) {
+          const error = new Error("officecli 命令已被用户中断");
+          error.code = "OFFICECLI_ABORTED";
+          throw error;
+        }
         // 计划 008：写作路由下，管线产出前禁止 create/add/set/batch 与 markdown 转换
         const officeGate = enforceOfficeGate("officecli", { args: String(params.args || "") });
         let args = parseArgs(String(params.args || ""));
@@ -1773,7 +1833,7 @@ execute: async (_toolCallId, params) => {
         try {
           let r;
           try {
-            r = await runAgentOfficeCommand(args, runOfficecli, entry.workspace);
+            r = await runAgentOfficeCommand(args, (cliArgs, opts = {}) => runOfficecli(cliArgs, { ...opts, signal }), entry.workspace);
           } catch (error) {
             const normalized = normalizeOfficeFailure(error, args);
             writeEvent("officecli_failed", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, command: args.slice(0, 8), code: normalized.code || "OFFICECLI_START_FAILED", message: String(normalized.message || normalized) });
@@ -3359,6 +3419,10 @@ execute: async (_toolCallId, params) => {
               ? { kind: "turn", id: entry.activeRunId }
               : { kind: "session", id: entry.clientId || entry.threadId || null };
           }
+          // 记住载荷与 Run：SSE 重连/切换会话时服务端据此补发待答问题，
+          // 否则通道历史重建后界面只能把它渲染成普通工具卡。
+          askPayload.runId = entry.activeRunId || null;
+          done.payload = askPayload;
           emitChannelSafe(entry, "ask_user", askPayload);
           if (reviewConfirmation) {
             emitChannelSafe(entry, "review_waiting_confirmation", {
@@ -4383,7 +4447,7 @@ execute: async (_toolCallId, params) => {
       }
     }));
 
-    entry = { session, sessionManager: sessionManager || null, channel, busy: false, compacting: false, compactionKind: null, compactionPromise: null, compactionRunId: null, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, turnRunId: null, activeTools: new Map(), task: null, mode: "agent", modePolicy: null, modePolicyKey: "", mcpToolNames: mcpToolRegistrations.map((item) => item.name), mcpReadOnlyToolNames: mcpToolRegistrations.filter((item) => item.tool.annotations?.readOnlyHint === true && item.tool.annotations?.destructiveHint !== true).map((item) => item.name), piExtensionToolNames, hasSubagent: true, reviewConfirmed: false, reviewAwaitingConfirmation: false, reviewProtectedPaths: new Set(), reviewSources: [], lastAgentError: null, lastSettledError: null, lastAssistantText: "", lastFinalText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, activeToolCount: 0, lastPiEventAt: Date.now(), pendingAbortPromise: null, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, promptChars: estimateRestoredContextChars(session), lastUsage: null, lastCompactionAt: 0, autoCompacting: false };
+    entry = { session, sessionManager: sessionManager || null, channel, busy: false, compacting: false, compactionKind: null, compactionPromise: null, compactionRunId: null, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, turnRunId: null, activeTools: new Map(), task: null, mode: "agent", modePolicy: null, modePolicyKey: "", mcpToolNames: mcpToolRegistrations.map((item) => item.name), mcpReadOnlyToolNames: mcpToolRegistrations.filter((item) => item.tool.annotations?.readOnlyHint === true && item.tool.annotations?.destructiveHint !== true).map((item) => item.name), piExtensionToolNames, hasSubagent: true, reviewConfirmed: false, reviewAwaitingConfirmation: false, reviewProtectedPaths: new Set(), reviewSources: [], lastAgentError: null, lastSettledError: null, lastAssistantText: "", lastFinalText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, activeToolCount: 0, lastPiEventAt: Date.now(), pendingAbortPromise: null, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, chainDepth: 0, promptChars: estimateRestoredContextChars(session), lastUsage: null, lastCompactionAt: 0, autoCompacting: false };
     if (metadataReport && !metadataReport.ok) {
       try {
         emitChannelSafe(entry, "tool_metadata_missing", {
@@ -4530,7 +4594,15 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
   }
 
   _enqueuePrompt(entry, payload) {
-    const wasOccupied = entry.busy || entry.compacting || entry.queuedCount > 0;
+    // 新指令到达意味着用户不再等上一个提问：先结算 ask_user。
+    // 否则阻塞的 ask 会占满 5 分钟超时窗口，把整条 promptChain 堵住。
+    this.settlePendingAsk(entry.clientId || "", {
+      status: "cancelled",
+      answer: "[系统提醒] 有新的任务指令到达，原提问作废；请结束当前回合，等待并执行新指令。",
+    });
+    // chainDepth 覆盖“上一轮 promptChain 还没排空、但 busy 已被看门狗清零”的窗口：
+    // 只靠 busy/queuedCount 会漏判，新指令静默挂起且不发 agent_queued。
+    const wasOccupied = (entry.chainDepth || 0) > 0 || entry.busy || entry.compacting || entry.queuedCount > 0;
     if (wasOccupied) {
       const position = entry.queuedCount + 1;
       emitChannelSafe(entry, "agent_queued", {
@@ -4540,17 +4612,22 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       });
     }
     entry.queuedCount += 1;
+    entry.chainDepth = (entry.chainDepth || 0) + 1;
     const queuedAt = Date.now();
     const operation = entry.promptChain.then(async () => {
       entry.queuedCount = Math.max(0, entry.queuedCount - 1);
-      // 排队等待时长：上一轮还没收尾（或正在压缩）时，这段时间会直接叠加到本轮首字延迟上。
-      entry.queueWaitMs = Date.now() - queuedAt;
-      // 手动压缩不在 promptChain 内执行；新消息必须等它完成后再进入 Runtime。
-      if (entry.compactionPromise) await entry.compactionPromise.catch(() => {});
-      const compactionStartedAt = Date.now();
-      await this._maybeCompact(entry, payload.runContext);
-      entry.compactionCheckMs = Date.now() - compactionStartedAt;
-      return this._promptEntry(entry, payload.text, payload.images, payload.effort, payload.references, payload.runContext);
+      try {
+        // 排队等待时长：上一轮还没收尾（或正在压缩）时，这段时间会直接叠加到本轮首字延迟上。
+        entry.queueWaitMs = Date.now() - queuedAt;
+        // 手动压缩不在 promptChain 内执行；新消息必须等它完成后再进入 Runtime。
+        if (entry.compactionPromise) await entry.compactionPromise.catch(() => {});
+        const compactionStartedAt = Date.now();
+        await this._maybeCompact(entry, payload.runContext);
+        entry.compactionCheckMs = Date.now() - compactionStartedAt;
+        return await this._promptEntry(entry, payload.text, payload.images, payload.effort, payload.references, payload.runContext);
+      } finally {
+        entry.chainDepth = Math.max(0, (entry.chainDepth || 0) - 1);
+      }
     });
     // 保留链路继续执行，同时不让前一个失败阻断后续排队请求。
     entry.promptChain = operation.catch(() => {});
@@ -4688,6 +4765,8 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.busyStartedAt = Date.now();
     entry.references = Array.isArray(references) ? references : [];
     entry.activeRunId = runContext?.runId || null;
+    // runId 反查 archive 映射：Run 开始登记、收尾删除，中断时用 resolveLiveEntry 兜底。
+    if (runContext?.runId && entry.clientId) this.runEntryKeys.set(runContext.runId, entry.clientId);
     // 每轮独立计数：上一轮的轮次预算与提醒标记都不能串到本轮
     entry.memoryWrittenThisRun = false;
     // 终稿缓存按 Run 隔离：新 Run 开始即清空，旧 Run 迟到文本不会串入本轮。
@@ -5158,6 +5237,8 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         } catch {}
       }
       entry.busy = false;
+      // Run 收尾：撤销 runId 反查映射，避免长会话中映射越积越多。
+      if (entry.activeRunId) this.runEntryKeys.delete(entry.activeRunId);
       entry.activeRunId = null;
       // 排队中的模型切换在本轮结束后生效：运行中的任务始终用旧模型跑完，
       // 结束后把用户选择的模型真正应用上，并广播一条 model_switched 供界面画分割线。
@@ -5194,13 +5275,20 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
    * 重载/切会话与运行中的 key 不一致，此时按 client 前缀找到真正在跑的那个会话。
    */
   async abort(clientId, options = {}) {
-    const entry = this.resolveLiveEntry(clientId);
+    const entry = this.resolveLiveEntry(clientId, { runId: options.runId });
     if (!entry) return { ok: true, cancelled: false, reason: "no-live-session" };
     // 打标：后续的轮次提醒与 ask_user 续跑都要据此停止
     entry.cancelRequested = true;
     entry.abortRequestedAt = Date.now();
     entry.runStopCache = true;
     entry.runStopCheckedAt = Date.now();
+    // 先结算待答问题，再中断运行时：
+    // ask_user 是阻塞 Promise，Pi 的 session.abort() 并不能把它唤醒；不结算的话
+    // 工具会一直挂到 5 分钟超时，promptChain 被堵住，后续新指令看起来像卡死。
+    this.settlePendingAsk(entry.clientId || clientId, {
+      status: "cancelled",
+      answer: "[系统提醒] 本轮任务已被用户取消，请立即停止执行，不要再调用工具，直接在正文里说明本轮已取消。",
+    });
     const runId = entry.activeRunId || options.runId || null;
     let runtimeAborted = false;
     try {
@@ -5217,25 +5305,47 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     return { ok: true, cancelled: true, runId, runtimeAborted, thread: entry.threadId || null, emitted: aborted };
   }
 
-  /** 按 key 找活跃会话；key 不匹配时按 client 前缀兜底（页面 thread 标识可能已变）。 */
-  resolveLiveEntry(key) {
+  /**
+   * 按 key 找活跃会话。
+   *
+   * 精确 key 不存在时：
+   * - 已知 runId：只按 activeRunId 匹配，避免多会话下中断到另一个 thread；
+   * - 未知 runId：仅当同 client 前缀只有一个候选时才兜底（页面 thread 标识可能已变），
+   *   多个候选时拒绝猜测并记诊断，宁可返回 null 也不误操作别的会话。
+   */
+  resolveLiveEntry(key, options = {}) {
     if (!key) return null;
     const exact = this.sessions.get(key);
     if (exact) return exact;
-    const prefix = `${String(key).split("::")[0]}::`;
-    let fallback = null;
-    for (const [sessionKey, candidate] of this.sessions) {
-      if (!sessionKey.startsWith(prefix)) continue;
-      if (!fallback) fallback = candidate;
-      if (candidate.busy || candidate.activeRunId) return candidate;
+    const runId = String(options.runId || "").trim();
+    if (runId) {
+      const mapped = this.runEntryKeys?.get(runId);
+      if (mapped) {
+        const mappedEntry = this.sessions.get(mapped);
+        // entry 仍存活且空闲:false 使用旧映射；已换 key 则继续按 activeRunId 找。
+        if (mappedEntry && (mappedEntry.busy || mappedEntry.activeRunId === runId || (mappedEntry.chainDepth || 0) > 0)) return mappedEntry;
+      }
+      for (const candidate of this.sessions.values()) {
+        if (candidate?.activeRunId === runId) return candidate;
+      }
+      return null;
     }
-    return fallback;
+    const prefix = `${String(key).split("::")[0]}::`;
+    const candidates = [];
+    for (const [sessionKey, candidate] of this.sessions) {
+      if (sessionKey.startsWith(prefix)) candidates.push(candidate);
+    }
+    if (candidates.length === 1) return candidates[0];
+    if (candidates.length > 1) {
+      console.warn(`[agent] resolveLiveEntry 前缀兜底命中 ${candidates.length} 个会话，已拒绝猜测：${key}`);
+    }
+    return null;
   }
 
   /** 手动压缩当前会话上下文。压缩属于 pi session 能力，不通过伪造 /compact 文本实现。 */
   async compact(clientId, customInstructions = "") {
     const entry = await this.getOrCreate(clientId);
-    if (entry.busy || entry.compacting || entry.queuedCount > 0 || (typeof entry.session.isIdle === "function" && !entry.session.isIdle())) {
+    if (entry.busy || entry.compacting || entry.queuedCount > 0 || (entry.chainDepth || 0) > 0 || (typeof entry.session.isIdle === "function" && !entry.session.isIdle())) {
       throw new Error("agent busy — wait for the current task to finish");
     }
     entry.compacting = true;
@@ -5267,7 +5377,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     if (!workspace) throw new Error("当前工作区不存在或不是文件夹");
     const old = this.sessions.get(clientId);
     if (old) {
-      if (old.busy || old.compacting || old.queuedCount > 0) throw new Error("当前会话仍有任务排队，不能替换活动会话");
+      if (old.busy || old.compacting || old.queuedCount > 0 || (old.chainDepth || 0) > 0) throw new Error("当前会话仍有任务排队，不能替换活动会话");
       piRuntimeManager.dispose(old.runtimeId, old.session);
       this.sessions.delete(clientId);
     }
@@ -5291,26 +5401,51 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       busy: Boolean(entry?.busy),
       compacting: Boolean(entry?.compacting),
       queuedCount: entry?.queuedCount || 0,
+      chainDepth: entry?.chainDepth || 0,
       busyForMs: entry?.busyStartedAt ? now - entry.busyStartedAt : null,
       activeRunId: entry?.activeRunId || null,
     };
     return error;
   }
 
-  async resumeThread(clientId, threadId, sessionPath, cwd = getWorkspace()) {
+  /**
+   * 恢复会话。
+   *
+   * 幂等：同一个 client::thread 上已经有指向同一份 Pi 会话的活运行时（可能正在
+   * 执行任务）时，直接复用它并返回 reused=true，不 dispose、不重建。
+   * 切走再切回运行中的会话是正常操作，不是“恢复失败”；早期实现无条件抛
+   * SESSION_BUSY，导致界面把历史置为只读并禁用输入。
+   *
+   * 只有“同一 key 上挂的确实是另一份会话”且旧运行时忙时，才保留 SESSION_BUSY。
+   */
+  async resumeThread(clientId, threadId, sessionPath, cwd = getWorkspace(), expectedSessionId = "") {
     const inFlight = this.resumePromises.get(clientId);
     if (inFlight) return inFlight;
     const resume = (async () => {
     const workspace = normalizeWorkspace(cwd) || normalizeWorkspace(getWorkspace());
     if (!workspace) throw new Error("当前工作区不存在或不是文件夹");
+    const targetSessionId = String(expectedSessionId || "").trim()
+      || (sessionPath ? path.basename(String(sessionPath), path.extname(String(sessionPath))) : "");
     const old = this.sessions.get(clientId);
     if (old) {
-      if (old.busy || old.compacting || old.queuedCount > 0) throw this._sessionBusyError(old);
+      const liveSessionId = String(old.session?.sessionId || "").trim();
+      const sameWorkspace = !old.workspace || normalizeWorkspace(old.workspace) === workspace;
+      if (targetSessionId && liveSessionId && liveSessionId === targetSessionId && sameWorkspace) {
+        return {
+          ok: true,
+          reused: true,
+          threadId: old.threadId || threadId,
+          sessionId: liveSessionId,
+          runtimeId: old.runtimeId,
+          cwd: old.workspace || workspace,
+        };
+      }
+      if (old.busy || old.compacting || old.queuedCount > 0 || (old.chainDepth || 0) > 0) throw this._sessionBusyError(old);
       piRuntimeManager.dispose(old.runtimeId, old.session);
       this.sessions.delete(clientId);
     }
     const entry = await this._create(clientId, { cwd: workspace, sessionPath, threadId });
-    return { ok: true, threadId, sessionId: entry.session.sessionId, runtimeId: entry.runtimeId, cwd: workspace };
+    return { ok: true, reused: false, threadId, sessionId: entry.session.sessionId, runtimeId: entry.runtimeId, cwd: workspace };
     })();
     this.resumePromises.set(clientId, resume);
     try {
@@ -5522,7 +5657,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
 
   async restartRuntime(clientId, { threadId = null, sessionPath = null, cwd = getWorkspace(), modelSpec = "" } = {}) {
     const old = this.sessions.get(clientId);
-    if (old?.busy || old?.compacting || old?.queuedCount > 0) throw new Error("当前 Runtime 仍有任务排队，不能重启");
+    if (old?.busy || old?.compacting || old?.queuedCount > 0 || (old?.chainDepth || 0) > 0) throw new Error("当前 Runtime 仍有任务排队，不能重启");
     if (old) {
       piRuntimeManager.markRecovery(old.runtimeId, "manual_runtime_restart");
       piRuntimeManager.dispose(old.runtimeId, old.session);
@@ -5544,7 +5679,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       modelSpec: spec,
     });
     const nextSpec = String(spec || "").trim();
-    if (entry.busy || entry.compacting || entry.queuedCount > 0) {
+    if (entry.busy || entry.compacting || entry.queuedCount > 0 || (entry.chainDepth || 0) > 0) {
       // 运行中的任务继续用旧模型跑完（Pi 会话不支持中途换模型），把切换排队到本轮结束，
       // 不再用 "agent busy" 直接失败——那样用户会以为切换没生效，实际是"稍后生效"。
       entry.pendingModelSpec = nextSpec;

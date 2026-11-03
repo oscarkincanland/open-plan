@@ -199,6 +199,22 @@ function hasOtherActiveRun(run) {
 // 进入"取消中"但还没终结的 Run：runId → { cancelRequestedAt, lastEventAt }。
 // 中断后 SDK 若因工具卡住等原因迟迟不回来，看门狗据此强制收尾。
 const pendingCancellations = new Map();
+
+/**
+ * Run 生命周期 → 会话列表缓存失效钩子（P0-3，2026-11-03-001）。
+ *
+ * 会话列表的 runStatus 来自每个会话最新 Run，但 /api/sessions 的无参请求走
+ * 服务端 5s 缓存；Run 开始/结束/取消不失效缓存时，侧栏与项目卡的运行动画
+ * 在多任务并行下“跟不上”。runs.mjs 不能反向 import index.mjs（成环），
+ * 这里提供注入钩子，由 index.mjs 启动时注册 invalidateSessionsListCache。
+ */
+let runLifecycleInvalidator = null;
+export function setRunLifecycleInvalidator(fn) {
+  runLifecycleInvalidator = typeof fn === "function" ? fn : null;
+}
+function notifyRunLifecycleChanged() {
+  try { runLifecycleInvalidator?.(); } catch {}
+}
 const TODO_STATUS_ALIASES = Object.freeze({
   pending: "planned",
   todo: "planned",
@@ -847,6 +863,8 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
   activeRunIndex.set(id, before.root);
   rememberTerminalRun(id, false);
   try { attachRunTimingSpans(id, { blobs: blobsMs, saveRun: saveMs, appendEvent: appendMs, beforeFiles: Object.keys(before.files || {}).length }); } catch {}
+  // Run 开始：会话列表的 runStatus 即发生变化，立即失效 /api/sessions 缓存。
+  notifyRunLifecycleChanged();
   return saved;
 }
 
@@ -1451,6 +1469,8 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
   } finally {
     releaseRunLocks(run.id);
     activeRunIndex.delete(run.id);
+    // Run 落终态：会话列表 runStatus 变化，失效 /api/sessions 缓存。
+    notifyRunLifecycleChanged();
     if (isTerminalRun(run)) rememberTerminalRun(run.id, true);
   }
 }
@@ -1588,6 +1608,8 @@ export function requestRunCancellation(id, reason = "用户请求中断") {
     cancelRequestedAt: run.cancelRequestedAt || new Date().toISOString(),
     lastEventAt: lastRunEventAt(run),
   });
+  // 取消中 → 会话列表/项目卡显示「正在中断」，立即失效 /api/sessions 缓存。
+  notifyRunLifecycleChanged();
   return getRun(id);
 }
 

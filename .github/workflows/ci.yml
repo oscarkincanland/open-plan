@@ -159,6 +159,9 @@ jobs:
       - name: 会话加载 TDZ（不得先用后声明 / 历史优先显示 / 失败带堆栈）
         run: node scripts/CI运行测试.mjs 会话加载TDZ回归测试
 
+      - name: 会话恢复与中断一致性（resume 幂等 / ask 结算 / 排队可见性 / 精确匹配）
+        run: node scripts/CI运行测试.mjs 会话恢复与中断一致性测试
+
 
 
       - name: Office 写作闸门通电（ADR 0012 / 工具书 / 环境预检）

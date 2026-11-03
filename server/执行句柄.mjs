@@ -542,7 +542,19 @@ export function 创建执行句柄(初始依赖 = {}) {
     const live = manager.resolveLiveEntry?.(key) || null;
     // P2-3：一并回执「取消后仍排队的轮次数量」，前端据此区分「已停」与「排队中已停」
     // （基线只返回 ok/runId，无法判断是否还有排队的轮次）。字段为新增，不影响既有消费方。
-    const payload = { ...result, runId: result?.runId || targetRunId || null, stillQueued: Number(live?.queuedCount || 0) };
+    // settleDeadlineMs：服务端取消看门狗的上限（15s）+ 5s 余量。客户端据此设置
+    // “中断未确认”提示窗口，避免固定 10s 小于服务端结算期限而必然误报。
+    const payload = {
+      ...result,
+      runId: result?.runId || targetRunId || null,
+      stillQueued: Number(live?.queuedCount || 0),
+      // 2026-11-03-001 P0-4：任务中心“收尾中”语义——runtime 中断未被显式确认
+      //（abort 抛错路径）仍有排队链路时 stillRunning=true，不要立即显示已取消。
+      stillRunning: Boolean(result?.cancelled && !result?.runtimeAborted)
+        || Boolean(live && (live.chainDepth || 0) > 0),
+      chainDepth: Number(live?.chainDepth || 0),
+      settleDeadlineMs: 20000,
+    };
     通知("已中断", { runId: payload.runId });
     return payload;
   }

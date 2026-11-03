@@ -16,7 +16,7 @@ import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves, startOwnerHeartbeat, stopOwnerHeartbeat } from "./runs.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves, startOwnerHeartbeat, stopOwnerHeartbeat, setRunLifecycleInvalidator } from "./runs.mjs";
 import { attachRunTimingMeta, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
@@ -2251,6 +2251,11 @@ let sessionMetaStoreLoaded = false;
 let sessionMetaDirty = false;
 let sessionMetaFlushTimer = null;
 
+// Run 开始/结束/取消时由 runs.mjs 反向回调：会话列表 runStatus 即时变化，
+// 这里失效热缓存，否则侧栏与项目卡的多任务运行动画要等 5s TTL（2026-11-03-001 P0-3）。
+setRunLifecycleInvalidator(() => invalidateSessionsListCache());
+
+
 function loadPersistedSessionMeta() {
   if (sessionMetaStoreLoaded) return;
   sessionMetaStoreLoaded = true;
@@ -3434,16 +3439,21 @@ app.post("/api/runs/:id/cancel", async (req, res) => {
   if (!run) return res.status(404).json({ error: "run not found" });
   if (!run.actions?.canCancel) return res.status(409).json({ error: `任务当前状态不可取消：${run.status}`, run });
   const pending = requestRunCancellation(run.id, String(req.body?.reason || "用户请求取消"));
-  const key = agentKey(run.clientId, run.threadId);
-  const live = agentManager.sessions?.get(key);
+  // P1-1 统一中断：这里此前只查 `sessions.get(key)` + live.busy，key 不匹配
+  //（切会话/多标签页/entry 重建）或 busy=false（幽灵回合）时根本不 abort agent，
+  // Run 被标成 cancelled 而进程继续跑——用户反馈“点了中断还是停不下来”。
+  // 统一走执行句柄：按 runId 精确找 entry、结算 ask_user、中断 runtime。
+  // （2026-11-03-001 P0-4）
   try {
-    if (live?.busy) {
-      await agentManager.abort(key);
-    } else {
-      finishRun(run.id, { status: "cancelled", sessionId: run.sessionId, error: "任务在恢复前被取消", summary: "任务已取消" });
+    const result = await 执行句柄.中断(run.id, String(req.body?.reason || "用户请求取消"), { client: run.clientId, thread: run.threadId });
+    const finished = getRun(run.id);
+    // 没找到活跃 entry 且 Run 仍是可取消态：直接按取消收尾，避免永远停在 cancel_requested。
+    if (result?.cancelled === false && !["cancelled", "aborted", "completed", "failed"].includes(String(finished.status))) {
+      const nowFinished = finishRun(run.id, { status: "cancelled", sessionId: run.sessionId, error: "任务在恢复前被取消", summary: "任务已取消" });
+      res.json({ ok: true, run: nowFinished, previous: pending, stillQueued: 0, stillRunning: false });
+      return;
     }
-    // P2-3：同上，回执仍排队的轮次数量（取消发生在排队期时该值 > 0）。
-    res.json({ ok: true, run: getRun(run.id), previous: pending, stillQueued: Number(live?.queuedCount || 0) });
+    res.json({ ok: true, run: getRun(run.id), previous: pending, stillQueued: Number(result?.stillQueued || 0), stillRunning: Boolean(result?.stillRunning) });
   } catch (error) {
     res.status(409).json({ error: error.message, run: getRun(run.id) });
   }
@@ -4537,7 +4547,11 @@ app.get("/api/agent/pending", (req, res) => {
     const session = entry?.session;
     pendingMessages = typeof session?.pendingMessageCount === "number" ? session.pendingMessageCount : null;
   } catch {}
-  res.json({ questions: agentManager.pendingQuestions(key), pendingMessages });
+  // 只返回仍存活的待答问题（内存里有等待中的 resolver）。
+  // 服务重启后 pending-asks.json 里可能残留 pending 记录，但已没有 agent 在等，
+  // 返回它们会让前端恢复出一张点不动的死卡片。
+  const questions = key ? agentManager.pendingAskList(key) : agentManager.pendingQuestions("");
+  res.json({ questions, pendingMessages });
 });
 
 // 回答 agent 的提问（ask_user 工具：用户回答后 agent 继续）
@@ -5046,7 +5060,9 @@ app.post("/api/agent/resume", async (req, res) => {
         code: "SESSION_WORKSPACE_MISMATCH",
       });
     }
-    const result = await agentManager.resumeThread(agentKey(client, thread), thread, found.fullPath, workspace);
+    const expectedSessionId = String(found.sessionId || "").trim()
+      || path.basename(String(found.fileName || found.fullPath || ""), path.extname(String(found.fileName || found.fullPath || "")));
+    const result = await agentManager.resumeThread(agentKey(client, thread), thread, found.fullPath, workspace, expectedSessionId);
     annotateSessionThread(result.sessionId, thread);
     res.json(result);
   } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
@@ -5248,6 +5264,23 @@ try {
       serverAt: new Date().toISOString(),
     },
   })}\n\n`);
+  // 待答问题恢复：切会话/刷新会重建 SSE 通道，通道历史里未必还有 ask_user，
+  // 前端只能把历史里的 tool_start 渲染成普通工具卡，用户无法回答。
+  // 握手后补发一次仍存活的待答问题；前端按 askId 去重，不会产生第二张卡。
+  try {
+    const pendingAsk = agentManager.pendingAsk?.(agentKey(client, thread));
+    if (pendingAsk) {
+      write(`data: ${JSON.stringify({
+        type: "ask_user",
+        at: new Date().toISOString(),
+        data: {
+          ...pendingAsk,
+          runId: pendingAsk.runId || entry.activeRunId || null,
+          recovered: true,
+        },
+      })}\n\n`);
+    }
+  } catch {}
   if (historyTruncated) {
     // 明确告知：游标与当前历史窗口已不连续。前端据此触发 Run 对账，
     // 用服务端 Run 终态和最终文本重建，而不是依赖已被淘汰的事件。
@@ -6351,7 +6384,14 @@ const cancelWatchdogTimer = setInterval(() => {
       const now = Date.now();
       if (!cancelAt || now - cancelAt < CANCEL_STALL_MS) continue;
       if (lastEventAt && now - lastEventAt < CANCEL_STALL_MS) continue;
-      const entry = agentManager.resolveLiveEntry(agentKey(run.clientId, run.threadId));
+      const pendingKey = agentKey(run.clientId, run.threadId);
+      // 兜底结算：正常 abort 路径已经结算过；若中断来自其他入口（例如任务中心取消），
+      // 这里再结算一次，避免 ask_user 继续挂到 5 分钟超时后 promptChain 才排空。
+      agentManager.settlePendingAsk?.(pendingKey, {
+        status: "cancelled",
+        answer: "[系统提醒] 本轮任务已被用户取消，请立即停止执行，不要再调用工具，直接在正文里说明本轮已取消。",
+      });
+      const entry = agentManager.resolveLiveEntry(pendingKey, { runId: run.id });
       const completion = resolveRunCompletion(entry, "cancelled", { artifacts: 0, runId: run.id });
       const finished = finishRun(run.id, {
         status: "cancelled",
@@ -6415,7 +6455,7 @@ function reapStalledRuns() {
       const events = Array.isArray(run.events) ? run.events : [];
       const lastAt = Date.parse(events[events.length - 1]?.at || run.startedAt || "") || 0;
       if (!lastAt || Date.now() - lastAt < RUN_STALL_MS) continue;
-      const entry = agentManager.resolveLiveEntry(agentKey(run.clientId, run.threadId));
+      const entry = agentManager.resolveLiveEntry(agentKey(run.clientId, run.threadId), { runId: run.id });
       const runtime = entry ? agentManager.runtimeSnapshot(agentKey(run.clientId, run.threadId)) : null;
       const runtimeBusy = Boolean(entry?.busy) || ["running", "queued", "compacting"].includes(String(runtime?.status || ""));
       // 运行时仍在忙：可能只是长工具在跑，交给它自己收尾。
