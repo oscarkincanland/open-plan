@@ -83,7 +83,7 @@ try {
   assert.match(runSummarySource, /!embedded && \(trace\?\.tools\?\.length > 0/, "嵌入式结果卡不重复渲染工具明细");
   assert.match(runSummarySource, /run-trace-step-heading/, "独立结果摘要仍保留有序工具时间线");
   assert.match(runSummarySource, /const summaryText = String\(completion\?\.summary/, "总结优先取完成摘要（推断来源即模型终稿）");
-  assert.match(runSummarySource, /const fallbackSummary = summaryText \|\|/, "总结不再因存在最终答复而隐藏");
+  assert.match(runSummarySource, /const fallbackSummary = finalAnswer \? "" : \(summaryText \|\|/, "终稿存在时结果卡不再重复摘要");
   assert.match(chatPanelSource, /foldedProcessBlocks/, "思考、工具及运行中的进度播报应并入消息级过程卡");
   assert.match(chatPanelSource, /message-process-scroll/, "过程内容应在一个有界滚动容器中回看");
   assert.match(chatPanelSource, /<ExecutionFlow \{\.\.\.messageExecutionFlow\} embedded \/>/, "去重后的 SSE 轨迹应嵌入消息过程卡");

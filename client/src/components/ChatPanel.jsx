@@ -5250,9 +5250,10 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
   const statusLabel = view.lifecycleLabel; // R04：状态缺失显示“状态待同步”，不默认“运行结束”
   const completion = view.outcome || m.completion || null;
   const finalAnswer = String(view.answer?.text || m.authoritativeFinalText || "").trim();
-  // 总结优先：完成摘要（推断来源时取自模型最终答复，历史会话可能来自显式声明）是本轮工作的完整结论，不能因为存在最终答复就被隐藏。
+  // 终稿即整体结论：模型最终答复已在正文/结论区完整展示时，不再在结果卡里重复一段压缩摘要。
+  // 只有历史记录缺少终稿时才退回完成摘要/正文。
   const summaryText = String(completion?.summary || m.summaryText || "").trim();
-  const fallbackSummary = summaryText || (finalAnswer ? "" : String(m.text || "").trim());
+  const fallbackSummary = finalAnswer ? "" : (summaryText || String(m.text || "").trim());
   // 标题只用于非嵌入的历史摘要，优先取权威最终答复；收尾摘要只作为兼容标题。
   const conclusionSource = String(view.answer?.text || m.authoritativeFinalText || completion?.summary || m.text || m.task?.text || m.task?.goal || "").trim();
   const titleLine = conclusionSource.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0] || "";
@@ -5839,14 +5840,17 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   const timelineSummaryText = String(timelineCompletion?.summary || "").trim();
   const timelineFinalText = !streaming ? authoritativeFinalText : "";
   const finalTextIsSummary = Boolean(timelineFinalText && finalTextBlockIndex >= 0);
+  // 结论块的唯一优先来源是模型终稿：即使终稿没能和时间流里的文本块对上（历史/重试差异），
+  // 也直接用它作为「整体结论」，而不是退化成一句被压缩过的完成摘要。
+  const timelineSummarySource = timelineFinalText || timelineSummaryText;
   const summaryParts = useMemo(
     () => (timelinePath
-      ? splitCompletionSummary(finalTextIsSummary ? "" : timelineSummaryText, finalTextIsSummary ? timelineFinalText : "")
+      ? splitCompletionSummary(finalTextIsSummary ? "" : timelineSummarySource, finalTextIsSummary ? timelineFinalText : "")
       : { what: "", conclusion: "", detail: "" }),
-    [timelinePath, finalTextIsSummary, timelineFinalText, timelineSummaryText],
+    [timelinePath, finalTextIsSummary, timelineFinalText, timelineSummarySource],
   );
-  // 总结展示条件：终稿已从时间流隐藏（匹配到文本块）→ 用终稿渲染；否则有完成摘要才渲染。
-  const showTimelineSummary = timelinePath && !streaming && (finalTextIsSummary || Boolean(timelineSummaryText));
+  // 总结展示条件：终稿已从时间流隐藏（匹配到文本块）→ 用终稿渲染；否则终稿/完成摘要存在即渲染。
+  const showTimelineSummary = timelinePath && !streaming && (finalTextIsSummary || Boolean(timelineSummarySource));
   const timelineActionNeeded = timelinePath && runCardView ? (() => {
     if (runCardView.lifecycle === "waiting_approval") return { kind: "approval", text: runCardView.progress?.waitingReason || "等待你审批后继续" };
     if (runCardView.lifecycle === "waiting_user") return { kind: "ask", text: runCardView.progress?.waitingReason || "等待你回答后继续" };
@@ -5922,7 +5926,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
         return (
           <TimelineRow key={item.id} icon={item.icon} verb={item.verb} obj={objNode} objTitle={item.obj} timeText={item.timeText} state={item.state}>
             {isLiveThinking
-              ? <TypewriterText text={item.text} enabled className="tl-thinking-text" />
+              ? <TypewriterText text={item.text} enabled autoScroll className="tl-thinking-text" />
               : <div className="tl-thinking-text">{item.text}</div>}
           </TimelineRow>
         );
@@ -5956,7 +5960,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
         const state = ["completed", "closed"].includes(String(b.status)) ? (b.isError ? "err" : "ok")
           : ["failed", "cancelled"].includes(String(b.status)) ? "err"
             : "run";
-        const roleLabel = { scout: "资料探索", reviewer: "审阅", planner: "方案拆解", verifier: "独立核验", worker: "执行" }[b.role] || b.role || "只读任务";
+        const roleLabel = { scout: "资料探索", reviewer: "审阅", planner: "方案拆解", verifier: "独立核验", worker: "执行", pipeline_planner: "规划结构", pipeline_writer: "撰写正文" }[b.role] || b.role || "只读任务";
         const taskLabel = b.task ? String(b.task).replace(/\s+/g, " ").slice(0, 40) : "";
         const timeText = b.startAt && b.endAt
           ? (() => { const ms = new Date(b.endAt) - new Date(b.startAt); return Number.isFinite(ms) && ms >= 0 ? `${(ms / 1000).toFixed(1)} 秒` : ""; })()
@@ -6027,7 +6031,9 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
           timeText={`${text.length.toLocaleString()} 字`}
           state={live ? "run" : "ok"}
         >
-          <div className="tl-thinking-text">{text}</div>
+          {live
+            ? <TypewriterText text={text} enabled autoScroll className="tl-thinking-text" />
+            : <div className="tl-thinking-text">{text}</div>}
         </TimelineRow>
       );
     }
@@ -6488,11 +6494,27 @@ function appendSubagentTrace(list, item) {
 }
 
 // ========== 编辑流水线阶段条（P2-A，方案 §5.2） ==========
+/**
+ * 阶段状态 → 图标/文案。skipped 是「sourceMarkdown 直通，跳过本阶段」，
+ * 不是失败；revise 是验收要求修订，也不是失败。此前一律落到 close 图标，
+ * 导致用户看到「规划结构 ✗ / 撰写正文 ✗」误以为流水线出错。
+ */
+function pipelineStageMeta(status) {
+  const value = String(status || "running").toLowerCase();
+  if (["done", "pass", "completed", "ok"].includes(value)) return { icon: "check", label: "完成", tone: "done" };
+  if (["skipped", "skip"].includes(value)) return { icon: "minus", label: "跳过", tone: "skipped" };
+  if (["revise", "needs_revision"].includes(value)) return { icon: "warning", label: "需修订", tone: "revise" };
+  if (value === "revise_failed") return { icon: "close", label: "修订失败", tone: "failed" };
+  if (["failed", "error"].includes(value)) return { icon: "close", label: "失败", tone: "failed" };
+  if (["cancelled", "canceled", "aborted"].includes(value)) return { icon: "stop", label: "已取消", tone: "cancelled" };
+  return { icon: "flow", label: "进行中", tone: "running" };
+}
+
 function PipelineCard({ block, onOpenFile }) {
   const [expanded, setExpanded] = useState(block.status === "running");
   const stages = Array.isArray(block.stages) ? block.stages : [];
   const runningStage = stages.find((stage) => stage.status === "running");
-  const failed = stages.some((stage) => stage.status === "failed") || block.status === "failed";
+  const failed = stages.some((stage) => ["failed", "revise_failed", "error"].includes(String(stage.status))) || block.status === "failed";
   const statusText = block.status === "completed" ? "已交付" : block.status === "failed" ? "未通过验收" : block.status === "cancelled" ? "已取消" : runningStage ? `进行中：${runningStage.label || runningStage.stage}` : "进行中";
   return (
     <section className={`pipeline-card ${block.status || "running"}`} aria-label={`编辑流水线（${block.format === "pptx" ? "PPT" : "Word"}）`}>
@@ -6507,16 +6529,19 @@ function PipelineCard({ block, onOpenFile }) {
       </button>
       {expanded && <div className="pipeline-card-body">
         <ol className="pipeline-stages">
-          {stages.map((stage) => (
-            <li key={stage.stage} className={`pipeline-stage ${stage.status || "running"}`}>
-              <span className="pipeline-stage-icon"><Icon name={stage.status === "done" || stage.status === "pass" || stage.status === "completed" ? "check" : stage.status === "running" ? "flow" : "close"} size={12} /></span>
-              <div className="pipeline-stage-info">
-                <b>{stage.label || stage.stage}</b>
-                <em>{stage.status === "done" || stage.status === "pass" || stage.status === "completed" ? "完成" : stage.status === "revise" ? "需修订" : stage.status === "failed" ? "失败" : "进行中"}{stage.artifact ? ` · ${stage.artifact}` : ""}</em>
-                {stage.issues?.length > 0 && <span className="pipeline-stage-issues">{stage.issues.slice(0, 3).join("；")}</span>}
-              </div>
-            </li>
-          ))}
+          {stages.map((stage) => {
+            const meta = pipelineStageMeta(stage.status);
+            return (
+              <li key={stage.stage} className={`pipeline-stage ${meta.tone}`}>
+                <span className="pipeline-stage-icon"><Icon name={meta.icon} size={12} /></span>
+                <div className="pipeline-stage-info">
+                  <b>{stage.label || stage.stage}</b>
+                  <em>{meta.label}{stage.artifact ? ` · ${stage.artifact}` : ""}</em>
+                  {stage.issues?.length > 0 && <span className="pipeline-stage-issues">{stage.issues.slice(0, 3).join("；")}</span>}
+                </div>
+              </li>
+            );
+          })}
         </ol>
         {block.deliverable && (
           <div className="pipeline-deliverable">
@@ -6535,7 +6560,7 @@ function PipelineCard({ block, onOpenFile }) {
 function SubagentCard({ block, onOpenDetail }) {
   const [expanded, setExpanded] = useState(block.status === "running");
   const statusText = block.status === "completed" ? "已完成" : block.status === "failed" ? "失败" : block.status === "cancelled" ? "已取消" : block.status === "planned" ? "已编排" : "执行中";
-  const roleText = { scout: "资料探索", reviewer: "审阅", planner: "方案拆解", verifier: "独立核验", worker: "执行" }[block.role] || "只读任务";
+  const roleText = { scout: "资料探索", reviewer: "审阅", planner: "方案拆解", verifier: "独立核验", worker: "执行", pipeline_planner: "规划结构", pipeline_writer: "撰写正文" }[block.role] || "只读任务";
   const content = block.summary || block.preview || "";
   const tools = Array.isArray(block.tools) ? block.tools : [];
   const runningTools = tools.filter((tool) => tool.status !== "done").length;

@@ -169,6 +169,7 @@
     "test:progress-narration": "node scripts/进度播报测试.mjs",
     "test:conclusion": "node scripts/任务结论事件流测试.mjs",
     "test:workspace-panel": "node scripts/工作区面板与输入栏收敛测试.mjs",
+    "test:session-convergence": "node scripts/会话收敛与流水线状态测试.mjs",
     "test:service-supervisor": "node scripts/服务监督回归测试.mjs",
     "test:native-files": "node scripts/原生文件测试.mjs",
     "test:run-view": "node scripts/运行展示投影测试.mjs",

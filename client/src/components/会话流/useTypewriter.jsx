@@ -36,8 +36,33 @@ export default function useTypewriter(fullText, { enabled = false } = {}) {
   return shown;
 }
 
-/** 打字机文本组件：供 map 渲染场景使用（hook 不能在循环里调用）。 */
-export function TypewriterText({ text, enabled = false, className = "" }) {
+/**
+ * 打字机文本组件（hook 不能在循环里调用，故单独封装）。
+ * autoScroll=true 时随每次揭示把独立滚动容器跟到尾部（思考过程跟随最新一行）；
+ * 用户主动向上翻阅时暂停跟随，滚回底部后自动恢复。
+ */
+export function TypewriterText({ text, enabled = false, className = "", autoScroll = false }) {
   const shown = useTypewriter(text, { enabled });
-  return <div className={className} aria-live="polite">{String(text || "").slice(0, shown)}</div>;
+  const scrollRef = useRef(null);
+  const followTailRef = useRef(true);
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    followTailRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
+  };
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!autoScroll || !el || !followTailRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [shown, autoScroll]);
+  return (
+    <div
+      ref={scrollRef}
+      className={className}
+      onScroll={autoScroll ? handleScroll : undefined}
+      aria-live="polite"
+    >
+      {String(text || "").slice(0, shown)}
+    </div>
+  );
 }

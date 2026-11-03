@@ -147,6 +147,9 @@ jobs:
       - name: 输入栏与工作区面板收敛（上下文/审批并入输入栏；工作区入口为面板）
         run: node scripts/CI运行测试.mjs 工作区面板与输入栏收敛测试
 
+      - name: 会话收敛与流水线状态（跳过/修订不再画叉；思考跟随；记忆后不追问）
+        run: node scripts/CI运行测试.mjs 会话收敛与流水线状态测试
+
       - name: 产物文件类型图标（docx 等按类型出图，不回退通用图标）
         run: node scripts/CI运行测试.mjs 产物图标测试
 

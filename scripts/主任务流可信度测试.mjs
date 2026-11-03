@@ -111,9 +111,9 @@ assert.match(对话面板, /import \{[^}]*projectLegacyRunSummary[^}]*\} from "\
 assert.match(对话面板, /const fileChanges = useMemo\(\(\) => changes\.filter\(\(change\) => change\.role !== "internal"\)/, "文件改动应来自投影的单一份集合");
 // 最终答案只在助手正文显示；结果卡只给状态与文件入口。
 assert.match(对话面板, /const finalAnswer = String\(view\.answer\?\.text \|\| m\.authoritativeFinalText/, "结果卡应识别已显示的权威答案");
-// completion.summary 优先、最终答复只作补充（082e7bea 起的行为）：
-// 有 summary 就显示 summary；没有 summary 时才用最终答复兜底，且有最终答复时不回退到正文。
-assert.match(对话面板, /const fallbackSummary = summaryText \|\| \(finalAnswer \? ""/, "摘要优先，最终答复只作补充");
+// 2026-11-03 口径：最终答复就是整体结论。终稿已在正文/结论区完整展示时，
+// 结果卡不再重复一段压缩摘要；只有历史记录缺少终稿时才退回 summary/正文。
+assert.match(对话面板, /const fallbackSummary = finalAnswer \? "" : \(summaryText \|\|/, "终稿存在时结果卡不再重复摘要");
 assert.doesNotMatch(对话面板, /run-result-conclusion/, "结果卡不能再生成第二份折叠结论");
 assert.match(对话面板, /交付产物 \{deliverables\.length\}/, "交付产物应单独成入口");
 assert.doesNotMatch(对话面板, /m\.products\.map/, "结果卡不应再单独渲染产物标签（与变更重复）");

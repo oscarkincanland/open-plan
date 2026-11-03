@@ -29,6 +29,11 @@ export const SUBAGENT_ROLES = Object.freeze({
   planner: { label: "方案拆解", readOnly: true, tools: ["read", "grep", "find", "ls"], timeoutMs: 60000, prompt: "方案拆解者，输出简短、可执行的步骤。" },
   verifier: { label: "独立核验", readOnly: true, tools: ["read", "grep", "find", "ls"], timeoutMs: 120000, prompt: "独立核验者，对抗式检查结论是否成立、证据是否充分，给出 pass/revise/fail 判定。" },
   worker: { label: "执行", readOnly: false, tools: ["read", "grep", "find", "ls", "write", "edit", "officecli"], timeoutMs: 180000, prompt: "执行者，按子任务产出结果（写操作需审批）；完成后给出简明交付说明。" },
+  // 编辑流水线的内部只读角色（不暴露给 run_subagent 的 role 枚举）。
+  // 此前 Planner/Writer 都借用 planner 角色，Writer 会继承「输出简短、可执行的步骤」
+  // 的规划者人设，整篇正文容易被写短或中途收束，最终 JSON 不可解析。
+  pipeline_planner: { label: "规划结构", readOnly: true, tools: ["read", "grep", "find", "ls"], timeoutMs: 120000, prompt: "文档结构规划者：输出完整、层级清晰、可被 JSON 解析的章节大纲。" },
+  pipeline_writer: { label: "撰写正文", readOnly: true, tools: ["read", "grep", "find", "ls"], timeoutMs: 240000, prompt: "文档撰写者：严格按给定大纲一次性写出完整正文，只输出可解析的 JSON；不要省略章节，不要输出元话语或省略号。" },
 });
 
 /**
