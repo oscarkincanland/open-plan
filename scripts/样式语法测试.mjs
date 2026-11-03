@@ -73,11 +73,14 @@ if (errors.length) {
   ok("块与声明结构完整");
 }
 
+// 2026-11-03 随 a71cd950「对话内容列回中」更新断言：内容列在对话区自身宽度内
+// 居中，.chat-body 的 scrollbar-gutter 留出的 8px 让列中心左移约 4px，
+// 输入区用 translateX(-4px) 补偿并保留 ≤720px 取消规则的护栏。
 const composeRule = /\.center-chat-slot \.chat-compose\s*\{([\s\S]*?)\}/.exec(source);
 if (composeRule && /transform:\s*translateX\(-4px\)/.test(composeRule[1])) {
   ok(".chat-compose 内含滚动条补偿");
 } else {
-  bad(".chat-compose 缺少 transform: translateX(-4px)");
+  bad(".chat-compose 缺少 translateX(-4px) 补偿（a71cd950 回中口径）");
 }
 
 const smallScreen = /@media\s*\(max-width:\s*720px\)\s*\{[\s\S]*?\.center-chat-slot \.chat-compose\s*\{\s*transform:\s*none;\s*\}/.test(source);
