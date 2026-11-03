@@ -21,8 +21,9 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const 样式 = fs.readFileSync(path.join(ROOT, "client", "src", "styles.css"), "utf8");
 
-/** 硬编码色值棘轮基线（2026-10-29 设计一致性整改收尾实测；只允许下降，不许上升）。 */
-const 硬编码基线 = { 总数: 139, 不同值: 98 };
+/** 硬编码色值棘轮基线（2026-10-29 首次实测；2026-11-03 删除 :root 已定义令牌的冗余
+ *  hex fallback（var(--x, #hex) 永不生效）后实测 125/87。只允许下降，不许上升。 */
+const 硬编码基线 = { 总数: 125, 不同值: 87 };
 
 let failed = 0;
 const test = (name, fn) => {

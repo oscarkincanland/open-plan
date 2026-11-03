@@ -920,7 +920,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .memory-proposal-card { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); font-size: 11px; }
 .memory-proposal-card .btn-xs { margin-left: auto; white-space: nowrap; }
 .memory-proposal-state { color: var(--success); margin-left: auto; white-space: nowrap; }
-.workflow-warning { color: var(--warning, #d19a66); font-size: 10px; margin-top: 5px; }
+.workflow-warning { color: var(--warning); font-size: 10px; margin-top: 5px; }
 .run-artifacts { margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--border); font-size: 10px; }
 .run-artifacts > .btn-xs { margin-top: 5px; }
 /* 历史 Run 的工具聚合列表已由执行过程阶段分组取代 */
@@ -950,7 +950,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .run-summary-header { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 11px; }
 .run-summary-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--success); }
 .run-summary-dot.failed { background: var(--error); }
-.run-summary-dot.cancelled { background: var(--warning, #d19a66); }
+.run-summary-dot.cancelled { background: var(--warning); }
 .run-summary-dot.running { background: var(--accent); animation: blink 1s infinite; }
 .run-summary-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .run-summary-meta { flex-shrink: 0; color: var(--dim); font-size: 10px; }
@@ -3733,10 +3733,10 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   transform: translateX(-50%);
   z-index: 3;
   padding: 7px 12px;
-  border: 1px solid var(--error, #c96b6b);
+  border: 1px solid var(--error);
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--panel-bg) 92%, transparent);
-  color: var(--error, #c96b6b);
+  color: var(--error);
   font-size: 12px;
 }
 
@@ -5031,7 +5031,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   display: flex;
   align-items: center;
   gap: 10px;
-  color: var(--danger, #c2410c);
+  color: var(--danger);
 }
 .map-toolbar {
   position: absolute;
@@ -5606,7 +5606,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .artifact-status.published { color: var(--success); }
 .artifact-status.failed { color: var(--error); }
 .artifact-status.ready { color: var(--success); }
-.artifact-status.pending { color: var(--warning, #b7791f); }
+.artifact-status.pending { color: var(--warning); }
 .artifact-publish-btn { flex-shrink: 0; }
 .artifact-acceptance-details { flex-basis: 100%; margin: 2px 0 0 22px; color: var(--dim); font-size: 10px; line-height: 1.6; }
 .artifact-acceptance-details summary { color: var(--muted); cursor: pointer; }
@@ -6575,9 +6575,9 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   appearance: none;
   width: 18px;
   height: 18px;
-  border: 2px solid var(--pure-white, #fff);
+  border: 2px solid var(--pure-white);
   border-radius: 50%;
-  background: var(--pure-white, #fff);
+  background: var(--pure-white);
   box-shadow: 0 2px 8px color-mix(in srgb, var(--pure-black) 40%, transparent);
   cursor: grab;
 }
@@ -6585,9 +6585,9 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .model-thinking-control input[type="range"]::-moz-range-thumb {
   width: 16px;
   height: 16px;
-  border: 2px solid var(--pure-white, #fff);
+  border: 2px solid var(--pure-white);
   border-radius: 50%;
-  background: var(--pure-white, #fff);
+  background: var(--pure-white);
   box-shadow: 0 2px 8px color-mix(in srgb, var(--pure-black) 40%, transparent);
   cursor: grab;
 }
@@ -7409,7 +7409,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   width: 560px;
   max-width: 92vw;
   max-height: 72vh;
-  background: var(--panel-bg, #1e2236);
+  background: var(--panel-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
@@ -7624,7 +7624,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .approval-actions { display: flex; gap: 6px; }
 .approval-allow { background: var(--success, var(--map-accent)); border-color: transparent; }
 .approval-always { }
-.approval-deny { background: var(--error, #d9534f); border-color: transparent; }
+.approval-deny { background: var(--error); border-color: transparent; }
 .approval-scope { margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 
 /* ===== 对话栏历史抽屉（chat-hist，可折叠） ===== */
@@ -9395,7 +9395,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .model-provider-item-main code { color: var(--accent); font-size: 10px; }
 .model-provider-item-main span { color: var(--dim); font-size: 10px; }
 .model-provider-item-status { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 5px; flex-shrink: 0; }
-.model-provider-item-status .danger, .model-provider-model-row .danger { color: var(--danger, #d66); }
+.model-provider-item-status .danger, .model-provider-model-row .danger { color: var(--danger); }
 .model-provider-empty { margin-top: 12px; padding: 10px; border: 1px dashed var(--border); border-radius: 8px; color: var(--dim); font-size: 10px; line-height: 1.5; }
 .model-provider-editor { margin-top: 12px; padding: 11px; border: 1px dashed color-mix(in srgb, var(--accent) 40%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--accent) 4%, transparent); }
 .model-provider-editor-head, .model-provider-models-head, .model-provider-editor-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
