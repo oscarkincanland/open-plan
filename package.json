@@ -65,6 +65,7 @@
     "test:session-resume": "node scripts/会话恢复与中断一致性测试.mjs",
     "test:interrupt-chain": "node scripts/中断链路回归测试.mjs",
     "test:run-association": "node scripts/会话流Run归属回归测试.mjs",
+    "test:chat-window": "node scripts/会话窗口与运行卡回归测试.mjs",
     "test:stream-quota": "node scripts/长连接预算测试.mjs",
     "test:fsync-batch": "node scripts/写盘批量测试.mjs",
     "test:queue-indicator": "node scripts/排队提示测试.mjs",
