@@ -364,12 +364,20 @@ test("中断不把 Runtime 标成失败（否则下一条消息被当作失效�
   assert.match(运行时源, /if \(this\.isUserAbort\(record, error\)\) \{[\s\S]{0,260}?reason: "user_abort"/, "中断收尾记 user_abort 而不是 markFailure");
 });
 
-test("abort 接口返回真实结果，并按 client 兜底查找在跑会话", () => {
-  assert.match(agent源, /resolveLiveEntry\(clientId\)/, "找不到精确 key 时要按 client 前缀兜底");
+test("abort 接口返回真实结果，并按 runId 精确兜底查找在跑会话", () => {
+  // 009 起：精确 key 缺失时先按已知 runId 匹配 activeRunId；未知 runId 仅在唯一
+  // 候选时兜底前缀，多候选拒绝猜测并记诊断——客户端中断不再可能命中别的会话。
+  assert.match(agent源, /resolveLiveEntry\(clientId, \{ runId: options\.runId \}\)/, "abort 要携带 runId 查找在跑会话");
   assert.match(agent源, /return \{ ok: true, cancelled: false, reason: "no-live-session" \}/, "没有在跑的任务要如实返回");
+  assert.match(agent源, /candidate\?\.activeRunId === runId\) return candidate/, "已知 runId 按 activeRunId 精确匹配");
+  assert.match(agent源, /多个候选时拒绝猜测并记诊断/, "多候选拒绝猜测并记诊断");
   // P2-3 起该响应还会附带 stillQueued（取消后仍排队的轮次），因此只锁定前缀形状，不写死整行。
-  assert.match(index源, /res\.json\(await 执行句柄\.中断\(runId,/, "中断应委托执行句柄收口");
-  assert.match(执行句柄源, /const payload = \{ \.\.\.result, runId: result\?\.runId \|\| targetRunId \|\| null/, "中断结果要回传 runId");
+  assert.match(index源, /await 执行句柄\.中断\(run\.id,/, "任务中心取消应委托执行句柄收口");
+  assert.match(index源, /res\.json\(await 执行句柄\.中断\(runId,/, "对话中断应委托执行句柄收口");
+  // 001 起 payload 由多行对象承载（新增 stillRunning/chainDepth/settleDeadlineMs），
+  // 只锁定 runId 回传与期限字段，不写死整块形状。
+  assert.match(执行句柄源, /const payload = \{[\s\S]{0,120}?runId: result\?\.runId \|\| targetRunId \|\| null/, "中断结果要回传 runId");
+  assert.match(执行句柄源, /settleDeadlineMs: 20000/, "中断回执带服务端确认期限");
   assert.match(index源, /const running = listRuns\(\{ limit: 20 \}\)\.find/, "内存 key 不匹配时按 Run 记录兜底取消");
 });
 
@@ -387,9 +395,13 @@ test("客户端：中断后的 agent_error 按中断处理，且不残留错误�
     "中断后到达的 agent_error 应直接收尾为中断");
   assert.match(对话面板, /if \(id\) patch\(id, \(m\) => \(\{ \.\.\.m, status: "done", stopped: true, errorText: "" \}\)\)/,
     "中断收尾要清掉 errorText，结果卡里不能再留「模型调用失败」");
-  assert.match(对话面板, /pushSystem\("已请求中断，但服务端未在 10 秒内确认收尾/, "服务端未确认时要说实话");
+  // 009 起：确认窗口按服务端 settleDeadlineMs（先 20s 兜底，响应后按服务端时限重置），
+  // 超时说真话（可能卡在不响应中断的工具里），不再写死 10 秒。
+  assert.match(对话面板, /pushSystem\(`已受理中断，但服务端在 \$\{seconds\} 秒内仍未确认收尾/, "服务端未确认时要说实话（含实际等待秒数）");
+  assert.match(对话面板, /const settleDeadlineMs = Number\(result\?\.settleDeadlineMs \|\| 0\);/, "客户端读服务端期限（settleDeadlineMs）");
+  assert.match(对话面板, /if \(settleDeadlineMs > 0 && stoppingRef\.current && settleDeadlineMs !== defaultConfirmMs\) \{[\s\S]{0,120}?armStopConfirm\(settleDeadlineMs\);/, "拿到服务端期限后重排确认窗口");
+  assert.match(对话面板, /armStopConfirm\(defaultConfirmMs\);/, "默认确认窗口 20s（小于服务端结果回执不再误报）");
   assert.match(对话面板, /pushSystem\("没有找到正在运行的任务，可能这一轮已经结束了。"/, "没有在跑的任务不要谎报已中断");
-  assert.match(对话面板, /}, 10000\);\n    try \{\n      const res = await fetch\("\/api\/agent\/abort"/, "确认窗口应为 10 秒而不是 1.2 秒本地收尾");
 });
 
 // ---------- 7. 供应商流截断（不是"模型调用失败"）----------

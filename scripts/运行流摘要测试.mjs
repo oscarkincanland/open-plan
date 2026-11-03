@@ -54,7 +54,9 @@ test("runSummaryView 提供折叠行/总结所需字段", () => {
 
 test("App 历史首屏使用 fields=summary", () => {
   assert.match(app, /listRuns\("", 50, \{ sessionId: session\.id, fields: "summary" \}\)/);
-  assert.match(app, /events: \[\]/);
+  // 历史首屏不拉完整事件：listRuns 只给活跃 Run 与最新一条 events，这里只消费
+  // 列表自带的 events（多数为空，else 分支兜底空数组），展开过程时再按 runId 拉取。
+  assert.match(app, /events: Array\.isArray\(run\.events\) \? run\.events\.map\(/, "历史首屏不拉完整事件");
   assert.match(app, /durationMs: Number\(run\.durationMs\)/);
   assert.match(app, /stepCount: Number\(run\.stepCount\)/);
 });

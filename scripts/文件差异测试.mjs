@@ -207,20 +207,24 @@ test("前端接入：API 封装 + 改动面板契约", () => {
 console.log("\n▶ 端到端（服务在跑时）");
 
 const BASE = process.env.OAW_TEST_BASE || "http://127.0.0.1:3002";
+// Windows/Node 24 的退出竞态：undici keep-alive socket 与 process.exit 的拆除
+// 相撞时偶发 libuv 断言（src\win\async.c）。e2e 请求显式 connection: close，
+// 响应后即拆连接，退出路径不再持有任何 keep-alive socket。
+const e2eFetch = (url, options = {}) => fetch(url, { ...options, headers: { ...options.headers, connection: "close" } });
 try {
-  const runsRes = await fetch(`${BASE}/api/runs?limit=40`, { signal: AbortSignal.timeout(8000) });
+  const runsRes = await e2eFetch(`${BASE}/api/runs?limit=40`, { signal: AbortSignal.timeout(8000) });
   const runsData = await runsRes.json();
   const withChange = (runsData.runs || []).find((run) => (run.artifacts || []).length);
   if (!withChange) {
     console.log("      （没有带产物的 Run 样本，跳过端到端）");
   } else {
     // 旧 Run 可能只有 artifactId；新 Run 有 changeId —— 两者都应可解析
-    const artifactRes = await fetch(`${BASE}/api/runs/${encodeURIComponent(withChange.id)}`, { signal: AbortSignal.timeout(8000) });
+    const artifactRes = await e2eFetch(`${BASE}/api/runs/${encodeURIComponent(withChange.id)}`, { signal: AbortSignal.timeout(8000) });
     const artifactData = await artifactRes.json();
     const artifact = (artifactData.run?.artifacts || artifactData.artifacts || [])[0];
     const id = artifact?.changeId || artifact?.artifactId;
     if (id) {
-      const diffRes = await fetch(`${BASE}/api/runs/${encodeURIComponent(withChange.id)}/changes/${encodeURIComponent(id)}/diff`, { signal: AbortSignal.timeout(15000) });
+      const diffRes = await e2eFetch(`${BASE}/api/runs/${encodeURIComponent(withChange.id)}/changes/${encodeURIComponent(id)}/diff`, { signal: AbortSignal.timeout(15000) });
       const diffBody = await diffRes.json().catch(() => ({}));
       if (diffRes.status === 200 && diffBody.ok) {
         ok(`真实变更可取出差异（kind=${diffBody.diff?.kind}，路径=${diffBody.change?.relativePath}）`);
@@ -228,12 +232,12 @@ try {
         bad(`真实变更差异接口异常：HTTP ${diffRes.status} ${JSON.stringify(diffBody).slice(0, 120)}`);
       }
     }
-    const bogus = await fetch(`${BASE}/api/runs/${encodeURIComponent(withChange.id)}/changes/change_deadbeef0000/diff`, { signal: AbortSignal.timeout(8000) });
+    const bogus = await e2eFetch(`${BASE}/api/runs/${encodeURIComponent(withChange.id)}/changes/change_deadbeef0000/diff`, { signal: AbortSignal.timeout(8000) });
     const bogusBody = await bogus.json().catch(() => ({}));
     assert.equal(bogus.status, 404, "伪造 changeId 应 404");
     assert.equal(bogusBody.code, "CHANGE_NOT_FOUND", "应给出 CHANGE_NOT_FOUND");
     ok("伪造 changeId 被拒绝（404 CHANGE_NOT_FOUND）");
-    const traversal = await fetch(`${BASE}/api/runs/${encodeURIComponent(withChange.id)}/changes/${encodeURIComponent("../../etc/passwd")}/diff`, { signal: AbortSignal.timeout(8000) });
+    const traversal = await e2eFetch(`${BASE}/api/runs/${encodeURIComponent(withChange.id)}/changes/${encodeURIComponent("../../etc/passwd")}/diff`, { signal: AbortSignal.timeout(8000) });
     const traversalBody = await traversal.json().catch(() => ({}));
     assert.equal(traversal.status, 404, "路径穿越应被拒绝");
     assert.ok(!String(JSON.stringify(traversalBody)).includes("root:"), "不得读出系统文件");
@@ -244,4 +248,7 @@ try {
 }
 
 console.log(failed ? "\n文件差异测试：失败" : "\n文件差异测试：通过");
+// Windows/Node 24 退出竞态：undici 的 TCPSocketWrap 需要一轮事件循环才能完成关闭，
+// 直接 process.exit 会撞 libuv 断言（src\win\async.c）。给一个短 settle 再退出。
+await new Promise((resolve) => setTimeout(resolve, 400));
 process.exit(failed ? 1 : 0);

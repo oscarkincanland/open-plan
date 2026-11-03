@@ -256,7 +256,7 @@ await test("回归：scroll 缺省分支返回值逐字不变，仅新增可选 
   assert.match(src, /export async function browserScroll\(key, direction, amount, options = \{\}\)/, "browserScroll 应新增可选 options 参数");
 });
 
-await test("契约：新工具已登记（agent 定义 + 三处白名单 + task 白名单 + 开关快照）", () => {
+await test("契约：新工具已登记（agent 定义 + task 单一事实源白名单 + customTools + 开关快照）", () => {
   const agent = fs.readFileSync(path.join(ROOT, "server", "agent.mjs"), "utf8");
   const task = fs.readFileSync(path.join(ROOT, "server", "task.mjs"), "utf8");
   const flags = fs.readFileSync(path.join(ROOT, "server", "运行开关.mjs"), "utf8");
@@ -264,11 +264,13 @@ await test("契约：新工具已登记（agent 定义 + 三处白名单 + task 
   for (const name of names) {
     assert.match(agent, new RegExp(`name: "${name}"`), `agent 缺少工具定义 ${name}`);
     assert.match(task, new RegExp(`"${name}"`), `task 白名单缺少 ${name}`);
+    // 单一事实源收敛后 agent.mjs 只保留定义处字符串；运行时激活改由 task.mjs
+    // 白名单 + customTools 变量数组驱动，不再维护第二份名称串。
     const quoted = (agent.match(new RegExp(`"${name}"`, "g")) || []).length;
-    assert.ok(quoted >= 2, `tools/setActiveTools 白名单应包含 ${name}（实际 ${quoted} 处字符串）`);
+    assert.equal(quoted, 1, `agent.mjs 应只保留定义处 ${name}（白名单单一事实源在 task.mjs；实际 ${quoted} 处）`);
   }
   for (const toolVar of ["browserWaitForTool", "browserActTool", "browserExtractTool", "browserSelectOptionTool"]) {
-    assert.match(agent, new RegExp(toolVar), `customTools 缺少 ${toolVar}`);
+    assert.match(agent, new RegExp(`${toolVar},`), `customTools 缺少 ${toolVar}`);
   }
   assert.match(flags, /browserAtomic/, "运行开关应含 browserAtomic");
   for (const key of ["browserAtomic", "browserWaitFor", "browserAct", "browserScrollContainer", "browserExtract", "browserSelectOption"]) {
