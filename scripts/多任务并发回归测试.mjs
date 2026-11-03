@@ -141,7 +141,7 @@ if (LIVE) {
       id,
       client: `client-multi-${id}-${stamp}`,
       thread: `thread-multi-${id}-${stamp}`,
-      prompt: `请完成一个多文件任务：在工作区根目录创建目录 ${root}/${id}/，生成 data.csv（表头 + 3 条数据行）与 summary.md（说明）。完成后用 read 回读并调用 complete_task 声明 success。不要只说明步骤。`,
+      prompt: `请完成一个多文件任务：在工作区根目录创建目录 ${root}/${id}/，生成 data.csv（表头 + 3 条数据行）与 summary.md（说明）。完成后用 read 回读并在最终答复里说明结果。不要只说明步骤。`,
     }));
     for (const c of cases) {
       await post("/api/agent/new", { client: c.client, thread: c.thread, cwd: workspace, label: `MULTI-${c.id} ${stamp}` });

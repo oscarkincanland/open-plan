@@ -98,6 +98,23 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext, o
   // 统一预览状态：loading | ready | partial | unsupported | failed（子查看器一致消费）
   const [previewState, setPreviewState] = useState(PREVIEW_STATE.LOADING);
   const [previewErr, setPreviewErr] = useState("");
+  // 文档信息浮层（2026-11-03 预览收敛）：预览能力与排版说明收进 ⓘ
+  const [infoOpen, setInfoOpen] = useState(false);
+  const infoWrapRef = useRef(null);
+
+  useEffect(() => {
+    if (!infoOpen) return undefined;
+    const onPointerDown = (event) => {
+      if (!infoWrapRef.current?.contains(event.target)) setInfoOpen(false);
+    };
+    const onKeyDown = (event) => { if (event.key === "Escape") setInfoOpen(false); };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [infoOpen]);
 
   // 标注模式相关状态
   const [annoMode, setAnnoMode] = useState(false);
@@ -535,15 +552,14 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext, o
   return (
     <>
       <div className="docview-head">
-        <span className="doc-title">{doc.name}</span>
-        <span className={`badge preview-state preview-state-${previewState}`} title={previewErr || ""}>
-          {previewState === PREVIEW_STATE.LOADING && <Icon name="loading" size={12} />}
-          {previewState === PREVIEW_STATE.FAILED && <Icon name="warning" size={12} />}
-          {PREVIEW_STATE_LABEL[previewState] || previewState}
-        </span>
-        <span className={`badge preview-capability preview-capability-${capability.level}`} title={capability.detail}>
-          {capability.label}
-        </span>
+        <span className="doc-title" title={doc.name}>{doc.name}</span>
+        {/* 状态只留一个圆点（标题行不再堆文字徽标）；失败等异常仍走下方警示行 */}
+        <span
+          className={`preview-state-dot preview-state-${previewState}`}
+          title={previewErr || (PREVIEW_STATE_LABEL[previewState] || previewState)}
+          aria-label={PREVIEW_STATE_LABEL[previewState] || previewState}
+          role="status"
+        />
         {doc.kind === "html" && !isOfficePreview && (
           <>
             <span className="badge">{watchUrl ? "实时预览" : "静态预览"}</span>
@@ -557,7 +573,6 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext, o
             )}
           </>
         )}
-        {isOfficePreview && <span className="badge">专用预览工具栏</span>}
         {doc.kind === "xlsx" && <span className="badge">可编辑</span>}
         {doc.kind === "htmlfile" && <span className="badge">HTML 页面</span>}
         {doc.kind === "pdf" && <span className="badge">PDF</span>}
@@ -601,6 +616,31 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext, o
         {watchErr && <span className="badge err-badge"><Icon name="warning" size={12} /> {watchErr}</span>}
         {previewErr && <span className="badge err-badge"><Icon name="warning" size={12} /> {previewErr}</span>}
         {watchUrl && <span className="badge ws-hint">可点选元素，配合右侧 agent 修改</span>}
+        {/* 文档信息：预览能力、编辑能力与排版说明收进 ⓘ，标题行不再堆文字徽标 */}
+        <div className="doc-info-wrap" ref={infoWrapRef}>
+          <button
+            type="button"
+            className={`doc-info-btn ${infoOpen ? "active" : ""}`}
+            onClick={() => setInfoOpen((value) => !value)}
+            aria-haspopup="dialog"
+            aria-expanded={infoOpen}
+            aria-label="文档信息"
+            title="文档信息：预览能力与排版说明"
+          >
+            <Icon name="info" size={13} />
+          </button>
+          {infoOpen && (
+            <div className="doc-info-pop" role="dialog" aria-label="文档信息">
+              <div className="doc-info-head">
+                <strong>{capability.label}</strong>
+                <span className={`preview-capability preview-capability-${capability.level}`}>{capability.level}</span>
+              </div>
+              <p>{capability.detail}</p>
+              <p className="doc-info-row">编辑能力：{capability.editable || "无"}</p>
+              <p className="doc-info-row">文件：{doc.name}</p>
+            </div>
+          )}
+        </div>
       </div>
       {commentsOpen && comments.length > 0 && !showComments && (
         <div className="comments-panel">

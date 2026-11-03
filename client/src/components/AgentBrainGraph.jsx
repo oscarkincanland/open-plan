@@ -9,7 +9,7 @@ const TOOL_CATEGORY = {
   write: "写入", edit: "写入", officecli: "写入", map_edit: "写入", map_import: "写入",
   bash: "命令",
   map_analyze: "分析", map_save_analysis: "分析", map_clear_analysis: "分析",
-  ask_user: "协作", todo: "协作", memory_update: "协作", complete_task: "协作",
+  ask_user: "协作", todo: "协作", memory_update: "协作",
 };
 const CATEGORY_ORDER = ["读取", "写入", "命令", "分析", "协作"];
 const CATEGORY_ICON = { 读取: "file", 写入: "edit", 命令: "terminal", 分析: "chart", 协作: "comment" };

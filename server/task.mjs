@@ -1,7 +1,5 @@
 import crypto from "node:crypto";
 import { RUNTIME_FLAGS, officeGateActiveFor } from "./运行开关.mjs";
-// complete_task 是否启用（用户偏好，默认关闭）：提示词必须与工具暴露保持一致。
-import { completeTaskEnabled } from "./运行偏好.mjs";
 import { matchTemplate } from "./office规范/模板匹配.mjs";
 import { selectScene, sceneLabels, defaultScene } from "./office规范/场景选择.mjs";
 
@@ -31,7 +29,7 @@ const OFFICE_TOOLS = Object.freeze([
 // 暴露联网搜索能力；否则审查依据不可追溯，也会产生无关事件。
 const REVIEW_TOOLS = Object.freeze([
   "read", "grep", "find", "ls", "ask_user", "kb_search", "kb_read", "context_read", "skills_search", "skills_read",
-  "officecli", "write", "edit", "review_copy", "review_source_apply", "todo", "complete_task",
+  "officecli", "write", "edit", "review_copy", "review_source_apply", "todo",
 ]);
 const AGENT_TOOLS = Object.freeze([
   ...OFFICE_TOOLS,
@@ -39,7 +37,7 @@ const AGENT_TOOLS = Object.freeze([
   // Work 模式持有全部地图工具（含只读四件套与写工具）。
   "map_read", "map_analyze", "map_clear_analysis", "map_datasets", "map_layer_info",
   "map_edit", "map_import", "map_save_analysis", "map_reset", "map_project_create",
-  "memory_update", "todo", "complete_task",
+  "memory_update", "todo",
   // P2-A：编辑流水线（生成 Word/PPT 初稿的原生流水线，仅 Work 模式）
   "editorial_pipeline",
   // 场景化分析模板（确定性编排，产出图层统计 + Word 报告；由 OAW_MAP_TEMPLATES 控制启用）
@@ -465,9 +463,7 @@ function officeWritingPlaybook() {
     "3) 需要逐章增量写入时，用 write 写一章、紧接 add <file> / --type markdown --prop src=<章节.md>（write→add 成对出现，不要攒批）；",
     "4) 样式：create 新建文档已预置 Normal/Heading1-4/Title/TOC/页眉页脚，直接用，不要用 raw-set 改 styles.xml；",
     "5) 自检：validate <file> 与 view <file> issues；",
-    // complete_task 默认关闭（server/运行偏好.mjs）：关闭时模型看不到这个工具，
-    // 提示词就不能要求它调用——否则会出现"要求调用不存在的工具"。
-    ...(completeTaskEnabled() ? ["6) 收尾：complete_task 报告产物路径与未完成项。"] : []),
+    "6) 收尾：直接给用户最终答复，写清产物路径与未完成项。",
     "禁止：不要用 bash 写生成脚本；不要手写 styles.xml；不要把 JSON 塞进命令行参数。",
     "常用命令速查（覆盖绝大多数文档操作，不要再跑 help / --help 去探索）：",
     "  create <f>.docx            新建文档（已预置样式）；create <f>.docx --force 覆盖已有文件",

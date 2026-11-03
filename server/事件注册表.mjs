@@ -47,7 +47,7 @@ const REGISTRY = [
   { type: "tool_end", lifecycle: true, persist: true, note: "工具调用结束", schema: { required: ["name"], types: { name: "string", isError: "boolean" } } },
   { type: "tool_call_progress", lifecycle: true, persist: false, note: "工具分段进度（高频）" },
   { type: "tool_repeat_warning", lifecycle: true, persist: true, note: "同参数重复调用提醒" },
-  { type: "completion_nudge", lifecycle: true, persist: true, note: "收尾强制完成声明提醒" },
+  { type: "completion_nudge", lifecycle: true, persist: true, legacy: true, note: "历史事件：收尾强制完成声明提醒（显式完成声明已停用，不再发射）" },
   { type: "write_started", lifecycle: true, persist: true, note: "写入开始（含锁）" },
   { type: "write_locked", lifecycle: true, persist: false, note: "写入已加锁（与 write_started 恒成对，不落盘省冗余）" },
   { type: "write_rejected", lifecycle: true, persist: true, note: "写入被拒（含失败码）" },
@@ -124,7 +124,7 @@ const REGISTRY = [
   { type: "review_write_blocked", lifecycle: true, persist: true, note: "Review 原文写回被保护拦截" },
 
   // ---- 完成语义与总结 ----
-  { type: "task_completed", lifecycle: true, persist: true, note: "显式完成声明" },
+  { type: "task_completed", lifecycle: true, persist: true, legacy: true, note: "历史事件：显式完成声明（显式完成声明已停用，仅历史会话回放使用）" },
   { type: "agent_summary", lifecycle: true, persist: true, note: "本轮总结" },
   { type: "assistant_final", lifecycle: true, persist: true, note: "最终回答文本" },
   { type: "agent_end", lifecycle: true, persist: true, note: "Agent 收尾" },

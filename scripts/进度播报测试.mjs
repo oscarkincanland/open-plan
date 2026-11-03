@@ -204,7 +204,7 @@ test("提醒文案包含轮次数与行为要求", () => {
   assert.match(turnNoticeText("turn-progress", 12), /本轮已经进行 12 个模型回合/);
   assert.match(turnNoticeText("turn-progress", 12), /不要在小结里调用工具/);
   assert.match(turnNoticeText("turn-budget", 25), /ask_user/);
-  assert.match(turnNoticeText("turn-budget-hard", 45), /complete_task/);
+  assert.match(turnNoticeText("turn-budget-hard", 45), /最终答复/);
   assert.equal(turnNoticeText("unknown", 1), "");
 });
 

@@ -261,7 +261,8 @@ export function describeRunFold({ interrupted = false, failed = false, risky = f
 }
 
 /**
- * complete_task.summary → { what, conclusion, detail }。
+ * 结论文本 → { what, conclusion, detail }。
+ *  - 来源：Run 完成摘要（source:"inferred"，取模型最终答复）或历史会话的显式声明；
  *  - conclusion：优先取「结论」分节首段；无标题结构时取全文首段；
  *  - what：取「做了什么/完成工作/工作内容」分节（R-C 落地前可能缺失，缺失即空串不渲染）；
  *  - detail：完整 Markdown（结论分节已并入 conclusion 时从 detail 中移除，避免重复）。

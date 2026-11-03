@@ -39,12 +39,9 @@ try {
   assert.match(chatPanelSource, /\}, \[messages\]\);/, "自动滚动只应由消息内容变化触发");
   assert.match(chatPanelSource, /className="chat-scroll-latest"/, "用户离开底部后应提供回到底部按钮");
   assert.match(chatPanelSource, /function appendExecutionFlowEvent\(/, "执行流应合并重复的文件/总结事件");
-  assert.match(chatPanelSource, /className="chat-topbar"/);
+  assert.doesNotMatch(chatPanelSource, /className="chat-topbar"/, "输入栏收敛后消息流上方不再有独立横带");
   assert.match(chatPanelSource, /const showExecutionFlow = busy &&/, "SSE 执行流只在当前运行期间呈现");
-  const topbarStart = chatPanelSource.indexOf('<div className="chat-topbar">');
-  const chatBodyStart = chatPanelSource.indexOf('<div className="chat-body"', topbarStart);
-  const topbarSource = chatPanelSource.slice(topbarStart, chatBodyStart);
-  assert.doesNotMatch(topbarSource, /<ExecutionFlow/, "执行流不能再挂在对话顶部栏");
+  const chatBodyStart = chatPanelSource.indexOf('<div className="chat-body"');
   assert.ok(chatBodyStart >= 0 && chatPanelSource.indexOf("<ExecutionFlow", chatBodyStart) > chatBodyStart, "实时执行流应作为当前消息流的一部分呈现");
   assert.doesNotMatch(chatPanelSource, /className="task-status-bar"/, "顶部不再重复展示复杂状态栏");
   assert.doesNotMatch(stylesSource, /\.chat-body > \.execution-flow \{\s*position: sticky/, "消息内执行流不能吸顶遮挡消息");
@@ -85,7 +82,7 @@ try {
   assert.match(runSummarySource, /useEffect\(\(\) => setSummaryOpen\(runIsLive \|\| hasSummaryText\), \[runIsLive, hasSummaryText\]\)/, "运行中/有总结时展开，过程仍单独折叠");
   assert.match(runSummarySource, /!embedded && \(trace\?\.tools\?\.length > 0/, "嵌入式结果卡不重复渲染工具明细");
   assert.match(runSummarySource, /run-trace-step-heading/, "独立结果摘要仍保留有序工具时间线");
-  assert.match(runSummarySource, /const summaryText = String\(completion\?\.summary/, "总结优先取 complete_task.summary");
+  assert.match(runSummarySource, /const summaryText = String\(completion\?\.summary/, "总结优先取完成摘要（推断来源即模型终稿）");
   assert.match(runSummarySource, /const fallbackSummary = summaryText \|\|/, "总结不再因存在最终答复而隐藏");
   assert.match(chatPanelSource, /foldedProcessBlocks/, "思考、工具及运行中的进度播报应并入消息级过程卡");
   assert.match(chatPanelSource, /message-process-scroll/, "过程内容应在一个有界滚动容器中回看");

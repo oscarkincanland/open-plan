@@ -96,13 +96,10 @@ export async function waitForFlush(before, workspace = getWorkspace()) {
   return diffWorkspace(before, lastSnapshot);
 }
 
-// 完成语义：显式 complete_task 优先；否则按 Run 终态推断（source:"inferred"），
-// 前端据此区分“回答结束”与“任务真正完成”。
-export function resolveRunCompletion(entry, runStatus, { artifacts = 0, validations = [], runId = null } = {}) {
-  const pending = entry?.pendingCompletion && typeof entry.pendingCompletion === "object" ? entry.pendingCompletion : null;
-  // 完成声明必须属于当前 Run：同一会话上一轮的声明不能串到本轮（否则会误报 success）。
-  const explicit = pending && (!runId || !pending.runId || pending.runId === runId) ? pending : null;
-  return explicit || inferCompletion({ runStatus, artifacts, validations });
+// 完成语义：一律按 Run 终态推断（source:"inferred"），结论文本取模型最终答复。
+// 显式完成声明工具（complete_task）已于 2026-11-03 移除，这里不再有"显式优先"分支。
+export function resolveRunCompletion(entry, runStatus, { artifacts = 0, validations = [], runId = null, finalText = "" } = {}) {
+  return inferCompletion({ runStatus, artifacts, validations, finalText: finalText || entry?.lastFinalText || "" });
 }
 
 export function getRunFinalText(run) {
@@ -458,7 +455,7 @@ export function 创建执行句柄(初始依赖 = {}) {
           verificationStatus: "not_checked",
         }
         : null;
-      const failureCompletion = truncationCompletion || resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations], runId: run.id });
+      const failureCompletion = truncationCompletion || resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations], runId: run.id, finalText: entry?.lastFinalText || "" });
       const failed = deps.runs.finishRun(run.id, {
         status: cancelled ? "cancelled" : (truncatedRecoverable ? "completed" : "failed"),
         sessionId: entry?.session?.sessionId || null,
@@ -492,7 +489,7 @@ export function 创建执行句柄(初始依赖 = {}) {
     const finalStatus = cancelled ? "cancelled" : "completed";
     const publishPaths = publishableStagedValidations.map((item) => item.path).filter(Boolean);
     const publishedCount = changed.length + publishableStagedValidations.length;
-    const completed = run ? deps.runs.finishRun(run.id, { status: finalStatus, sessionId: entry?.session?.sessionId || null, summary: cancelled ? "任务已取消" : (publishedCount ? `本轮对话完成，共处理 ${publishedCount} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更"), validations: allValidations, publishPaths: run ? publishPaths : null, completion: resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }) }) : null;
+    const completed = run ? deps.runs.finishRun(run.id, { status: finalStatus, sessionId: entry?.session?.sessionId || null, summary: cancelled ? "任务已取消" : (publishedCount ? `本轮对话完成，共处理 ${publishedCount} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更"), validations: allValidations, publishPaths: run ? publishPaths : null, completion: resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations, finalText: entry?.lastFinalText || "" }) }) : null;
     if (entry) {
       const productPaths = [...changed, ...publishableStagedValidations.map((item) => item.path).filter(Boolean)];
       if (productPaths.length) deps.emit(entry, "file_changed", { files: productPaths, runId: run?.id || null });
@@ -507,7 +504,7 @@ export function 创建执行句柄(初始依赖 = {}) {
         references: resolved,
         status: completed?.status || finalStatus,
       });
-      if (run) deps.emit(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked", completion: completed?.completion || resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }), finalText: getRunFinalText(deps.runs.getRun(run.id)), model: deps.runs.getRun(run.id)?.model || null, finalMessageId: deps.runs.getRun(run.id)?.finalMessageId || null });
+      if (run) deps.emit(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked", completion: completed?.completion || resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations, finalText: entry?.lastFinalText || "" }), finalText: getRunFinalText(deps.runs.getRun(run.id)), model: deps.runs.getRun(run.id)?.model || null, finalMessageId: deps.runs.getRun(run.id)?.finalMessageId || null });
     }
     if (run) {
       void 记忆抽取({

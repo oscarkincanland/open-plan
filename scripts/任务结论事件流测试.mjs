@@ -16,7 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { flowEventTone, runConclusion, toolIdentity } from "../client/src/事件展示.js";
-import { applyObjectiveDowngrade } from "../server/运行轨迹.mjs";
+import { applyObjectiveDowngrade, inferCompletion, summarizeFinalText } from "../server/运行轨迹.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -115,7 +115,7 @@ test("内置工具清单全部映射到确定图标（无遗漏、无异常）",
     kb_search: "book", kb_read: "book", skills_search: "book", skills_read: "book", memory_update: "book",
     map_read: "map", map_datasets: "map", map_edit: "map", map_import: "map", map_analyze: "map", map_template: "map", map_save_analysis: "map", map_clear_analysis: "map",
     map_layer_info: "map", map_reset: "map", map_project_create: "map",
-    review_copy: "shield", ask_user: "comment", todo: "list", complete_task: "check", run_subagent: "flow",
+    review_copy: "shield", ask_user: "comment", todo: "list", run_subagent: "flow",
     // P2-A：编辑流水线与子代理同属编排类
     editorial_pipeline: "flow",
   };
@@ -255,11 +255,11 @@ test("新 Run 开始即清空终稿缓存（跨 Run 隔离）", () => {
   assert.match(agent源, /entry\.lastFinalText = "";/);
   assert.match(agent源, /entry\.suppressFinalText = false;/);
 });
-test("提醒回合不得生成第二份用户终稿", () => {
-  assert.match(agent源, /const previousSuppressFinalText = entry\.suppressFinalText/);
-  assert.match(agent源, /entry\.suppressFinalText = true/);
-  assert.match(agent源, /entry\.suppressFinalText = previousSuppressFinalText/);
-  assert.match(agent源, /if \(entry\.lastAssistantText && !entry\.suppressFinalText\)/);
+test("不再有提醒回合，终稿只有主回合一份", () => {
+  // 显式完成声明与「补一句收尾」的提醒回合都已移除：只有主回合产生终稿。
+  assert.doesNotMatch(agent源, /suppressFinalText = previousSuppressFinalText/, "不应再有补充提醒回合");
+  assert.doesNotMatch(agent源, /completion_nudge/, "不应再发 completion_nudge");
+  assert.match(agent源, /if \(entry\.lastAssistantText && !entry\.suppressFinalText\)/, "终稿仍只取主回合文本");
 });
 test("终稿有唯一写入点，recordRunEvent 的 assistant_final 走幂等路径", () => {
   assert.match(runs源, /export function recordRunFinalText/);
@@ -277,14 +277,34 @@ test("run_finished 携带 finalText 与 finalMessageId", () => {
 test("结论详细度：提示词允许结构化成果摘要，Run 摘要优先用结论", () => {
   // 生成端：不再强制「1-3 句、禁止 Markdown」，有成果时允许结构化 Markdown
   assert.match(agent源, /当本轮产生了文件、报告、数据、代码改动等成果时，用简洁但完整的 Markdown 把成果讲清楚/);
-  // complete_task 取消软上限（D1：本次只改工具层，不改最终答复策略）
-  assert.doesNotMatch(agent源, /建议 ≤800 字/, "complete_task 不再限定 800 字");
-  assert.doesNotMatch(agent源, /纯问答一句话即可/, "complete_task 不再要求一句话");
-  assert.match(agent源, /不设字数上限（服务端上限 4000 字符）/);
-  assert.match(agent源, /同一事实只写一次/);
-  assert.match(agent源, /不复述工具流水/);
   // 落盘端：Run 摘要优先采用结论，历史列表/结果卡标题才能显示真实结论
   assert.match(runs源, /if \(run\.completion\?\.summary\) run\.summary = String\(run\.completion\.summary\)\.slice\(0, 4000\)/);
+});
+test("显式完成声明已移除：结论回到模型终稿（原生收尾）", () => {
+  // 工具层：complete_task 不再是工具、不再进白名单、不再有元数据
+  assert.doesNotMatch(agent源, /complete_task/, "agent.mjs 不应再出现 complete_task");
+  assert.doesNotMatch(read("server/task.mjs"), /complete_task/, "task.mjs 白名单不应再含 complete_task");
+  assert.doesNotMatch(read("server/工具元数据.mjs"), /complete_task/, "工具元数据不应再含 complete_task");
+  assert.ok(!allModeToolNames().includes("complete_task"), "complete_task 不应出现在可激活工具清单");
+  // 提示词：不再要求模型调用收尾工具，改为"直接给最终答复"
+  assert.match(agent源, /收尾（原生终稿）/);
+  assert.match(agent源, /直接给用户最终答复/);
+  // 收尾回合：不再追加"补一句完成声明"的模型回合
+  assert.doesNotMatch(agent源, /completion_nudge/);
+  // 完成语义：一律按终态推断，结论取模型最终答复
+  assert.match(执行句柄源, /export function resolveRunCompletion\(entry, runStatus, \{ artifacts = 0, validations = \[\], runId = null, finalText = "" \} = \{\}\)/);
+  assert.match(执行句柄源, /inferCompletion\(\{ runStatus, artifacts, validations, finalText:/);
+  assert.doesNotMatch(执行句柄源, /pendingCompletion/, "不再有显式声明优先分支");
+});
+test("推断摘要优先取模型终稿（会话列表不退化成通用文案）", () => {
+  const completion = inferCompletion({ runStatus: "completed", artifacts: 2, finalText: "# 结论\n已完成 **两处** 修改\n- 甲\n- 乙" });
+  assert.equal(completion.source, "inferred");
+  assert.match(completion.summary, /已完成 两处 修改/, "摘要应来自模型终稿而不是通用文案");
+  assert.doesNotMatch(completion.summary, /未检测到文件变更/);
+  assert.equal(summarizeFinalText(""), "");
+  assert.ok(summarizeFinalText("x".repeat(600)).length <= 401, "超长终稿要截断到 400 字 + 省略号");
+  // 没有终稿时回退到通用文案
+  assert.match(inferCompletion({ runStatus: "completed", artifacts: 2 }).summary, /任务结束，产生 2 项文件变更/);
 });
 test("执行句柄读取权威终稿优先走 Run 根级投影", () => {
   assert.match(执行句柄源, /if \(run && String\(run\.finalText \|\| ""\)\.trim\(\)\) return String\(run\.finalText\);/);

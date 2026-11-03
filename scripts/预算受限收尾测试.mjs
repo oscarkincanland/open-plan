@@ -80,14 +80,14 @@ await test("变更类工具被拦（write / edit / bash / officecli / editorial_
     const gate = evaluateRestrictedTool(state, { toolName: tool, mutating: true });
     assert.equal(gate.allow, false, `${tool} 应被拦`);
     assert.equal(gate.code, "TOOL_RESTRICTED");
-    assert.ok(gate.reason.includes("complete_task"), "拒绝原因应指向 complete_task");
+    assert.ok(gate.reason.includes("收尾"), "拒绝原因应指向收尾（直接给最终答复）");
   }
 });
 
 await test("只读与收尾交互工具放行", () => {
   const state = createRunBudget({ runId: "r6" });
   enterRestrictedMode(state);
-  for (const tool of ["read", "ls", "find", "grep", "todo", "ask_user", "complete_task"]) {
+  for (const tool of ["read", "ls", "find", "grep", "todo", "ask_user"]) {
     const gate = evaluateRestrictedTool(state, { toolName: tool, mutating: false });
     assert.equal(gate.allow, true, `${tool} 应放行`);
     assert.equal(gate.code, null);

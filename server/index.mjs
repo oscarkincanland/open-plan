@@ -40,7 +40,6 @@ import { normalizeOfficeFailure, normalizeWorkspaceWriteError, workspaceWriteHtt
 import { PREVIEW_PREVIEW_MAX_BYTES, codeLanguageFor, isCodeExt, isTextExt, readTextPreview } from "./预览类型.mjs";
 import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, CHANNEL_HISTORY_LIMIT } from "./事件协议.mjs";
 import * as searchModule from "./联网搜索.mjs";
-import * as runtimePreferences from "./运行偏好.mjs";
 import { clientBuildId } from "./客户端构建.mjs";
 import { nativeCapabilities, openWithDefaultApp, pickFiles, pickFolder, revealInFileManager, cancelActivePicker, activePickerInfo } from "./原生文件.mjs";
 import { DIFF_LIMITS, diffFileContents } from "./文件差异.mjs";
@@ -2297,24 +2296,6 @@ app.get("/api/agent/config-status", (req, res) => {
     res.json(status);
   } catch (error) {
     res.status(500).json({ error: error.message, code: "CONFIG_STATUS_FAILED" });
-  }
-});
-
-// ---------- 运行偏好（设置面板可切换的产品行为，下一轮任务生效） ----------
-app.get("/api/runtime-preferences", (_req, res) => {
-  try {
-    res.json({ ok: true, preferences: runtimePreferences.publicRuntimePreferences() });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
-  }
-});
-
-app.patch("/api/runtime-preferences", (req, res) => {
-  try {
-    const saved = runtimePreferences.saveRuntimePreferences(req.body || {});
-    res.json({ ok: true, preferences: { ...saved, completeTaskAvailable: true, source: "user" } });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
   }
 });
 

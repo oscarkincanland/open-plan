@@ -137,7 +137,7 @@ export function enterRestrictedMode(state) {
 const RESTRICTED_ALLOWED_TOOLS = new Set([
   "read", "grep", "find", "ls", "glob", "kb_read", "kb_search", "context_read",
   "officecli", // 只读子命令在 agent.mjs 侧另行判定
-  "todo", "ask_user", "complete_task", "memory_update",
+  "todo", "ask_user", "memory_update",
 ]);
 
 /**
@@ -160,7 +160,7 @@ export function evaluateRestrictedTool(state, { toolName = "", mutating = false 
     allow: false,
     code: "TOOL_RESTRICTED",
     reason: `本轮已达硬预算，处于受限收尾模式：不再允许「${name}」这类改文件的操作。`
-      + "请立即用 complete_task 汇报当前结果与未完成项（需要用户决策时用 ask_user），不要继续改文件。",
+      + "请立即收尾：直接给用户最终答复，写清当前结果与未完成项（需要用户决策时用 ask_user），不要继续改文件。",
   };
 }
 

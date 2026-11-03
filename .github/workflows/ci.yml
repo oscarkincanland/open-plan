@@ -144,8 +144,8 @@ jobs:
       - name: 事件发射点（注册表里的事件必须有真实发射点）
         run: node scripts/CI运行测试.mjs 事件发射点守护测试
 
-      - name: complete_task 运行偏好（默认关闭 / 设置可开 / 提示词与工具暴露一致）
-        run: node scripts/CI运行测试.mjs 完成偏好测试
+      - name: 输入栏与工作区面板收敛（上下文/审批并入输入栏；工作区入口为面板）
+        run: node scripts/CI运行测试.mjs 工作区面板与输入栏收敛测试
 
       - name: 产物文件类型图标（docx 等按类型出图，不回退通用图标）
         run: node scripts/CI运行测试.mjs 产物图标测试

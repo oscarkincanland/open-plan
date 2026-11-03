@@ -236,13 +236,6 @@ add([
     riskLevel: "low",
     resultBudget: budget(8 * KB, "head", "truncate"),
   }),
-  meta("complete_task", {
-    readOnly: false,
-    destructive: false,
-    sideEffectScope: "session",
-    riskLevel: "low",
-    resultBudget: budget(8 * KB, "head", "truncate"),
-  }),
   meta("memory_update", {
     readOnly: false,
     destructive: false,

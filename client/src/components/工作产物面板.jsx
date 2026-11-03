@@ -39,7 +39,7 @@ function ArtifactSummaryCard({ run }) {
         <span className={`artifact-run-status ${status || "unknown"}`}>{COMPLETION_LABELS[status] || statusText[run.status] || "进行中"}</span>
         {run.verificationStatus && <small>验证：{run.verificationStatus}</small>}
       </div>
-      <p className="artifact-run-summary-text">{summary || "本轮尚未记录完成结论；任务结束后会在这里显示 complete_task 的结论。"}</p>
+      <p className="artifact-run-summary-text">{summary || "本轮尚未记录完成结论；任务结束后会在这里显示 Agent 的最终答复。"}</p>
       {incomplete.length > 0 && <div className="artifact-run-summary-list"><strong>未完成项</strong>{incomplete.map((item) => <span key={item}>{item}</span>)}</div>}
       {blockers.length > 0 && <div className="artifact-run-summary-list warn"><strong>阻塞</strong>{blockers.map((item) => <span key={item}>{item}</span>)}</div>}
     </div>

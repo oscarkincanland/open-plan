@@ -42,14 +42,18 @@ const sources = collectSources(path.join(ROOT, "server"));
 const corpus = sources.map((file) => fs.readFileSync(file, "utf8")).join("\n");
 const registrySrc = fs.readFileSync(REGISTRY, "utf8");
 
-/** 从注册表解析出全部已登记的事件类型。 */
+/** 从注册表解析出全部已登记的事件类型（legacy 条目单列：已停用、只服务历史回放）。 */
 function registeredTypes() {
   const types = new Set();
-  for (const m of registrySrc.matchAll(/\{\s*type:\s*"([^"]+)"/g)) types.add(m[1]);
-  return [...types];
+  const legacy = new Set();
+  for (const m of registrySrc.matchAll(/\{\s*type:\s*"([^"]+)"([^}]*)\}/g)) {
+    types.add(m[1]);
+    if (/legacy\s*:\s*true/.test(m[2] || "")) legacy.add(m[1]);
+  }
+  return { types: [...types], legacy };
 }
 
-const registered = registeredTypes();
+const { types: registered, legacy: legacyTypes } = registeredTypes();
 
 test("注册表能解析出事件类型", () => {
   assert.ok(registered.length > 50, `事件类型应超过 50 种，实际 ${registered.length}`);
@@ -58,6 +62,8 @@ test("注册表能解析出事件类型", () => {
 test("每个已登记事件在 server/ 下都有真实发射点", () => {
   const missing = [];
   for (const type of registered) {
+    // legacy（已停用、只服务历史回放）的事件不再要求有发射点。
+    if (legacyTypes.has(type)) continue;
     const escaped = type.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     // 发射形态多样：emit?.("x") / emitChannel(entry, "x") / emitWriteEvent(cb, "x", …)
     // / onEvent?.("x") / appendEvent({ type: "x" }) / 常量表集中声明。

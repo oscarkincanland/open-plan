@@ -346,6 +346,12 @@ function fileBasename(value) {
   return parts.length ? parts[parts.length - 1] : "";
 }
 
+// 路径末段：工作区面板只显示目录名，完整路径放 title。
+function pathBaseName(value) {
+  const text = String(value || "").replace(/[\\/]+$/, "");
+  return text.split(/[\\/]/).pop() || text;
+}
+
 const GLOBAL_EVENT_NOTICES = new Set(["run_finished", "run_recovered", "run_cancel_requested", "agent_error", "ask_user"]);
 // 启动加载分区文案：失败提示与重试按钮按分区说明，避免只报一句笼统错误。
 const LOAD_SCOPE_LABELS = { files: "文件列表", sessions: "会话列表", projects: "项目列表", workspaces: "工作区列表" };
@@ -2374,66 +2380,131 @@ export default function App() {
               </button>
             </提示气泡>
             <div className="topbar-tools" ref={topbarToolsRef}>
-              <提示气泡 label="工作区工具">
+              <提示气泡 label="工作区">
                 <button
                   ref={previewToggleRef}
                   className={`btn-sm topbar-tools-toggle ${topbarMenuOpen ? "active" : ""}`}
                   onClick={() => setTopbarMenuOpen((v) => !v)}
-                  aria-label="工作区工具"
+                  aria-label="工作区"
                   aria-expanded={topbarMenuOpen}
-                  aria-haspopup="menu"
+                  aria-haspopup="dialog"
+                  title="工作区：文件、产物、改动、浏览器与任务中心"
                 >
-                  <Icon name="more" size={14} />
+                  <Icon name="columns" size={14} />
                   {(Object.values(unreadByThread).reduce((sum, count) => sum + Number(count || 0), 0) > 0 || artifactNotice) && <i className="topbar-tools-dot" aria-hidden="true" />}
                 </button>
               </提示气泡>
+              {/* 工作区面板（2026-11-03）：把原来的下拉菜单换成卡片面板。
+                  每个卡片仍调用原来的打开逻辑，不新增页面、不改页面内部。 */}
               {topbarMenuOpen && (
-                <div className="topbar-tools-menu" role="menu" aria-label="工作区工具菜单">
-                  {artifactNotice && (
+                <div className="topbar-tools-panel" role="dialog" aria-label="工作区">
+                  <div className="topbar-tools-panel-head">
+                    <span className="topbar-tools-panel-title"><Icon name="folder" size={13} /> 工作区</span>
+                    <span className="topbar-tools-panel-sub" title={currentWorkspace || ""}>
+                      {currentWorkspace ? pathBaseName(currentWorkspace) : "未选择工作区"}
+                    </span>
+                  </div>
+                  <div className="topbar-tools-cards">
                     <button
-                      role="menuitem"
-                      onClick={() => {
-                        const target = artifactNotice;
-                        setTopbarMenuOpen(false);
-                        setArtifactNotice(null);
-                        void open(target.path, threadId, currentWorkspace);
-                      }}
-                      title={`打开本轮新产物：${artifactNotice.path}`}
+                      type="button"
+                      className={`topbar-tools-card ${canvasSideVisible ? "on" : ""}`}
+                      onClick={() => { setTopbarMenuOpen(false); if (!canvasOpen) openCanvasView("artifacts"); setCanvasSideOpen(true); }}
+                      title="浏览会话工作区的文件"
                     >
-                      <Icon name="file" size={14} /><span>本轮新产物：{artifactNotice.name}</span>
+                      <Icon name="folder" size={15} />
+                      <span><strong>工作区文件</strong><small>浏览会话工作区的文件</small></span>
                     </button>
-                  )}
-                  <button role="menuitem" onClick={() => { setTopbarMenuOpen(false); handleNewSession(undefined, { agentId: currentSession?.agentId || "" }); }} disabled={creatingSession} title={currentSession?.agentId ? "新建对话（沿用当前会话的智能体）" : "新建对话"}>
-                    <Icon name="chatPlus" size={14} /><span>新建对话</span>
-                  </button>
-                  <button role="menuitemcheckbox" aria-checked={canvasOpen} className={canvasOpen ? "on" : ""} onClick={() => { if (canvasOpen) collapseCanvas(); else if (canvasTabs.length) setCanvasCollapsed(false); else openCanvasView("artifacts"); }} title={canvasOpen ? "收起工作区画布（保留标签）" : "打开工作区画布"}>
-                    <Icon name="columns" size={14} /><span>工作区画布</span>
-                  </button>
-                  <button role="menuitem" onClick={() => openCanvasView("artifacts")} title="打开工作产物：任务摘要 / 产物 / 链接">
-                    <Icon name="package" size={14} /><span>工作产物</span>
-                  </button>
-                  <button role="menuitem" onClick={() => openCanvasView("changes")} title="打开改动：本轮文件变化">
-                    <Icon name="history" size={14} /><span>改动</span>
-                  </button>
-                  <button role="menuitemcheckbox" aria-checked={browserOpen} className={browserOpen ? "on" : ""} onClick={() => { if (browserOpen) closeBrowserPanel(); else { browserAutoOpenBlockedRef.current = false; setBrowserActivityPing(0); openCanvasView("browser"); } }} title={browserOpen ? "关闭内置浏览器标签" : "打开内置浏览器标签"}>
-                    <Icon name="globe" size={14} /><span>内置浏览器</span>{browserActivityPing > 0 && !browserOpen && <i className="browser-activity-dot" aria-hidden="true" />}
-                  </button>
-                  <button role="menuitemcheckbox" aria-checked={canvasSideVisible} className={canvasSideVisible ? "on" : ""} onClick={() => { if (!canvasOpen || !sideDrawerAllowed(activeCanvasTab?.kind)) { openCanvasView("artifacts"); setCanvasSideOpen(true); return; } setCanvasSideOpen((value) => !value); }} title="展开/收起文件树抽屉">
-                    <Icon name="folder" size={14} /><span>文件树</span>
-                  </button>
-                  {flag("qoderObjectBar") && (
-                    <button role="menuitemcheckbox" aria-checked={objectsOpen} className={objectsOpen ? "on" : ""} onClick={() => { if (objectsOpen) closeObjects(); else openCanvasView("objects"); }} title={objectsOpen ? "关闭对象栏标签" : "打开对象栏：本轮产出 / 来源 / 技能 / 记忆汇总"}>
-                      <Icon name="layers" size={14} /><span>对象栏</span>
+                    <button
+                      type="button"
+                      className="topbar-tools-card"
+                      onClick={() => { setTopbarMenuOpen(false); setArtifactSegment("artifacts"); openCanvasView("artifacts"); }}
+                      title="打开工作产物：任务摘要 / 产物 / 链接"
+                    >
+                      <Icon name="package" size={15} />
+                      <span><strong>工作产物</strong><small>任务摘要、产物与链接</small></span>
                     </button>
-                  )}
-                  {flag("domainWorkflows") && (
-                    <button role="menuitemcheckbox" aria-checked={workflowsOpen} className={workflowsOpen ? "on" : ""} onClick={() => { if (workflowsOpen) closeWorkflows(); else openCanvasView("workflows"); }} title={workflowsOpen ? "关闭领域工作流标签" : "打开领域工作流：阶段 / 工具白名单 / 预算 / 产物契约与预检试算"}>
-                      <Icon name="flow" size={14} /><span>领域工作流</span>
+                    <button
+                      type="button"
+                      className="topbar-tools-card"
+                      onClick={() => { setTopbarMenuOpen(false); openCanvasView("changes"); }}
+                      title="打开改动：本轮文件变化"
+                    >
+                      <Icon name="history" size={15} />
+                      <span><strong>本轮改动</strong><small>本轮文件变化</small></span>
                     </button>
+                    <button
+                      type="button"
+                      className={`topbar-tools-card ${browserOpen ? "on" : ""}`}
+                      onClick={() => {
+                        setTopbarMenuOpen(false);
+                        if (browserOpen) { closeBrowserPanel(); return; }
+                        browserAutoOpenBlockedRef.current = false;
+                        setBrowserActivityPing(0);
+                        openCanvasView("browser");
+                      }}
+                      title={browserOpen ? "关闭内置浏览器标签" : "打开内置浏览器标签"}
+                    >
+                      <Icon name="globe" size={15} />
+                      <span><strong>内置浏览器</strong><small>{browserOpen ? "点击关闭浏览器标签" : "浏览网页"}</small></span>
+                      {browserActivityPing > 0 && !browserOpen && <i className="browser-activity-dot" aria-hidden="true" />}
+                    </button>
+                    <button
+                      type="button"
+                      className="topbar-tools-card"
+                      onClick={() => { setTopbarMenuOpen(false); taskCenterRef.current?.open(); }}
+                      title="任务中心：并行任务、运行状态与历史会话"
+                    >
+                      <Icon name="list" size={15} />
+                      <span><strong>任务中心</strong><small>并行任务与运行状态</small></span>
+                    </button>
+                  </div>
+                  {(artifactNotice || flag("qoderObjectBar") || flag("domainWorkflows")) && (
+                    <div className="topbar-tools-more">
+                      <span className="topbar-tools-more-label">更多工具</span>
+                      {artifactNotice && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const target = artifactNotice;
+                            setTopbarMenuOpen(false);
+                            setArtifactNotice(null);
+                            void open(target.path, threadId, currentWorkspace);
+                          }}
+                          title={`打开本轮新产物：${artifactNotice.path}`}
+                        >
+                          <Icon name="file" size={13} /><span>本轮新产物：{artifactNotice.name}</span>
+                        </button>
+                      )}
+                      {flag("qoderObjectBar") && (
+                        <button
+                          type="button"
+                          onClick={() => { setTopbarMenuOpen(false); if (objectsOpen) closeObjects(); else openCanvasView("objects"); }}
+                          title={objectsOpen ? "关闭对象栏标签" : "打开对象栏：本轮产出 / 来源 / 技能 / 记忆汇总"}
+                        >
+                          <Icon name="layers" size={13} /><span>对象栏</span>
+                        </button>
+                      )}
+                      {flag("domainWorkflows") && (
+                        <button
+                          type="button"
+                          onClick={() => { setTopbarMenuOpen(false); if (workflowsOpen) closeWorkflows(); else openCanvasView("workflows"); }}
+                          title={workflowsOpen ? "关闭领域工作流标签" : "打开领域工作流：阶段 / 工具白名单 / 预算 / 产物契约与预检试算"}
+                        >
+                          <Icon name="flow" size={13} /><span>领域工作流</span>
+                        </button>
+                      )}
+                    </div>
                   )}
-                  <button role="menuitem" onClick={() => { setTopbarMenuOpen(false); taskCenterRef.current?.open(); }} title="任务中心：并行任务、运行状态与历史会话">
-                    <Icon name="list" size={14} /><span>任务中心</span>
-                  </button>
+                  <div className="topbar-tools-foot">
+                    <button
+                      type="button"
+                      onClick={() => { setTopbarMenuOpen(false); handleNewSession(undefined, { agentId: currentSession?.agentId || "" }); }}
+                      disabled={creatingSession}
+                      title={currentSession?.agentId ? "新建对话（沿用当前会话的智能体）" : "新建对话"}
+                    >
+                      <Icon name="chatPlus" size={14} /><span>新建对话</span>
+                    </button>
+                  </div>
                 </div>
               )}
               <TaskCenter

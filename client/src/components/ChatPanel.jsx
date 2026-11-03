@@ -913,7 +913,25 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [busyInputMode, setBusyInputMode] = useState("queue"); // "queue" | "context"
   const [composerMenu, setComposerMenu] = useState(null);
   const [composerIndex, setComposerIndex] = useState(0);
+  // 输入栏「+」聚合菜单：图片 / 文件 / 当前地图视图（2026-11-03 输入栏收敛）
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const addMenuRef = useRef(null);
   const [mcpServers, setMcpServers] = useState([]); // `#` 提及：插件候选（按需拉取）
+
+  // 「+」菜单：点击外部或按 Esc 关闭
+  useEffect(() => {
+    if (!addMenuOpen) return undefined;
+    const onPointerDown = (event) => {
+      if (!addMenuRef.current?.contains(event.target)) setAddMenuOpen(false);
+    };
+    const onKeyDown = (event) => { if (event.key === "Escape") setAddMenuOpen(false); };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [addMenuOpen]);
 
   useEffect(() => { onModeChange?.(normalizeUiMode(editMode)); }, [editMode, onModeChange]);
   useEffect(() => { onPhaseChange?.(busy ? (agentPhase || "正在处理") : ""); }, [agentPhase, busy, onPhaseChange]);
@@ -4386,25 +4404,6 @@ case "runtime_connecting":
         )}
 
         <div className="chat-stream-shell">
-          <div className="chat-topbar">
-            <div className="chat-top-controls" aria-label="会话控制">
-              <ContextUsageRing
-                usage={runState.usage}
-                contextWindow={selectedContextWindow}
-                contextTokens={selectedUsage.context}
-                compactThreshold={selectedCompactThreshold}
-                compactionMode={selectedCompactionMode}
-                compactionReserveTokens={selectedCompactionReserve}
-                compactionKeepRecentTokens={selectedCompactionKeepRecent}
-                compaction={runState.compaction || null}
-                model={selectedModelInfo}
-                compacting={compacting}
-                busy={busy}
-                onCompact={compactContext}
-              />
-              <ApprovalModeControl mode={approvalMode} saving={approvalModeSaving} onChange={changeApprovalMode} />
-            </div>
-          </div>
           <div className="chat-body" ref={bodyRef} onScroll={updateScrollFollowState} aria-busy={historyHydrating || undefined}>
           {/* 切换历史会话且缓存未命中：渲染骨架屏，替代此前的空白等待。
               只在还没有任何消息时出现，避免覆盖正在进行的对话。 */}
@@ -4783,33 +4782,74 @@ case "runtime_connecting":
               )}
             </div>
           </div>
-          {/* 工具栏按“上下文 / Agent 设置 / 会话”分组；Chat / Work 已移到顶栏 */}
+          {/* 输入栏工具条：左侧「添加 + 权限」，右侧「上下文 · 模型 · 新会话」。
+              上下文用量与压缩都收进上下文 chip，不再在消息流上方单独占一条横带。 */}
           <div className="chat-toolbar">
             <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
             <input ref={attInputRef} type="file" accept=".docx,.xlsx,.pptx,.md,.markdown,.txt,.pdf,.html,.htm,.csv,.json,.mp4,.webm,.mov,.mp3,.wav,.m4a" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
-            <div className="chat-toolbar-group toolbar-context-group" title="上下文工具">
-              <span className="chat-toolbar-label">上下文</span>
-              <提示气泡 label="上传图片">
-                <button className="ct-btn" aria-label="上传图片" onClick={() => fileInputRef.current?.click()}>
-                  <Icon name="image" size={14} />
-                </button>
-              </提示气泡>
-              <提示气泡 label="上传附件">
-                <button className="ct-btn" aria-label="上传附件（docx/xlsx/pdf/md/txt 等）" onClick={() => attInputRef.current?.click()}>
-                  <Icon name="link" size={14} />
-                </button>
-              </提示气泡>
-              {mapContext?.center && <提示气泡 label="加入地图上下文">
-                <button className="ct-btn" aria-label="将当前地图视图加入下一轮上下文" onClick={injectMapContext}>
-                  <Icon name="locate" size={14} />
-                </button>
-              </提示气泡>}
-              <button className={`ct-btn ct-context-btn ${compacting ? "active" : ""}`} title={busy ? "当前任务完成后才能压缩上下文" : "压缩当前 Pi 会话上下文，保留任务摘要"} onClick={compactContext} disabled={busy || compacting}>
-                <Icon name={compacting ? "loading" : "layers"} size={14} />
-                <span>压缩</span>
+            {/* 左：添加（图片 / 文件 / 当前地图视图） */}
+            <div className="composer-add-wrap" ref={addMenuRef}>
+              <button
+                type="button"
+                className={`ct-btn composer-add-btn ${addMenuOpen ? "active" : ""}`}
+                aria-label="添加内容"
+                aria-haspopup="menu"
+                aria-expanded={addMenuOpen}
+                title="添加图片、文件或当前地图视图"
+                onClick={() => setAddMenuOpen((value) => !value)}
+              >
+                <Icon name="plus" size={14} />
               </button>
+              {addMenuOpen && (
+                <div className="composer-add-menu" role="menu" aria-label="添加内容">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { setAddMenuOpen(false); fileInputRef.current?.click(); }}
+                    title="上传图片（最多 8 张，自动压缩）"
+                  >
+                    <Icon name="image" size={13} /><span>图片</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { setAddMenuOpen(false); attInputRef.current?.click(); }}
+                    title="上传附件（docx/xlsx/pdf/md/txt 等）"
+                  >
+                    <Icon name="link" size={13} /><span>文件</span>
+                  </button>
+                  {mapContext?.center && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => { setAddMenuOpen(false); injectMapContext(); }}
+                      title="将当前地图视图加入下一轮上下文"
+                    >
+                      <Icon name="locate" size={13} /><span>当前地图视图</span>
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
-            <span className="ct-sep" />
+            {/* 左：工具审批模式（每次询问 / 自动批准） */}
+            <ApprovalModeControl mode={approvalMode} saving={approvalModeSaving} onChange={changeApprovalMode} />
+            <span className="chat-toolbar-spacer" />
+            {/* 右：上下文用量（含压缩入口）、模型与思考程度 */}
+            <ContextUsageRing
+              variant="inline"
+              usage={runState.usage}
+              contextWindow={selectedContextWindow}
+              contextTokens={selectedUsage.context}
+              compactThreshold={selectedCompactThreshold}
+              compactionMode={selectedCompactionMode}
+              compactionReserveTokens={selectedCompactionReserve}
+              compactionKeepRecentTokens={selectedCompactionKeepRecent}
+              compaction={runState.compaction || null}
+              model={selectedModelInfo}
+              compacting={compacting}
+              busy={busy}
+              onCompact={compactContext}
+            />
             {/* 模型与思考程度：一个 Proma 式统一入口，底层仍使用 Pi 配置 */}
             <div className="chat-toolbar-group toolbar-agent-group" title="Agent 设置：模型与思考程度">
               <span className="chat-toolbar-label">Agent</span>
@@ -5038,7 +5078,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
   const statusLabel = view.lifecycleLabel; // R04：状态缺失显示“状态待同步”，不默认“运行结束”
   const completion = view.outcome || m.completion || null;
   const finalAnswer = String(view.answer?.text || m.authoritativeFinalText || "").trim();
-  // 总结优先：complete_task.summary 是本轮工作的完整结论，不能因为存在最终答复就被隐藏。
+  // 总结优先：完成摘要（推断来源时取自模型最终答复，历史会话可能来自显式声明）是本轮工作的完整结论，不能因为存在最终答复就被隐藏。
   const summaryText = String(completion?.summary || m.summaryText || "").trim();
   const fallbackSummary = summaryText || (finalAnswer ? "" : String(m.text || "").trim());
   // 标题只用于非嵌入的历史摘要，优先取权威最终答复；收尾摘要只作为兼容标题。
@@ -5622,8 +5662,8 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     return `已运行 ${formatDuration(runElapsedMs)}${waitingNote}`;
   })();
   const timelineCompletion = runCardView?.outcome || runSummary?.completion || null;
-  // 本轮结语以模型终稿为准：complete_task.summary 是工具结构化产物，常与真实结语不一致。
-  // 只有终稿不可用（未匹配到时间流文本块/缺失）时才退回 complete_task.summary。
+  // 本轮结语以模型终稿为准：完成摘要在推断来源下由终稿生成，历史会话可能是工具结构化产物。
+  // 只有终稿不可用（未匹配到时间流文本块/缺失）时才退回完成摘要。
   const timelineSummaryText = String(timelineCompletion?.summary || "").trim();
   const timelineFinalText = !streaming ? authoritativeFinalText : "";
   const finalTextIsSummary = Boolean(timelineFinalText && finalTextBlockIndex >= 0);
@@ -5633,7 +5673,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
       : { what: "", conclusion: "", detail: "" }),
     [timelinePath, finalTextIsSummary, timelineFinalText, timelineSummaryText],
   );
-  // 总结展示条件：终稿已从时间流隐藏（匹配到文本块）→ 用终稿渲染；否则有 complete_task.summary 才渲染。
+  // 总结展示条件：终稿已从时间流隐藏（匹配到文本块）→ 用终稿渲染；否则有完成摘要才渲染。
   const showTimelineSummary = timelinePath && !streaming && (finalTextIsSummary || Boolean(timelineSummaryText));
   const timelineActionNeeded = timelinePath && runCardView ? (() => {
     if (runCardView.lifecycle === "waiting_approval") return { kind: "approval", text: runCardView.progress?.waitingReason || "等待你审批后继续" };
@@ -6704,9 +6744,12 @@ function ApprovalBlock({ block }) {
 }
 
 // ========== Proma 风格上下文用量圈 ==========
-function ContextUsageRing({ usage, contextWindow, contextTokens, compactThreshold, compactionMode, compactionReserveTokens, compactionKeepRecentTokens, compaction, model, compacting, busy, onCompact }) {
+// variant="inline"：输入栏工具条里的紧凑形态（迷你环 + 百分比 + token 数），
+// 弹层内容不变，仍提供「压缩上下文」入口。
+function ContextUsageRing({ usage, contextWindow, contextTokens, compactThreshold, compactionMode, compactionReserveTokens, compactionKeepRecentTokens, compaction, model, compacting, busy, onCompact, variant = "default" }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
+  const inline = variant === "inline";
   const percentage = Math.min(100, Math.round((contextTokens / Math.max(1, contextWindow)) * 100));
   const hasThreshold = Number(compactThreshold) > 0;
   const thresholdPercentage = hasThreshold ? Math.min(100, Math.round((compactThreshold / Math.max(1, contextWindow)) * 100)) : null;
@@ -6714,7 +6757,9 @@ function ContextUsageRing({ usage, contextWindow, contextTokens, compactThreshol
   const reserveTokens = Number(compactionReserveTokens) > 0 ? Number(compactionReserveTokens) : 0;
   const keepRecentTokens = Number(compactionKeepRecentTokens) > 0 ? Number(compactionKeepRecentTokens) : 0;
   const compactCount = Number(compaction?.count || 0);
-  const radius = 14;
+  const radius = inline ? 10 : 14;
+  const viewBox = inline ? 28 : 36;
+  const center = viewBox / 2;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - (circumference * percentage) / 100;
   const details = usageDetails(usage);
@@ -6729,7 +6774,7 @@ function ContextUsageRing({ usage, contextWindow, contextTokens, compactThreshol
   }, [open]);
 
   return (
-    <div className={`context-ring-wrap ${open ? "open" : ""}`} ref={wrapRef}>
+    <div className={`context-ring-wrap ${inline ? "inline" : ""} ${open ? "open" : ""}`} ref={wrapRef}>
       <button
         type="button"
         className={`context-ring-button ${tone}`}
@@ -6738,13 +6783,17 @@ function ContextUsageRing({ usage, contextWindow, contextTokens, compactThreshol
         title={`上下文 ${formatTokenCount(contextTokens)} / ${formatTokenCount(contextWindow)} tokens${hasThreshold ? ` · 压缩线 ${formatTokenCount(compactThreshold)}` : ""}`}
       >
         <span className="context-ring-svg" aria-hidden="true">
-          <svg viewBox="0 0 36 36">
-            <circle className="context-ring-track" cx="18" cy="18" r={radius} />
-            <circle className="context-ring-progress" cx="18" cy="18" r={radius} style={{ strokeDasharray: circumference, strokeDashoffset: offset }} />
+          <svg viewBox={`0 0 ${viewBox} ${viewBox}`}>
+            <circle className="context-ring-track" cx={center} cy={center} r={radius} />
+            <circle className="context-ring-progress" cx={center} cy={center} r={radius} style={{ strokeDasharray: circumference, strokeDashoffset: offset }} />
           </svg>
-          <strong>{percentage}%</strong>
+          {!inline && <strong>{percentage}%</strong>}
         </span>
-        <span className="context-ring-label"><b>上下文</b><small>{formatTokenCount(contextTokens)}</small></span>
+        {inline ? (
+          <span className="context-ring-label inline"><b>{percentage}%</b><small>{formatTokenCount(contextTokens)}</small></span>
+        ) : (
+          <span className="context-ring-label"><b>上下文</b><small>{formatTokenCount(contextTokens)}</small></span>
+        )}
       </button>
       {open && (
         <div className="context-ring-pop" role="dialog" aria-label="上下文用量">
@@ -6801,22 +6850,74 @@ function ContextUsageRing({ usage, contextWindow, contextTokens, compactThreshol
   );
 }
 
-// ========== Codex 风格审批模式按钮 ==========
+// ========== 工具审批模式（每次询问 / 自动批准） ==========
+// 输入栏左下的下拉选择：一眼看清当前档位，并能直接切换。
 function ApprovalModeControl({ mode, saving, onChange }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
   const automatic = mode === "auto";
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointerDown = (event) => {
+      if (!wrapRef.current?.contains(event.target)) setOpen(false);
+    };
+    const onKeyDown = (event) => { if (event.key === "Escape") setOpen(false); };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const pick = (next) => {
+    setOpen(false);
+    if (next !== mode) onChange(next);
+  };
+
   return (
-    <button
-      type="button"
-      className={`approval-mode-control ${automatic ? "auto" : "ask"}`}
-      onClick={() => onChange(automatic ? "ask" : "auto")}
-      disabled={saving}
-      aria-pressed={automatic}
-      title={automatic ? "当前：自动批准。会自动放行原本需要逐次询问的操作，deny 规则仍然生效；该模式保存在本机全局配置，跨会话/项目生效，可在设置中改回" : "当前：每次询问。工具写入或危险操作需要逐次确认。点击启用自动批准（本机全局，可随时关闭）"}
-    >
-      <Icon name={automatic ? "check" : "shield"} size={14} />
-      <span>{automatic ? "自动批准" : "每次询问"}</span>
-      <i className="approval-mode-dot" />
-    </button>
+    <div className="approval-mode-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className={`approval-mode-control ${automatic ? "auto" : "ask"}`}
+        onClick={() => setOpen((value) => !value)}
+        disabled={saving}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={automatic ? "当前：自动批准。会自动放行原本需要逐次询问的操作，deny 规则仍然生效；该模式保存在本机全局配置，跨会话/项目生效，可在设置中改回" : "当前：每次询问。工具写入或危险操作需要逐次确认。点击选择其他模式（本机全局，可随时切换）"}
+      >
+        <Icon name={automatic ? "check" : "shield"} size={14} />
+        <span>{automatic ? "自动批准" : "每次询问"}</span>
+        <Icon name="chevronDown" size={11} className="approval-mode-chevron" />
+        <i className="approval-mode-dot" />
+      </button>
+      {open && (
+        <div className="approval-mode-menu" role="menu" aria-label="工具审批模式">
+          <button
+            type="button"
+            role="menuitemradio"
+            aria-checked={automatic}
+            className={automatic ? "on" : ""}
+            onClick={() => pick("auto")}
+          >
+            <Icon name="check" size={13} />
+            <span><strong>自动批准</strong><small>放行原本需询问的操作；deny 规则仍然生效</small></span>
+          </button>
+          <button
+            type="button"
+            role="menuitemradio"
+            aria-checked={!automatic}
+            className={!automatic ? "on" : ""}
+            onClick={() => pick("ask")}
+          >
+            <Icon name="shield" size={13} />
+            <span><strong>每次询问</strong><small>写入与危险操作逐次确认</small></span>
+          </button>
+          <p className="approval-mode-note">本机全局生效，跨会话与项目保持一致。</p>
+        </div>
+      )}
+    </div>
   );
 }
 

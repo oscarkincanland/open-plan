@@ -50,7 +50,7 @@ function lifecycleText(run) {
   return statusText[status] || status;
 }
 
-// 任务达成：模型 complete_task 声明（explicit）或按终态推断（inferred）。
+// 任务达成：一律按 Run 终态推断（inferred）；历史会话可能带显式声明（explicit）。
 function completionText(run) {
   const completion = run?.completion;
   if (!completion?.status) return "";

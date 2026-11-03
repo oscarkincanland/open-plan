@@ -153,7 +153,6 @@
     "test:adr-index": "node scripts/决策记录索引守护测试.mjs",
     "test:spec-index": "node scripts/规范索引守护测试.mjs",
     "test:event-emission": "node scripts/事件发射点守护测试.mjs",
-    "test:completion-pref": "node scripts/完成偏好测试.mjs",
     "test:build-guard": "node scripts/构建版本守卫测试.mjs",
     "test:session-load-tdz": "node scripts/会话加载TDZ回归测试.mjs",
 
@@ -166,7 +165,7 @@
     "clean:artifacts": "node scripts/清理误报产物.mjs",
     "test:progress-narration": "node scripts/进度播报测试.mjs",
     "test:conclusion": "node scripts/任务结论事件流测试.mjs",
-    "test:complete-task": "node scripts/complete_task契约测试.mjs",
+    "test:workspace-panel": "node scripts/工作区面板与输入栏收敛测试.mjs",
     "test:service-supervisor": "node scripts/服务监督回归测试.mjs",
     "test:native-files": "node scripts/原生文件测试.mjs",
     "test:run-view": "node scripts/运行展示投影测试.mjs",

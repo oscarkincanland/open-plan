@@ -61,6 +61,10 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
   const [outlineOpen, setOutlineOpen] = useState(true);
+  // 工具栏「更多」菜单（2026-11-03 预览收敛）：高保真切换、刷新渲染与说明收在这里，
+  // 主工具栏只留高频操作，保证单行不换行。
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef(null);
   const [outline, setOutline] = useState([]);
   const [outlineW, setOutlineW] = useState(220); // 目录宽度（可拖拽）
   const outlineDragRef = useRef(null);
@@ -104,6 +108,21 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
   const [selectionMenu, setSelectionMenu] = useState(null);
   const [selectionNote, setSelectionNote] = useState("");
   const [imageNotice, setImageNotice] = useState("");
+
+  // 「更多」菜单：点击外部或按 Esc 关闭
+  useEffect(() => {
+    if (!moreOpen) return undefined;
+    const onPointerDown = (event) => {
+      if (!moreRef.current?.contains(event.target)) setMoreOpen(false);
+    };
+    const onKeyDown = (event) => { if (event.key === "Escape") setMoreOpen(false); };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [moreOpen]);
 
   // 选中文档中的文字后显示 Codex 风格操作条：加入上下文、写批注或交给 Agent。
   useEffect(() => {
@@ -610,7 +629,7 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
 
   return (
     <div className="oaw-docx-wrap">
-      {/* 第一行：主工具栏 */}
+      {/* 主工具栏（单行）：预览/编辑、批注、修订、目录、页码、缩放、适应宽度、更多 */}
       <div className="oaw-docx-toolbar">
         <div className="toolbar-seg oaw-docx-mode">
           <button className={`toolbar-seg-btn ${mode === "preview" ? "active" : ""}`} onClick={exitEditMode}>
@@ -620,18 +639,6 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
             <Icon name="penTool" size={12} /> 编辑
           </button>
         </div>
-        <button
-          className={`toolbar-btn ${renderMode === "office" ? "active" : ""}`}
-          onClick={() => {
-            if (renderMode === "native" && mode === "edit") exitEditMode();
-            setError("");
-            if (renderMode === "native") { setLoading(true); onPreviewState?.(PREVIEW_STATE.LOADING); }
-            setRenderMode(renderMode === "office" ? "native" : "office");
-          }}
-          title={renderMode === "office" ? "切回浏览器渲染（可编辑）" : "OfficeCLI 高保真只读渲染：适合复杂版式，渲染失败时自动提示"}
-        >
-          <Icon name={renderMode === "office" ? "eye" : "globe"} size={14} />
-        </button>
         <button className={`toolbar-btn ${showComments ? "active" : ""}`} onClick={() => setShowComments(!showComments)} title="显示批注">
           <Icon name="comment" size={14} />
         </button>
@@ -643,9 +650,6 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
             <Icon name="list" size={14} />
           </button>
         )}
-        <button className="toolbar-btn" onClick={() => setRenderKey((k) => k + 1)} title="刷新渲染">
-          <Icon name="refresh" size={14} />
-        </button>
         <span className="toolbar-sep" />
         {pageCount > 0 && (
           <div className="oaw-docx-page-nav" aria-label="Word 分页导航">
@@ -670,7 +674,54 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
             </button>
           </>
         )}
-        <span className="oaw-docx-hint" title="预览页由浏览器按 A4 排版计算，不保证与 Word 原始页码一致">{mode === "edit" ? "编辑模式" : "预览模式"}{pageCount ? ` · 共 ${pageCount} 个预览页` : ""}{imageNotice ? ` · ${imageNotice}` : ""}</span>
+        {/* 更多：渲染方式、刷新与预览说明（主工具栏保持单行清爽） */}
+        <div className="docx-more-wrap" ref={moreRef}>
+          <button
+            className={`toolbar-btn ${moreOpen ? "active" : ""}`}
+            onClick={() => setMoreOpen((value) => !value)}
+            aria-haspopup="menu"
+            aria-expanded={moreOpen}
+            aria-label="更多预览选项"
+            title="更多：渲染方式、刷新与预览说明"
+          >
+            <Icon name="more" size={14} />
+          </button>
+          {moreOpen && (
+            <div className="docx-more-menu" role="menu" aria-label="更多预览选项">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMoreOpen(false);
+                  if (renderMode === "native" && mode === "edit") exitEditMode();
+                  setError("");
+                  if (renderMode === "native") { setLoading(true); onPreviewState?.(PREVIEW_STATE.LOADING); }
+                  setRenderMode(renderMode === "office" ? "native" : "office");
+                }}
+                title={renderMode === "office" ? "切回浏览器渲染（可编辑）" : "OfficeCLI 高保真只读渲染：适合复杂版式，渲染失败时自动提示"}
+              >
+                <Icon name={renderMode === "office" ? "eye" : "globe"} size={13} />
+                <span>{renderMode === "office" ? "切回浏览器渲染（可编辑）" : "OfficeCLI 高保真预览"}</span>
+                {renderMode === "office" && <em className="docx-more-state">当前：高保真</em>}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { setMoreOpen(false); setRenderKey((k) => k + 1); }}
+                title="重新渲染当前文档"
+              >
+                <Icon name="refresh" size={13} /><span>刷新渲染</span>
+              </button>
+              <p className="docx-more-note">
+                {mode === "edit" ? "编辑模式" : "预览模式"}
+                {pageCount ? ` · 共 ${pageCount} 个预览页` : ""}
+                {imageNotice ? ` · ${imageNotice}` : ""}
+                <br />
+                预览页由浏览器按 A4 排版计算，不保证与 Word 原始页码一致。
+              </p>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* 第二行：编辑工具栏（仅编辑模式显示） */}

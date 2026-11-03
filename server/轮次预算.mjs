@@ -44,7 +44,7 @@ export function turnNoticeText(kind, turnCount, { interval = TURN_PROGRESS_INTER
     case "turn-budget":
       return `[系统提醒] 本轮已经进行 ${turn} 个模型回合。请先给出一段阶段结论（已完成什么、还差什么、下一步计划），并用 ask_user 询问用户是否继续，不要无汇报地继续扩大范围。`;
     case "turn-budget-hard":
-      return `[系统提醒] 本轮已经进行 ${turn} 个模型回合，已明显超出常规预算。请立即收尾：总结当前结果、把未完成项写入 complete_task 的 incomplete，并调用 complete_task 结束本轮，剩余工作交给用户决定是否新开一轮。`;
+      return `[系统提醒] 本轮已经进行 ${turn} 个模型回合，已明显超出常规预算。请立即收尾：直接给用户最终答复，写清当前结果与未完成项，结束本轮，剩余工作交给用户决定是否新开一轮。`;
     default:
       return "";
   }
