@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import Icon from "../Icon.jsx";
+import 文件类型图标 from "../文件类型图标.jsx";
 import { buildArtifactIndex } from "../../产物类型.js";
 
 const MAX_VISIBLE_FILES = 8;
@@ -30,7 +31,9 @@ export default function ArtifactCard({ products = [], onOpenFile = null, onOpenP
         {visible.map((item) => (
           <div className={`product-card${item.deliverable ? " deliverable" : ""}${item.confirmed ? "" : " provisional"}`} key={item.path}>
             <button type="button" className="product-card-main" onClick={() => onOpenFile?.(item.path)} title={item.path}>
-              <span className={`product-card-icon artifact-kind-${item.icon}`}><Icon name={item.icon} size={15} /></span>
+              {/* 图标与文件树/RunSummary 产物行同源（文件类型图标）：docx 等此前用未注册的
+                  Icon name（"doc"），图标区域渲染成空白灰块，实测用户反馈“产物没有图标”。 */}
+              <span className={`product-card-icon artifact-kind-${item.icon}`}><文件类型图标 file={item.path} size={15} /></span>
               <span className="product-card-meta">
                 <strong>{item.name}</strong>
                 <small>{item.typeLabel}{item.sizeText ? ` · ${item.sizeText}` : ""}</small>

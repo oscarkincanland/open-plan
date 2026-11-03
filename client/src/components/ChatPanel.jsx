@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
 import { createPortal } from "react-dom";
-import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, branchAgentSession, getSession, getSessionMessageVersions, getSessionGoal, setSessionGoal, sessionGoalAction, clearSessionGoal, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns, getTabId, listAgents } from "../api.js";
+import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, branchAgentSession, getSession, getSessionMessageVersions, getSessionGoal, setSessionGoal, sessionGoalAction, clearSessionGoal, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns, getTabId, listAgents, listPendingQuestions } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import 提及菜单 from "./提及菜单.jsx";
 import { detectMentionTrigger, filterAgentsForMention, buildMentionPrefix } from "./提及逻辑.js";
@@ -17,7 +17,7 @@ import GoalBar from "./GoalBar.jsx";
 import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数, 计算权威文本缺口, 追加流式文本块 } from "./流式文本队列.js";
 import { completionLabel, formatDuration, formatTokenCount, reduceRunTrace, reduceTurnMetrics, resolveRunElapsedMs, runToolDetailText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, summarizeTurnMetrics, turnMetricsText, verificationLabel } from "../运行轨迹.js";
-import { associateRunMessages, findAssistantEntryByText, isInternalHarnessMessage, projectLegacyRunSummary, upsertRunSummaryMessage } from "../运行展示投影.js";
+import { associateRunMessages, findAssistantEntryByText, hiddenLegacySummaryRuns, isInternalHarnessMessage, projectLegacyRunSummary, upsertRunSummaryMessage } from "../运行展示投影.js";
 import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, toolIdentity } from "../事件展示.js";
 import { buildArtifactIndex } from "../产物类型.js";
 import 文件类型图标 from "./文件类型图标.jsx";
@@ -986,6 +986,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const displayedTextRef = useRef(new Map());
   const textRevealRafRef = useRef(null);
   const streamingMsgIdRef = useRef(null);
+  // 当前线程已渲染过的提问 askId：服务端握手补发与客户端主动对账可能
+  // 同时到达，用它在“同一线程内”去重；切线程时清空，允许重新恢复。
+  const liveAskIdsRef = useRef(new Set());
   const stoppingRef = useRef(false);
   // 本轮是否发出过中断请求：中断后到达的 agent_error（SDK 以 "Request aborted" 收尾）
   // 要按中断处理，而不是当成"生成失败"。
@@ -1349,6 +1352,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       }
       followLatestRef.current = true;
       setUnreadBelow(0); // 切会话未读归零：旧会话的未读不再延续到新会话
+      // 历史水合会整体替换 messages：已渲染的提问卡也被清掉，
+      // 清空去重集合，让服务端握手补发/客户端对账能重新恢复它。
+      liveAskIdsRef.current.clear();
       const normalizedHistory = normalizeHistoryMessages(historyMessages);
       seedFinishedRuns(threadId, normalizedHistory);
       setMessages(normalizedHistory);
@@ -1410,6 +1416,79 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     }
   }, [historyMessages]);
 
+  // 待答问题恢复（服务端 SSE 握手指发之外的第二道保险）：
+  // 历史水合会整体替换 messages，如果 ask_user 实时事件先到会被覆盖；
+  // 水合完成后主动对账一次仍存活的 pending ask，缺失时补一张提问卡。
+  useEffect(() => {
+    if (!threadId || !clientId) return undefined;
+    if (!historyMessages || historyThreadId !== threadId) return undefined;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const data = await listPendingQuestions(clientId, threadId);
+        if (cancelled) return;
+        // 服务端 /api/agent/pending 现在返回活提问载荷（字段 askId）；
+        // 旧版/持久化记录用 id。两种都要兼容，否则过滤后为空、卡片不显示。
+        const questions = (data?.questions || [])
+          .map((question) => ({ ...question, askId: String(question?.askId || question?.id || "") }))
+          .filter((question) => (
+            question.askId
+            && !liveAskIdsRef.current.has(question.askId)
+            && (!question.expiresAt || Date.parse(question.expiresAt) > Date.now())
+          ));
+        if (!questions.length) return;
+        for (const question of questions) liveAskIdsRef.current.add(question.askId);
+        setMessages((messages) => {
+          let next = messages;
+          for (const question of questions) {
+            const askId = question.askId;
+            const exists = next.some((message) => (message.blocks || []).some((block) => block?.type === "ask" && block.id === askId));
+            if (exists) continue;
+            if (next === messages) next = [...messages];
+            const block = {
+              type: "ask",
+              id: askId,
+              question: question.question || "",
+              options: Array.isArray(question.options) ? question.options : [],
+              ...(Array.isArray(question.fields) && question.fields.length ? { fields: question.fields } : {}),
+              owner: question.owner || null,
+              expiresAt: Number(Date.parse(question.expiresAt || "")) || (Date.now() + ASK_TIMEOUT_FALLBACK_MS),
+              answer: "",
+            };
+            // 优先挂回该 Run 的最后一条 assistant 消息；找不到再新建气泡，
+            // 避免把恢复出来的提问卡塞进上一轮的旧消息里。
+            let target = -1;
+            for (let i = next.length - 1; i >= 0; i -= 1) {
+              const message = next[i];
+              if (message?.role !== "assistant") continue;
+              if (question.runId && message.runId && message.runId !== question.runId) continue;
+              target = i;
+              break;
+            }
+            if (target >= 0) {
+              next[target] = { ...next[target], blocks: [...(next[target].blocks || []), block] };
+            } else {
+              next.push({
+                id: newId(),
+                role: "assistant",
+                blocks: [block],
+                status: "streaming",
+                images: [],
+                createdAt: Date.now(),
+                runId: question.runId || null,
+              });
+            }
+          }
+          return next;
+        });
+      } catch {}
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [historyMessages, historyThreadId, threadId, clientId]);
+
   // 切换子对话时只切换本地视图，不销毁其它会话的消息/运行状态。
   // 后端 SSE 会随 thread 重连；旧 thread 的任务继续由任务中心跟踪。
   useEffect(() => {
@@ -1417,6 +1496,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     if (previous === threadId) return;
     followLatestRef.current = true;
     runtimeConnectingEventRef.current = null;
+    // 切到另一个会话：提问去重集合只对当前线程有意义，清空后重新进入才能恢复。
+    liveAskIdsRef.current.clear();
     const hydratingHistory = Boolean(historyMessages && historyThreadId === threadId);
     const hydratedMessages = hydratingHistory ? normalizeHistoryMessages(historyMessages) : [];
     const hydratedRun = [...hydratedMessages].reverse().find((item) => item?.runId && item?.runStatus);
@@ -2684,7 +2765,12 @@ case "runtime_connecting":
         });
         break;
       // agent 主动提问（ask_user 工具）：追加问题卡片，用户回答后 agent 继续
-      case "ask_user":
+      case "ask_user": {
+        const askId = data.askId || `${data.runId || "ask"}:${data.question || ""}`;
+        // 服务端握手指发与客户端对账可能同时到达：同线程内按 askId 只渲染一次。
+        // 切线程时清空该集合，保证重新进入会话还能恢复提问卡。
+        if (liveAskIdsRef.current.has(askId)) break;
+        liveAskIdsRef.current.add(askId);
         if (!aid) aid = ensureAssistant();
         if (aid) {
           // 提问卡会插到文本之前，先把打字机缓冲里未落定的文字并回上一段文本块。
@@ -2697,7 +2783,6 @@ case "runtime_connecting":
             try { onOpenFile?.(data.previewFile); } catch {}
           }
           setRunState((s) => ({ ...s, status: "waiting_user", runId: data.runId || s.runId || null }));
-          const askId = data.askId || `${data.runId || "ask"}:${data.question || ""}`;
           patch(aid, (m) => m.blocks?.some((block) => block.type === "ask" && block.id === askId)
             ? m
             : ({
@@ -2715,8 +2800,9 @@ case "runtime_connecting":
                 answer: "",
               }],
             }));
-}
+        }
         break;
+      }
       // 工具审批请求（opencode 式 allow/ask/deny）：追加审批卡片，用户批准后 agent 继续
       case "tool_approval_request":
         if (!aid) aid = ensureAssistant();
@@ -3093,6 +3179,7 @@ case "runtime_connecting":
         connectionTimerRef.current = null;
         setConnectionNotice(null);
         flushToolOutput();
+        expireOpenAsks();
         finalizeStopped();
         break;
       case "file_changed":
@@ -3187,6 +3274,19 @@ case "runtime_connecting":
             if (connectionTimerRef.current) window.clearTimeout(connectionTimerRef.current);
             connectionTimerRef.current = null;
             setConnectionNotice(null);
+            // 用户已点中断且服务端已给终态：立刻收掉“未确认”计时器与停止态，
+            // 否则 10/20 秒计时器会在 run_finished 之后仍弹一条误报。
+            if (stopConfirmTimerRef.current) {
+              window.clearTimeout(stopConfirmTimerRef.current);
+              stopConfirmTimerRef.current = null;
+            }
+            if (stopRequestedRef.current) {
+              stoppingRef.current = false;
+              stopRequestedRef.current = false;
+              roundStoppedRef.current = true;
+              const stoppedId = aid || lastAssistantIdRef.current;
+              if (stoppedId) patch(stoppedId, (m) => ({ ...m, status: "done", stopped: true, errorText: "" }));
+            }
             setBusy(false);
             runInProgressRef.current = false;
             setStopping(false);
@@ -3455,6 +3555,10 @@ case "runtime_connecting":
     const sendReferences = [...sourceReferences, ...parseReferenceMarkers(text)].filter((r, i, arr) => arr.findIndex((x) => x.id === r.id) === i);
 
     // 当前任务执行中：默认排队，另一种选择是只保存为下一轮上下文，不再隐式 steer 打断当前回复。
+    // 但“当前有提问待答”是例外：本地队列要等 run_finished 才发，而 run 正卡在 ask 上，
+    // 只在本地排队会一直等到 ask 的 5 分钟超时。此时直接把新指令提交服务端，
+    // 由服务端结算 ask 并把本轮排到当前链之后（用户语义：新指令 = 旧提问作废）。
+    const pendingAskOpen = messages.some((message) => (message.blocks || []).some((block) => block?.type === "ask" && !block.answer && !block.expired));
     if (busy && !options.force) {
       if (busyInputMode === "context") {
         setInjectedContext((prev) => [...prev, { text, images: sourceImages, attachments: sourceAttachments }]);
@@ -3464,7 +3568,7 @@ case "runtime_connecting":
         pushSystem("已加入待注入上下文，不会打断当前任务。", `context:${Date.now()}:${text.slice(0, 40)}`);
         return;
       }
-      if (busyInputMode === "queue") {
+      if (busyInputMode === "queue" && !pendingAskOpen) {
         const messageId = newId();
         const item = {
           id: messageId,
@@ -3501,8 +3605,13 @@ case "runtime_connecting":
         pushSystem(`已排队第 ${nextQueue.length} 条，当前任务完成后自动执行。`, `queue:${messageId}`);
         return;
       }
-      // busyInputMode === "steer"：立即插入新指令（服务端 streamingBehavior=steer 打断当前回合）
-      pushSystem("正在插入新指令，当前回合将被打断…", `steer_send:${Date.now()}:${rawText.slice(0, 40)}`);
+      if (pendingAskOpen) {
+        expireOpenAsks();
+        pushSystem("已作废旧提问，新指令将排队执行。", `ask_cancel:${Date.now()}:${rawText.slice(0, 40)}`);
+      } else {
+        // busyInputMode === "steer"：立即插入新指令（服务端 streamingBehavior=steer 打断当前回合）
+        pushSystem("正在插入新指令，当前回合将被打断…", `steer_send:${Date.now()}:${rawText.slice(0, 40)}`);
+      }
     }
 
     // 注入当前文件上下文。用户在本轮目标标签里移除当前文件后，本轮不再注入，
@@ -3718,16 +3827,21 @@ case "runtime_connecting":
     stoppingRef.current = true;
     stopRequestedRef.current = true;
     setStopping(true);
-    // 服务端收尾可能要等模型响应中断（实测数秒）。这里给 10 秒确认窗口：
-    // 期间保持「中断中」而不是立刻假装停住——早先 1.2 秒就本地收尾，
-    // 会出现"界面说停了、模型还在输出"的错觉。
-    if (stopConfirmTimerRef.current) window.clearTimeout(stopConfirmTimerRef.current);
-    stopConfirmTimerRef.current = window.setTimeout(() => {
-      stopConfirmTimerRef.current = null;
-      if (!stoppingRef.current) return;
-      finalizeStopped();
-      pushSystem("已请求中断，但服务端未在 10 秒内确认收尾（可能卡在不响应中断的工具里）；如仍在输出可再点一次中断或刷新页面。", "stop-unconfirmed");
-    }, 10000);
+    // 服务端收尾可能要等模型响应中断（实测数秒）。确认窗口不能小于服务端
+    // 取消看门狗上限（15s），否则走看门狗路径时必然误报；服务端会在 abort
+    // 响应里回传 settleDeadlineMs，这里先按 20s 兜底，拿到后按服务端时限重置。
+    const defaultConfirmMs = 20000;
+    const armStopConfirm = (ms) => {
+      if (stopConfirmTimerRef.current) window.clearTimeout(stopConfirmTimerRef.current);
+      const seconds = Math.max(1, Math.round(ms / 1000));
+      stopConfirmTimerRef.current = window.setTimeout(() => {
+        stopConfirmTimerRef.current = null;
+        if (!stoppingRef.current) return;
+        finalizeStopped();
+        pushSystem(`已受理中断，但服务端在 ${seconds} 秒内仍未确认收尾（可能卡在不响应中断的工具里）；如仍在输出可再点一次中断或刷新页面。`, "stop-unconfirmed");
+      }, ms);
+    };
+    armStopConfirm(defaultConfirmMs);
     try {
       const res = await fetch("/api/agent/abort", {
         method: "POST",
@@ -3736,6 +3850,10 @@ case "runtime_connecting":
       });
       if (!res.ok) throw new Error(`请求失败（${res.status}）`);
       const result = await res.json().catch(() => ({}));
+      const settleDeadlineMs = Number(result?.settleDeadlineMs || 0);
+      if (settleDeadlineMs > 0 && stoppingRef.current && settleDeadlineMs !== defaultConfirmMs) {
+        armStopConfirm(settleDeadlineMs);
+      }
       // 服务端如实返回是否真的取消了：没有在跑的任务时不要谎报"已中断"。
       if (result && result.cancelled === false) {
         if (stopConfirmTimerRef.current) {
@@ -3979,6 +4097,19 @@ case "runtime_connecting":
       ? msg
       : { ...msg, blocks: (msg.blocks || []).map((block) => (block.id === blockId ? { ...block, expired: true } : block)) });
   }, [patch]);
+
+  // 本轮被中断：把仍待回答的提问卡统一置为失效。
+  // 服务端已经结算 ask（不会再接受回答），卡片不能继续显示成可点击状态。
+  const expireOpenAsks = useCallback(() => {
+    setMessages((messages) => messages.map((message) => {
+      const blocks = message.blocks || [];
+      if (!blocks.some((block) => block?.type === "ask" && !block.answer && !block.expired)) return message;
+      return {
+        ...message,
+        blocks: blocks.map((block) => (block?.type === "ask" && !block.answer && !block.expired ? { ...block, expired: true, cancelled: true } : block)),
+      };
+    }));
+  }, []);
 
   const resendRef = useRef(null);
   resendRef.current = send;
@@ -4245,6 +4376,9 @@ case "runtime_connecting":
   const assistantRunIds = new Set(visibleMessages
     .filter((message) => message?.role === "assistant" && message.runId)
     .map((message) => message.runId));
+  // 恢复链孤儿卡：summary 的 runId 与同窗 assistant 的 runId 不同（恢复前后的两个 run），
+  // 气泡会被重复展示；时间窗重叠且折叠条已覆盖时不再渲染旧气泡（计划 2026-11-03-001 P0-1）。
+  const overlappingLegacySummaryRunIds = hiddenLegacySummaryRuns(visibleMessages);
   const runActivityMessagesById = new Map();
   visibleMessages.forEach((message, index) => {
     if (!message?.runId || (message.role !== "assistant" && !message.internalProcess)) return;
@@ -4463,7 +4597,8 @@ case "runtime_connecting":
             </div>
           )}
           {(() => { let previousRoundModel = ""; const lastAssistantVisibleId = [...visibleMessages].reverse().find((message) => message?.role === "assistant")?.id || null; return visibleMessages.map((originalMessage, i) => {
-            if (originalMessage?.role === "system" && originalMessage.summary && originalMessage.runId && assistantRunIds.has(originalMessage.runId)) return null;
+            if (originalMessage?.role === "system" && originalMessage.summary && originalMessage.runId
+              && (assistantRunIds.has(originalMessage.runId) || overlappingLegacySummaryRunIds.has(originalMessage.runId))) return null;
             let m = originalMessage;
             let firstIndex = i;
             if (m?.runId && (m.role === "assistant" || m.internalProcess)) {
@@ -5011,7 +5146,6 @@ case "runtime_connecting":
                 )}
               </div>
             </div>
-            <span className="chat-toolbar-spacer" />
             <div className="chat-toolbar-group toolbar-session-group">
               <提示气泡 label="新建会话">
                 <button className="ct-btn" aria-label="新建会话" onClick={handleNewSession}>
@@ -6085,7 +6219,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                 {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
               </>
             ) : (
-              <RunFoldBar state={runFold.state} label={runFold.label} steps={runTimeline.length} pendingLabel={runFoldPending}>
+              <RunFoldBar state={runFold.state} label={runFold.label} steps={runTimeline.length} pendingLabel={runFoldPending} defaultOpen={runFold.state === "cancelled" || runFold.state === "err"}>
                 <div className="tl-list">{runTimeline.map(renderTimelineItem)}</div>
                 {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
               </RunFoldBar>
@@ -6549,6 +6683,7 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
   const [error, setError] = useState("");
   // 提问有 5 分钟时间窗口：服务端超时后按假设继续，卡片必须同步失效而不是继续接受输入。
   const expired = Boolean(block.expired);
+  const cancelled = Boolean(block.cancelled);
   // v0.13.5：结构化表单（fields）与旧的快捷选项/单行输入兼容。
   const fields = Array.isArray(block.fields) ? block.fields : [];
   const [formValues, setFormValues] = useState({});
@@ -6600,14 +6735,16 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
         <span className="ask-title">需要你确认</span>
         {(() => { const 归属 = 交互归属文案(block.owner); return 归属 ? <span className="interaction-owner" title={归属.title}>{归属.text}</span> : null; })()}
         {block.answer && <span className="ask-status">✓ 已回答</span>}
-        {!block.answer && expired && <span className="ask-status expired">已超时</span>}
+        {!block.answer && expired && <span className="ask-status expired">{cancelled ? "已取消" : "已超时"}</span>}
       </div>
       <div className="ask-question">{block.question}</div>
       {block.answer ? (
         <div className="ask-answer">你的回答：{block.answer}</div>
       ) : expired ? (
         <div className="ask-expired" role="status">
-          超过 5 分钟未回答，Agent 已按自己的假设继续（本轮不再接受该问题的回答）。如需修正，请直接在下方输入消息说明。
+          {cancelled
+            ? "本轮已中断，该问题不再接受回答。如需继续，请直接在下方输入消息说明。"
+            : "超过 5 分钟未回答，Agent 已按自己的假设继续（本轮不再接受该问题的回答）。如需修正，请直接在下方输入消息说明。"}
         </div>
       ) : fields.length ? (
         <div className="ask-form">
@@ -6939,7 +7076,7 @@ function ApprovalModeControl({ mode, saving, onChange }) {
             className={automatic ? "on" : ""}
             onClick={() => pick("auto")}
           >
-            <Icon name="check" size={13} />
+            <Icon name="shield" size={13} />
             <span><strong>自动批准</strong><small>放行原本需询问的操作；deny 规则仍然生效</small></span>
           </button>
           <button

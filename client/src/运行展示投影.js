@@ -467,8 +467,10 @@ export function upsertRunSummaryMessage(messages = [], data = {}, {
  * 既不能在恢复后显示为“You”，也不能截断同一 Run 的过程归约。
  * 旧版本把“模型连接中断后自动续跑”的提示直接以普通 user 消息写入，
  * 因此保留旧格式识别，已存在的历史会话无需迁移。
+ * office-pipeline/编辑流水线的 steer 提醒同样以 user 文本写入
+ * （实测会让同一 Run 的摘要卡向前归属被提前截断，旧“运行结果”卡因此复现）。
  */
-const INTERNAL_HARNESS_PREFIX = /^\s*(?:\[系统提醒\]|系统提醒[：:]|上一个回合的模型连接中断了[。.])/;
+const INTERNAL_HARNESS_PREFIX = /^\s*(?:\[系统提醒\]|系统提醒[：:]|上一个回合的模型连接中断了[。.]|本轮尚未使用\s*(?:editorial_pipeline|编辑流水线)|请立即改用编辑流水线)/;
 
 export function isInternalHarnessMessage(message) {
   return message?.role === "user" && INTERNAL_HARNESS_PREFIX.test(String(message.text || ""));
@@ -492,17 +494,31 @@ export function associateRunMessages(messages = []) {
   let next = list;
   let changed = false;
   const at = (index) => (changed ? next : list)[index];
+  const timeOf = (value) => Date.parse(value || "") || 0;
 
   for (let summaryIndex = 0; summaryIndex < list.length; summaryIndex += 1) {
     const summary = list[summaryIndex];
     const runId = String(summary?.role === "system" && summary.summary ? summary.runId || "" : "");
     if (!runId) continue;
 
+    // 归属下界：优先用 Run startedAt（buildRunSummaryMessages 已带回）。
+    // 同一 Run 内部的 steer/排队指令会以多条 user 消息写入，不能把它们当
+    // “真实用户边界”截断；只有时间早于 Run 开始的消息才属于上一轮。
+    // startedAt 缺失（旧数据/时间戳缺失）时回退到“最近真实 user 边界”的旧规则。
+    const runStartedMs = timeOf(summary?.startedAt || summary?.run?.startedAt) || 0;
+
     // 第 1 遍：向前（较早）区间——总结卡与上一条边界消息之间。
     let start = summaryIndex - 1;
     for (; start >= 0; start -= 1) {
       const item = list[start];
       if (item?.role === "system" && item.summary) break;
+      if (runStartedMs) {
+        // 同一 Run 的消息都在 startedAt 之后；时间戳缺失时保守地沿用旧边界，
+        // 避免把明显更早的历史内容硬塞进本轮。
+        const itemMs = timeOf(item?.createdAt) || 0;
+        if (itemMs && itemMs < runStartedMs) break;
+        continue;
+      }
       if (item?.role === "user" && !isInternalHarnessMessage(item)) break;
     }
     for (let index = start + 1; index < summaryIndex; index += 1) {
@@ -515,17 +531,58 @@ export function associateRunMessages(messages = []) {
     }
 
     // 第 2 遍：向后（较晚）区间——只补尚未归属的 assistant，不覆盖已有归属。
+    // 自愈窗口有界：孤儿 assistant 必须落在本 Run 的 startedAt 之后；
+    // 摘要卡带 finishedAt 时再以 finishedAt 为上界，避免把下一轮的消息吸进来。
+    const runFinishedMs = timeOf(summary?.finishedAt) || 0;
     for (let index = summaryIndex + 1; index < list.length; index += 1) {
       const item = at(index);
       if (item?.role === "system" && item.summary) break;
       if (item?.role === "user" && !isInternalHarnessMessage(item)) break;
       if (item?.role !== "assistant") continue;
       if (item.runId) continue;
+      // 异常孤儿早于 Run 开始时不硬塞进本轮（时间可用才保护）。
+      const itemMs = timeOf(item?.createdAt) || 0;
+      if (runStartedMs && itemMs && itemMs < runStartedMs) continue;
+      if (runFinishedMs && itemMs && itemMs > runFinishedMs) continue;
       if (!changed) { next = [...list]; changed = true; }
       next[index] = { ...item, runId };
     }
   }
   return changed ? next : list;
+}
+
+/**
+ * 遗留气泡去重：恢复链会产生两个 runId——恢复前 run 以一条 summary 卡收尾，
+ * 恢复后 run 的 SSE 把 assistant 消息重新归属（实测卡片 run_8ef… 与 assistant
+ * run_fd9… 共用同一个 01:15~01:17 时间窗）。旧规则只按 runId 相等抑制气泡，
+ * 于是孤儿卡带着旧 RunSummary 形态复现。这里按时间窗判定：summary 的
+ * [startedAt, finishedAt] 窗口内存在已归属其他 run 的 assistant 时，
+ * 该卡不应再以独立气泡出现（折叠条已覆盖同一时间窗）。无时间戳时保守不抑制。
+ */
+export function hiddenLegacySummaryRuns(messages = []) {
+  const list = Array.isArray(messages) ? messages : [];
+  const timeOf = (value) => Date.parse(value || "") || 0;
+  const cards = list
+    .filter((item) => item?.role === "system" && item.summary && item.runId)
+    .map((item) => ({
+      runId: String(item.runId),
+      startedMs: timeOf(item.startedAt || item.run?.startedAt) || 0,
+      finishedMs: timeOf(item.finishedAt) || 0,
+    }));
+  const hidden = new Set();
+  for (const card of cards) {
+    if (!card.startedMs && !card.finishedMs) continue;
+    for (const item of list) {
+      if (item?.role !== "assistant" || !item.runId || String(item.runId) === card.runId) continue;
+      const itemMs = timeOf(item.createdAt) || 0;
+      if (!itemMs) continue;
+      if (card.startedMs && itemMs < card.startedMs) continue;
+      if (card.finishedMs && itemMs > card.finishedMs) continue;
+      hidden.add(card.runId);
+      break;
+    }
+  }
+  return hidden;
 }
 
 /**
