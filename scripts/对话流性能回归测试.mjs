@@ -211,9 +211,8 @@ try {
   assert.match(livePlainStyles, /\.result-tabbed/, "结果区页签应有独立视觉分节");
   assert.match(livePlainStyles, /\.product-card-main/, "产物卡片应有可点击主体样式");
   assert.match(livePlainStyles, /\.artifact-inline \{/, "结论内嵌产物应有行内文件条样式");
-  // 2026-11-03：对话区改为整列左对齐（不再居中），消息列左缘与输入框一致。
-  assert.match(livePlainStyles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,220}?margin-left: 0;/, "消息列应贴左（左对齐）");
-  assert.doesNotMatch(livePlainStyles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,220}?margin-left: auto;/, "消息列不应再居中");
+  // 2026-11-03：内容列在对话区自身宽度内居中（右侧画布开/关时自动重新居中）。
+  assert.match(livePlainStyles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,220}?margin-left: auto;/, "消息列应在对话区内居中");
   // 会话定位导航栏：细横杠刻度（ZCode 风格），不再有轨道线/圆珠；当前阅读位置高亮
   const timelineSource = fs.readFileSync(new URL("../client/src/components/ChatTimeline.jsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   assert.doesNotMatch(timelineSource, /timeline-rail/, "导航栏不再画连续轨道线");

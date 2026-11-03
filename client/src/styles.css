@@ -872,9 +872,9 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 }
 .composer-add-menu button:hover { background: var(--selected); color: var(--text); }
 .composer-add-menu button .icon { color: var(--muted); flex-shrink: 0; }
-.chat-load-older { align-self: center; border: 1px solid var(--line, #d6ddd2); border-radius: 999px; background: var(--surface, var(--pure-white)); color: var(--muted, #667064); padding: 6px 12px; font-size: 12px; cursor: pointer; }
-.chat-load-older:hover { color: var(--text, #243025); border-color: var(--accent, #7c9b2e); background: var(--accent-soft, #f2f6e9); }
-.chat-history-window-note { align-self: center; max-width: min(720px, 92%); color: var(--muted, #667064); font-size: 11px; line-height: 1.5; text-align: center; padding: 4px 10px; }
+.chat-load-older { align-self: center; border: 1px solid var(--line, #d6ddd2); border-radius: 999px; background: var(--surface, var(--pure-white)); color: var(--muted); padding: 6px 12px; font-size: 12px; cursor: pointer; }
+.chat-load-older:hover { color: var(--text); border-color: var(--accent); background: var(--accent-soft, #f2f6e9); }
+.chat-history-window-note { align-self: center; max-width: min(720px, 92%); color: var(--muted); font-size: 11px; line-height: 1.5; text-align: center; padding: 4px 10px; }
 /* 分页状态行：加载成功 / 已到最早 / 不支持时的常驻说明（替代"点了没反应"） */
 .chat-history-status { align-self: center; max-width: min(720px, 92%); color: var(--muted); font-size: 11px; line-height: 1.5; text-align: center; padding: 2px 10px 4px; font-variant-numeric: tabular-nums; }
 /* 切换历史会话的骨架屏（缓存未命中时替代空白等待） */
@@ -883,7 +883,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .chat-history-skeleton-row.is-assistant { align-items: flex-start; }
 .chat-history-skeleton-row.is-user { align-items: flex-end; background: color-mix(in srgb, var(--user-bg) 22%, transparent); }
 .chat-history-skeleton-row .oaw-skeleton-block { height: 10px; }
-.chat-empty { color: var(--muted); text-align: left; padding: 20px 0; font-size: 13px; }
+.chat-empty { color: var(--muted); text-align: center; padding: 40px 0; font-size: 13px; }
 .vision-hint { padding: 4px 12px; font-size: 11px; color: var(--warning); background: #2a2410; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 /* messages */
 .msg { display: flex; gap: 10px; }
@@ -8965,8 +8965,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .center-chat-slot .chat-head,
 .center-chat-slot .agent-capability-preview { display: none; }
 .center-chat-slot .chat-body {
-  /* 2026-11-03 左对齐：左内边距固定 16px，与输入框 margin-left 对齐；右侧仍保留 gutter 呼吸位。 */
-  padding: 34px var(--chat-gutter) 28px 16px;
+  /* 内容列居中：左右内边距对称（都取 gutter），右侧另有 scrollbar-gutter 预留。 */
+  padding: 34px var(--chat-gutter) 28px;
   gap: 20px;
   /* 始终为滚动条留位：输入框按同一宽度收窄后才能与消息列右缘严格对齐 */
   scrollbar-gutter: stable;
@@ -8979,20 +8979,31 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .center-chat-slot .msg.user .msg-main { width: auto; max-width: min(78%, 540px); }
 .center-chat-slot .msg.user .bubble { width: fit-content; max-width: 100%; }
 /* 消息、执行过程卡、任务卡、输入区共用同一内容列（--msg-content-max）。
-   2026-11-03：整列改为左对齐（不再居中），左缘统一贴到面板左侧内边距，
-   右侧保留最大宽度，避免大屏两侧各留一大片空白。 */
+   2026-11-03：列在**对话区自身宽度内居中**——右侧画布开/关时对话区变宽变窄，
+   内容自动跟着重新居中（不是相对整个窗口居中）。 */
 .center-chat-slot .chat-body > .msg,
 .center-chat-slot .chat-body > .chat-load-older,
 .center-chat-slot .chat-body > .chat-history-window-note {
   width: 100%;
   max-width: var(--msg-content-max);
-  margin-left: 0;
+  margin-left: auto;
   margin-right: auto;
 }
 .center-chat-slot .msg { position: relative; }
-/* 左对齐后内容列已贴左，头像若仍绝对定位到 -39px 会压到侧栏；
-   主对话列隐藏头像（消息头已有作者名），正文左缘与输入框严格对齐。 */
-.center-chat-slot .msg > .avatar { display: none; }
+/* 头像放到内容列外侧的留白里：让消息正文与输入框/任务卡严格同宽、边缘对齐。
+   窄屏留白不足时隐藏头像（消息头仍有作者名），避免压住正文。 */
+.center-chat-slot .msg > .avatar {
+  position: absolute;
+  top: 2px;
+  left: -39px;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-lg);
+}
+.center-chat-slot .msg.user > .avatar { left: auto; right: -39px; }
+@media (max-width: 1100px) {
+  .center-chat-slot .msg > .avatar { display: none; }
+}
 .center-chat-slot .msg-header { min-height: 22px; gap: 6px; }
 .center-chat-slot .msg-author { font-size: 11px; }
 .center-chat-slot .msg-time { font-size: 10px; }
@@ -9042,8 +9053,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .center-chat-slot .tool-card { border-radius: var(--radius-lg); background: var(--panel2-bg); }
 
 .center-chat-slot .chat-input {
-  width: min(var(--msg-content-max), calc(100% - 32px));
-  margin: 0 0 18px 16px;
+  width: min(var(--msg-content-max), calc(100% - var(--chat-gutter) * 2 - var(--scrollbar-w)));
+  margin: 0 auto 18px;
   padding: 10px 13px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
@@ -9051,13 +9062,19 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   box-shadow: 0 12px 28px color-mix(in srgb, var(--body-bg) 35%, transparent);
 }
 /* 输入区外壳：任务卡在输入框之外（上面），输入框本体在里面。
-   宽度与对齐规则只在外壳上写一次，输入框占满外壳；与消息列共用同一内容列。 */
+   宽度与对齐规则只在外壳上写一次，输入框占满外壳；与消息列共用同一内容列并居中。 */
 .center-chat-slot .chat-compose {
-  width: min(var(--msg-content-max), calc(100% - 32px));
-  margin: 0 0 18px 16px;
+  width: min(var(--msg-content-max), calc(100% - var(--chat-gutter) * 2 - var(--scrollbar-w)));
+  margin: 0 auto 18px;
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* .chat-body 用 scrollbar-gutter: stable 预留了 8px 滚动条，消息列中心因此
+     左移约 4px；输入/任务区不在滚动容器内，用同样的偏移对齐，避免上下错位。 */
+  transform: translateX(-4px);
+}
+@media (max-width: 720px) {
+  .center-chat-slot .chat-compose { transform: none; }
 }
 .center-chat-slot .chat-compose .chat-input {
   width: 100%;
@@ -9105,7 +9122,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .center-chat-slot .ct-btn.active { color: var(--accent); background: var(--selected); }
 .center-chat-slot .send-btn { width: 36px; height: 36px; border-radius: var(--radius-lg); background: var(--accent); color: var(--on-accent); }
 .center-chat-slot .busy-input-mode { font-size: 11px; }
-.center-chat-slot .chat-empty { padding-top: 20px; font-size: 15px; }
+.center-chat-slot .chat-empty { padding-top: 18vh; font-size: 15px; }
 
 .preview-panel-head { min-height: 54px; padding: 10px 14px; font-size: 12px; }
 .preview-panel-tabs { padding: 7px 10px; background: var(--panel2-bg); }
@@ -10318,7 +10335,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .chat-empty-steps {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-start;
+  justify-content: center;
   gap: 6px 14px;
   list-style: none;
   counter-reset: chat-step;
@@ -10344,10 +10361,10 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .chat-empty-examples {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-start;
+  justify-content: center;
   gap: 6px;
-  max-width: none;
-  margin: 0 0 12px;
+  max-width: 640px;
+  margin: 0 auto 12px;
 }
 .chat-empty-example {
   border: 1px dashed var(--border);

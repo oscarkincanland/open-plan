@@ -72,14 +72,16 @@ test("上下文 chip 为紧凑形态，弹层向上展开且保留压缩入口",
 
 console.log("\n▶ 2026-11-03 界面收敛（左对齐 / 图标 / 空态 / 模型弹层）");
 
-test("对话区整列左对齐，输入框与消息同左缘", () => {
-  assert.match(styles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,220}?margin-left: 0;/, "消息列应贴左");
-  assert.doesNotMatch(styles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,220}?margin-left: auto;/, "消息列不应再居中");
-  assert.match(styles, /\.center-chat-slot \.chat-compose \{\n  width: min\(var\(--msg-content-max\), calc\(100% - 32px\)\);\n  margin: 0 0 18px 16px;/, "输入区外壳应与消息同左缘");
-  assert.match(styles, /\.center-chat-slot \.chat-input \{\n  width: min\(var\(--msg-content-max\), calc\(100% - 32px\)\);\n  margin: 0 0 18px 16px;/, "输入框应与消息同左缘");
-  assert.match(styles, /\.center-chat-slot \.msg > \.avatar \{ display: none; \}/, "左对齐后隐藏绝对定位头像，避免压到侧栏");
-  assert.match(styles, /\.center-chat-slot \.chat-body \{[\s\S]{0,200}?padding: 34px var\(--chat-gutter\) 28px 16px;/, "消息区左内边距固定 16px，与输入框同左缘");
-  assert.doesNotMatch(styles, /transform: translateX\(-4px\)/, "左对齐后不再需要居中补偿位移");
+test("对话区内容列在对话区内居中，并随右侧画布宽度自适应", () => {
+  // 2026-11-03 修订：用户要求回到居中——但居中的参照是「对话区自身宽度」，
+  // 右侧画布开/关时中心列自动重新居中（不是相对整个窗口贴左或贴中）。
+  assert.match(styles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,220}?margin-left: auto;/, "消息列应在对话区内居中");
+  assert.doesNotMatch(styles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,220}?margin-left: 0;/, "消息列不应贴左");
+  assert.match(styles, /\.center-chat-slot \.chat-body \{[\s\S]{0,200}?padding: 34px var\(--chat-gutter\) 28px;/, "消息区左右内边距对称，居中不受滚动条预留影响");
+  assert.match(styles, /\.center-chat-slot \.chat-compose \{[\s\S]{0,300}?margin: 0 auto 18px;/, "输入区外壳应在对话区内居中");
+  assert.match(styles, /\.center-chat-slot \.chat-input \{[\s\S]{0,220}?margin: 0 auto 18px;/, "输入框应在对话区内居中");
+  assert.match(styles, /width: min\(var\(--msg-content-max\), calc\(100% - var\(--chat-gutter\) \* 2 - var\(--scrollbar-w\)\)\)/, "宽度随对话区可用宽度收缩（右侧画布开/关自适应）");
+  assert.match(styles, /\.center-chat-slot \.msg > \.avatar \{[\s\S]{0,120}?left: -39px;/, "头像定位应恢复（居中后留白够用）");
 });
 
 test("输入栏与顶栏图标去外框、尺寸统一 28px", () => {
@@ -103,8 +105,10 @@ test("空态恢复：AGENTS.md 提示不再写消息流", () => {
   assert.match(chatPanel, /const hasProjectInstructions = useMemo\(/, "项目指令应改为派生状态");
   assert.match(chatPanel, /projectInstructions=\{hasProjectInstructions\}/, "应把派生状态传给欢迎卡片");
   assert.match(read("client/src/components/欢迎卡片.jsx"), /chat-empty-project-note/, "欢迎卡片应给一行弱提示");
-  assert.match(styles, /\.chat-empty \{ color: var\(--muted\); text-align: left;/, "空态文字应左对齐");
-  assert.match(styles, /\.center-chat-slot \.chat-empty \{ padding-top: 20px;/, "空态不再用 18vh 居中留白");
+  assert.match(styles, /\.chat-empty \{ color: var\(--muted\); text-align: center;/, "空态文字应与内容列一起居中");
+  assert.match(styles, /\.center-chat-slot \.chat-empty \{ padding-top: 18vh;/, "空态保持垂直居中留白（欢迎页）");
+  assert.match(styles, /\.chat-empty-steps \{[\s\S]{0,120}?justify-content: center;/, "空态步骤应居中");
+  assert.match(styles, /\.chat-empty-examples \{[\s\S]{0,140}?justify-content: center;/, "空态示例应居中");
 });
 
 test("模型弹层：供应商条 + 渐变滑轨 + 星标保留", () => {
