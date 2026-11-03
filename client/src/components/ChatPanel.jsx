@@ -782,6 +782,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [recentModels, setRecentModels] = useState(() => readStoredModelList(MODEL_RECENT_KEY));
   const [favoriteModels, setFavoriteModels] = useState(() => readStoredModelList(MODEL_FAVORITE_KEY));
   const [allModelsOpen, setAllModelsOpen] = useState(false);
+  // 供应商过滤（2026-11-03）：弹层顶部供应商条显式切换，默认「全部」。
+  const [modelProviderFilter, setModelProviderFilter] = useState("all");
   // 目标上下文里的当前文件可以按轮移除：移除只影响本轮的 [当前打开文件] 注入，
   // 不改变真正打开的文件，也不代表授权写入。
   const [contextFileDismissed, setContextFileDismissed] = useState(false);
@@ -1100,11 +1102,23 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       const searchable = `${item.id || ""} ${item.name || ""} ${item.provider || ""}`.toLowerCase();
       if (query && !searchable.includes(query)) continue;
       const provider = modelProvider(item);
+      if (modelProviderFilter !== "all" && provider !== modelProviderFilter) continue;
       if (!groups.has(provider)) groups.set(provider, []);
       groups.get(provider).push(item);
     }
     return [...groups.entries()];
-  }, [models, modelQ]);
+  }, [models, modelQ, modelProviderFilter]);
+
+  // 供应商选项：从真实模型目录推导，不写死名单；顺序按名称，数量用于条上小字。
+  const providerChoices = useMemo(() => {
+    const map = new Map();
+    for (const item of models) {
+      const id = modelProvider(item);
+      if (!map.has(id)) map.set(id, { id, label: modelProviderMeta(item).label, count: 0, sample: item });
+      map.get(id).count += 1;
+    }
+    return [...map.values()].sort((a, b) => String(a.label).localeCompare(String(b.label), "zh"));
+  }, [models]);
 
   // 切换模型时记入“最近”，并在选中失败回退时也记录实际生效的那个。
   const rememberModel = useCallback((id) => {
@@ -1142,19 +1156,20 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   // 每个分区按 id 去重且保留真实元数据标签。
   const modelSections = useMemo(() => {
     const byId = new Map(models.map((item) => [item.id, item]));
-    const pick = (ids) => ids.map((id) => byId.get(id)).filter(Boolean);
+    const inFilter = (m) => modelProviderFilter === "all" || modelProvider(m) === modelProviderFilter;
+    const pick = (ids) => ids.map((id) => byId.get(id)).filter(Boolean).filter(inFilter);
     if (modelQ.trim()) {
       return [{ key: "search", title: `搜索结果（${modelGroups.reduce((sum, [, list]) => sum + list.length, 0)}）`, items: modelGroups.flatMap(([, list]) => list) }];
     }
     const sections = [];
     const current = selectedModelInfo || byId.get(model);
-    if (current) sections.push({ key: "current", title: "当前使用", items: [current] });
+    if (current && inFilter(current)) sections.push({ key: "current", title: "当前使用", items: [current] });
     const recent = pick(recentModels.filter((id) => id !== model));
     if (recent.length) sections.push({ key: "recent", title: "最近使用", items: recent });
     const favorites = pick(favoriteModels);
     if (favorites.length) sections.push({ key: "favorites", title: "收藏", items: favorites });
     return sections;
-  }, [models, modelGroups, modelQ, model, recentModels, favoriteModels, selectedModelInfo]);
+  }, [models, modelGroups, modelQ, model, recentModels, favoriteModels, selectedModelInfo, modelProviderFilter]);
 
   // 打开的当前文件发生变化时，恢复“本轮带上当前文件”的默认行为。
   useEffect(() => { setContextFileDismissed(false); }, [currentDoc]);
@@ -3306,17 +3321,12 @@ case "runtime_connecting":
     }
   }, [goal, pushSystem, runGoalAction, saveGoal]);
 
-  // v0.12.3：工作区存在 AGENTS.md 时，每个会话首次进入提示一次“项目指令已生效”，
-  // 避免用户误以为项目约定只对别的会话生效；同会话重复渲染不重复提示。
-  const projectInstructionNotifiedRef = useRef(new Set());
-  useEffect(() => {
-    if (!workspace) return;
-    const hasProjectInstructions = (referenceFiles || []).some((name) => /(^|[\\/])AGENTS\.md$/i.test(String(name || "")));
-    if (!hasProjectInstructions) return;
-    if (projectInstructionNotifiedRef.current.has(threadId)) return;
-    projectInstructionNotifiedRef.current.add(threadId);
-    pushSystem("已加载工作区指令 AGENTS.md，本会话的对话与任务会遵循其中约定。", `project-instructions:${threadId}`);
-  }, [threadId, workspace, referenceFiles, pushSystem]);
+  // 工作区存在 AGENTS.md 时，只在空态里给一行弱提示：不再写进消息流——
+  // 写进消息流会让 messages.length > 0，欢迎卡片（初始化界面）永远不显示。
+  const hasProjectInstructions = useMemo(
+    () => Boolean(workspace) && (referenceFiles || []).some((name) => /(^|[\\/])AGENTS\.md$/i.test(String(name || ""))),
+    [workspace, referenceFiles],
+  );
 
   const upsertRunSummary = useCallback((data = {}) => {
     const runId = data.runId || null;
@@ -4423,6 +4433,7 @@ case "runtime_connecting":
               mode={normalizeUiMode(editMode)}
               emptyExample={emptyExample}
               agents={agents}
+              projectInstructions={hasProjectInstructions}
               onSend={(text) => send(text)}
             />
           )}
@@ -4860,12 +4871,12 @@ case "runtime_connecting":
                   onClick={() => setModelOpen((value) => !value)}
                   aria-haspopup="dialog"
                   aria-expanded={modelOpen}
-                  title={model ? `模型：${modelDisplayName(selectedModelInfo)}，思考：${selectedEffort.shortLabel}` : "选择模型与思考程度"}
+                  title={model ? `供应商：${selectedProviderMeta.label}；模型：${modelDisplayName(selectedModelInfo)}；思考：${selectedEffort.shortLabel}` : "选择供应商、模型与思考程度"}
                 >
-                  <ModelProviderMark model={selectedModelInfo} size={18} />
+                  <ModelProviderMark model={selectedModelInfo} size={16} />
                   <span className="model-control-current">
                     <strong>{modelDisplayName(selectedModelInfo)}</strong>
-                    <small>{selectedEffort.shortLabel}</small>
+                    <small>{selectedProviderMeta.label} · {selectedEffort.shortLabel}</small>
                   </span>
                   <Icon name="chevronDown" size={12} />
                 </button>
@@ -4881,9 +4892,36 @@ case "runtime_connecting":
                       <div><ModelProviderMark model={selectedModelInfo} size={22} /><span><strong>{selectedProviderMeta.label}</strong><small>{model || "按 Pi 配置"}</small></span></div>
                       <span className="model-control-status">{selectedModelInfo?.available === false ? "不可用" : "可用"}</span>
                     </div>
+                    {/* 供应商条：显式切换供应商，模型列表随之过滤（默认全部） */}
+                    <div className="model-provider-strip" role="tablist" aria-label="供应商">
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={modelProviderFilter === "all"}
+                        className={`model-provider-chip ${modelProviderFilter === "all" ? "on" : ""}`}
+                        onClick={() => setModelProviderFilter("all")}
+                        title="显示全部供应商的模型"
+                      >
+                        全部<small>{models.length}</small>
+                      </button>
+                      {providerChoices.map((provider) => (
+                        <button
+                          key={provider.id}
+                          type="button"
+                          role="tab"
+                          aria-selected={modelProviderFilter === provider.id}
+                          className={`model-provider-chip ${modelProviderFilter === provider.id ? "on" : ""}`}
+                          onClick={() => setModelProviderFilter(provider.id)}
+                          title={`只看 ${provider.label} 的模型`}
+                        >
+                          <ModelProviderMark model={provider.sample} size={13} />
+                          {provider.label}<small>{provider.count}</small>
+                        </button>
+                      ))}
+                    </div>
                     <input
                       className="ct-pop-search"
-                      placeholder="搜索模型…"
+                      placeholder={modelProviderFilter === "all" ? "搜索模型…" : `在 ${providerChoices.find((p) => p.id === modelProviderFilter)?.label || "当前供应商"} 中搜索…`}
                       value={modelQ}
                       onChange={(e) => setModelQ(e.target.value)}
                       autoFocus
@@ -4916,7 +4954,7 @@ case "runtime_connecting":
                             aria-expanded={allModelsOpen}
                             title="展开全部模型列表（按供应商分组）"
                           >
-                            <Icon name={allModelsOpen ? "chevronDown" : "chevronRight"} size={12} /> 全部模型（{models.length}）
+                            <Icon name={allModelsOpen ? "chevronDown" : "chevronRight"} size={12} /> 全部模型（{modelGroups.reduce((sum, [, list]) => sum + list.length, 0)}）
                             <small>可用 {modelCounts.available || "—"}</small>
                           </button>
                           {allModelsOpen && (
@@ -6877,7 +6915,7 @@ function ApprovalModeControl({ mode, saving, onChange }) {
   };
 
   return (
-    <div className="approval-mode-wrap" ref={wrapRef}>
+    <div className={`approval-mode-wrap ${open ? "open" : ""}`} ref={wrapRef}>
       <button
         type="button"
         className={`approval-mode-control ${automatic ? "auto" : "ask"}`}
@@ -6885,12 +6923,12 @@ function ApprovalModeControl({ mode, saving, onChange }) {
         disabled={saving}
         aria-haspopup="menu"
         aria-expanded={open}
-        title={automatic ? "当前：自动批准。会自动放行原本需要逐次询问的操作，deny 规则仍然生效；该模式保存在本机全局配置，跨会话/项目生效，可在设置中改回" : "当前：每次询问。工具写入或危险操作需要逐次确认。点击选择其他模式（本机全局，可随时切换）"}
+        aria-label={automatic ? "工具审批：自动批准" : "工具审批：每次询问"}
+        title={automatic ? "自动批准：放行原本需要逐次询问的操作，deny 规则仍然生效（本机全局，可在下拉里切换）" : "每次询问：工具写入或危险操作逐次确认（本机全局，可在下拉里切换）"}
       >
-        <Icon name={automatic ? "check" : "shield"} size={14} />
-        <span>{automatic ? "自动批准" : "每次询问"}</span>
+        <Icon name={automatic ? "shield" : "shieldPlain"} size={14} />
+        <span>{automatic ? "自动" : "询问"}</span>
         <Icon name="chevronDown" size={11} className="approval-mode-chevron" />
-        <i className="approval-mode-dot" />
       </button>
       {open && (
         <div className="approval-mode-menu" role="menu" aria-label="工具审批模式">
@@ -6911,7 +6949,7 @@ function ApprovalModeControl({ mode, saving, onChange }) {
             className={!automatic ? "on" : ""}
             onClick={() => pick("ask")}
           >
-            <Icon name="shield" size={13} />
+            <Icon name="shieldPlain" size={13} />
             <span><strong>每次询问</strong><small>写入与危险操作逐次确认</small></span>
           </button>
           <p className="approval-mode-note">本机全局生效，跨会话与项目保持一致。</p>

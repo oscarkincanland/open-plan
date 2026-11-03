@@ -70,6 +70,55 @@ test("上下文 chip 为紧凑形态，弹层向上展开且保留压缩入口",
   assert.match(chatPanel, /onCompact=\{compactContext\}/, "上下文弹层应保留压缩入口");
 });
 
+console.log("\n▶ 2026-11-03 界面收敛（左对齐 / 图标 / 空态 / 模型弹层）");
+
+test("对话区整列左对齐，输入框与消息同左缘", () => {
+  assert.match(styles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,220}?margin-left: 0;/, "消息列应贴左");
+  assert.doesNotMatch(styles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,220}?margin-left: auto;/, "消息列不应再居中");
+  assert.match(styles, /\.center-chat-slot \.chat-compose \{\n  width: min\(var\(--msg-content-max\), calc\(100% - 32px\)\);\n  margin: 0 0 18px 16px;/, "输入区外壳应与消息同左缘");
+  assert.match(styles, /\.center-chat-slot \.chat-input \{\n  width: min\(var\(--msg-content-max\), calc\(100% - 32px\)\);\n  margin: 0 0 18px 16px;/, "输入框应与消息同左缘");
+  assert.match(styles, /\.center-chat-slot \.msg > \.avatar \{ display: none; \}/, "左对齐后隐藏绝对定位头像，避免压到侧栏");
+  assert.match(styles, /\.center-chat-slot \.chat-body \{[\s\S]{0,200}?padding: 34px var\(--chat-gutter\) 28px 16px;/, "消息区左内边距固定 16px，与输入框同左缘");
+  assert.doesNotMatch(styles, /transform: translateX\(-4px\)/, "左对齐后不再需要居中补偿位移");
+});
+
+test("输入栏与顶栏图标去外框、尺寸统一 28px", () => {
+  assert.match(styles, /\.chat-toolbar-group \{[\s\S]{0,260}?border: 0;/, "工具条分组不应再画外框");
+  assert.match(styles, /\.approval-mode-control \{ display: inline-flex;[\s\S]{0,200}?min-height: 28px;[\s\S]{0,120}?border: 1px solid transparent;/, "审批按钮应为无框 28px");
+  assert.match(styles, /\.context-ring-wrap\.inline \.context-ring-button \{ min-height: 28px;[\s\S]{0,160}?border: 1px solid transparent;/, "上下文 chip 应为无框 28px");
+  assert.match(styles, /\.topbar-search-btn \{ width: 28px; height: 28px; flex: 0 0 auto;/, "搜索按钮应为 28px 且不被挤压");
+  assert.match(styles, /\.topbar-tools-toggle \{ width: 28px; height: 28px; flex: 0 0 auto;/, "工作区按钮应为 28px 且不被挤压");
+  assert.match(styles, /\.topbar-search-btn:hover \{ background: var\(--selected\); border-color: transparent;/, "搜索按钮只在该悬停时出浅底，不画框");
+});
+
+test("审批控件图标化 + 短文字（自动 / 询问）", () => {
+  assert.match(chatPanel, /<Icon name=\{automatic \? "shield" : "shieldPlain"\} size=\{14\} \/>/, "应使用盾牌类图标并区分两档");
+  assert.match(chatPanel, /\{automatic \? "自动" : "询问"\}/, "按钮文字应为极短标签");
+  assert.match(chatPanel, /aria-label=\{automatic \? "工具审批：自动批准" : "工具审批：每次询问"\}/, "去掉长文字后要有完整无障碍标签");
+  assert.match(read("client/src/components/Icon.jsx"), /shieldPlain:/, "shieldPlain 图标应存在");
+});
+
+test("空态恢复：AGENTS.md 提示不再写消息流", () => {
+  assert.doesNotMatch(chatPanel, /pushSystem\("已加载工作区指令 AGENTS\.md/, "不应再把项目指令提示写进消息流");
+  assert.match(chatPanel, /const hasProjectInstructions = useMemo\(/, "项目指令应改为派生状态");
+  assert.match(chatPanel, /projectInstructions=\{hasProjectInstructions\}/, "应把派生状态传给欢迎卡片");
+  assert.match(read("client/src/components/欢迎卡片.jsx"), /chat-empty-project-note/, "欢迎卡片应给一行弱提示");
+  assert.match(styles, /\.chat-empty \{ color: var\(--muted\); text-align: left;/, "空态文字应左对齐");
+  assert.match(styles, /\.center-chat-slot \.chat-empty \{ padding-top: 20px;/, "空态不再用 18vh 居中留白");
+});
+
+test("模型弹层：供应商条 + 渐变滑轨 + 星标保留", () => {
+  assert.match(chatPanel, /model-provider-strip/, "弹层顶部应有供应商条");
+  assert.match(chatPanel, /role="tablist" aria-label="供应商"/, "供应商条应是可切换的语义");
+  assert.match(chatPanel, /const \[modelProviderFilter, setModelProviderFilter\] = useState\("all"\)/, "应有供应商过滤状态");
+  assert.match(chatPanel, /if \(modelProviderFilter !== "all" && provider !== modelProviderFilter\) continue;/, "模型列表应随供应商过滤");
+  assert.match(styles, /\.model-provider-chip\.on \{/, "供应商 chip 应有选中态");
+  assert.match(styles, /linear-gradient\(90deg, var\(--success\), var\(--accent\)\)/, "思考深度滑轨应为渐变轨道");
+  assert.match(styles, /\.model-thinking-control input\[type="range"\]::-webkit-slider-thumb \{/, "滑杆应有白色圆钮");
+  assert.match(chatPanel, /onToggleFavorite=\{toggleFavoriteModel\}/, "收藏星标必须保留");
+  assert.match(chatPanel, /<small>\{selectedProviderMeta\.label\} · \{selectedEffort\.shortLabel\}<\/small>/, "触发器第二行应显示供应商与思考档位");
+});
+
 console.log("\n▶ 顶栏工作区面板");
 
 test("顶栏入口是面板而不是下拉菜单", () => {

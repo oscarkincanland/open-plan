@@ -96,10 +96,16 @@ test("服务端中断回执仍返回 stillQueued", () => {
   );
 });
 
-test("工作区 AGENTS.md 只提示一次项目指令生效", () => {
-  assert.match(chatPanel, /const projectInstructionNotifiedRef = useRef\(new Set\(\)\)/);
+test("工作区 AGENTS.md 提示不写消息流，只在空态给弱提示", () => {
+  // 2026-11-03：项目指令提示不再 pushSystem（会把空态挤掉、初始化界面永远看不到），
+  // 改为派生状态 + 欢迎卡片底部一行弱提示。
+  assert.doesNotMatch(chatPanel, /pushSystem\("已加载工作区指令 AGENTS\.md/, "不应再把项目指令提示写进消息流");
+  assert.doesNotMatch(chatPanel, /projectInstructionNotifiedRef/, "一次性提示 ref 应已移除");
+  assert.match(chatPanel, /const hasProjectInstructions = useMemo\(/, "项目指令应改为派生状态");
   assert.match(chatPanel, /\(referenceFiles \|\| \[\]\)\.some\(\(name\) => \/\(\^\|\[\\\\\/\]\)AGENTS\\\.md\$\//);
-  assert.match(chatPanel, /pushSystem\("已加载工作区指令 AGENTS\.md，本会话的对话与任务会遵循其中约定。", `project-instructions:\$\{threadId\}`\)/);
+  assert.match(chatPanel, /projectInstructions=\{hasProjectInstructions\}/, "应把派生状态传给欢迎卡片");
+  const welcome = fs.readFileSync(path.join(ROOT, "client/src/components/欢迎卡片.jsx"), "utf8");
+  assert.match(welcome, /chat-empty-project-note/, "欢迎卡片应渲染弱提示");
 });
 
 /* ---------------- 3) 发送/停止三态 ---------------- */

@@ -77,7 +77,7 @@ assert.match(对话面板, /const modelSections = useMemo/, "应有当前/最近
 assert.match(对话面板, /title: "当前使用"/, "应有当前使用分区");
 assert.match(对话面板, /title: "最近使用"/, "应有最近使用分区");
 assert.match(对话面板, /title: "收藏"/, "应有收藏分区");
-assert.match(对话面板, /全部模型（\{models\.length\}）/, "应保留可展开的全部模型高级入口");
+assert.match(对话面板, /全部模型（\{modelGroups\.reduce\(/, "应保留可展开的全部模型高级入口（按当前供应商过滤后计数）");
 assert.match(对话面板, /function modelCapabilityLabel\(model\)/, "能力标签应走统一函数");
 assert.match(对话面板, /typeof model\.vision === "boolean"/, "能力标签应基于真实 vision 元数据");
 assert.match(对话面板, /Number\(model\.contextWindow\)/, "能力标签应读取真实上下文窗口");
