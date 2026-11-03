@@ -1398,8 +1398,19 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         setStopping(false);
       // OAW_REPLAY_RECOVER（F4）：恢复水合场景不锚定历史最后一条 assistant 气泡——
       // 运行中那条消息尚未落盘，锚定会把回放 token 拼进上一轮气泡；改为由
-      // ensureAssistant 新建气泡承载恢复的流式内容（flag 关 = 基线锚定）。
-      assistantIdRef.current = isLiveRun ? (flag("replayRecover") ? null : (latestAssistant?.id || null)) : null;
+      // ensureAssistant 新建气泡承载恢复的流式内容。
+      // 2026-11-03 实测补齐：默认路径也必须先校验「历史最后一条 assistant 是否
+      // 属于当前活跃 Run」。运行中刷新时活跃 Run 是新一轮（E），最后一条 assistant
+      // 属于已完成的上一轮（D）；基线锚定会把 D 当成 live（executionFlow 挂到 D、
+      // 直铺时间流、折叠条消失），实测「刷新后上一轮折叠条丢失」。runId 不匹配时
+      // 一律交给 ensureAssistant 新建气泡。
+      const liveAnchorMatchesRun = Boolean(
+        isLiveRun && latestAssistant?.runId && latestRun?.runId
+        && String(latestAssistant.runId) === String(latestRun.runId),
+      );
+      assistantIdRef.current = isLiveRun
+        ? (flag("replayRecover") || !liveAnchorMatchesRun ? null : (latestAssistant?.id || null))
+        : null;
       lastAssistantIdRef.current = latestAssistant?.id || null;
       streamBufRef.current = null;
       streamingMsgIdRef.current = assistantIdRef.current;
@@ -5626,11 +5637,42 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
   );
 }
 
+/**
+ * 运行中的 Run 摘要卡（刷新/恢复首帧只有摘要卡、还没有可归属的 assistant 时）。
+ *
+ * 2026-11-03 实测：运行中刷新后该卡曾被渲染成完整 RunSummary 结果卡，显示
+ * 「目标未达成 / 文件变更 0 项 / 技术详情 JSON」等终态信息，被用户读成旧式
+ * 结果气泡或报错。这里改为轻量状态条：运行中、已用时长、步数、等待提示；
+ * 完成后实时事件会 upsert 同一张卡（run_finished）切回终态折叠条。
+ */
+function LiveRunSummaryBar({ m }) {
+  const startedMs = Date.parse(m.startedAt || "") || 0;
+  const elapsedMs = startedMs ? Math.max(0, Date.now() - startedMs) : 0;
+  const steps = Number(m.stepCount || 0) || 0;
+  return (
+    <div className="msg system summary-msg live-run-msg" role="status" aria-live="polite">
+      <div className="run-fold is-running open">
+        <div className="run-fold-head" style={{ cursor: "default" }}>
+          <span className="run-fold-dot running" aria-hidden="true" style={{ background: "var(--accent)" }} />
+          <span className="run-fold-label">运行中</span>
+          {elapsedMs > 0 && <span className="run-fold-steps">· 已用 {formatDuration(elapsedMs)}</span>}
+          {steps > 0 && <span className="run-fold-steps">· {steps} 步</span>}
+          <span className="run-fold-pending">正在执行，完成后自动汇总</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
 function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onAskExpired, onResend, onEditMessage, onForkMessage, onRegenerate, onSwitchVersion, isLastAssistant = false, versionSwitching = false, index, prevRole, clientId, threadId, sessionId = "", runSummary = null, executionFlow = null }) {
   if (m.role === "system") {
     if (m.summary) {
       const runId = m.runId || null;
+      // 运行中（含刷新恢复的 streaming 卡）走轻量状态条，不显示终态结果卡内容。
+      if (m.runStatus === "running" || m.status === "streaming") {
+        return <LiveRunSummaryBar m={m} />;
+      }
       return (
         <RunSummary
           m={m}
