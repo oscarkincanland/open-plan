@@ -4210,7 +4210,7 @@ execute: async (_toolCallId, params, signal) => {
         outputPath: Type.Optional(Type.String({ maxLength: 200, description: "工作区相对输出路径（如 报告/初稿.docx）；缺省按目标命名" })),
         requirements: Type.Optional(Type.String({ maxLength: 20000, description: "额外要求：受众、字数、风格、必含章节等（长要求可直接传入，不要截断）" })),
         scene: Type.Optional(Type.String({ maxLength: 40, description: "场景 ID（academic/report/contract/official-doc/resume/exam/copywriting）；缺省自动选择" })),
-        clarificationAnswers: Type.Optional(Type.Array(Type.String({ maxLength: 500 }), { description: "用户对澄清问题的回答；有值则跳过澄清闸门" })),
+        clarificationAnswers: Type.Optional(Type.Array(Type.String({ maxLength: 4000 }), { description: "用户对澄清问题的回答；有值则跳过澄清闸门" })),
         sourceMarkdown: Type.Optional(Type.String({ maxLength: 200000, description: "已有 Markdown 正文（docx/pptx 均支持）；提供时跳过 Planner/Writer，直接排版并验收；pptx 按标题分页、段落作要点" })),
       }),
       execute: async (_toolCallId, params, signal) => {
