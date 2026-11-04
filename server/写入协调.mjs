@@ -288,6 +288,12 @@ export async function acquireWriteLockWithRetry(options = {}, { timeoutMs = writ
           ownerKind: error.details?.ownerKind || null,
           lockedAt: error.details?.lockedAt || null,
         };
+        // 2026-11-04 并发修复：超时错误直接说清「谁占着、等了多久、怎么办」。
+        // 此前只有一句「写入范围与其他任务冲突」，模型只能盲目重试或放弃。
+        const owner = String(error.details.ownerThreadId || error.details.ownerRunId || "").slice(0, 24);
+        const seconds = Math.max(1, Math.round(waitedMs / 1000));
+        error.message = `${error.message}（已等待 ${seconds} 秒${owner ? `，占用任务 ${owner}` : ""}；` +
+          `可稍后重试，或把本次写入改到其他文件/子目录）`;
         if (typeof onWait === "function") {
           try { onWait({ attempts, waitedMs, error }); } catch {}
         }

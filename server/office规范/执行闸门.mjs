@@ -29,6 +29,21 @@ const MUTATING_BASH_COMMANDS = new Set([
   "mklink", "rename", "cpio", "rsync", "scp", "sftp", "make",
 ]);
 
+/**
+ * git 只读子命令白名单（2026-11-04 并发写锁修复）。
+ *
+ * 背景：git/node/python 此前一律按写命令处理，连 `git --version`、`git status`、
+ * `command -v git` 都会去抢工作区写锁；并发任务持锁时这些纯查询要白等 20 秒后
+ * 被「写入范围与其他任务冲突」拒绝，用户侧表现为“并行时什么命令都跑不动”。
+ * 这里按子命令细分：只读查询直接放行，其余（clone/push/pull/commit/…）仍按写
+ * 处理，由写锁推导（server/bash写锁.mjs）锁到真实目标。
+ */
+const GIT_READONLY_SUBCOMMANDS = new Set([
+  "status", "log", "diff", "show", "rev-parse", "rev-list", "describe", "shortlog",
+  "blame", "ls-files", "ls-remote", "cat-file", "name-rev", "for-each-ref", "grep",
+  "--version", "version",
+]);
+
 /** 透明前缀：本身不改文件，跳过后看真正的命令。 */
 const BASH_COMMAND_PREFIXES = new Set(["sudo", "env", "command", "nohup", "time", "nice", "stdbuf"]);
 
@@ -88,10 +103,30 @@ export function bashChainHasMutatingCommand(command) {
  * 宁可多占一次工作区锁（并发稍慢），不可把写命令当成只读（并发写冲突）。
  */
 function bashSegmentIsReadonly(segment) {
+  const text = String(segment || "");
+  // bash 内建只读查询：command -v X / command -V X（透明前缀会在 bashSegmentCommand
+  // 里被跳过，导致误把 -v 当成命令名，这里先单独识别）。
+  if (/^\s*(?:sudo\s+|env\s+)*command\s+-[vV]\s+\S+/.test(text)) return true;
   const name = bashSegmentCommand(segment);
   if (!name) return false; // 解析不了 → 按写处理
   // 内联只读脚本（node -e 只读 / python -c 只读）沿用既有放行口径。
   if (isInlineReadonlyScript(segment)) return true;
+  // git 只读子命令：status/log/diff/show/rev-parse/… 与 --version 直接放行。
+  if (name === "git") {
+    const sub = text.match(/^\s*(?:sudo\s+|env\s+)*git\s+([A-Za-z-]+)/)?.[1]?.toLowerCase() || "";
+    return GIT_READONLY_SUBCOMMANDS.has(sub);
+  }
+  // node / python 的纯版本查询（不执行脚本）。
+  if (name === "node" || name === "nodejs") {
+    return /^\s*(?:sudo\s+|env\s+)*node(?:js)?\s+(?:--version|-v)\s*$/.test(text);
+  }
+  if (name === "python" || name === "python3" || name === "py") {
+    return /^\s*(?:sudo\s+|env\s+)*py(?:thon3?)?\s+(?:--version|-V|-v)\s*$/.test(text);
+  }
+  // 包管理器的只读查询（版本 / 本地列表 / 远端元信息）。
+  if (["npm", "pnpm", "yarn", "npx"].includes(name)) {
+    return /^\s*(?:sudo\s+|env\s+)*(?:npm|pnpm|yarn|npx)\s+(?:--version|-v|ls|list|view|info)\b/.test(text);
+  }
   if (MUTATING_BASH_COMMANDS.has(name)) return false;
   // unzip 只有 -p/-l 是只读（解到标准输出），其余形式会落盘。
   if (name === "unzip") return /-(?:p|l)\b/.test(segment);
