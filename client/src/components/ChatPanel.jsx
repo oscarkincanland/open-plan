@@ -89,9 +89,9 @@ const DEFAULT_CONTEXT_WINDOW = 128000;
 const PI_COMPACTION_RESERVE_TOKENS = 16384;
 const PI_COMPACTION_KEEP_RECENT_TOKENS = 20000;
 const LIVE_RUN_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested", "finishing"]);
-// 提问卡片的时间窗口兜底（服务端 ASK_TIMEOUT_MS = 5 分钟，正常由事件里的 expiresAt 给出）：
+// 提问卡片的时间窗口兜底（服务端 ASK_TIMEOUT_MS = 30 分钟，正常由事件里的 expiresAt 给出）：
 // 缺少 expiresAt 时按同一口径计时，到期把卡片置为已超时，不再留下点得动却必然 404 的死卡片。
-const ASK_TIMEOUT_FALLBACK_MS = 5 * 60 * 1000;
+const ASK_TIMEOUT_FALLBACK_MS = 30 * 60 * 1000;
 const MAX_VISIBLE_MESSAGES = 120;
 const MESSAGE_PAGE_SIZE = 80;
 const COMPOSER_COMMANDS = [
@@ -3567,7 +3567,7 @@ case "runtime_connecting":
 
     // 当前任务执行中：默认排队，另一种选择是只保存为下一轮上下文，不再隐式 steer 打断当前回复。
     // 但“当前有提问待答”是例外：本地队列要等 run_finished 才发，而 run 正卡在 ask 上，
-    // 只在本地排队会一直等到 ask 的 5 分钟超时。此时直接把新指令提交服务端，
+    // 只在本地排队会一直等到 ask 的 30 分钟超时。此时直接把新指令提交服务端，
     // 由服务端结算 ask 并把本轮排到当前链之后（用户语义：新指令 = 旧提问作废）。
     const pendingAskOpen = messages.some((message) => (message.blocks || []).some((block) => block?.type === "ask" && !block.answer && !block.expired));
     if (busy && !options.force) {
@@ -4100,7 +4100,7 @@ case "runtime_connecting":
     setRunState((state) => ({ ...state, status: "running" }));
   }, [patch, setAgentPhase]);
 
-  // 提问超时（服务端 5 分钟窗口已过）或回答被服务端拒绝时，把卡片标记为失效：
+  // 提问超时（服务端 30 分钟窗口已过）或回答被服务端拒绝时，把卡片标记为失效：
   // 卡片不再提供输入，输入栏的待处理条也随之收起。
   const markAskExpired = useCallback((messageId, blockId) => {
     if (!messageId || !blockId) return;
@@ -6685,15 +6685,35 @@ function PendingActionBar({ approval, ask, onLocateApproval, onLocateAsk, client
       });
       const result = await res.json().catch(() => ({}));
       if (res.status === 404) {
-        // 服务端已无该问题（5 分钟窗口已过或已在别处回答）：收起卡片，
+        // 服务端已无该问题（30 分钟窗口已过或已在别处回答）：收起卡片，
         // 而不是留一张点得动、一发就报 no pending question 的死卡片。
         onExpired?.(ask?.id);
-        throw new Error("该问题已失效（超过 5 分钟未回答或已在别处回答），回答未提交");
+        throw new Error("该问题已失效（超过 30 分钟未回答或已在别处回答），回答未提交");
       }
       if (!res.ok) throw new Error(result.error || `回答失败（${res.status}）`);
       onAnswered?.(ask?.id, value);
       setAnswer("");
     } catch (e) { setError(e.message || "回答失败，请重试"); }
+    setSending("");
+  };
+
+  const skipAsk = async () => {
+    if (sending || !ask?.id) return;
+    setSending("ask");
+    setError("");
+    try {
+      const res = await fetch("/api/agent/answer", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client: clientId, thread: threadId, skip: true }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (res.status === 404) {
+        onExpired?.(ask.id);
+        throw new Error("该问题已失效（超过 30 分钟未回答或已在别处回答）");
+      }
+      if (!res.ok) throw new Error(result.error || `跳过失败（${res.status}）`);
+      onAnswered?.(ask.id, "（已跳过，按专业判断继续）");
+    } catch (e) { setError(e.message || "跳过失败，请重试"); }
     setSending("");
   };
 
@@ -6735,6 +6755,7 @@ function PendingActionBar({ approval, ask, onLocateApproval, onLocateAsk, client
             </>
           )}
           <span className="pending-action-buttons">
+            <button className="btn" onClick={skipAsk} disabled={Boolean(sending)}>{sending === "ask" ? "…" : "跳过并继续"}</button>
             <提示气泡 label="滚动到提问卡片"><button className="btn-xs" onClick={onLocateAsk} aria-label="定位到提问卡片"><Icon name="locate" size={12} /></button></提示气泡>
           </span>
         </>
@@ -6748,7 +6769,7 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
-  // 提问有 5 分钟时间窗口：服务端超时后按假设继续，卡片必须同步失效而不是继续接受输入。
+  // 提问有 30 分钟时间窗口：服务端超时后按假设继续，卡片必须同步失效而不是继续接受输入。
   const expired = Boolean(block.expired);
   const cancelled = Boolean(block.cancelled);
   // v0.13.5：结构化表单（fields）与旧的快捷选项/单行输入兼容。
@@ -6770,7 +6791,7 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
       const result = await res.json().catch(() => ({}));
       if (res.status === 404) {
         onExpired?.(block.id);
-        throw new Error("该问题已失效（超过 5 分钟未回答或已在别处回答），回答未提交");
+        throw new Error("该问题已失效（超过 30 分钟未回答或已在别处回答），回答未提交");
       }
       if (!res.ok) throw new Error(result.error || `回答失败（${res.status}）`);
       onAnswered?.(block.id, answer);
@@ -6795,6 +6816,42 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
     submit(answer);
   };
 
+  const skip = async () => {
+    if (sending || expired) return;
+    setSending(true);
+    setError("");
+    try {
+      const res = await fetch("/api/agent/answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client: clientId, thread: threadId, skip: true }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (res.status === 404) {
+        onExpired?.(block.id);
+        throw new Error("该问题已失效（超过 30 分钟未回答或已在别处回答）");
+      }
+      if (!res.ok) throw new Error(result.error || `跳过失败（${res.status}）`);
+      onAnswered?.(block.id, "（已跳过，按专业判断继续）");
+    } catch (e) {
+      setError(e.message || "跳过失败，请重试");
+    }
+    setSending(false);
+  };
+
+  // 已回答 / 已超时 / 已取消：不再保留可交互大卡片，只留一行回执，避免历史被问答块塞满。
+  if (block.answer || expired) {
+    const answerText = String(block.answer || "").replace(/\s+/g, " ").trim().slice(0, 120);
+    const statusText = block.answer ? `已回答：${answerText || "（已跳过）"}` : cancelled ? "本轮已中断，问题已取消" : "已超时，Agent 已按假设继续";
+    return (
+      <div className={`ask-receipt ${block.answer ? "answered" : cancelled ? "cancelled" : "expired"}`} role="status" title={String(block.question || "")}>
+        <Icon name={block.answer ? "check" : "info"} size={12} />
+        <span className="ask-receipt-question">{String(block.question || "").replace(/\s+/g, " ").trim().slice(0, 80)}</span>
+        <span className="ask-receipt-status">{statusText}</span>
+      </div>
+    );
+  }
+
   return (
     <div className={`ask-block ${block.answer ? "answered" : ""} ${expired ? "expired" : ""}`}>
       <div className="ask-head">
@@ -6811,7 +6868,7 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
         <div className="ask-expired" role="status">
           {cancelled
             ? "本轮已中断，该问题不再接受回答。如需继续，请直接在下方输入消息说明。"
-            : "超过 5 分钟未回答，Agent 已按自己的假设继续（本轮不再接受该问题的回答）。如需修正，请直接在下方输入消息说明。"}
+            : "超过 30 分钟未回答，Agent 已按自己的假设继续（本轮不再接受该问题的回答）。如需修正，请直接在下方输入消息说明。"}
         </div>
       ) : fields.length ? (
         <div className="ask-form">
@@ -6874,9 +6931,12 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
               )}
             </label>
           ))}
-          <button className="btn primary ask-submit" onClick={submitForm} disabled={sending}>
-            {sending ? "…" : "提交"}
-          </button>
+          <div className="ask-actions">
+            <button className="btn primary ask-submit" onClick={submitForm} disabled={sending}>
+              {sending ? "…" : "提交"}
+            </button>
+            <button className="btn ask-skip" onClick={skip} disabled={sending}>跳过并继续</button>
+          </div>
           {error && <div className="ask-error" role="alert">{error}</div>}
         </div>
       ) : (
@@ -6899,6 +6959,7 @@ function AskBlock({ block, clientId, threadId, onAnswered, onExpired }) {
             <button className="btn primary ask-submit" onClick={() => submit(input)} disabled={sending}>
               {sending ? "…" : "发送"}
             </button>
+            <button className="btn ask-skip" onClick={skip} disabled={sending}>跳过</button>
           </div>
           {error && <div className="ask-error" role="alert">{error}</div>}
         </>

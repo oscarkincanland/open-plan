@@ -670,7 +670,8 @@ const MODEL_IDLE_TIMEOUT_MS = Math.max(30000, Number.parseInt(process.env.OAW_MO
 const MODEL_CATALOG_CACHE_MS = Math.max(5000, Number.parseInt(process.env.OAW_MODEL_CATALOG_CACHE_MS || "30000", 10) || 30000);
 // ask_user 阻塞等待用户回答的时间窗口：到期后按专业判断继续。
 // 前端凭事件里的 expiresAt 把卡片置为"已超时"，避免留下点得动、一发就报 no pending question 的死卡片。
-export const ASK_TIMEOUT_MS = 300_000;
+// 默认 30 分钟；OAW_ASK_TIMEOUT_MS 可调（最低 60 秒）。
+export const ASK_TIMEOUT_MS = Math.max(60_000, Number.parseInt(process.env.OAW_ASK_TIMEOUT_MS || "1800000", 10) || 1_800_000);
 // 编辑流水线的 Writer 要输出整篇正文 JSON，远超 planner 只读角色的 60s 预算与
 // 子代理默认 12000 字符文本上限，因此这两个限制在流水线侧单独放宽。
 const PIPELINE_WRITER_TIMEOUT_MS = Math.max(60_000, Number.parseInt(process.env.OAW_PIPELINE_WRITER_TIMEOUT_MS || "240000", 10) || 240_000);
@@ -1180,7 +1181,7 @@ class AgentManager extends EventEmitter {
    * 结算一个待答问题。
    *
    * 取消/插话时不能只打 cancelRequested：ask_user 是阻塞 Promise，Pi 的
-   * session.abort() 唤不醒它，工具会一直等到 5 分钟超时，promptChain 随之
+   * session.abort() 唤不醒它，工具会一直等到 30 分钟超时，promptChain 随之
    * 被堵住。这里主动回填一段让模型收尾的回答，并把持久化记录改成 cancelled，
    * 刷新后不会再出现一张点不动的提问卡。
    */
@@ -1199,6 +1200,17 @@ class AgentManager extends EventEmitter {
     // resolver 内部会按 answered 落盘；这里覆盖成取消/作废状态。
     try { resolvePendingAsk(key, String(answer || ""), status); } catch {}
     return true;
+  }
+
+  /**
+   * 用户选择「跳过并继续」：结算待回答，返回一段让模型按专业判断继续的提示。
+   * 与超时结算共用 settlePendingAsk，避免留下仍可提交的幽灵问题。
+   */
+  skipPendingAsk(clientId) {
+    return this.settlePendingAsk(clientId, {
+      status: "skipped",
+      answer: "[系统提醒] 用户选择跳过该问题，请按专业判断继续，并在最终结果中注明你的假设；不要再重复提问。",
+    });
   }
 
   submitAnswer(clientId, answer) {
@@ -3334,7 +3346,7 @@ execute: async (_toolCallId, params, signal) => {
           };
         }
         // 单槽位保护（O-26）：同一会话同时只允许一个待回答问题。
-        // 直接拒绝第二个，而不是覆盖第一个的 resolve（否则前者要挂满 5 分钟）。
+        // 直接拒绝第二个，而不是覆盖第一个的 resolve（否则前者要挂满 30 分钟）。
         if (this.pendingAsks.has(clientId)) {
           return {
             content: [{ type: "text", text: "已有一个待回答的问题：请等待用户回答后再提问（同一会话同时只能有一个问题）。" }],
@@ -3369,7 +3381,7 @@ execute: async (_toolCallId, params, signal) => {
             placeholder: String(field.placeholder || ""),
             ...(field.accept ? { accept: String(field.accept) } : {}),
           }));
-        // 阻塞等待用户回答（最长 5 分钟），期间 SSE 推送 ask_user 事件
+        // 阻塞等待用户回答（最长 30 分钟），期间 SSE 推送 ask_user 事件
         return await new Promise((resolve) => {
           const pendingAskId = `ask_${crypto.randomUUID()}`;
           const expiresAt = new Date(Date.now() + ASK_TIMEOUT_MS).toISOString();
@@ -4603,7 +4615,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
 
   _enqueuePrompt(entry, payload) {
     // 新指令到达意味着用户不再等上一个提问：先结算 ask_user。
-    // 否则阻塞的 ask 会占满 5 分钟超时窗口，把整条 promptChain 堵住。
+    // 否则阻塞的 ask 会占满 30 分钟超时窗口，把整条 promptChain 堵住。
     this.settlePendingAsk(entry.clientId || "", {
       status: "cancelled",
       answer: "[系统提醒] 有新的任务指令到达，原提问作废；请结束当前回合，等待并执行新指令。",
@@ -5292,7 +5304,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.runStopCheckedAt = Date.now();
     // 先结算待答问题，再中断运行时：
     // ask_user 是阻塞 Promise，Pi 的 session.abort() 并不能把它唤醒；不结算的话
-    // 工具会一直挂到 5 分钟超时，promptChain 被堵住，后续新指令看起来像卡死。
+    // 工具会一直挂到 30 分钟超时，promptChain 被堵住，后续新指令看起来像卡死。
     this.settlePendingAsk(entry.clientId || clientId, {
       status: "cancelled",
       answer: "[系统提醒] 本轮任务已被用户取消，请立即停止执行，不要再调用工具，直接在正文里说明本轮已取消。",

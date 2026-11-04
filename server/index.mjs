@@ -4560,14 +4560,21 @@ app.get("/api/agent/pending", (req, res) => {
 
 // 回答 agent 的提问（ask_user 工具：用户回答后 agent 继续）
 app.post("/api/agent/answer", (req, res) => {
-  const { client, thread, answer, values } = req.body || {};
+  const { client, thread, answer, values, skip } = req.body || {};
+  if (!client) return res.status(400).json({ error: "client required" });
+  // 「跳过并继续」：不写入用户回答，直接让模型按专业判断继续（避免 30 分钟等待）。
+  if (skip === true) {
+    const skipped = 执行句柄.跳过问答(client, { thread });
+    if (!skipped.ok) return res.status(404).json({ error: "no pending question" });
+    return res.json(skipped);
+  }
   // v0.13.5：Schema 表单可直接回传 values；统一序列化为一段可读文本交给执行句柄。
   const answerText = String(
     answer ?? (values && typeof values === "object"
       ? Object.entries(values).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join("、") : value ?? ""}`).join("\n")
       : ""),
   ).trim();
-  if (!client || !answerText) return res.status(400).json({ error: "client and answer required" });
+  if (!answerText) return res.status(400).json({ error: "client and answer required" });
   // P1-1：响应交互下沉到执行句柄（路由只做参数校验与响应封装）。
   const result = 执行句柄.响应交互(client, answerText, { thread });
   if (!result.ok) return res.status(404).json({ error: "no pending question" });

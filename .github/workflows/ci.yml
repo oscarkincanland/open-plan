@@ -150,6 +150,9 @@ jobs:
       - name: 会话收敛与流水线状态（跳过/修订不再画叉；思考跟随；记忆后不追问）
         run: node scripts/CI运行测试.mjs 会话收敛与流水线状态测试
 
+      - name: ask 超时与跳过（30 分钟窗口 / 自动回执 / 跳过继续）
+        run: node scripts/CI运行测试.mjs ask超时与跳过测试
+
       - name: 产物文件类型图标（docx 等按类型出图，不回退通用图标）
         run: node scripts/CI运行测试.mjs 产物图标测试
 

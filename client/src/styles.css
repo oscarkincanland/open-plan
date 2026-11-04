@@ -7539,6 +7539,14 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   box-sizing: border-box;
 }
 .ask-block.answered { border-color: var(--success); background: rgba(181, 189, 104, 0.08); }
+/* 已回答/已超时：收成一行回执，不再占一张可交互大卡片 */
+.ask-receipt { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 5px 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--panel2-bg) 55%, transparent); color: var(--muted); font-size: 11px; }
+.ask-receipt.answered { color: var(--success); border-color: color-mix(in srgb, var(--success) 30%, var(--border)); }
+.ask-receipt.expired, .ask-receipt.cancelled { color: var(--dim); }
+.ask-receipt-question { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ask-receipt-status { min-width: 0; flex: 1 1 auto; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.ask-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.ask-skip { color: var(--muted); }
 .ask-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
 .ask-title { font-weight: 600; color: var(--warning); }
 .ask-status { margin-left: auto; color: var(--success); font-size: 11px; }

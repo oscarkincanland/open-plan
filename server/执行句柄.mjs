@@ -572,6 +572,18 @@ export function 创建执行句柄(初始依赖 = {}) {
   }
 
   /**
+   * 跳过当前待答交互：模型按专业判断继续，不再等待用户回答。
+   */
+  function 跳过问答(id, options = {}) {
+    const client = String(id || "");
+    const thread = options.thread || "";
+    const key = deps.agentKey(client, thread);
+    const result = 管理器().skipPendingAsk?.(key);
+    if (result) 通知("交互已跳过", { key });
+    return result ? { ok: true, mode: "skipped" } : { ok: false };
+  }
+
+  /**
    * 释放一个会话运行时：销毁 Runtime、摘掉会话占用与待答交互。
    */
   async function 释放(sessionId) {
@@ -643,7 +655,7 @@ export function 创建执行句柄(初始依赖 = {}) {
       release: true,
       subscribe: true,
       availability: true,
-      actions: ["执行", "中断", "响应交互", "释放", "订阅", "可用性", "能力"],
+      actions: ["执行", "中断", "响应交互", "跳过问答", "释放", "订阅", "可用性", "能力"],
       availabilityState: 可用性(),
       sessions: manager.sessions?.size || 0,
       runtimes: manager.listRuntimes?.().length || 0,
@@ -654,6 +666,7 @@ export function 创建执行句柄(初始依赖 = {}) {
     执行,
     中断,
     响应交互,
+    跳过问答,
     释放,
     订阅,
     可用性,
