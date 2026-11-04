@@ -95,6 +95,10 @@ export const EVENT_UI = Object.freeze({
   completion_nudge: { phase: "executing" },
   run_budget_notice: { phase: "executing" },
   run_budget_blocked: { phase: "executing" },
+  tool_backgrounded: { phase: "executing" },
+  background_job_finished: { phase: "executing" },
+  background_job_failed: { phase: "executing" },
+  background_job_cancelled: { phase: "executing" },
   // 验证
   artifacts_validated: { phase: "verifying" },
   // 交付
@@ -198,6 +202,10 @@ export function flowEventLabel(event) {
     case "tool_repeat_warning": return `重复调用提醒：${data.name || "工具"} 第 ${data.count || 3} 次`;
     case "run_budget_notice": return `预算提醒：${eventMessageText(data.reason, "接近软预算")}`;
     case "run_budget_blocked": return `预算阻断：${eventMessageText(data.reason, "已达硬预算")}`;
+    case "tool_backgrounded": return `已转后台：${data.kind || "工具"} ${String(data.jobId || "").slice(0, 20)}`;
+    case "background_job_finished": return `后台任务完成${data.exitCode !== undefined ? `（exit ${data.exitCode}）` : ""}`;
+    case "background_job_failed": return `后台任务失败：${eventMessageText(data.error, "执行出错")}`;
+    case "background_job_cancelled": return `后台任务已取消：${eventMessageText(data.reason, "用户取消")}`;
     case "completion_nudge": return "补充完成状态";
     case "tool_start": return `调用 ${toolLabel}`;
     case "tool_end": return `${toolLabel}${data.isError ? "失败" : "完成"}`;
