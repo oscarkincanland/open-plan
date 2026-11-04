@@ -156,6 +156,9 @@ jobs:
       - name: 后台任务（2 分钟阈值 / 完成回执 / 取消 / 重启中断）
         run: node scripts/CI运行测试.mjs 后台任务测试
 
+      - name: bash 写锁范围（同工作区不同文件的并发任务不互相阻塞）
+        run: node scripts/CI运行测试.mjs bash写锁测试
+
       - name: 原生文本编辑（简单段落/样式走原生，批注等仍走 CLI）
         run: node scripts/CI运行测试.mjs 原生文本编辑测试
 

@@ -128,7 +128,8 @@ test("ask_user 解除澄清闸门", () => {
 console.log("\n▶ 并发锁与草稿预览接线（4 例）");
 test("bash 只读命令不占写锁", () => {
   assert.ok(AGENT_SOURCE.includes("const readonlyBash = isReadonlyBash(effectiveCommand);"));
-  assert.match(AGENT_SOURCE, /const operationPromise = readonlyBash\s*\? runBash\(\)\s*: withWorkspaceWriteLock/);
+  assert.match(AGENT_SOURCE, /const operationPromise = readonlyBash\s*\? runBash\(\)\s*: withBashWriteLocks/);
+  assert.match(AGENT_SOURCE, /bashWriteTargets\(command, \{ cwd: cwd \|\| ctx\.workspace, workspace: ctx\.workspace \}\)/);
 });
 test("officecli 按目标文件加锁", () => assert.ok(AGENT_SOURCE.includes("targetPath: parsed.path || ctx.workspace")));
 test("pipeline 按交付文件加锁", () => assert.ok(AGENT_SOURCE.includes("targetPath: lockTarget")));

@@ -88,6 +88,7 @@ import {
   stagedAccess,
   writeWorkspaceFile,
 } from "./写入协调.mjs";
+import { bashWriteTargets } from "./bash写锁.mjs";
 // officecli 的参数处理（分词 / 暂存文件引用 / 输出目录）抽成纯函数模块，便于单测。
 import { collectReferencedPaths, ensureOfficeOutputDirs, parseOfficeArgs as parseArgs } from "./office参数.mjs";
 import {
@@ -1683,12 +1684,13 @@ class AgentManager extends EventEmitter {
     // 这里与探测端共用同一个解析结果，保证"探测说可用"与"实际执行"是同一个 shell。
     const bashShell = resolveBashShell().shell;
     const localBash = createLocalBashOperations(bashShell ? { shellPath: bashShell } : {});
-    // 工作区级写锁只覆盖单次工具调用：长任务整轮持锁会把并发 Run 全部挡在门外
-    // （实测 33 次「文件正在被其他任务修改」都来自这种整轮持锁）。
-    const withWorkspaceWriteLock = async (ctx, kind, action) => {
+    // 写锁只覆盖单次工具调用：长任务整轮持锁会把并发 Run 全部挡在门外。
+    // 路径级锁用于地图项目等明确目录；bash 按命令推导真实目标（见 bash写锁.mjs），
+    // 避免两个任务在同一个工作区里因为「另一个任务写了无关文件」互相阻塞。
+    const withPathWriteLock = async (ctx, kind, targetPath, action) => {
       const token = await acquireWriteLockWithRetry({
         workspace: ctx.workspace,
-        targetPath: ctx.workspace,
+        targetPath,
         runId: ctx.runId,
         threadId: ctx.threadId,
         kind,
@@ -1697,6 +1699,24 @@ class AgentManager extends EventEmitter {
         return await action();
       } finally {
         releaseWriteLock(token);
+      }
+    };
+    const withBashWriteLocks = async (ctx, kind, command, cwd, action) => {
+      const targets = bashWriteTargets(command, { cwd: cwd || ctx.workspace, workspace: ctx.workspace });
+      const tokens = [];
+      try {
+        for (const target of targets) {
+          tokens.push(await acquireWriteLockWithRetry({
+            workspace: ctx.workspace,
+            targetPath: target,
+            runId: ctx.runId,
+            threadId: ctx.threadId,
+            kind,
+          }));
+        }
+        return await action();
+      } finally {
+        for (const token of tokens.reverse()) releaseWriteLock(token);
       }
     };
     const managedBashTool = createBashToolDefinition(workspace, {
@@ -1786,7 +1806,7 @@ class AgentManager extends EventEmitter {
           // 只读命令（ls/grep/unzip -p 等）不占工作区写锁，避免 Word/PPT 两个任务互相挡。
           const operationPromise = readonlyBash
             ? runBash()
-            : withWorkspaceWriteLock(ctx, "bash", async () => {
+            : withBashWriteLocks(ctx, "bash", effectiveCommand, cwd, async () => {
                 writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", command: effectiveCommand.slice(0, 500) });
                 writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash" });
                 try {
@@ -3049,7 +3069,7 @@ execute: async (_toolCallId, params, signal) => {
           };
         }
 
-        await withWorkspaceWriteLock(ctx, "map_edit", async () => {
+        await withPathWriteLock(ctx, "map_edit", path.join(ctx.workspace, "maps", name), async () => {
           writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}/style.json`, kind: "map_edit" });
           writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}/style.json`, kind: "map_edit" });
           atomicWriteFile(stylePath, JSON.stringify(style, null, 2), "utf8");
@@ -3111,7 +3131,7 @@ execute: async (_toolCallId, params, signal) => {
         try { geojson = JSON.parse(fs.readFileSync(fp, "utf8")); } catch {
           return { content: [{ type: "text", text: `不是合法的 GeoJSON: ${rel}` }], details: {} };
         }
-        const r = await withWorkspaceWriteLock(ctx, "map_import", async () => {
+        const r = await withPathWriteLock(ctx, "map_import", path.join(ctx.workspace, "maps", name), async () => {
           // 台账记**具体文件**（不是项目目录）：产物归属按精确路径匹配，
           // 记目录会让导入的图层只落到"待确认"（run-window）而不是"已确认"（write-ledger）。
           const wrote = [`maps/${name}/layers/${layerId}.geojson`, `maps/${name}/style.json`, `maps/${name}/map.config.json`];
@@ -3264,7 +3284,7 @@ execute: async (_toolCallId, params, signal) => {
           entry, tool: "map_reset", input: `${level} maps/${name}`,
           runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
         });
-        const result = await withWorkspaceWriteLock(ctx, "map_reset", async () => map.resetProject(name, level, { actor: "agent" }));
+        const result = await withPathWriteLock(ctx, "map_reset", path.join(ctx.workspace, "maps", name), async () => map.resetProject(name, level, { actor: "agent" }));
         if (!result?.ok) return { content: [{ type: "text", text: `重置失败：${result?.error || "未知错误"}` }], details: {} };
         emitChannelSafe(entry, "file_changed", { files: [`maps/${name}/map.config.json`, `maps/${name}/style.json`] });
         const removed = Array.isArray(result.removed) ? result.removed.length : 0;
@@ -3529,7 +3549,7 @@ execute: async (_toolCallId, params, signal) => {
           entry, tool: "map_save_analysis", input: `${project}/${layerId}`,
           runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
         });
-        await withWorkspaceWriteLock(ctx, "map_save_analysis", async () => {
+        await withPathWriteLock(ctx, "map_save_analysis", path.join(ctx.workspace, "maps", name), async () => {
           // 台账记具体文件（含 -lines 派生层）：产物归属按精确路径匹配，
           // 记目录会让保存的图层只落到"待确认"而不是"已确认"。
           const wrote = [
