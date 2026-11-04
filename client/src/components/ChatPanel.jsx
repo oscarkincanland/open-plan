@@ -6245,20 +6245,15 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   }, [streaming, visibleBlocks]);
   return (
     <div className={`msg ${isUser ? "user" : "assistant"} ${m.status || ""}`} data-msg-index={index}>
-      <div className={`avatar ${isUser ? "user-avatar" : "agent-avatar"} ${!isUser && streaming ? "is-streaming" : ""}`}>
-        {isUser
-          ? <Icon name="user" size={14} />
-          : <Logo size={22} withBackground={false} className="agent-avatar-mark" />}
-      </div>
       <div className="msg-main">
-        {/* 消息头：作者 + 时间（相邻同角色消息省略，减少重复气泡头部） */}
-        {!hideHeader && (
+        {/* 消息头只保留助手侧（模型 + 时间 + 失败/中断）；用户侧只显示输入气泡。 */}
+        {!hideHeader && !isUser && (
         <div className="msg-header">
-          <span className="msg-author">{isUser ? "You" : (model || "Agent")}</span>
+          <span className="msg-author">{model || "Agent"}</span>
           <span className="msg-time">{formatMsgTime(m.createdAt || Date.now())}</span>
-          {!isUser && m.status === "error" && <span className="msg-error-badge">生成失败</span>}
+          {m.status === "error" && <span className="msg-error-badge">生成失败</span>}
           {/* 中断既要认本地标记，也要认 Run 的终态：刷新/切回会话后本地标记会丢，只有 runStatus 还在 */}
-          {!isUser && (m.stopped || runInterrupted) && <span className="msg-stopped-badge">{m.stopped ? "已停止生成" : "本轮已中断"}</span>}
+          {(m.stopped || runInterrupted) && <span className="msg-stopped-badge">{m.stopped ? "已停止生成" : "本轮已中断"}</span>}
         </div>
         )}
         {isUser ? (

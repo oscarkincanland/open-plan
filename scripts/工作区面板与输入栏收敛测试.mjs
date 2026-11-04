@@ -81,7 +81,9 @@ test("对话区内容列在对话区内居中，并随右侧画布宽度自适�
   assert.match(styles, /\.center-chat-slot \.chat-compose \{[\s\S]{0,300}?margin: 0 auto 18px;/, "输入区外壳应在对话区内居中");
   assert.match(styles, /\.center-chat-slot \.chat-input \{[\s\S]{0,220}?margin: 0 auto 18px;/, "输入框应在对话区内居中");
   assert.match(styles, /width: min\(var\(--msg-content-max\), calc\(100% - var\(--chat-gutter\) \* 2 - var\(--scrollbar-w\)\)\)/, "宽度随对话区可用宽度收缩（右侧画布开/关自适应）");
-  assert.match(styles, /\.center-chat-slot \.msg > \.avatar \{[\s\S]{0,120}?left: -39px;/, "头像定位应恢复（居中后留白够用）");
+  assert.doesNotMatch(styles, /\.center-chat-slot \.msg > \.avatar/, "消息头像应移除");
+  assert.doesNotMatch(chatPanel, /className=\{`avatar /, "消息组件不应再渲染头像容器");
+  assert.match(chatPanel, /!hideHeader && !isUser/, "消息头只保留助手侧");
 });
 
 test("输入栏与顶栏图标去外框、尺寸统一 28px", () => {

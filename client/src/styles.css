@@ -886,9 +886,8 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .chat-empty { color: var(--muted); text-align: center; padding: 40px 0; font-size: 13px; }
 .vision-hint { padding: 4px 12px; font-size: 11px; color: var(--warning); background: #2a2410; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 /* messages */
-.msg { display: flex; gap: 10px; }
-.msg.user { flex-direction: row-reverse; }
-.avatar { width: 28px; height: 28px; border-radius: 4px; background: var(--surface); display: flex; align-items: center; justify-content: center; font-size: 12px; flex-shrink: 0; color: var(--muted); }
+.msg { display: flex; gap: 0; }
+.msg.user { flex-direction: row; justify-content: flex-end; }
 .bubble { max-width: 85%; width: fit-content; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; line-height: 1.7; word-break: break-word; white-space: pre-wrap; }
 /* 用户消息：高对比强调（边框 + 加粗文本），突出"我的任务" */
 .msg.user .bubble {
@@ -1382,7 +1381,6 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   padding: 0 2px;
 }
 .msg-author { font-family: var(--font-emphasis); font-weight: 600; color: var(--muted); }
-.msg.user .msg-author { color: var(--muted); }
 .msg-time { font-size: 10px; color: var(--dim); font-variant-numeric: tabular-nums; }
 .msg-streaming-status {
   display: inline-flex;
@@ -2832,20 +2830,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   font-size: 11px;
   flex-shrink: 0;
 }
-.avatar.user-avatar {
-  background: var(--user-bg);
-  color: var(--user-fg, var(--accent));
-  border: 1px solid var(--border);
-}
-.avatar.agent-avatar {
-  background: var(--accent);
-  color: var(--body-bg);
-}
-@keyframes agent-avatar-breathe {
-  0%, 100% { transform: scale(.992); }
-  50% { transform: scale(1.012); }
-}
-.avatar.agent-avatar.is-streaming { animation: agent-avatar-breathe 3.8s ease-in-out infinite; transform-origin: center; }
+/* 2026-11-04：消息头像已移除；保留此空位注释避免样式表出现孤立选择器。 */
 
 /* ===== 技能广场分类 ===== */
 .modal-view-switch {
@@ -8997,21 +8982,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   margin-left: auto;
   margin-right: auto;
 }
-.center-chat-slot .msg { position: relative; }
-/* 头像放到内容列外侧的留白里：让消息正文与输入框/任务卡严格同宽、边缘对齐。
-   窄屏留白不足时隐藏头像（消息头仍有作者名），避免压住正文。 */
-.center-chat-slot .msg > .avatar {
-  position: absolute;
-  top: 2px;
-  left: -39px;
-  width: 30px;
-  height: 30px;
-  border-radius: var(--radius-lg);
-}
-.center-chat-slot .msg.user > .avatar { left: auto; right: -39px; }
-@media (max-width: 1100px) {
-  .center-chat-slot .msg > .avatar { display: none; }
-}
+.center-chat-slot .msg { position: relative; gap: 0; }
+/* 2026-11-04：消息极简化，不再渲染头像；用户气泡靠右，助手正文占满内容列。 */
 .center-chat-slot .msg-header { min-height: 22px; gap: 6px; }
 .center-chat-slot .msg-author { font-size: 11px; }
 .center-chat-slot .msg-time { font-size: 10px; }
@@ -9817,7 +9789,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   margin-right: 0;
 }
 .center-chat-slot.map-mode .msg { gap: 0; }
-.center-chat-slot.map-mode .msg > .avatar { display: none; }
+.center-chat-slot.map-mode .msg { padding-right: 0; }
 .center-chat-slot.map-mode .msg.system.summary-msg { padding-left: 0; }
 .center-chat-slot.map-mode .msg-main { width: 100%; max-width: 100%; }
 .center-chat-slot.map-mode .msg.user .msg-main { max-width: min(88%, 100%); }

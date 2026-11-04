@@ -101,7 +101,7 @@ for (const 名称 of 全部关键帧) {
   if (动画声明.some((d) => /infinite/.test(d) && 命中.test(d.replace(/^animation\s*:/, " ")))) 无限动画.add(名称);
 }
 const 期望持续动画 = [
-  "activity-marquee-sweep", "agent-avatar-breathe", "blink", "brain-pulse", "dot-breathe-soft",
+  "activity-marquee-sweep", "blink", "brain-pulse", "dot-breathe-soft",
   "marquee-neon", "marquee-scroll", "marquee-shine",
   "mp-spin", "pulse", "pulse-status", "pulse-status-soft", "session-pulse", "spin", "streaming-label-breathe", "thinking-caret-blink",
 ];
@@ -114,7 +114,6 @@ assert.deepEqual(
 // 每个持续动画的宿主选择器都必须在闸门清单里
 const 持续动画宿主 = {
   spin: [".loading-spinner", ".icon-loading"],
-  "agent-avatar-breathe": [".avatar.agent-avatar.is-streaming"],
   blink: [".typing", ".run-summary-dot.running"],
   "dot-breathe-soft": [".efp-pulse", ".execution-flow-item.running .execution-flow-dot", ".streaming-dot"],
   pulse: [".tool-icon.run", ".tl-state.run"],
