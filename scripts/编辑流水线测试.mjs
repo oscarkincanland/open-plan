@@ -103,6 +103,34 @@ await test("pptx 一次通过且页数一致", async () => {
   assert.ok(result.checks.some((c) => c.includes("幻灯片 3 页")));
   assert.ok(result.checks.some((c) => c.includes("章节覆盖 3/3")));
 });
+await test("pptx 支持 sourceMarkdown 直通（按标题分页）", async () => {
+  const markdown = [
+    "# 金东区农村公路网布局规划汇报",
+    "- 汇报单位：浙江数智交院",
+    "## 现状与问题",
+    "- 乡道村道 702.709 km",
+    "- 12 个乡镇全部负增长",
+    "## 布局方案",
+    "- 三横三纵骨架",
+    "- 分期实施",
+  ].join("\n");
+  const result = await runEditorialPipeline({
+    format: "pptx",
+    goal: "金东区农村公路网布局规划汇报",
+    workspace: tmp,
+    emit,
+    sourceMarkdown: markdown,
+    runModelTask: async () => "判定：pass",
+  });
+  assert.equal(result.status, "completed");
+  assert.ok(result.checks.some((c) => c.includes("幻灯片 3 页")), `应生成 3 页，实际：${result.checks.join(" | ")}`);
+  assert.ok(result.checks.some((c) => c.includes("章节覆盖 3/3")));
+});
+await test("editorial_pipeline 工具不再限制 requirements 1000 字", () => {
+  const source = fs.readFileSync(path.join(ROOT, "server", "agent.mjs"), "utf8");
+  assert.match(source, /requirements: Type\.Optional\(Type\.String\(\{ maxLength: 20000/);
+  assert.match(source, /goal: Type\.String\(\{ minLength: 4, maxLength: 6000/);
+});
 
 console.log("\n▶ revise 回环（≤1 轮）");
 await test("内容缺漏触发 revise→补写→复渲染→通过；Formatter 跑两遍", async () => {

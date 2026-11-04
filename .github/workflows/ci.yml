@@ -159,6 +159,9 @@ jobs:
       - name: 原生文本编辑（简单段落/样式走原生，批注等仍走 CLI）
         run: node scripts/CI运行测试.mjs 原生文本编辑测试
 
+      - name: 编辑流水线（docx/pptx / sourceMarkdown / 长 requirements）
+        run: node scripts/CI运行测试.mjs 编辑流水线测试
+
       - name: 产物文件类型图标（docx 等按类型出图，不回退通用图标）
         run: node scripts/CI运行测试.mjs 产物图标测试
 

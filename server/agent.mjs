@@ -4185,13 +4185,13 @@ execute: async (_toolCallId, params, signal) => {
         "适合结构化文档/PPT 初稿的一次性生成；生成后再用 officecli 做精修。传 goal（目标）与 format（docx|pptx），可选 outputPath 与 requirements。",
       promptSnippet: "生成新的 Word/PPT 初稿时优先用编辑流水线（每步有检查、产物可回放）。",
       parameters: Type.Object({
-        goal: Type.String({ minLength: 4, maxLength: 2000, description: "要生成的文档目标与背景（越具体越好）" }),
+        goal: Type.String({ minLength: 4, maxLength: 6000, description: "要生成的文档目标与背景（越具体越好）" }),
         format: Type.Union([Type.Literal("docx"), Type.Literal("pptx")], { description: "产物格式：docx=Word 文档，pptx=演示文稿" }),
         outputPath: Type.Optional(Type.String({ maxLength: 200, description: "工作区相对输出路径（如 报告/初稿.docx）；缺省按目标命名" })),
-        requirements: Type.Optional(Type.String({ maxLength: 1000, description: "额外要求：受众、字数、风格、必含章节等" })),
+        requirements: Type.Optional(Type.String({ maxLength: 20000, description: "额外要求：受众、字数、风格、必含章节等（长要求可直接传入，不要截断）" })),
         scene: Type.Optional(Type.String({ maxLength: 40, description: "场景 ID（academic/report/contract/official-doc/resume/exam/copywriting）；缺省自动选择" })),
         clarificationAnswers: Type.Optional(Type.Array(Type.String({ maxLength: 500 }), { description: "用户对澄清问题的回答；有值则跳过澄清闸门" })),
-        sourceMarkdown: Type.Optional(Type.String({ maxLength: 200000, description: "已有 Markdown 正文；提供时跳过 Planner/Writer，直接排版并验收" })),
+        sourceMarkdown: Type.Optional(Type.String({ maxLength: 200000, description: "已有 Markdown 正文（docx/pptx 均支持）；提供时跳过 Planner/Writer，直接排版并验收；pptx 按标题分页、段落作要点" })),
       }),
       execute: async (_toolCallId, params, signal) => {
         const ctx = activeWriteContext("editorial_pipeline");

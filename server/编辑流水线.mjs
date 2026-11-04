@@ -95,6 +95,32 @@ export function diagnoseUnparsable(raw, { intermediateDir, fileBase, stage, work
   return `原始返回 ${text.length} 字符${saved}；开头：${head || "（空）"}`;
 }
 
+/** Markdown blocks → PPT slides：标题分页、段落即要点、表格挂当前页。 */
+function markdownBlocksToSlides(blocks, fallbackTitle = "汇报材料") {
+  const slides = [];
+  let current = null;
+  const ensure = () => {
+    if (!current) {
+      current = { title: String(fallbackTitle || "概述").slice(0, 80), bullets: [] };
+      slides.push(current);
+    }
+    return current;
+  };
+  for (const block of Array.isArray(blocks) ? blocks : []) {
+    if (block?.type === "heading") {
+      current = { title: String(block.text || "未命名").slice(0, 80), bullets: [] };
+      slides.push(current);
+    } else if (block?.type === "paragraph") {
+      const text = String(block.text || "").trim();
+      if (text) ensure().bullets.push(text);
+    } else if (block?.type === "table" && Array.isArray(block.rows) && block.rows.length) {
+      const slide = ensure();
+      if (!slide.table) slide.table = { headers: block.rows[0].map(String), rows: block.rows.slice(1) };
+    }
+  }
+  return slides;
+}
+
 /**
  * Evaluator 的确定性检查（§5.2：内容覆盖、格式合规、文件可打开、结构完整）。
  * @returns {{ok: boolean, structural: boolean, checks: string[], issues: string[]}}
@@ -303,12 +329,23 @@ export async function runEditorialPipeline({
     let effectiveCover;
     if (sourceBlocks) {
       const title = sourceHeadings[0] || safePipelineName(goal);
-      outline = {
-        outline: { title, sections: sourceHeadings.map((text) => ({ title: text })) },
-        checks: [`Markdown 直通：${sourceBlocks.length} 个内容块`],
-      };
-      content = { content: { sections: [] }, checks: [] };
-      effectiveCover = cover ? { ...cover, title: String(cover.title || title).slice(0, 80) } : null;
+      if (normalizedFormat === "pptx") {
+        // Markdown 直通 PPT：每个标题一页，标题后的段落作为要点；表格挂到当前页。
+        const slides = markdownBlocksToSlides(sourceBlocks, title);
+        outline = {
+          outline: { title, slides: slides.map((slide) => ({ title: slide.title })) },
+          checks: [`Markdown 直通：${slides.length} 页`],
+        };
+        content = { content: { slides }, checks: [] };
+        effectiveCover = null;
+      } else {
+        outline = {
+          outline: { title, sections: sourceHeadings.map((text) => ({ title: text })) },
+          checks: [`Markdown 直通：${sourceBlocks.length} 个内容块`],
+        };
+        content = { content: { sections: [] }, checks: [] };
+        effectiveCover = cover ? { ...cover, title: String(cover.title || title).slice(0, 80) } : null;
+      }
       emit("pipeline_stage_finished", { pipelineId, stage: "planner", label: STAGE_LABELS.planner, status: "skipped", checks: ["sourceMarkdown 直通，跳过 Planner"] });
       emit("pipeline_stage_finished", { pipelineId, stage: "writer", label: STAGE_LABELS.writer, status: "skipped", checks: ["sourceMarkdown 直通，跳过 Writer"] });
     } else {
@@ -377,7 +414,6 @@ export async function runEditorialPipeline({
     }
 
     // ---- Stage 3 Formatter（原生直写）+ Evaluator 回环（≤1 轮 revise）----
-    if (sourceBlocks && normalizedFormat === "pptx") throw new Error("sourceMarkdown 仅支持 docx");
     let formatterResult = null;
     let evaluation = null;
     for (let round = 0; round <= (sourceBlocks ? 0 : 1); round += 1) {
