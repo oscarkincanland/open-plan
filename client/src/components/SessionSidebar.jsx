@@ -112,13 +112,16 @@ function groupByDate(sessions) {
 }
 
 // 会话列表：置顶区 + 日期分组（Proma 风格，供左侧栏与对话栏历史抽屉共用）
-export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete, onBatchDelete, onRename, onFork, onPin, onFreeze, initialEditingId = null }) {
+export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete, onBatchDelete, onRename, onFork, onPin, onFreeze, onArchive, onBatchArchive, initialEditingId = null }) {
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState("");
   const [pinned, setPinned] = useState(getPinnedSet);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [actionsId, setActionsId] = useState(null);
+  // 2026-11-03：会话行操作收敛为一个「⋮」菜单；菜单位置用 fixed 坐标。
+  const [menuSessionId, setMenuSessionId] = useState(null);
+  const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
   const [selecting, setSelecting] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   // v0.13.6：会话分组模式（日期 / 工作区），每个工作区默认展示 20 条。
@@ -169,6 +172,43 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
       return next;
     });
   };
+
+  const openSessionMenu = (event, session) => {
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    setMenuSessionId(session.id);
+    setMenuPos({ x: Math.max(8, rect.right - 196), y: rect.bottom + 4 });
+  };
+
+  const sessionMenuItems = (() => {
+    if (!menuSessionId) return [];
+    const session = sessions.find((item) => item.id === menuSessionId);
+    if (!session) return [];
+    const isPinned = session.pinned ?? pinned.has(session.id);
+    const running = RUNNING_SESSION_STATUSES.has(session.runStatus);
+    if (session.archived) {
+      return [
+        { label: "恢复会话", icon: "history", onClick: async () => { if (onArchive) await onArchive(session.id, false); } },
+        { label: "重命名", icon: "penTool", onClick: () => { setEditingId(session.id); setEditValue(session.label || session.title || ""); } },
+        { separator: true },
+        { label: "永久删除", icon: "trash", danger: true, onClick: async () => { if (await askConfirm("永久删除此归档会话？删除后不可恢复。")) await onDelete?.(session.id); } },
+      ];
+    }
+    return [
+      { label: isPinned ? "取消置顶" : "置顶", icon: "pin", onClick: () => handleTogglePin(session) },
+      { label: "重命名", icon: "penTool", onClick: () => { setEditingId(session.id); setEditValue(session.label || session.title || ""); } },
+      {
+        label: running ? "运行中不可归档" : "归档",
+        icon: "bookmark",
+        disabled: running || !onArchive,
+        onClick: () => { if (onArchive) onArchive(session.id, true); },
+      },
+      { label: "从此会话创建分支", icon: "copy", onClick: () => { if (onFork) onFork(session.id, `${session.title || session.label || "会话"}（分支）`); } },
+      { label: session.frozen ? "解冻会话" : "冻结会话", icon: "lock", onClick: () => handleToggleFreeze(session) },
+      { separator: true },
+      { label: "删除", icon: "trash", danger: true, onClick: async () => { if (await askConfirm("确认删除此会话?")) await onDelete?.(session.id); } },
+    ];
+  })();
 
   const searched = search.trim()
     ? sessions.filter((s) => (s.title || s.label || s.id).toLowerCase().includes(search.toLowerCase()))
@@ -260,31 +300,15 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
       {s.cwd && <div className="session-cwd" title={s.cwd}>{shortenCwd(s.cwd)}</div>}
       {!selecting && actionsId === s.id && (
         <div className="session-actions" onClick={(e) => e.stopPropagation()}>
-        <提示气泡 label={isPinned ? "取消置顶" : "置顶"}>
-          <button className="btn-icon" onClick={() => handleTogglePin(s)} aria-label={isPinned ? "取消置顶" : "置顶"}>
-            <Icon name="pin" size={12} className={isPinned ? "pinned" : ""} />
-          </button>
-        </提示气泡>
-        <提示气泡 label="重命名">
           <button
-            className="btn-icon"
-            onClick={() => { setEditingId(s.id); setEditValue(s.label || s.title || ""); }}
-            aria-label="重命名"
-          ><Icon name="penTool" size={12} /></button>
-        </提示气泡>
-        <提示气泡 label="从此会话创建分支">
-          <button className="btn-icon" onClick={async () => { if (onFork) await onFork(s.id, `${s.title || s.label || "会话"}（分支）`); }} aria-label="从此会话创建分支"><Icon name="copy" size={12} /></button>
-        </提示气泡>
-        <提示气泡 label={s.frozen ? "解冻会话" : "冻结会话"}>
-          <button className="btn-icon" onClick={() => handleToggleFreeze(s)} aria-label={s.frozen ? "解冻会话" : "冻结会话"}><Icon name="lock" size={12} /></button>
-        </提示气泡>
-        <提示气泡 label="删除">
-          <button
-            className="btn-icon danger"
-            onClick={async () => { if (await askConfirm("确认删除此会话?")) { await onDelete(s.id); } }}
-            aria-label="删除"
-          ><Icon name="trash" size={12} /></button>
-        </提示气泡>
+            type="button"
+            className="btn-icon session-menu-btn"
+            aria-label="会话操作"
+            aria-haspopup="menu"
+            aria-expanded={menuSessionId === s.id}
+            title="会话操作"
+            onClick={(event) => openSessionMenu(event, s)}
+          ><Icon name="more" size={14} /></button>
         </div>
       )}
     </div>
@@ -303,6 +327,12 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
         {selecting && <>
           <button type="button" onClick={() => setSelectedIds(new Set(filtered.map((session) => session.id)))}>全选</button>
           <button type="button" onClick={() => setSelectedIds(new Set())}>清空</button>
+          <button type="button" disabled={!selectedIds.size || !onBatchArchive} onClick={async () => {
+            if (!selectedIds.size || !onBatchArchive) return;
+            await onBatchArchive([...selectedIds], true);
+            setSelectedIds(new Set());
+            setSelecting(false);
+          }}>批量归档{selectedIds.size ? `（${selectedIds.size}）` : ""}</button>
           <button type="button" className="danger" disabled={!selectedIds.size || !onBatchDelete} onClick={async () => {
             if (!selectedIds.size || !onBatchDelete) return;
             if (!(await askConfirm(`确认删除已选的 ${selectedIds.size} 个会话吗？运行中的会话会自动跳过。`))) return;
@@ -347,11 +377,20 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
         </div>
       ))}
       {filtered.length === 0 && sessions.length > 0 && <div className="empty">无匹配结果</div>}
+      {menuSessionId && sessionMenuItems.length > 0 && (
+        <ContextMenu
+          x={menuPos.x}
+          y={menuPos.y}
+          items={sessionMenuItems}
+          onClose={() => setMenuSessionId(null)}
+          autoFocus
+        />
+      )}
     </div>
   );
 }
 
-export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onAtMention, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onBatchDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenMcp, onOpenPiPlugins, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, onCollapseSidebar, onCreateTask, theme = "dark", loadStatus = {}, changedFiles = NO_CHANGED_FILES }) {
+export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onAtMention, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenMcp, onOpenPiPlugins, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, onCollapseSidebar, onCreateTask, theme = "dark", loadStatus = {}, changedFiles = NO_CHANGED_FILES }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
   // v0.13.8：项目卡片工作区菜单（创建新任务 / 在资源管理器打开 / 归档）
@@ -1160,6 +1199,8 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                 onSelect={(session) => { setModal(null); setHistoryEditSessionId(null); onSelectSession?.(session); }}
                 onDelete={onDeleteSession}
                 onBatchDelete={onBatchDeleteSession}
+                onArchive={onArchiveSession}
+                onBatchArchive={onBatchArchiveSession}
                 onRename={onRenameSession}
                 onFork={onForkSession}
                 onPin={onPinSession}
@@ -1255,7 +1296,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
               <button className="mp-op" onClick={() => setModal(null)} title="关闭"><Icon name="close" size={14} /></button>
             </div>
             <div className="sb-modal-body">
-              {modalTab === "settings" ? <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} clientId={clientId} threadId={threadId} activeModel={activeModel} onModelChange={onModelChange} onProjectUpdated={onProjectUpdated} onProjectSelect={onProjectChange} /> : <MemoryTab workspace={currentWorkspace} projectId={currentProjectId} />}
+              {modalTab === "settings" ? <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} clientId={clientId} threadId={threadId} activeModel={activeModel} onSessionsChanged={onRefreshSessions} onModelChange={onModelChange} onProjectUpdated={onProjectUpdated} onProjectSelect={onProjectChange} /> : <MemoryTab workspace={currentWorkspace} projectId={currentProjectId} />}
             </div>
           </div>
         </div>

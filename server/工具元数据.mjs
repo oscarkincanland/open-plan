@@ -83,6 +83,16 @@ add([
     resultBudget: budget(20 * KB, "head", "truncate"),
     notes: "H2-4 开启时由调用方包 <skill_content> 并执行预算",
   }),
+  // 2026-11-03：只写工作区 .oaw/skill-drafts，不写技能库；安装由用户确认。
+  meta("skill_draft", {
+    readOnly: false,
+    destructive: false,
+    sideEffectScope: "workspace",
+    riskLevel: "medium",
+    needsApproval: false,
+    resultBudget: budget(4 * KB, "head", "truncate"),
+    notes: "技能草稿；运行时按复杂任务与项目设置动态放行，安装需用户确认",
+  }),
 
   // ---- 联网 ----
   meta("web_search", {

@@ -5,7 +5,7 @@ import { providerIdentity } from "../供应商标识.js";
 import { useTheme, SKINS } from "../theme.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
 import { ACTIVITY_DISPLAY_OPTIONS, ANSWER_DETAIL_OPTIONS, MARQUEE_COLORS, MARQUEE_SPEEDS, MARQUEE_STYLES, MOTION_LEVELS, PREVIEW_AUTO_OPEN_OPTIONS, useAppearance, useAppearanceSetter } from "../界面外观.js";
-import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentModelConfigs, agentNetworkSettings, agentNetworkSettingsSave, agentPlanApply, agentPlanDisconnect, agentPlanModels, agentPlans, agentProviderCatalog, agentSetDefaultModel, archiveProject, classifyProjects, createProject, deleteAgentModelConfig, fetchAgentModels, getPermissionRules, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, removePermissionRule, saveAgentModelConfig, searchSettings, searchSettingsSave, searchSettingsTest, updateProject, updateProjectSettings } from "../api.js";
+import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentModelConfigs, agentNetworkSettings, agentNetworkSettingsSave, agentPlanApply, agentPlanDisconnect, agentPlanModels, agentPlans, agentProviderCatalog, agentSetDefaultModel, archiveProject, archiveSession, archiveSessions, classifyProjects, createProject, deleteAgentModelConfig, deleteSession, deleteSessions, fetchAgentModels, getPermissionRules, listSessions, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, removePermissionRule, saveAgentModelConfig, searchSettings, searchSettingsSave, searchSettingsTest, updateProject, updateProjectSettings } from "../api.js";
 import { notifyError, askConfirm } from "./Feedback.jsx";
 
 /**
@@ -96,7 +96,7 @@ function providerDraftFromConfig(config = null) {
 
 function ProjectSettingsSection({ project, projects = [], currentWorkspace = "", models = [], onProjectUpdated, onProjectSelect }) {
   const [projectDraft, setProjectDraft] = useState({ name: "", type: "综合项目", status: "进行中", description: "" });
-  const [settingsDraft, setSettingsDraft] = useState({ defaultModel: "", agentProfile: "通用 Agent", skills: [], memoryPolicy: "approval_required", artifactPolicy: "validation_required" });
+  const [settingsDraft, setSettingsDraft] = useState({ defaultModel: "", agentProfile: "通用 Agent", skills: [], skillsPolicy: "auto", allowSkillDrafts: "off", memoryPolicy: "approval_required", artifactPolicy: "validation_required" });
   const [projectFilter, setProjectFilter] = useState({ query: "", type: "", status: "", pinned: false, pending: false, sort: "recent" });
   const [createOpen, setCreateOpen] = useState(false);
   const [newProject, setNewProject] = useState({ name: "", rootPath: currentWorkspace, type: "综合项目", status: "进行中", description: "" });
@@ -115,6 +115,8 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
       defaultModel: project?.settings?.defaultModel || "",
       agentProfile: project?.settings?.agentProfile || "通用 Agent",
       skills: Array.isArray(project?.settings?.skills) ? project.settings.skills : [],
+      skillsPolicy: project?.settings?.skillsPolicy || "auto",
+      allowSkillDrafts: project?.settings?.allowSkillDrafts || "off",
       memoryPolicy: project?.settings?.memoryPolicy || "approval_required",
       artifactPolicy: project?.settings?.artifactPolicy || "validation_required",
     });
@@ -250,6 +252,20 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
           <div className="sp-row"><span className="sp-label">默认模型</span><select className="sp-select" value={settingsDraft.defaultModel} onChange={(e) => setSettingsDraft((value) => ({ ...value, defaultModel: e.target.value }))}><option value="">跟随系统默认</option>{models.map((item) => <option key={`${item.provider || "model"}/${item.id}`} value={item.id}>{item.id}</option>)}</select></div>
            <div className="sp-row"><span className="sp-label">Agent Profile</span><select className="sp-select" value={settingsDraft.agentProfile} onChange={(e) => setSettingsDraft((value) => ({ ...value, agentProfile: e.target.value }))}>{PROJECT_PROFILES.map((item) => <option key={item}>{item}</option>)}</select><span className="sp-note-inline">{PROFILE_POLICY_HINTS[settingsDraft.agentProfile] || "按任务选择工具链"}</span></div>
           <div className="sp-row"><span className="sp-label">允许 Skills</span><input className="sp-input" placeholder="skill-a, skill-b（留空表示按需）" value={settingsDraft.skills.join(", ")} onChange={(e) => setSettingsDraft((value) => ({ ...value, skills: e.target.value.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean) }))} /></div>
+          <div className="sp-row">
+            <span className="sp-label">技能策略</span>
+            <select className="sp-select" value={settingsDraft.skillsPolicy} onChange={(e) => setSettingsDraft((value) => ({ ...value, skillsPolicy: e.target.value }))}>
+              <option value="auto">自动（简单用默认，复杂才检索）</option>
+              <option value="always">总是检索</option>
+              <option value="off">关闭自动检索</option>
+            </select>
+            <span className="sp-label">技能草稿</span>
+            <select className="sp-select" value={settingsDraft.allowSkillDrafts} onChange={(e) => setSettingsDraft((value) => ({ ...value, allowSkillDrafts: e.target.value }))}>
+              <option value="off">关闭</option>
+              <option value="complex">仅复杂任务允许生成</option>
+            </select>
+          </div>
+          <div className="sp-note">技能草稿只写工作区 `.oaw/skill-drafts`，安装到技能库必须由你在技能广场里确认。</div>
           <div className="sp-row"><span className="sp-label">记忆策略</span><select className="sp-select" value={settingsDraft.memoryPolicy} onChange={(e) => setSettingsDraft((value) => ({ ...value, memoryPolicy: e.target.value }))}><option value="approval_required">必须审核后沉淀</option><option value="manual">仅手动维护</option></select><span className="sp-label">成果策略</span><select className="sp-select" value={settingsDraft.artifactPolicy} onChange={(e) => setSettingsDraft((value) => ({ ...value, artifactPolicy: e.target.value }))}><option value="validation_required">校验通过后固定</option><option value="manual">仅手动固定</option></select></div>
           <div className="sp-row"><span className="sp-label">操作</span><button className="btn-sm primary" onClick={saveProject} disabled={saving}>{saving ? "保存中…" : "保存项目设置"}</button>{message && <span className="sp-auth-msg">{message}</span>}</div>
         </>
@@ -258,7 +274,139 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
   );
 }
 
-export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], defaultModel = "", activeModel = "", clientId = "", threadId = "", initialSection = "model", onModelChange, onModelsRefresh, onProjectUpdated, onProjectSelect }) {
+function formatArchiveTime(value) {
+  const ms = Date.parse(value || "");
+  if (!Number.isFinite(ms)) return "时间未知";
+  const diff = Date.now() - ms;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "刚刚";
+  if (mins < 60) return `${mins} 分钟前`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  return `${Math.floor(hours / 24)} 天前`;
+}
+
+/**
+ * 归档历史（2026-11-03）：归档会话的唯一管理入口。
+ * 归档只改 header，不删除文件/消息；运行中的会话不可归档，因此这里不会出现“在跑”的项。
+ */
+function ArchiveSettingsSection({ onSessionsChanged }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [query, setQuery] = useState("");
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [message, setMessage] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setMessage("");
+    try {
+      const result = await listSessions({ archived: "only" });
+      setItems(Array.isArray(result?.sessions) ? result.sessions : []);
+    } catch (error) {
+      setMessage(`读取归档失败：${error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const available = new Set(items.map((item) => item.id));
+    setSelectedIds((current) => new Set([...current].filter((id) => available.has(id))));
+  }, [items]);
+
+  const visible = query.trim()
+    ? items.filter((item) => `${item.title || ""} ${item.label || ""} ${item.cwd || ""}`.toLowerCase().includes(query.trim().toLowerCase()))
+    : items;
+  const toggle = (id) => setSelectedIds((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const restoreOne = async (id) => {
+    try {
+      await archiveSession(id, false);
+      await load();
+      onSessionsChanged?.();
+      setMessage("已恢复该会话");
+    } catch (error) { setMessage(`恢复失败：${error.message}`); }
+  };
+  const deleteOne = async (id) => {
+    if (!(await askConfirm("永久删除此归档会话？删除后不可恢复。"))) return;
+    try {
+      await deleteSession(id);
+      await load();
+      onSessionsChanged?.();
+      setMessage("已永久删除");
+    } catch (error) { setMessage(`删除失败：${error.message}`); }
+  };
+  const batchRestore = async () => {
+    if (!selectedIds.size) return;
+    try {
+      const result = await archiveSessions([...selectedIds], false);
+      setSelectedIds(new Set());
+      await load();
+      onSessionsChanged?.();
+      setMessage(`已恢复 ${result?.restoredIds?.length || 0} 个会话${result?.skipped?.length ? `，跳过 ${result.skipped.length} 个` : ""}`);
+    } catch (error) { setMessage(`批量恢复失败：${error.message}`); }
+  };
+  const batchDelete = async () => {
+    if (!selectedIds.size) return;
+    if (!(await askConfirm(`永久删除已选的 ${selectedIds.size} 个归档会话？删除后不可恢复。`))) return;
+    try {
+      const result = await deleteSessions([...selectedIds]);
+      setSelectedIds(new Set());
+      await load();
+      onSessionsChanged?.();
+      setMessage(`已删除 ${result?.deleted?.length || 0} 个会话${result?.skipped?.length ? `，跳过 ${result.skipped.length} 个` : ""}`);
+    } catch (error) { setMessage(`批量删除失败：${error.message}`); }
+  };
+
+  return (
+    <div className="sp-section archive-settings-section" id="settings-archive">
+      <div className="sp-section-title"><Icon name="history" size={12} /> 归档历史</div>
+      <p className="sp-hint">归档只收起会话，不删除文件和消息，可随时恢复；运行中的会话不能归档。</p>
+      <div className="archive-toolbar">
+        <input className="sp-input" placeholder="搜索标题或工作区" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <button type="button" className="btn-sm" onClick={load} disabled={loading}><Icon name="refresh" size={12} /> {loading ? "刷新中…" : "刷新"}</button>
+      </div>
+      {selectedIds.size > 0 && (
+        <div className="archive-batch">
+          <span>已选 {selectedIds.size} 个</span>
+          <button type="button" className="btn-xs" onClick={() => setSelectedIds(new Set(visible.map((item) => item.id)))}>全选</button>
+          <button type="button" className="btn-xs" onClick={() => setSelectedIds(new Set())}>清空</button>
+          <button type="button" className="btn-xs" onClick={batchRestore}>批量恢复</button>
+          <button type="button" className="btn-xs danger" onClick={batchDelete}>批量永久删除</button>
+        </div>
+      )}
+      {loading && !items.length && <div className="sp-note">正在读取归档…</div>}
+      {!loading && !visible.length && <div className="empty">暂无归档会话</div>}
+      <div className="archive-list">
+        {visible.map((item) => (
+          <div key={item.id} className="archive-item">
+            <input type="checkbox" checked={selectedIds.has(item.id)} onChange={() => toggle(item.id)} aria-label={`选择 ${item.title || item.label || item.id}`} />
+            <div className="archive-item-main">
+              <strong title={item.title || item.label || "未命名会话"}>{item.title || item.label || "未命名会话"}</strong>
+              <small>
+                {item.mode === "chat" ? "Chat" : item.mode === "review" ? "Review" : "Work"}
+                {item.cwd ? ` · ${item.cwd}` : ""}
+                {` · 归档于 ${formatArchiveTime(item.archivedAt)}`}
+              </small>
+            </div>
+            <div className="archive-item-actions">
+              <button type="button" className="btn-xs" onClick={() => restoreOne(item.id)}>恢复</button>
+              <button type="button" className="btn-xs danger" onClick={() => deleteOne(item.id)}>永久删除</button>
+            </div>
+          </div>
+        ))}
+      </div>
+      {message && <div className="sp-note archive-msg">{message}</div>}
+    </div>
+  );
+}
+
+export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], defaultModel = "", activeModel = "", clientId = "", threadId = "", initialSection = "model", onSessionsChanged, onModelChange, onModelsRefresh, onProjectUpdated, onProjectSelect }) {
   const { theme, setTheme, skin, setSkin } = useTheme();
   const [settingsSection, setSettingsSection] = useState("model");
   const appearance = useAppearance();
@@ -965,12 +1113,15 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
           ["network", "网络与代理"],
           ["services", "服务集成"],
           ["project", "项目设置与记忆"],
+          ["archive", "归档历史"],
           ["permission", "审批与权限"],
           ["advanced", "命令面板与高级"],
         ].map(([id, label]) => (
           <button key={id} className={settingsSection === id ? "active" : ""} onClick={() => setSettingsSection(id)}>{label}</button>
         ))}
       </nav>
+
+      {settingsSection === "archive" && <ArchiveSettingsSection onSessionsChanged={onSessionsChanged} />}
 
       {settingsSection === "plans" && <>
       <div className="sp-section" id="settings-plans">

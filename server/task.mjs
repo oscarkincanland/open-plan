@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { RUNTIME_FLAGS, officeGateActiveFor } from "./运行开关.mjs";
+import { estimateTaskComplexity, resolveSkillsRouting, resolveSkillDraftRouting } from "./任务复杂度.mjs";
 import { matchTemplate } from "./office规范/模板匹配.mjs";
 import { selectScene, sceneLabels, defaultScene } from "./office规范/场景选择.mjs";
 
@@ -40,6 +41,8 @@ const AGENT_TOOLS = Object.freeze([
   "memory_update", "todo",
   // 2026-11-04：后台任务（转后台的工具结果用 job_status 等待/读取，job_cancel 取消）
   "job_status", "job_cancel",
+  // 2026-11-03：技能草稿（仅 Work；运行时还会检查复杂任务 + 项目设置开关）
+  "skill_draft",
   // P2-A：编辑流水线（生成 Word/PPT 初稿的原生流水线，仅 Work 模式）
   "editorial_pipeline",
   // 场景化分析模板（确定性编排，产出图层统计 + Word 报告；由 OAW_MAP_TEMPLATES 控制启用）
@@ -269,7 +272,11 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
     : null;
   const knowledge = refList.some((item) => ["knowledge", "knowledge_dir"].includes(item.kind)) || containsAny(source, ["知识库", "知识库搜索", "知识检索", "参考资料"]);
   const map = containsAny(source, ["地图", "图层", "geojson", "等时圈", "热力图", "od图", "空间分析"]) || /(?:^|[\\/])maps(?:[\\/]|$)/i.test(ctx.files);
-  const workflow = Boolean(task.workflowId) || /@工作流\[|@技能\[|工作流|skill|workflow/i.test(String(text || ""));
+  const workflow = Boolean(task.workflowId) || /@工作流\[|@技能\[|#技能\[|工作流|skill|workflow/i.test(String(text || ""));
+  // 2026-11-03：复杂度只影响“默认技能清单 / 技能发现 / 草稿钩子”，不改变工具权限。
+  const complexity = estimateTaskComplexity({ text, task, references, attachments });
+  const skillsRouting = resolveSkillsRouting({ complexity, task, text });
+  const skillDraftsRouting = resolveSkillDraftRouting({ complexity, task });
   const officeGenerate = (intent.route === "generate" || intent.route === "template") && mode !== "chat" && mode !== "review";
   const capabilities = [
     mode === "chat"
@@ -345,6 +352,8 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
     });
   }
   if (workflow) capabilities.push({ id: "skills", label: "Skills / 工作流", status: "planned", required: Boolean(task.workflowId), provider: "native", reason: task.workflowId ? `工作流 ${task.workflowId} 声明了技能依赖` : "本轮出现工作流或技能意图" });
+  else if (skillsRouting === "discover") capabilities.push({ id: "skills", label: "Skills 发现", status: "available", required: false, provider: "native", reason: "复杂任务：允许先 skills_search，命中后按需读取" });
+  if (skillDraftsRouting === "enabled") capabilities.push({ id: "skill_drafts", label: "技能草稿", status: "available", required: false, provider: "native", reason: "复杂任务 + 项目允许：可生成草稿，安装需用户确认" });
   return {
     version: 3,
     mode,
@@ -354,6 +363,7 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
     scene: intent.scene ? { id: intent.scene.scene, label: intent.scene.label, confidence: intent.scene.confidence } : null,
     clarification,
     hint,
+    complexity,
     capabilities,
     routing: {
       // preferred=编辑既有文档（admission 阻塞预检）；lazy=生成类任务（原生直写优先，
@@ -371,7 +381,8 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
       // read_only / read_write：让前端与提示词都能区分"能不能落盘"。
       // 仅当上面真的声明了地图能力时才启用（与 capabilities 严格一致）。
       map: mapAvailable ? (mode === "chat" ? "read_only" : "read_write") : "not_needed",
-      skills: workflow ? "preflight" : "available_on_demand",
+      skills: skillsRouting,
+      skillDrafts: skillDraftsRouting,
     },
     output: { expected: mode !== "chat" && output, saveToWorkspace: mode !== "chat" && task.output?.saveToWorkspace !== false },
   };

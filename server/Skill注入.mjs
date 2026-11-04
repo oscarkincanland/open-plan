@@ -7,11 +7,11 @@ import { previewText } from "./工具结果外置.mjs";
 
 export const DEFAULT_SKILL_MAX_BYTES = 20 * 1024;
 
-// 常用技能短清单（H2-4 扩展）：按真实使用频次排序，提示词只注入最常用的少数几个，
-// 不做全目录注入。冷启动（无使用记录）时回退到默认优先级 ∩ 实际目录。
+// 默认技能短清单（2026-11-03 按本项目校准）：简单任务只用这 8 个；
+// 复杂任务才走 skills_search/skills_read 发现钩子。名称是技能目录名（非 frontmatter name）。
 export const TOP_SKILLS_IN_PROMPT = 8;
 export const DEFAULT_SKILL_PRIORITIES = Object.freeze([
-  "docx", "pptx", "xlsx", "lark-doc", "lark-sheets", "lark-base", "lark-im", "frontend-design",
+  "docx", "pptx", "xlsx", "pdf", "officecli", "baoyu-echarts", "frontend-design", "ultimate-ppt-master-skill",
 ]);
 
 /** 清洗持久化的使用计数：仅保留正整数计数，键截断防膨胀。 */

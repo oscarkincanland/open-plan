@@ -171,6 +171,18 @@ jobs:
       - name: 会话恢复与中断一致性（resume 幂等 / ask 结算 / 排队可见性 / 精确匹配）
         run: node scripts/CI运行测试.mjs 会话恢复与中断一致性测试
 
+      - name: 会话归档（默认隐藏 / 设置归档历史 / 批量归档与恢复）
+        run: node scripts/CI运行测试.mjs 会话归档测试
+
+      - name: 上下文单次读取（运行宪法 / 祖先研发宪法过滤 / AGENTS.md 不重复）
+        run: node scripts/CI运行测试.mjs 上下文单次读取测试
+
+      - name: 工作区初始化（AGENTS.md + memory 种子 / 幂等不覆盖）
+        run: node scripts/CI运行测试.mjs 工作区初始化测试
+
+      - name: 任务复杂度与技能策略（简单默认 / 复杂发现 / 草稿确认）
+        run: node scripts/CI运行测试.mjs 任务复杂度与技能策略测试
+
 
 
       - name: Office 写作闸门通电（ADR 0012 / 工具书 / 环境预检）

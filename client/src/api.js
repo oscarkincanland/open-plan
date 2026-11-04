@@ -211,7 +211,7 @@ export const listSessions = (fileOrOptions) => {
     if (fileOrOptions) params.set("file", fileOrOptions);
   } else {
     const options = fileOrOptions || {};
-    for (const key of ["file", "projectId", "mode", "runStatus", "limit", "cursor", "groupBy"]) {
+    for (const key of ["file", "projectId", "mode", "runStatus", "archived", "limit", "cursor", "groupBy"]) {
       if (options[key] !== undefined && options[key] !== null && options[key] !== "") params.set(key, options[key]);
     }
     for (const key of ["pinned", "frozen"]) if (options[key] !== undefined && options[key] !== null) params.set(key, String(options[key]));
@@ -265,6 +265,12 @@ export const resolveContext = (references, text) => api("/api/context/resolve", 
 export const readContext = (reference, query, range) => api("/api/context/read", { method: "POST", body: JSON.stringify({ reference, query, range }) });
 
 export const listSkills = () => api("/api/skills");
+// 2026-11-03 技能草稿：只写工作区；安装到技能库必须由用户显式确认。
+export const listSkillDrafts = (workspace = "") => api(`/api/skills/drafts${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ""}`);
+export const installSkillDraft = (name, workspace = "", overwrite = false) =>
+  api(`/api/skills/drafts/${encodeURIComponent(name)}/install`, { method: "POST", body: JSON.stringify({ workspace, overwrite }) });
+export const discardSkillDraft = (name, workspace = "") =>
+  api(`/api/skills/drafts/${encodeURIComponent(name)}${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ""}`, { method: "DELETE" });
 // P1-8 对象栏自取数用（均为既有只读端点，无新增后端接口）
 export const listArtifacts = (options = {}) => {
   const params = new URLSearchParams();
@@ -303,6 +309,11 @@ export const deleteSession = (id) =>
   apiControl(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
 export const deleteSessions = (ids) =>
   apiControl("/api/sessions/batch-delete", { method: "POST", body: JSON.stringify({ ids }) }, { timeoutMs: 20000 });
+// 2026-11-03 会话归档：只改 header，不移动/删除文件。
+export const archiveSession = (id, archived = true) =>
+  api(`/api/sessions/${encodeURIComponent(id)}/archive`, { method: "POST", body: JSON.stringify({ archived }) });
+export const archiveSessions = (ids, archived = true) =>
+  apiControl("/api/sessions/batch-archive", { method: "POST", body: JSON.stringify({ ids, archived }) }, { timeoutMs: 20000 });
 export const renameSession = (id, label) =>
   api(`/api/sessions/${encodeURIComponent(id)}/rename`, { method: "POST", body: JSON.stringify({ label }) });
 export const pinSession = (id, pinned = true) =>

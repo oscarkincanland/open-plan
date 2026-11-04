@@ -151,6 +151,8 @@ import {
   readJobLog,
   waitForJob,
 } from "./后台任务.mjs";
+import { RUNTIME_CONSTITUTION_VERSION, renderConstitution } from "./智能体运行宪法.mjs";
+import { selectAgentsFiles, listContextFilePaths } from "./上下文文件.mjs";
 
 const HARNESS_WRAPPED = Symbol.for("oaw.harness.wrapped");
 
@@ -1016,7 +1018,8 @@ function resolveInitialModel(modelRuntime, requestedSpec = "") {
     || null;
 }
 
-/** 分层读取工作区记忆：规则优先，偏好/项目知识/经验再按预算注入。 */
+/** 分层读取工作区记忆：只读 memory/*.md；工作区 AGENTS.md 由 Pi 原生上下文加载一次。 */
+const NATIVE_CONTEXT_FILES = String(process.env.OAW_NATIVE_CONTEXT_FILES || "on").toLowerCase() !== "off";
 function readMemoryLayers(workspace = getWorkspace()) {
   const layers = { rules: "", project: "", preferences: "", lessons: "", other: [] };
   try {
@@ -1025,7 +1028,6 @@ function readMemoryLayers(workspace = getWorkspace()) {
     const read = (file, max = 1800) => {
       try { return fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim().slice(0, max) : ""; } catch { return ""; }
     };
-    layers.rules = read(path.join(ws, "AGENTS.md"), 1800);
     const memDir = path.join(ws, "memory");
     if (fs.existsSync(memDir)) {
       for (const f of fs.readdirSync(memDir).filter((x) => x.endsWith(".md"))) {
@@ -1061,8 +1063,19 @@ function readMemoryLayers(workspace = getWorkspace()) {
 
 function readMemoryContext(workspace = getWorkspace()) {
   const layers = readMemoryLayers(workspace);
+  // 回退开关：极少数运行形态没有 Pi 原生上下文文件时，才把 AGENTS.md 放回记忆摘要。
+  const fallbackAgents = !NATIVE_CONTEXT_FILES
+    ? (() => {
+        try {
+          const ws = normalizeWorkspace(workspace) || normalizeWorkspace(getWorkspace());
+          const file = ws ? path.join(ws, "AGENTS.md") : "";
+          return file && fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim().slice(0, 1800) : "";
+        } catch { return ""; }
+      })()
+    : "";
   return [
-    layers.rules && `## 工作区准则（AGENTS.md）\n${layers.rules}`,
+    fallbackAgents && `## 工作区准则（AGENTS.md，回退注入）\n${fallbackAgents}`,
+    layers.rules && `## 记忆中的工作规则\n${layers.rules}`,
     layers.project && `## 项目信息\n${layers.project.slice(0, 900)}`,
     layers.preferences && `## 用户偏好\n${layers.preferences.slice(0, 900)}`,
     layers.lessons && `## 经验教训\n${layers.lessons.slice(0, 900)}`,
@@ -1369,6 +1382,20 @@ class AgentManager extends EventEmitter {
     const builtInExtensionPaths = RUNTIME_FLAGS.piToolGateExtension
       ? [path.join(PROJECT_DIR, "server", "pi-extensions")]
       : [];
+    // 2026-11-03 技能策略：简单任务只用默认短清单；复杂任务才开发现/草稿钩子。
+    const taskPlan = options.task?.capabilityPlan || null;
+    const skillsRouting = String(taskPlan?.routing?.skills || "default");
+    const skillDraftRouting = String(taskPlan?.routing?.skillDrafts || "off");
+    const skillPolicyLines = skillsRouting === "discover"
+      ? [
+          "- **技能发现（复杂任务）**: 动手前先调用一次 `skills_search`（limit ≤5）；只对前 1–2 个描述真正匹配的 Skill 调用 `skills_read`，每轮最多 2 次。未命中直接继续，不要为了用技能反复搜索。",
+          ...(skillDraftRouting === "enabled"
+            ? ["- **技能草稿（需用户确认）**: 若发现可复用流程，可用 `skill_draft` 生成草稿；草稿只写入 `.oaw/skill-drafts/`，不会进入技能库，安装必须由用户在技能管理里确认。"]
+            : []),
+        ]
+      : skillsRouting === "off"
+        ? ["- **技能策略**: 本轮不自动检索 Skills；只使用用户显式 `@技能[...]` 指定的技能。"]
+        : ["- **技能策略（简单任务）**: 只使用默认技能清单中的技能，不要调用 `skills_search`；用户显式 `@技能[...]` 除外。"];
     const loader = new DefaultResourceLoader({
       cwd: workspace,
       agentDir: AGENT_DIR,
@@ -1379,7 +1406,13 @@ class AgentManager extends EventEmitter {
       noSkills: true,
       agentsFilesOverride: (current) => ({
         agentsFiles: [
-          ...current.agentsFiles,
+          // L0 运行宪法：内置只读，永远排在上下文文件第一位。
+          {
+            path: "(builtin)/runtime-constitution.md",
+            content: renderConstitution({ mode: options.task?.mode || options.mode || "work" }),
+          },
+          // L1 工作区 AGENTS.md + agentDir 全局规则；丢弃工作区之外的祖先研发宪法。
+          ...selectAgentsFiles(current.agentsFiles, { workspace, agentDir: AGENT_DIR }),
           {
             path: ".agent-context.md",
             content: [
@@ -1408,10 +1441,11 @@ class AgentManager extends EventEmitter {
               "- **规划素材库（traffic-material）**: 模板库在**项目目录**下（不在当前工作区）：绝对路径 `" + PROJECT_DIR + "/templates/traffic-material/`，内置 14 份交通规划详版模板（00_总览通用规范、01_年度工作报告、02_五年发展规划、03_规划文本条文式、04_工程可行性研究报告、05_线位论证预可、06_选址用地预审、07_交通影响评价、08_汇报材料、09_物流园区规划、10_规划研究报告、11_PPT汇报、12_素材库深挖）。用户要求撰写交通规划/工可/汇报/年度报告等文档时，**用 read 工具读取该绝对路径下的对应模板作为结构参考**（如 04_工程可行性研究报告模板.md、08_汇报材料模板.md），产出保存到当前工作区。完整列表可用 GET /api/templates?category=sucaiku 查看。",
               "- **模板库（OpenDesign HTML PPT）**: 项目 `templates/opendesign/` 内置 157 个 HTML 模板（64 款 html-ppt-* 演示风格 + landing/dashboard 等），每个模板目录含 example.html 首页可直接预览（模版库页面已接入）。用户要求生成 PPT/演示/海报/网页作品时，优先用 read 工具读取 `templates/opendesign/<模板名>/example.html` 作为风格与结构参考（如 html-ppt-zhangzara-studio、html-ppt-tech-sharing、html-ppt-pitch-deck、html-ppt-taste-editorial），产出应保存到当前工作区。",
               ...(skillsPromptLine ? [skillsPromptLine] : []),
+              ...skillPolicyLines,
               "- When you modify a document, confirm what changed. Files are auto-refreshed in the browser.",
               "",
-              // 工作区记忆（AGENTS.md + memory/）——每次对话前刷新在 .agent-context.md 的「工作区记忆」段
-              "- **工作区记忆**: 「动态上下文」已包含工作区记忆摘要（含 AGENTS.md 准则与 memory/*.md）；需要全文时阅读动态上下文给出的上下文文件的「工作区记忆」段。沉淀新经验请用 memory_update 工具（自动写入当前工作区 memory/MEMORY.md），勿直接写文件。",
+              // 项目记忆（仅 memory/*.md）——工作区 AGENTS.md 已由 Pi 原生上下文加载一次，不重复注入。
+              "- **工作区记忆**: 「动态上下文」的「项目记忆」段只含 memory/*.md（项目信息/偏好/经验）。工作区规则已经作为 `AGENTS.md` 上下文加载过一次，**不要再用 read 重复读取同一个 AGENTS.md**；需要全文时以本轮上下文文件为准。沉淀新经验请用 memory_update 工具（自动写入当前工作区 memory/MEMORY.md），勿直接写文件。",
             ].join("\n"),
           },
         ],
@@ -1419,6 +1453,7 @@ class AgentManager extends EventEmitter {
       }),
     });
     await loader.reload();
+    const resolvedContextFiles = listContextFilePaths(loader.getAgentsFiles?.().agentsFiles || []);
     const piExtensionToolNames = extensionToolNames(loader, enabledExtensionConfig);
     const configuredMcpTools = cachedMcpTools();
 
@@ -2728,9 +2763,67 @@ execute: async (_toolCallId, params, signal) => {
       },
     });
 
+    // 2026-11-03：技能草稿。只在复杂任务且项目设置 allowSkillDrafts=complex 时启用；
+    // 只写工作区 .oaw/skill-drafts，不进入技能库；安装必须由用户在技能管理里确认。
+    const skillDraftTool = defineTool({
+      name: "skill_draft",
+      label: "技能草稿",
+      description: "把本轮可复用的流程写成技能草稿，供用户审核后安装。只写工作区 .oaw/skill-drafts，不修改技能库；未开启技能草稿或非复杂任务时调用会失败。",
+      parameters: Type.Object({
+        name: Type.String({ description: "技能名（小写字母/数字/短横线，2-64 字符），例如 od-quality-check" }),
+        description: Type.String({ description: "一句话说明适用场景（≤200 字）" }),
+        body: Type.String({ description: "SKILL.md 正文：触发条件、步骤、依赖、验收（≤20KB）" }),
+        overwrite: Type.Optional(Type.Boolean({ description: "草稿同名时是否覆盖；默认 false" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const allowed = entry?.task?.capabilityPlan?.routing?.skillDrafts === "enabled";
+        if (!allowed) {
+          return { content: [{ type: "text", text: "本轮未开启技能草稿（需要复杂任务 + 项目设置「技能草稿=仅复杂任务」）。" }], details: { denied: true } };
+        }
+        const slug = String(params.name || "").trim().toLowerCase();
+        const description = String(params.description || "").trim();
+        const body = String(params.body || "").trim();
+        if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(slug)) {
+          return { content: [{ type: "text", text: "技能名不合法：只能是小写字母/数字/短横线，2-64 字符。" }], details: { invalid: "name" } };
+        }
+        if (!description || description.length > 200) {
+          return { content: [{ type: "text", text: "description 必填且不超过 200 字。" }], details: { invalid: "description" } };
+        }
+        if (!body || Buffer.byteLength(body, "utf8") > 20 * 1024) {
+          return { content: [{ type: "text", text: "body 必填且不超过 20KB。" }], details: { invalid: "body" } };
+        }
+        const ws = entry?.workspace || getWorkspace();
+        const dir = path.join(ws, ".oaw", "skill-drafts", slug);
+        const file = path.join(dir, "SKILL.md");
+        if (fs.existsSync(file) && params.overwrite !== true) {
+          return { content: [{ type: "text", text: `草稿已存在：${slug}。如需覆盖请显式传 overwrite=true。` }], details: { conflict: true, path: file } };
+        }
+        const content = [
+          "---",
+          `name: ${slug}`,
+          `description: ${JSON.stringify(description)}`,
+          "source: skill_draft",
+          `createdAt: ${new Date().toISOString()}`,
+          "---",
+          "",
+          body,
+        ].join("\n");
+        try {
+          fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(file, content, "utf8");
+          writeEvent("skill_draft_created", { name: slug, path: file, bytes: Buffer.byteLength(content, "utf8"), overwrite: params.overwrite === true });
+          return {
+            content: [{ type: "text", text: `技能草稿已生成：${slug}\n路径：${file}\n注意：草稿不会进入技能库，需用户在技能管理中确认安装。` }],
+            details: { name: slug, path: file, installed: false },
+          };
+        } catch (error) {
+          return { content: [{ type: "text", text: `写入技能草稿失败：${error.message}` }], details: { error: error.message } };
+        }
+      },
+    });
+
     const contextReadTool = defineTool({
-      name: "context_read",
-      label: "读取引用上下文",
+      name: "context_read",      label: "读取引用上下文",
       description: "读取用户本轮通过 @ 引用的文件、目录或外部文件。先使用引用 ID；可选 query 做行过滤，range 可传 startLine/endLine。不要猜测未解析的引用内容。",
       parameters: Type.Object({
         refId: Type.String({ description: "引用 ID，例如 ref_a1b2c3d4e5f6" }),
@@ -4235,7 +4328,7 @@ execute: async (_toolCallId, params, signal) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, jobStatusTool, jobCancelTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapLayerInfoTool, mapResetTool, mapProjectCreateTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, browserWaitForTool, browserActTool, browserExtractTool, browserSelectOptionTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
+        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, jobStatusTool, jobCancelTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, skillDraftTool, contextReadTool, mapReadTool, mapDatasetsTool, mapLayerInfoTool, mapResetTool, mapProjectCreateTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, browserWaitForTool, browserActTool, browserExtractTool, browserSelectOptionTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
         tools: sessionToolNames,
       }));
     } catch (error) {
@@ -4712,6 +4805,13 @@ execute: async (_toolCallId, params, signal) => {
     }));
 
     entry = { session, sessionManager: sessionManager || null, channel, busy: false, compacting: false, compactionKind: null, compactionPromise: null, compactionRunId: null, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, turnRunId: null, activeTools: new Map(), task: null, mode: "agent", modePolicy: null, modePolicyKey: "", mcpToolNames: mcpToolRegistrations.map((item) => item.name), mcpReadOnlyToolNames: mcpToolRegistrations.filter((item) => item.tool.annotations?.readOnlyHint === true && item.tool.annotations?.destructiveHint !== true).map((item) => item.name), piExtensionToolNames, hasSubagent: true, reviewConfirmed: false, reviewAwaitingConfirmation: false, reviewProtectedPaths: new Set(), reviewSources: [], lastAgentError: null, lastSettledError: null, lastAssistantText: "", lastFinalText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, activeToolCount: 0, lastPiEventAt: Date.now(), pendingAbortPromise: null, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, chainDepth: 0, promptChars: estimateRestoredContextChars(session), lastUsage: null, lastCompactionAt: 0, autoCompacting: false };
+    try {
+      emitChannelSafe(entry, "context_files_resolved", {
+        workspace,
+        constitutionVersion: RUNTIME_CONSTITUTION_VERSION,
+        files: resolvedContextFiles,
+      });
+    } catch {}
     if (metadataReport && !metadataReport.ok) {
       try {
         emitChannelSafe(entry, "tool_metadata_missing", {
@@ -5793,7 +5893,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
           "- 收尾时若待办仍有未完成项，必须在最终答复里逐条写明原因；系统会把未完成待办计入本轮状态，不要用“已完成”掩盖半成品。",
         );
       }
-      if (memCtx) lines.push("- 工作区记忆摘要：\n" + memCtx.slice(0, mode === "chat" ? 800 : 1500));
+      if (memCtx) lines.push("- 项目记忆摘要（不含规则；规则见已加载的 AGENTS.md）：\n" + memCtx.slice(0, mode === "chat" ? 800 : 1500));
       return lines.join("\n");
     } catch {
       return "";
@@ -5802,7 +5902,8 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
 
   /**
    * 写入当前工作区的 .agent-context.md——每次对话前刷新：
-   * 当前工作区路径（跟随 setWorkspace 动态变化）+ 当前工作文件 + 工作区记忆摘要
+   * 当前工作区路径（跟随 setWorkspace 动态变化）+ 当前工作文件 + memory/*.md 摘要。
+   * 工作区 AGENTS.md 由 Pi 原生上下文加载一次，这里不再重复拼接。
    * T3：memCtx 可由调用方传入（同一轮内与 buildDynamicContext 共享一次记忆读取）。
    */
   writeContextFile(entry, file, sharedMemCtx = null) {
@@ -5826,7 +5927,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
           ? "- 用户的操作默认针对此文件。修改它时直接用 officecli 操作（文件名相对工作区根目录，含子目录路径）。完成后告知用户已修改。"
           : "- 如果用户提到要修改某个文档，先用 officecli view 确认内容再操作。",
         "",
-        memCtx ? "## 工作区记忆（每次任务开始前阅读；沉淀新经验请用 memory_update 工具，勿直接写文件）\n" + memCtx : "",
+        memCtx ? "## 项目记忆（不含项目规则；规则见已加载的 AGENTS.md。沉淀新经验请用 memory_update 工具，勿直接写文件）\n" + memCtx : "",
         "",
         "- When the user asks to modify a document, make the changes, then confirm what changed. Files are auto-refreshed in the browser.",
       ].join("\n");

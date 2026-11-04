@@ -112,6 +112,7 @@ export const EVENT_UI = Object.freeze({
   step_updated: {},
   // 记忆建议（A03：只作为过程事件，不再插入主消息流）
   memory_initialized: {},
+  workspace_initialized: {},
   memory_proposal: {},
   memory_proposal_created: {},
   memory_proposal_updated: {},
@@ -248,6 +249,7 @@ export function flowEventLabel(event) {
     case "artifact_rolled_back": return "产物已回滚";
     case "map_action": return `地图操作${data.action ? `：${String(data.action).slice(0, 30)}` : ""}`;
     case "memory_initialized": return "记忆已初始化";
+    case "workspace_initialized": return `工作区已初始化${Array.isArray(data.created) && data.created.length ? `：${data.created.join("、")}` : ""}`;
     case "memory_proposal":
     case "memory_proposal_created": return "新增记忆建议";
     case "memory_proposal_updated":

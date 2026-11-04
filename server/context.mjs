@@ -87,7 +87,8 @@ export function parseReferences(text = "") {
   for (const m of source.matchAll(/@文件\[([^\]]+)\]/g)) add(makeRef("file", m[1], { source: m[0] }));
   // v0.13.4：`#` 提及。技能/插件只做声明式引用，由 Skills/MCP 清单在运行时解析；
   // 文件与 @文件 等价，复用同一套工作区路径校验。
-  for (const m of source.matchAll(/#技能\[([^\]]+)\]/g)) add(makeRef("skill", m[1], { source: m[0] }));
+  // 2026-11-03：技能标记统一为 `#技能[...]`，`@技能[...]` 作为兼容别名在同一解析器归一。
+  for (const m of source.matchAll(/[@#]技能\[([^\]]+)\]/g)) add(makeRef("skill", m[1], { source: m[0] }));
   for (const m of source.matchAll(/#插件\[([^\]]+)\]/g)) add(makeRef("plugin", m[1], { source: m[0] }));
   for (const m of source.matchAll(/#文件\[([^\]]+)\]/g)) add(makeRef("file", m[1], { source: m[0] }));
   for (const m of source.matchAll(/&会话\[([^\]]+)\]/g)) add(makeRef("session", m[1], { source: m[0] }));

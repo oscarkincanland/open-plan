@@ -6,6 +6,8 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { listWorkspace, searchWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace, isInside } from "./workspace.mjs";
 import { computeChatWindowStart } from "./会话窗口.mjs";
+import { ACTIVE_SESSION_STATUSES, archiveHeaderPatch, shouldIncludeArchived, sortArchivedSessions } from "./会话归档.mjs";
+import { initializeWorkspace } from "./工作区初始化.mjs";
 import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, queryComments, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
 import { getApprovalMode, listPendingApprovals, listPermissionRules, removeUserRule, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
 import { agentManager, classifyAgentError, getCredentialErrors, isAbortLikeError, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
@@ -2245,7 +2247,7 @@ let sessionsListCache = { at: 0, payload: null };
 function invalidateSessionsListCache() {
   sessionsListCache = { at: 0, payload: null };
 }
-const SESSION_LIST_FIELDS = new Set(["label", "pinned", "frozen", "freezeReason", "projectId", "cwd", "parentSessionId", "agentId", "threadId"]);
+const SESSION_LIST_FIELDS = new Set(["label", "pinned", "frozen", "freezeReason", "archived", "archivedAt", "projectId", "cwd", "parentSessionId", "agentId", "threadId"]);
 const sessionHeaderCache = new Map();
 const sessionMetaCache = new Map();
 const persistedSessionMeta = new Map();
@@ -3009,6 +3011,73 @@ app.post("/api/skills/import", (req, res) => {
   }
 });
 
+// ---------- 技能草稿（2026-11-03）----------
+// 模型只能写工作区 .oaw/skill-drafts；安装到技能库必须由用户显式确认。
+function skillDraftRoot(workspace) {
+  return path.join(workspace, ".oaw", "skill-drafts");
+}
+function listSkillDrafts(workspace) {
+  const root = skillDraftRoot(workspace);
+  if (!fs.existsSync(root)) return [];
+  const items = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const file = path.join(root, entry.name, "SKILL.md");
+    if (!fs.existsSync(file)) continue;
+    let content = "";
+    try { content = fs.readFileSync(file, "utf8"); } catch { continue; }
+    const frontmatter = content.match(/^---\s*\n([\s\S]*?)\n---/);
+    const description = frontmatter?.[1]?.match(/description:\s*(.+)/)?.[1]?.trim().replace(/^["']|["']$/g, "") || "";
+    const createdAt = frontmatter?.[1]?.match(/createdAt:\s*(.+)/)?.[1]?.trim() || "";
+    items.push({ name: entry.name, description, createdAt, path: file, bytes: Buffer.byteLength(content, "utf8") });
+  }
+  return items.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || a.name.localeCompare(b.name));
+}
+
+app.get("/api/skills/drafts", (req, res) => {
+  const workspace = normalizeWorkspace(req.query.workspace || getWorkspace());
+  if (!workspace) return res.status(400).json({ error: "workspace invalid" });
+  res.json({ workspace, drafts: listSkillDrafts(workspace) });
+});
+
+app.post("/api/skills/drafts/:slug/install", (req, res) => {
+  const slug = String(req.params.slug || "").trim();
+  if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(slug)) return res.status(400).json({ error: "invalid skill name" });
+  const workspace = normalizeWorkspace(req.body?.workspace || getWorkspace());
+  if (!workspace) return res.status(400).json({ error: "workspace invalid" });
+  const source = path.join(skillDraftRoot(workspace), slug, "SKILL.md");
+  if (!fs.existsSync(source)) return res.status(404).json({ error: "draft not found" });
+  const targetDir = path.join(AGENT_DIR, "skills", slug);
+  const target = path.join(targetDir, "SKILL.md");
+  if (fs.existsSync(target) && req.body?.overwrite !== true) {
+    return res.status(409).json({ ok: false, code: "SKILL_EXISTS", error: "同名技能已存在，需显式覆盖" });
+  }
+  try {
+    const content = fs.readFileSync(source, "utf8");
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.writeFileSync(target, content, "utf8");
+    appendEvent({ type: "skill_installed", data: { name: slug, path: target, source, workspace } });
+    res.json({ ok: true, name: slug, path: target });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.delete("/api/skills/drafts/:slug", (req, res) => {
+  const slug = String(req.params.slug || "").trim();
+  if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(slug)) return res.status(400).json({ error: "invalid skill name" });
+  const workspace = normalizeWorkspace(req.query.workspace || getWorkspace());
+  if (!workspace) return res.status(400).json({ error: "workspace invalid" });
+  const dir = path.join(skillDraftRoot(workspace), slug);
+  if (!fs.existsSync(dir)) return res.status(404).json({ error: "draft not found" });
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+    res.json({ ok: true, name: slug });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 function sessionBaseName(fileName) {
   return String(fileName || "").replace(/\.(?:jsonl|json)$/i, "");
 }
@@ -3215,6 +3284,9 @@ function buildSessionMeta(f, h, text, { truncated = false } = {}) {
     pinned: Boolean(h.pinned),
     frozen: Boolean(h.frozen),
     freezeReason: h.freezeReason || "",
+    // 2026-11-03 归档：只改 header，不移动/删除会话文件。
+    archived: Boolean(h.archived),
+    archivedAt: h.archivedAt || "",
     contextSnapshot: h.contextSnapshot || null,
     parentSessionId: h.parentSessionId || null,
     branchSourceMessageId: h.branchSourceMessageId || null,
@@ -3939,9 +4011,13 @@ app.get("/api/sessions", (req, res) => {
   const runStatusFilter = String(req.query.runStatus || "").trim();
   const pinnedFilter = req.query.pinned === undefined ? null : req.query.pinned === "true";
   const frozenFilter = req.query.frozen === undefined ? null : req.query.frozen === "true";
-  // 只有“无筛选、无分页”的热轮询走缓存；带 file/project/mode/limit 的查询保持实时。
+  // archived：默认排除归档；only=只看归档；all=包含归档。
+  const archivedFilter = ["only", "all"].includes(String(req.query.archived || ""))
+    ? String(req.query.archived)
+    : "default";
+  // 只有“无筛选、无分页”的热轮询走缓存；带 file/project/mode/archived/limit 的查询保持实时。
   const cacheable = !fileFilter && !projectFilter && !modeFilter && !runStatusFilter
-    && pinnedFilter === null && frozenFilter === null
+    && pinnedFilter === null && frozenFilter === null && archivedFilter === "default"
     && !req.query.limit && !req.query.cursor && !req.query.groupBy;
   if (cacheable && sessionsListCache.payload && Date.now() - sessionsListCache.at <= SESSIONS_LIST_CACHE_MS) {
     return res.json(sessionsListCache.payload);
@@ -3984,6 +4060,7 @@ app.get("/api/sessions", (req, res) => {
         if (runStatusFilter && (latestRun?.status || "idle") !== runStatusFilter) continue;
         if (pinnedFilter !== null && meta.pinned !== pinnedFilter) continue;
         if (frozenFilter !== null && meta.frozen !== frozenFilter) continue;
+        if (!shouldIncludeArchived(meta.archived, archivedFilter)) continue;
         sessions.push({
           id,
           threadId: meta.threadId || latestRun?.threadId || id,
@@ -3998,6 +4075,8 @@ app.get("/api/sessions", (req, res) => {
           pinned: meta.pinned,
           frozen: meta.frozen,
           freezeReason: meta.freezeReason,
+          archived: meta.archived,
+          archivedAt: meta.archivedAt,
           contextSnapshot: meta.contextSnapshot,
           parentSessionId: meta.parentSessionId,
           branchSourceMessageId: meta.branchSourceMessageId,
@@ -4016,11 +4095,16 @@ app.get("/api/sessions", (req, res) => {
     }
     // v0.13.6：稳定排序 + 可选分页/按工作区分组。
     // 保持既有调用（无 limit/groupBy）返回全部 sessions，避免破坏前端。
-    sessions.sort((a, b) => {
-      const pin = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
-      if (pin) return pin;
-      return Number(b.modified || 0) - Number(a.modified || 0);
-    });
+    if (archivedFilter === "only") {
+      // 归档历史按归档时间倒序；没有 archivedAt 的旧数据退回文件修改时间。
+      sessions.splice(0, sessions.length, ...sortArchivedSessions(sessions));
+    } else {
+      sessions.sort((a, b) => {
+        const pin = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
+        if (pin) return pin;
+        return Number(b.modified || 0) - Number(a.modified || 0);
+      });
+    }
     const total = sessions.length;
     const pageLimit = Math.max(0, Number.parseInt(req.query.limit, 10) || 0);
     const cursor = Math.max(0, Number.parseInt(req.query.cursor, 10) || 0);
@@ -4404,6 +4488,52 @@ app.post("/api/sessions/batch-delete", (req, res) => {
   res.json({ ok: true, deleted, skipped, missing });
 });
 
+// 活跃会话 id 集合：归档/批量归档与批量删除共用同一份运行态口径。
+function activeSessionIdSet() {
+  return new Set(listRunSummaries({ limit: 500 })
+    .filter((run) => ACTIVE_SESSION_STATUSES.includes(run?.status))
+    .map((run) => String(run.sessionId || ""))
+    .filter(Boolean));
+}
+
+// POST /api/sessions/:id/archive - 归档/恢复会话（只改 header，不移动文件）
+app.post("/api/sessions/:id/archive", (req, res) => {
+  const archived = req.body?.archived !== false;
+  if (archived && activeSessionIdSet().has(String(req.params.id || ""))) {
+    return res.status(409).json({ ok: false, code: "SESSION_RUNNING", error: "会话正在运行，不能归档" });
+  }
+  const result = updateSessionHeader(req.params.id, archiveHeaderPatch(archived));
+  if (!result.ok) return res.status(result.status || 400).json(result);
+  res.json({ ok: true, sessionId: req.params.id, archived: Boolean(result.header.archived), archivedAt: result.header.archivedAt || "" });
+});
+
+// POST /api/sessions/batch-archive - 批量归档/恢复（归档时跳过运行中会话）
+app.post("/api/sessions/batch-archive", (req, res) => {
+  const archived = req.body?.archived !== false;
+  const ids = [...new Set((Array.isArray(req.body?.ids) ? req.body.ids : [])
+    .map((id) => String(id || "").trim())
+    .filter(Boolean))].slice(0, 200);
+  if (!ids.length) return res.status(400).json({ error: "ids required" });
+  const active = archived ? activeSessionIdSet() : new Set();
+  const changed = [];
+  const skipped = [];
+  const missing = [];
+  for (const id of ids) {
+    if (active.has(id)) {
+      skipped.push({ id, reason: "会话正在运行" });
+      continue;
+    }
+    if (!findSessionFile(id)) {
+      missing.push(id);
+      continue;
+    }
+    const result = updateSessionHeader(id, archiveHeaderPatch(archived));
+    if (result.ok) changed.push(id);
+    else skipped.push({ id, reason: result.error || (archived ? "归档失败" : "恢复失败") });
+  }
+  res.json({ ok: true, archived, [archived ? "archivedIds" : "restoredIds"]: changed, skipped, missing });
+});
+
 // DELETE /api/sessions/:id - 删除会话文件
 app.delete("/api/sessions/:id", (req, res) => {
   const found = findSessionFile(req.params.id);
@@ -4703,7 +4833,7 @@ app.post("/api/agent/prompt", async (req, res) => {
       resolved = await timed("resolveReferences", async () => resolveReferences(references, normalizedText, runWorkspace));
       const requestedMode = normalizeTaskMode(taskInput?.mode);
       const workflowId = requestedMode === "chat" ? null : (taskInput?.workflowId || workflowIdFromText(normalizedText));
-      const mentionedSkills = [...normalizedText.matchAll(/@技能\[([^\]]+)\]/g)].map((match) => match[1].trim()).filter(Boolean);
+      const mentionedSkills = [...normalizedText.matchAll(/[@#]技能\[([^\]]+)\]/g)].map((match) => match[1].trim()).filter(Boolean);
       // Chat 允许搜索/阅读 Skills，但不把项目默认 Skills 作为执行依赖，避免只读问答
       // 因历史配置缺失而被 Agent 预检拦截。
       const requestedSkills = requestedMode === "chat"
@@ -5486,24 +5616,18 @@ app.get("/api/memory/stream", (req, res) => {
   res.on("error", cleanup);
 });
 
-app.post("/api/memory/init", (_req, res) => {
+function workspaceInitHandler(_req, res) {
   try {
-    const ws = getWorkspace();
-    const agentsMd = path.join(ws, "AGENTS.md");
-    const memDir = path.join(ws, "memory");
-    const memMd = path.join(memDir, "MEMORY.md");
-    ensureDirectory(memDir);
-    if (!fs.existsSync(agentsMd)) {
-      atomicWriteFile(agentsMd, `# AGENTS.md\n\n## 项目说明\n\n在此添加项目指令和上下文信息。\n\n## 工作偏好\n\n在此添加工作偏好。\n`, "utf8");
-    }
-    if (!fs.existsSync(memMd)) {
-      atomicWriteFile(memMd, `# 记忆索引\n\n这是一个长期记忆文件，记录跨会话的上下文信息。\n\n## 项目信息\n\n## 工作规则\n\n## 用户偏好\n\n## 经验教训\n\n`, "utf8");
-    }
-    appendEvent({ type: "memory_initialized", data: { workspace: ws } });
+    const result = initializeWorkspace(getWorkspace(), { create: false });
+    if (!result.ok) return res.status(400).json(result);
+    appendEvent({ type: "workspace_initialized", data: { workspace: result.workspace, version: result.version, created: result.created, skipped: result.skipped } });
     startMemoryWatcher();
-    res.json({ ok: true, files: listMemoryFiles() });
+    res.json({ ...result, files: listMemoryFiles() });
   } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }
-});
+}
+
+app.post("/api/memory/init", workspaceInitHandler);
+app.post("/api/workspace/init", workspaceInitHandler);
 
 app.get("/api/memory/proposals", (req, res) => {
   const threadId = req.query.thread ? agentKey(String(req.query.client || ""), String(req.query.thread)) : "";

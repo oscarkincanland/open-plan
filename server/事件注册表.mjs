@@ -171,6 +171,7 @@ const REGISTRY = [
   { type: "memory_written", lifecycle: true, persist: true, note: "记忆写入" },
   { type: "memory_file_edited", lifecycle: true, persist: true, note: "记忆文件编辑" },
   { type: "memory_initialized", lifecycle: true, persist: true, note: "记忆初始化" },
+  { type: "workspace_initialized", lifecycle: true, persist: true, note: "工作区初始化（AGENTS.md + memory/MEMORY.md 种子）", schema: { required: ["workspace", "version", "created", "skipped"], types: { workspace: "string", version: "string", created: "array", skipped: "array" } } },
 
   // ---- 长期目标（v0.13.x Goal）----
   // Goal 是项目 Harness 的跨轮目标层，不是 Pi 原生能力；状态变化与用户操作都落盘可回放。
@@ -196,7 +197,10 @@ const REGISTRY = [
   { type: "subagent_background_started", lifecycle: true, persist: true, note: "子代理后台派发开始" },
   { type: "subagent_background_finished", lifecycle: true, persist: true, note: "子代理后台派发结束" },
   { type: "context_sections_assembled", lifecycle: true, persist: false, note: "上下文章节组装诊断" },
+  { type: "context_files_resolved", lifecycle: true, persist: true, note: "本轮上下文文件解析（L0/L1/记忆，去重后）", schema: { required: ["workspace", "constitutionVersion", "files"], types: { workspace: "string", constitutionVersion: "string", files: "array" } } },
   { type: "skill_injected", lifecycle: true, persist: true, note: "Skill 注入（含预算/哈希）" },
+  { type: "skill_draft_created", lifecycle: true, persist: true, note: "技能草稿生成（只写工作区，不安装）", schema: { required: ["name", "path", "bytes"], types: { name: "string", path: "string", bytes: "number" } } },
+  { type: "skill_installed", lifecycle: true, persist: true, note: "技能草稿经用户确认安装到技能库", schema: { required: ["name", "path"], types: { name: "string", path: "string" } } },
   { type: "config_source_resolved", lifecycle: true, persist: false, note: "配置来源解析诊断" },
   { type: "workflow_journal_updated", lifecycle: true, persist: true, note: "工作流阶段 journal 更新" },
   { type: "plugin_manifest_invalid", lifecycle: true, persist: true, note: "插件清单缺失/哈希不匹配" },

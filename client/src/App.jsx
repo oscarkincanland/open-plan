@@ -33,7 +33,7 @@ import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
 import { acquireStream } from "./长连接预算.js";
 import { createGlobalEventsLease } from "./跨标签页流租约.js";
-import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, getTabId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun, updateSessionMapContext } from "./api.js";
+import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteSession, deleteSessions, archiveSession, archiveSessions, renameSession, getSession, getClientId, getTabId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun, updateSessionMapContext } from "./api.js";
 import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
 import { mergeMapContext, normalizeMapView } from "./地图/地图上下文.js";
 import FeedbackHost, { notifyError, askConfirm } from "./components/Feedback.jsx";
@@ -1835,6 +1835,23 @@ export default function App() {
     await refreshSessions();
   }, [refreshSessions]);
 
+  // 2026-11-03 归档：只改 header。归档当前打开的会话时故意不清 currentSessionId，
+  // 避免用户正在看的对话被“归档”动作直接关掉；切走后再从默认列表消失。
+  const handleArchiveSession = useCallback(async (id, archived = true) => {
+    await archiveSession(id, archived);
+    await refreshSessions();
+  }, [refreshSessions]);
+
+  const handleBatchArchiveSessions = useCallback(async (ids, archived = true) => {
+    const result = await archiveSessions(ids, archived);
+    await refreshSessions();
+    if (result.skipped?.length) {
+      const reasons = [...new Set(result.skipped.map((item) => item.reason).filter(Boolean))];
+      if (reasons.length) window.setTimeout(() => notifyError(`部分会话未${archived ? "归档" : "恢复"}：${reasons.join("、")}`), 0);
+    }
+    return result;
+  }, [refreshSessions]);
+
   const handleDeleteSession = useCallback(async (id) => {
     await deleteSession(id);
     sessionHistoryCacheRef.current.delete(id);
@@ -2214,6 +2231,8 @@ export default function App() {
       onRefreshSessions={refreshSessions}
       onDeleteSession={handleDeleteSession}
       onBatchDeleteSession={handleBatchDeleteSessions}
+      onArchiveSession={handleArchiveSession}
+      onBatchArchiveSession={handleBatchArchiveSessions}
       unreadByThread={unreadByThread}
       onForkSession={handleForkSession}
       onPinSession={handlePinSession}
@@ -2372,6 +2391,8 @@ export default function App() {
               onRefreshSessions={refreshSessions}
               onDeleteSession={handleDeleteSession}
               onBatchDeleteSession={handleBatchDeleteSessions}
+              onArchiveSession={handleArchiveSession}
+              onBatchArchiveSession={handleBatchArchiveSessions}
               onRenameSession={handleRenameSession}
               onForkSession={handleForkSession}
               onPinSession={handlePinSession}
@@ -2875,7 +2896,7 @@ export default function App() {
              <div className="module-body module-settings-body">
                {settingsModuleTab === "memory"
                  ? <MemoryTab workspace={currentWorkspace} projectId={currentProject?.id || ""} />
-                 : <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} defaultModel={defaultModel} activeModel={selectedModel} clientId={clientId} threadId={threadId} initialSection={settingsSection} onModelChange={setSelectedModel} onModelsRefresh={refreshModelCatalog} onProjectUpdated={refreshProjects} onProjectSelect={(id) => { closeExternalModules(); handleProjectChange(id); }} />}
+                 : <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} defaultModel={defaultModel} activeModel={selectedModel} clientId={clientId} threadId={threadId} initialSection={settingsSection} onSessionsChanged={refreshSessions} onModelChange={setSelectedModel} onModelsRefresh={refreshModelCatalog} onProjectUpdated={refreshProjects} onProjectSelect={(id) => { closeExternalModules(); handleProjectChange(id); }} />}
              </div>
            </div>
          )}
