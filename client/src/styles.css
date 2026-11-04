@@ -12591,3 +12591,6 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .skills-draft-main strong { font-size: 12px; }
 .skills-draft-main small { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .skills-draft-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+
+/* 2026-11-03 运行宪法只读提示（L0，不可编辑） */
+.settings-constitution-note { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-pill); color: var(--muted); font-size: 11px; background: var(--panel2-bg, var(--panel)); }

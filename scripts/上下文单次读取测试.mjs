@@ -110,5 +110,14 @@ test("诊断事件 context_files_resolved 已登记", () => {
   assert.match(registry, /constitutionVersion/);
 });
 
+test("设置只读展示运行宪法版本，不提供编辑入口", () => {
+  const index = read("server/index.mjs");
+  const settings = read("client/src/components/SettingsPanel.jsx");
+  assert.match(index, /constitutionVersion: RUNTIME_CONSTITUTION_VERSION/);
+  assert.match(settings, /settings-constitution-note/);
+  assert.match(settings, /内置只读（不提供编辑）/);
+  assert.doesNotMatch(settings, /constitution.*<textarea/i);
+});
+
 console.log(failed ? "\n上下文单次读取测试：存在失败\n" : "\n上下文单次读取测试：全部通过\n");
 process.exit(failed ? 1 : 0);

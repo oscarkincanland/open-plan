@@ -8,6 +8,7 @@ import { listWorkspace, searchWorkspace, filePath, safeName, WORKSPACE_DIR, CLIE
 import { computeChatWindowStart } from "./会话窗口.mjs";
 import { ACTIVE_SESSION_STATUSES, archiveHeaderPatch, shouldIncludeArchived, sortArchivedSessions } from "./会话归档.mjs";
 import { initializeWorkspace } from "./工作区初始化.mjs";
+import { RUNTIME_CONSTITUTION_VERSION } from "./智能体运行宪法.mjs";
 import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, queryComments, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
 import { getApprovalMode, listPendingApprovals, listPermissionRules, removeUserRule, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
 import { agentManager, classifyAgentError, getCredentialErrors, isAbortLikeError, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
@@ -364,6 +365,8 @@ app.get("/api/status", (req, res) => {
     ok: true,
     officecli: path.basename(OFFICECLI),
     version: pkg.version,
+    // L0 运行宪法版本：设置里只做只读展示，不提供编辑入口。
+    constitutionVersion: RUNTIME_CONSTITUTION_VERSION,
     piPackageVersion: PI_PACKAGE_VERSION,
     // 前端拿它与自己实际加载的入口脚本比对，判断页面是否还在跑旧构建。
     clientBuild: clientBuildId(),

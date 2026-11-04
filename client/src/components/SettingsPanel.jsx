@@ -1104,6 +1104,10 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
             <span><small>当前项目</small><strong>{project?.name || "未建立项目"}</strong><em>{configuredProviderCount ? `${configuredProviderCount} 个凭据已配置` : "项目与记忆策略"}</em></span>
           </button>
         </div>
+        <div className="settings-constitution-note" role="note">
+          <Icon name="shield" size={12} />
+          <span>运行宪法 L0 {integration?.constitutionVersion ? `v${integration.constitutionVersion}` : ""} · 内置只读（不提供编辑）</span>
+        </div>
       </div>
       <nav className="settings-section-nav" aria-label="设置分类">
         {[
