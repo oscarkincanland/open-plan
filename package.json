@@ -67,6 +67,7 @@
     "test:context-single-read": "node scripts/上下文单次读取测试.mjs",
     "test:workspace-init": "node scripts/工作区初始化测试.mjs",
     "test:task-complexity": "node scripts/任务复杂度与技能策略测试.mjs",
+    "test:icon-system": "node scripts/图标体系契约测试.mjs",
     "test:interrupt-chain": "node scripts/中断链路回归测试.mjs",
     "test:run-association": "node scripts/会话流Run归属回归测试.mjs",
     "test:chat-window": "node scripts/会话窗口与运行卡回归测试.mjs",

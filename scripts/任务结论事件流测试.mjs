@@ -112,7 +112,8 @@ test("内置工具清单全部映射到确定图标（无遗漏、无异常）",
     write: "edit", edit: "edit", review_source_apply: "edit",
     bash: "terminal", officecli: "doc",
     grep: "search", find: "search", ls: "search", web_search: "search", web_fetch: "search",
-    kb_search: "book", kb_read: "book", skills_search: "book", skills_read: "book", memory_update: "book",
+    kb_search: "book", kb_read: "book", skills_search: "book", skills_read: "book", memory_update: "book", skill_draft: "book",
+    job_status: "history", job_cancel: "history",
     map_read: "map", map_datasets: "map", map_edit: "map", map_import: "map", map_analyze: "map", map_template: "map", map_save_analysis: "map", map_clear_analysis: "map",
     map_layer_info: "map", map_reset: "map", map_project_create: "map",
     review_copy: "shield", ask_user: "comment", todo: "list", run_subagent: "flow",
@@ -139,7 +140,7 @@ test("语义图标与状态徽记是两套：语义文件独立、工具卡同�
   assert.match(对话面板, /className=\{`tool-icon \$\{done \? \(isError \? "err" : "ok"\) : "run"\}`\}/);
   // 思维图标与工具图标都由映射表驱动，颜色之外保留文字
   assert.match(事件展示, /export function toolIdentity\(/);
-  assert.match(图标, /\n  brain: \(/);
+  assert.match(图标, /\n  brain: IconBrain,/);
 });
 
 // ---------- 3. 客观结果降级（服务端） ----------

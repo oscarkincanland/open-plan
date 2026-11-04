@@ -58,7 +58,7 @@ test("doc 与 docx 共用文档类别（Word 老格式也要有图标）", () =>
 test("每个语义类别都有对应字形（否则会静默回退成 other）", () => {
   const source = fs.readFileSync(path.join(ROOT, "client", "src", "components", "文件类型图标.jsx"), "utf8");
   const glyphBlock = source.slice(source.indexOf("const GLYPHS = {"), source.indexOf("export default function"));
-  const glyphs = new Set([...glyphBlock.matchAll(/^\s{2}([a-zA-Z]+):\s*\(/gm)].map((m) => m[1]));
+  const glyphs = new Set([...glyphBlock.matchAll(/^\s{2}([a-zA-Z]+):\s*Icon[A-Za-z0-9_]+,/gm)].map((m) => m[1]));
   assert.ok(glyphs.size >= 10, `字形表解析异常，只读到 ${glyphs.size} 个`);
   // 按每个扩展名还原出实际用到的 kind，逐一核对字形存在。
   const usedKinds = new Set();

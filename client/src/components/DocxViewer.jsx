@@ -636,7 +636,7 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
             <Icon name="eye" size={12} /> 预览
           </button>
           <button className={`toolbar-seg-btn ${mode === "edit" ? "active" : ""}`} onClick={enterEditMode}>
-            <Icon name="penTool" size={12} /> 编辑
+            <Icon name="edit" size={12} /> 编辑
           </button>
         </div>
         <button className={`toolbar-btn ${showComments ? "active" : ""}`} onClick={() => setShowComments(!showComments)} title="显示批注">
@@ -653,11 +653,11 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
         <span className="toolbar-sep" />
         {pageCount > 0 && (
           <div className="oaw-docx-page-nav" aria-label="Word 分页导航">
-            <button className="toolbar-btn" onClick={() => jumpToPage(currentPage - 1)} disabled={currentPage <= 1} title="上一页">‹</button>
+            <button className="toolbar-btn" onClick={() => jumpToPage(currentPage - 1)} disabled={currentPage <= 1} title="上一页" aria-label="上一页"><Icon name="chevronLeft" size={14} /></button>
             <select className="edit-select page-select" value={currentPage} onChange={(e) => jumpToPage(e.target.value)} title="跳转到页码">
               {Array.from({ length: pageCount }, (_, i) => <option key={i + 1} value={i + 1}>第 {i + 1} 页</option>)}
             </select>
-            <button className="toolbar-btn" onClick={() => jumpToPage(currentPage + 1)} disabled={currentPage >= pageCount} title="下一页">›</button>
+            <button className="toolbar-btn" onClick={() => jumpToPage(currentPage + 1)} disabled={currentPage >= pageCount} title="下一页" aria-label="下一页"><Icon name="chevronRight" size={14} /></button>
           </div>
         )}
         <span className="toolbar-sep" />

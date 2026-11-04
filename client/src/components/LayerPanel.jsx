@@ -551,7 +551,7 @@ export default function LayerPanel({
           <button onClick={ctxAction(() => onOpenAttribute(ctx.layerId))}><Icon name="list" size={12} /> 属性表</button>
           <button onClick={ctxAction(() => onZoomToLayer(ctx.layerId))}><Icon name="locate" size={12} /> 缩放到图层</button>
           <button onClick={ctxAction(() => setEditing({ layerId: ctx.layerId, name: cfg?.layers?.find((l) => l.id === ctx.layerId)?.name || ctx.layerId }))}>
-            <Icon name="penTool" size={12} /> 重命名
+            <Icon name="edit" size={12} /> 重命名
           </button>
           <button onClick={ctxAction(() => onDuplicateLayer(ctx.layerId))}><Icon name="copy" size={12} /> 复制图层</button>
           <div className="lp-ctx-group">

@@ -2311,7 +2311,7 @@ export default function MapPanel({
               title="绘制点/线/面并保存为图层"
               aria-pressed={Boolean(draw && !draw.kind.startsWith("measure"))}
             >
-              <Icon name="penTool" size={14} /> 绘制
+              <Icon name="edit" size={14} /> 绘制
             </button>
             {(activeAnalysis || tempLayers.length > 0 || measureResult) && (
               <button
@@ -2382,14 +2382,14 @@ export default function MapPanel({
         <div className="mp-toolmenu" onClick={(e) => e.stopPropagation()}>
           {toolMenu.type === "measure" ? (
             <>
-              <button onClick={() => startTool("measure", "measure-line")}><Icon name="penTool" size={12} /> 测量距离</button>
-              <button onClick={() => startTool("measure", "measure-polygon")}><Icon name="penTool" size={12} /> 测量面积</button>
+              <button onClick={() => startTool("measure", "measure-line")}><Icon name="edit" size={12} /> 测量距离</button>
+              <button onClick={() => startTool("measure", "measure-polygon")}><Icon name="edit" size={12} /> 测量面积</button>
             </>
           ) : (
             <>
               <button onClick={() => startTool("draw", "draw-point")}><Icon name="plus" size={12} /> 绘制点</button>
-              <button onClick={() => startTool("draw", "draw-line")}><Icon name="penTool" size={12} /> 绘制线</button>
-              <button onClick={() => startTool("draw", "draw-polygon")}><Icon name="penTool" size={12} /> 绘制面</button>
+              <button onClick={() => startTool("draw", "draw-line")}><Icon name="edit" size={12} /> 绘制线</button>
+              <button onClick={() => startTool("draw", "draw-polygon")}><Icon name="edit" size={12} /> 绘制面</button>
             </>
           )}
         </div>

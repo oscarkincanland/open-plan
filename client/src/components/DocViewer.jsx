@@ -702,7 +702,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext, o
                 onMouseDown={(e) => e.preventDefault()}
               >
                 <button className="oa-anno-btn" onClick={handleHighlight} title="高亮">
-                  <Icon name="penTool" size={12} />
+                  <Icon name="edit" size={12} />
                   <span>高亮</span>
                 </button>
                 <button className="oa-anno-btn" onClick={handleCommentClick} title="批注">
@@ -803,7 +803,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext, o
                 onMouseDown={(e) => e.preventDefault()}
               >
                 <button className="oa-anno-btn" onClick={handleHighlight} title="高亮">
-                  <Icon name="penTool" size={12} />
+                  <Icon name="edit" size={12} />
                   <span>高亮</span>
                 </button>
                 <button className="oa-anno-btn" onClick={handleCommentClick} title="批注">

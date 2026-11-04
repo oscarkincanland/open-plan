@@ -192,6 +192,9 @@ jobs:
       - name: 任务复杂度与技能策略（简单默认 / 复杂发现 / 草稿确认）
         run: node scripts/CI运行测试.mjs 任务复杂度与技能策略测试
 
+      - name: 图标体系（Tabler 映射唯一 / 无裸 SVG / Word 预览箭头）
+        run: node scripts/CI运行测试.mjs 图标体系契约测试
+
 
 
       - name: Office 写作闸门通电（ADR 0012 / 工具书 / 环境预检）

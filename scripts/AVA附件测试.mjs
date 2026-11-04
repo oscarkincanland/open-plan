@@ -68,8 +68,8 @@ test("附件卡片：类型图标与大小展示", () => {
   assert.match(chatPanel, /att\.mediaKind === "video" \? "play" : att\.mediaKind === "audio" \? "audio" : "file"/);
   assert.match(chatPanel, /\{att\.size \? <span className="att-size">\{formatBytes\(att\.size\)\}<\/span> : null\}/);
   assert.match(chatPanel, /视频附件，不自动播放/, "视频不自动播放提示");
-  assert.match(icon, /^\s{2}play: \(/m, "play 图标已注册");
-  assert.match(icon, /^\s{2}audio: \(/m, "audio 图标已注册");
+  assert.match(icon, /^\s{2}play: Icon/m, "play 图标已注册");
+  assert.match(icon, /^\s{2}audio: Icon/m, "audio 图标已注册");
 });
 
 test("工作区菜单：创建新任务 / 资源管理器打开 / 归档（不删磁盘）", () => {
