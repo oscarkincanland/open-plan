@@ -308,7 +308,8 @@ try {
   // UI 的模式说明不可混入用户输入；普通 Agent 任务不应因此误触发 Office 或 Skills。
   const plan = planTaskCapabilities({ text: "测试一下", task: { mode: "agent" } });
   assert.equal(plan.routing.officecli, "not_needed");
-  assert.equal(plan.routing.skills, "available_on_demand");
+  // 2026-11-04 技能路由：普通任务返回 default（不主动发现），复杂任务才 discover。
+  assert.equal(plan.routing.skills, "default");
   assert.equal(isGlobalSearchCommand('find / -name "梳理总结"'), true);
   assert.equal(isGlobalSearchCommand('find . -name "梳理总结"'), false);
   assert.equal(normalizeBashOptions({}).timeout, bashTimeoutPolicy.defaultSeconds);
