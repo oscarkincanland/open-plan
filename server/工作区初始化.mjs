@@ -75,6 +75,19 @@ export function buildWorkspaceSeed() {
   return { agentsMd: AGENTS_MD, memoryMd: MEMORY_MD, version: WORKSPACE_SEED_VERSION };
 }
 
+// 旧版 /api/memory/init 生成的通用占位；只有内容完全匹配时才升级，避免覆盖用户真实内容。
+const LEGACY_AGENTS = "# AGENTS.md\n\n## 项目说明\n\n在此添加项目指令和上下文信息。\n\n## 工作偏好\n\n在此添加工作偏好。\n";
+const LEGACY_MEMORY = "# 记忆索引\n\n这是一个长期记忆文件，记录跨会话的上下文信息。\n\n## 项目信息\n\n## 工作规则\n\n## 用户偏好\n\n## 经验教训\n\n";
+
+function readIfExists(file) {
+  try { return fs.existsSync(file) ? fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n") : ""; } catch { return ""; }
+}
+
+function isLegacyPlaceholder(file, legacy) {
+  const text = readIfExists(file).trim();
+  return Boolean(text) && text === legacy.trim();
+}
+
 export function initializeWorkspace(workspace, { create = true } = {}) {
   const root = normalizeWorkspace(workspace, { create });
   if (!root) return { ok: false, code: "WORKSPACE_INVALID", error: "工作区不存在或不是文件夹，无法初始化" };
@@ -83,23 +96,30 @@ export function initializeWorkspace(workspace, { create = true } = {}) {
   const memoryFile = path.join(memoryDir, "MEMORY.md");
   const seed = buildWorkspaceSeed();
   const created = [];
+  const upgraded = [];
   const skipped = [];
   try {
-    if (fs.existsSync(agentsFile)) {
-      skipped.push("AGENTS.md");
-    } else {
+    if (!fs.existsSync(agentsFile)) {
       atomicWriteFile(agentsFile, seed.agentsMd, "utf8");
       created.push("AGENTS.md");
+    } else if (isLegacyPlaceholder(agentsFile, LEGACY_AGENTS)) {
+      atomicWriteFile(agentsFile, seed.agentsMd, "utf8");
+      upgraded.push("AGENTS.md");
+    } else {
+      skipped.push("AGENTS.md");
     }
     ensureDirectory(memoryDir);
-    if (fs.existsSync(memoryFile)) {
-      skipped.push("memory/MEMORY.md");
-    } else {
+    if (!fs.existsSync(memoryFile)) {
       atomicWriteFile(memoryFile, seed.memoryMd, "utf8");
       created.push("memory/MEMORY.md");
+    } else if (isLegacyPlaceholder(memoryFile, LEGACY_MEMORY)) {
+      atomicWriteFile(memoryFile, seed.memoryMd, "utf8");
+      upgraded.push("memory/MEMORY.md");
+    } else {
+      skipped.push("memory/MEMORY.md");
     }
-    return { ok: true, workspace: root, version: seed.version, created, skipped };
+    return { ok: true, workspace: root, version: seed.version, created, upgraded, skipped };
   } catch (error) {
-    return { ok: false, code: "WORKSPACE_INIT_FAILED", error: error.message, workspace: root, created, skipped };
+    return { ok: false, code: "WORKSPACE_INIT_FAILED", error: error.message, workspace: root, created, upgraded, skipped };
   }
 }

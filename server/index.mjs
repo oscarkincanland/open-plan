@@ -5623,7 +5623,7 @@ function workspaceInitHandler(_req, res) {
   try {
     const result = initializeWorkspace(getWorkspace(), { create: false });
     if (!result.ok) return res.status(400).json(result);
-    appendEvent({ type: "workspace_initialized", data: { workspace: result.workspace, version: result.version, created: result.created, skipped: result.skipped } });
+    appendEvent({ type: "workspace_initialized", data: { workspace: result.workspace, version: result.version, created: result.created, upgraded: result.upgraded || [], skipped: result.skipped } });
     startMemoryWatcher();
     res.json({ ...result, files: listMemoryFiles() });
   } catch (e) { res.status(500).json({ error: e.message, code: e.code || null, detail: e.detail || null }); }

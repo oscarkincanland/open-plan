@@ -62,6 +62,20 @@ test("首次初始化创建 AGENTS.md 与 memory/MEMORY.md", () => {
   } finally { fs.rmSync(ws, { recursive: true, force: true }); }
 });
 
+test("旧版通用占位升级为项目化种子，用户真实内容不覆盖", () => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "oaw-init-legacy-"));
+  try {
+    fs.writeFileSync(path.join(ws, "AGENTS.md"), "# AGENTS.md\n\n## 项目说明\n\n在此添加项目指令和上下文信息。\n\n## 工作偏好\n\n在此添加工作偏好。\n", "utf8");
+    fs.mkdirSync(path.join(ws, "memory"), { recursive: true });
+    fs.writeFileSync(path.join(ws, "memory", "MEMORY.md"), "# 记忆索引\n\n这是一个长期记忆文件，记录跨会话的上下文信息。\n\n## 项目信息\n\n## 工作规则\n\n## 用户偏好\n\n## 经验教训\n\n", "utf8");
+    const result = initializeWorkspace(ws);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.upgraded.sort(), ["AGENTS.md", "memory/MEMORY.md"]);
+    assert.match(fs.readFileSync(path.join(ws, "AGENTS.md"), "utf8"), /WGS84 中国范围/);
+    assert.match(fs.readFileSync(path.join(ws, "memory", "MEMORY.md"), "utf8"), /默认中文；结论先行/);
+  } finally { fs.rmSync(ws, { recursive: true, force: true }); }
+});
+
 test("重复初始化不覆盖已有内容", () => {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "oaw-init-keep-"));
   try {

@@ -172,7 +172,7 @@ const REGISTRY = [
   { type: "memory_written", lifecycle: true, persist: true, note: "记忆写入" },
   { type: "memory_file_edited", lifecycle: true, persist: true, note: "记忆文件编辑" },
   { type: "memory_initialized", lifecycle: true, persist: true, note: "记忆初始化" },
-  { type: "workspace_initialized", lifecycle: true, persist: true, note: "工作区初始化（AGENTS.md + memory/MEMORY.md 种子）", schema: { required: ["workspace", "version", "created", "skipped"], types: { workspace: "string", version: "string", created: "array", skipped: "array" } } },
+  { type: "workspace_initialized", lifecycle: true, persist: true, note: "工作区初始化（AGENTS.md + memory/MEMORY.md 种子）", schema: { required: ["workspace", "version", "created", "skipped"], types: { workspace: "string", version: "string", created: "array", upgraded: "array", skipped: "array" } } },
 
   // ---- 长期目标（v0.13.x Goal）----
   // Goal 是项目 Harness 的跨轮目标层，不是 Pi 原生能力；状态变化与用户操作都落盘可回放。
