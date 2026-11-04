@@ -37,6 +37,13 @@ test("TurnRail 门槛：用户轮次 ≥2 且容器 ≥900px（ResizeObserver）
   assert.match(timeline, /entries\.filter\(\(entry\) => entry\.role === "user"\)\.length/, "用户轮次数按 user 消息计");
 });
 
+test("TurnRail 左侧竖排等距（不按消息比例散开）", () => {
+  assert.match(timeline, /top: \(\(index \+ 0\.5\) \/ total\) \* 100/, "短杠应按序号均分");
+  assert.doesNotMatch(timeline, /top: \(\(entry\.idx/, "不应再按消息下标比例定位");
+  assert.match(styles, /\.chat-timeline\.beads \{[\s\S]{0,80}?left: 3px;/, "导轨应在左侧");
+  assert.match(styles, /\.timeline-popup \{[\s\S]{0,80}?left: 28px;/, "左侧导轨的弹层应向右展开");
+});
+
 test("未读计数：新助手回复累计、回底 chip 显示、多路清零", () => {
   assert.match(chatPanel, /const \[unreadBelow, setUnreadBelow\] = useState\(0\)/);
   assert.match(chatPanel, /assistantSeenCountRef\.current = lastId/, "以最后一条助手消息 id 为基准（历史分页不误增）");
