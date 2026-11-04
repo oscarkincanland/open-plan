@@ -153,6 +153,9 @@ jobs:
       - name: ask 超时与跳过（30 分钟窗口 / 自动回执 / 跳过继续）
         run: node scripts/CI运行测试.mjs ask超时与跳过测试
 
+      - name: 后台任务（2 分钟阈值 / 完成回执 / 取消 / 重启中断）
+        run: node scripts/CI运行测试.mjs 后台任务测试
+
       - name: 产物文件类型图标（docx 等按类型出图，不回退通用图标）
         run: node scripts/CI运行测试.mjs 产物图标测试
 

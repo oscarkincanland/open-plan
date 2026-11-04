@@ -38,6 +38,8 @@ const AGENT_TOOLS = Object.freeze([
   "map_read", "map_analyze", "map_clear_analysis", "map_datasets", "map_layer_info",
   "map_edit", "map_import", "map_save_analysis", "map_reset", "map_project_create",
   "memory_update", "todo",
+  // 2026-11-04：后台任务（转后台的工具结果用 job_status 等待/读取，job_cancel 取消）
+  "job_status", "job_cancel",
   // P2-A：编辑流水线（生成 Word/PPT 初稿的原生流水线，仅 Work 模式）
   "editorial_pipeline",
   // 场景化分析模板（确定性编排，产出图层统计 + Word 报告；由 OAW_MAP_TEMPLATES 控制启用）

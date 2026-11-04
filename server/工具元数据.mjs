@@ -244,6 +244,22 @@ add([
     resultBudget: budget(8 * KB, "head", "truncate"),
     notes: "只创建待审核建议，不直接写 MEMORY.md",
   }),
+  meta("job_status", {
+    readOnly: true,
+    destructive: false,
+    sideEffectScope: "none",
+    riskLevel: "low",
+    resultBudget: budget(16 * KB, "head", "truncate"),
+    notes: "读取后台任务状态/日志尾部；wait=true 时等待完成",
+  }),
+  meta("job_cancel", {
+    readOnly: false,
+    destructive: false,
+    sideEffectScope: "process",
+    riskLevel: "medium",
+    resultBudget: budget(4 * KB, "head", "truncate"),
+    notes: "取消一个后台任务并终止其进程/CLI",
+  }),
 
   // ---- 编排 ----
   meta("run_subagent", {

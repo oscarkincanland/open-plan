@@ -138,6 +138,19 @@ import { normalizeToolError, toolError } from "./工具错误.mjs";
 import { buildSkillInjection, normalizeSkillUsage, bumpSkillUsage, rankSkillsByUsage, pickTopSkills } from "./Skill注入.mjs";
 import { buildSubagentProfile } from "./子代理配置.mjs";
 import { skillRootCandidates } from "./资源发现.mjs";
+import {
+  BACKGROUND_AFTER_MS,
+  appendJobOutput,
+  cancelJob,
+  cancelRunJobs,
+  createJob,
+  finishJob,
+  getJob,
+  listJobs,
+  publicJob,
+  readJobLog,
+  waitForJob,
+} from "./后台任务.mjs";
 
 const HARNESS_WRAPPED = Symbol.for("oaw.harness.wrapped");
 
@@ -1700,21 +1713,93 @@ class AgentManager extends EventEmitter {
               writeEvent("artifact_materialized", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, paths: materialized, reason: "bash_visibility" });
             }
           } catch {}
+          const readonlyBash = isReadonlyBash(effectiveCommand);
+          const backgroundEnabled = RUNTIME_FLAGS.backgroundJobs && !RUNTIME_FLAGS.piBashSidecar;
+          const job = backgroundEnabled
+            ? createJob({
+                runId: ctx.runId,
+                threadId: ctx.threadId,
+                kind: "bash",
+                command: effectiveCommand,
+                cwd: cwd || ctx.workspace,
+                mutating: !readonlyBash,
+              })
+            : null;
+          let forwardOutput = true;
+          const requestedTimeout = Number(options?.timeout);
+          const execOptions = job
+            ? {
+                ...normalizeBashOptions({ ...options, timeout: requestedTimeout > 0 ? requestedTimeout : 600 }),
+                onData: (chunk) => {
+                  appendJobOutput(job, chunk);
+                  if (forwardOutput) options?.onData?.(chunk);
+                },
+                signal: job.controller.signal,
+              }
+            : normalizeBashOptions(options);
           const runBash = async () => RUNTIME_FLAGS.piBashSidecar
             ? await getBashSidecar().execute(effectiveCommand, { cwd: cwd || ctx.workspace })
-            : await localBash.exec(effectiveCommand, cwd, normalizeBashOptions(options));
+            : await localBash.exec(effectiveCommand, cwd, execOptions);
+          if (job && options?.signal) {
+            options.signal.addEventListener("abort", () => {
+              const result = cancelJob(job.jobId, "Run 已取消");
+              if (result.ok) {
+                try { writeEvent("background_job_cancelled", { runId: ctx.runId, threadId: ctx.threadId, jobId: job.jobId, reason: "Run 已取消" }); } catch {}
+              }
+            }, { once: true });
+          }
           // 只读命令（ls/grep/unzip -p 等）不占工作区写锁，避免 Word/PPT 两个任务互相挡。
-          if (isReadonlyBash(effectiveCommand)) return runBash();
-          return withWorkspaceWriteLock(ctx, "bash", async () => {
-            writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", command: effectiveCommand.slice(0, 500) });
-            writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash" });
-            try {
-              return await runBash();
-            } catch (error) {
-              writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error?.code || "BASH_FAILED", message: String(error?.message || error) });
-              throw error;
-            }
+          const operationPromise = readonlyBash
+            ? runBash()
+            : withWorkspaceWriteLock(ctx, "bash", async () => {
+                writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", command: effectiveCommand.slice(0, 500) });
+                writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash" });
+                try {
+                  return await runBash();
+                } catch (error) {
+                  writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error?.code || "BASH_FAILED", message: String(error?.message || error) });
+                  throw error;
+                }
+              });
+          if (!job) return operationPromise;
+          const outcome = await Promise.race([
+            operationPromise
+              .then((result) => ({ done: true, result }))
+              .catch((error) => ({ done: true, error })),
+            new Promise((resolve) => {
+              const timer = setTimeout(() => resolve({ done: false }), BACKGROUND_AFTER_MS);
+              timer.unref?.();
+            }),
+          ]);
+          if (outcome.done) {
+            finishJob(job, {
+              status: outcome.error ? "failed" : "completed",
+              exitCode: outcome.result?.exitCode ?? null,
+              error: outcome.error ? String(outcome.error?.message || outcome.error) : "",
+            });
+            if (outcome.error) throw outcome.error;
+            return outcome.result;
+          }
+          // 超过阈值仍未完成：把等待移出主流程，进程继续跑；模型看到 marker 后继续其他步骤。
+          options?.onData?.(`\n[BACKGROUNDED] jobId=${job.jobId} 命令已转后台执行；需要结果时调用 job_status，或继续不依赖它的步骤。\n`);
+          forwardOutput = false;
+          writeEvent("tool_backgrounded", {
+            runId: ctx.runId,
+            threadId: ctx.threadId,
+            jobId: job.jobId,
+            kind: "bash",
+            command: effectiveCommand.slice(0, 300),
           });
+          operationPromise
+            .then((result) => {
+              const snapshot = finishJob(job, { status: "completed", exitCode: result?.exitCode ?? null, summary: `exit ${result?.exitCode ?? 0}` });
+              writeEvent("background_job_finished", { runId: ctx.runId, threadId: ctx.threadId, jobId: job.jobId, exitCode: result?.exitCode ?? null, summary: snapshot.summary });
+            })
+            .catch((error) => {
+              const snapshot = finishJob(job, { status: "failed", error: String(error?.message || error) });
+              writeEvent("background_job_failed", { runId: ctx.runId, threadId: ctx.threadId, jobId: job.jobId, error: snapshot.error });
+            });
+          return { exitCode: 0 };
         },
       },
     });
@@ -1784,6 +1869,8 @@ execute: async (_toolCallId, params, signal) => {
           runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
         });
         let officeLock = null;
+        let officeJob = null;
+        let officeLockHandedOff = false;
         if (mutating) {
           // 按目标文件加锁（而不是整个工作区）：Word 与 PPT 两个任务写不同文件时可以并行。
           officeLock = await acquireWriteLockWithRetry({
@@ -1844,10 +1931,106 @@ execute: async (_toolCallId, params, signal) => {
         } catch {}
         try {
           let r;
+          const officeReadOnlyBackground = new Set(["view", "get", "query", "validate"]).has(parsed.command);
+          const officeBackgroundEligible = RUNTIME_FLAGS.backgroundJobs && (officeReadOnlyBackground || parsed.command === "batch");
+          if (officeBackgroundEligible) {
+            officeJob = createJob({
+              runId: ctx.runId,
+              threadId: ctx.threadId,
+              kind: "officecli",
+              command: String(params.args || "").slice(0, 800),
+              cwd: entry.workspace,
+              mutating,
+              onFinish: () => {
+                if (officeJob?.backgrounded && officeLock) {
+                  const lock = officeLock;
+                  officeLock = null;
+                  releaseWriteLock(lock);
+                }
+              },
+            });
+            signal?.addEventListener?.("abort", () => {
+              const result = cancelJob(officeJob.jobId, "Run 已取消");
+              if (result.ok) {
+                try { writeEvent("background_job_cancelled", { runId: ctx.runId, threadId: ctx.threadId, jobId: officeJob.jobId, reason: "Run 已取消" }); } catch {}
+              }
+            }, { once: true });
+          }
+          const callOffice = () => runAgentOfficeCommand(
+            args,
+            (cliArgs, opts = {}) => runOfficecli(cliArgs, {
+              ...opts,
+              signal: officeJob?.controller.signal || signal,
+              timeoutMs: officeJob ? Math.max(Number(opts.timeoutMs) || 0, 900_000) : opts.timeoutMs,
+            }),
+            entry.workspace,
+          );
           try {
-            r = await runAgentOfficeCommand(args, (cliArgs, opts = {}) => runOfficecli(cliArgs, { ...opts, signal }), entry.workspace);
+            if (!officeJob) {
+              r = await callOffice();
+            } else {
+              const outcome = await Promise.race([
+                callOffice()
+                  .then((result) => ({ done: true, result }))
+                  .catch((error) => ({ done: true, error })),
+                new Promise((resolve) => {
+                  const timer = setTimeout(() => resolve({ done: false }), BACKGROUND_AFTER_MS);
+                  timer.unref?.();
+                }),
+              ]);
+              if (outcome.done) {
+                finishJob(officeJob, {
+                  status: outcome.error ? "failed" : "completed",
+                  exitCode: outcome.result?.code ?? null,
+                  error: outcome.error ? String(outcome.error?.message || outcome.error) : "",
+                  summary: outcome.result ? String(outcome.result.stdout || outcome.result.text || "").slice(-2000) : "",
+                });
+                if (outcome.error) throw outcome.error;
+                r = outcome.result;
+              } else {
+                // 批量修改/只读长命令：进程继续跑，锁在 Job 结算时释放；模型先继续其他步骤。
+                officeJob.backgrounded = true;
+                officeLockHandedOff = true;
+                appendJobOutput(officeJob, `[officecli] ${String(params.args || "").slice(0, 300)}\n`);
+                writeEvent("tool_backgrounded", {
+                  runId: ctx.runId,
+                  threadId: ctx.threadId,
+                  jobId: officeJob.jobId,
+                  kind: "officecli",
+                  command: String(params.args || "").slice(0, 300),
+                });
+                callOffice()
+                  .then((result) => {
+                    appendJobOutput(officeJob, String(result?.stdout || result?.text || ""));
+                    const snapshot = finishJob(officeJob, {
+                      status: Number(result?.code) === 0 ? "completed" : "failed",
+                      exitCode: result?.code ?? null,
+                      summary: String(result?.stdout || result?.text || "").slice(-8000),
+                    });
+                    writeEvent("background_job_finished", {
+                      runId: ctx.runId,
+                      threadId: ctx.threadId,
+                      jobId: officeJob.jobId,
+                      exitCode: snapshot.exitCode,
+                      summary: snapshot.summary.slice(0, 2000),
+                    });
+                  })
+                  .catch((error) => {
+                    const snapshot = finishJob(officeJob, { status: "failed", error: String(error?.message || error) });
+                    writeEvent("background_job_failed", { runId: ctx.runId, threadId: ctx.threadId, jobId: officeJob.jobId, error: snapshot.error });
+                  });
+                return {
+                  content: [{
+                    type: "text",
+                    text: `[BACKGROUNDED] jobId=${officeJob.jobId}\n命令已转后台执行（OfficeCLI ${parsed.command}）。可以继续不依赖它的步骤；需要结果时调用 job_status 等待或读取日志。`,
+                  }],
+                  details: { backgrounded: true, jobId: officeJob.jobId, command: parsed.command },
+                };
+              }
+            }
           } catch (error) {
             const normalized = normalizeOfficeFailure(error, args);
+            finishJob(officeJob, { status: "failed", error: String(normalized.message || normalized) });
             writeEvent("officecli_failed", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, command: args.slice(0, 8), code: normalized.code || "OFFICECLI_START_FAILED", message: String(normalized.message || normalized) });
             throw normalized;
           }
@@ -1908,7 +2091,8 @@ execute: async (_toolCallId, params, signal) => {
             details: { code: r.code, command: r.command || args },
           };
         } finally {
-          if (officeLock) releaseWriteLock(officeLock);
+          // 后台任务接管锁：由 Job 结算时释放，避免工具提前返回后同文件被并发写。
+          if (officeLock && !officeLockHandedOff) releaseWriteLock(officeLock);
         }
       },
     });
@@ -1948,6 +2132,66 @@ execute: async (_toolCallId, params, signal) => {
         return {
           content: [{ type: "text", text: `任务清单已更新：${run.todoProgress.completed}/${run.todoProgress.total} 完成。` }],
           details: { todos: run.todos, todoProgress: run.todoProgress },
+        };
+      },
+    });
+
+    const jobStatusTool = defineTool({
+      name: "job_status",
+      label: "后台任务",
+      description: "查看后台任务状态与日志尾部；wait=true 时等待任务完成（默认最多 30 秒）。工具返回 BACKGROUNDED 后，需要结果时调用它。",
+      parameters: Type.Object({
+        jobId: Type.Optional(Type.String({ description: "后台任务 id；省略时列出当前 Run 的后台任务" })),
+        wait: Type.Optional(Type.Boolean({ description: "是否等待任务完成" })),
+        timeoutMs: Type.Optional(Type.Number({ description: "等待上限，默认 30000ms，最大 120000ms" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const runId = entry?.activeRunId || null;
+        if (!params.jobId) {
+          const jobs = listJobs(runId).slice(-20);
+          return {
+            content: [{ type: "text", text: jobs.length ? JSON.stringify({ jobs }, null, 2) : "当前 Run 没有后台任务。" }],
+            details: { jobs },
+          };
+        }
+        const job = getJob(params.jobId);
+        if (!job) return { content: [{ type: "text", text: `未找到后台任务：${params.jobId}` }], isError: true };
+        const timeout = Math.min(120_000, Math.max(1_000, Number(params.timeoutMs) || 30_000));
+        const snapshot = params.wait ? await waitForJob(job.jobId, timeout) : publicJob(job);
+        const log = readJobLog(job.jobId, 8000);
+        return {
+          content: [{
+            type: "text",
+            text: [
+              `后台任务 ${snapshot.jobId}：${snapshot.status}${snapshot.exitCode !== null ? `（exit ${snapshot.exitCode}）` : ""}`,
+              snapshot.summary ? `摘要：${snapshot.summary}` : "",
+              snapshot.error ? `错误：${snapshot.error}` : "",
+              snapshot.waitedOut ? "等待超时，任务仍在后台运行。" : "",
+              log ? `日志尾部：\n${log}` : "",
+            ].filter(Boolean).join("\n"),
+          }],
+          details: { job: snapshot },
+        };
+      },
+    });
+    const jobCancelTool = defineTool({
+      name: "job_cancel",
+      label: "取消后台任务",
+      description: "取消一个后台任务并终止其进程/CLI。用户要求停止、或确认该后台任务不再需要时使用。",
+      parameters: Type.Object({
+        jobId: Type.String({ description: "后台任务 id" }),
+        reason: Type.Optional(Type.String({ description: "取消原因" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const reason = String(params.reason || "模型取消后台任务");
+        const result = cancelJob(String(params.jobId || ""), reason);
+        if (result.ok && result.job) {
+          try { writeEvent("background_job_cancelled", { runId: entry?.activeRunId || null, threadId: entry?.threadId || null, jobId: result.job.jobId, reason }); } catch {}
+        }
+        return {
+          content: [{ type: "text", text: result.ok ? `已取消后台任务：${params.jobId}` : `取消失败：${result.error || "job_not_found"}` }],
+          details: result,
+          isError: !result.ok,
         };
       },
     });
@@ -3991,7 +4235,7 @@ execute: async (_toolCallId, params, signal) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapLayerInfoTool, mapResetTool, mapProjectCreateTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, browserWaitForTool, browserActTool, browserExtractTool, browserSelectOptionTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
+        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, jobStatusTool, jobCancelTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapLayerInfoTool, mapResetTool, mapProjectCreateTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, browserWaitForTool, browserActTool, browserExtractTool, browserSelectOptionTool, subagentTool, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
         tools: sessionToolNames,
       }));
     } catch (error) {
@@ -5310,6 +5554,12 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       answer: "[系统提醒] 本轮任务已被用户取消，请立即停止执行，不要再调用工具，直接在正文里说明本轮已取消。",
     });
     const runId = entry.activeRunId || options.runId || null;
+    // 用户取消 Run 时一并取消它名下的后台任务，避免进程/CLI 继续写文件。
+    if (runId) {
+      cancelRunJobs(runId, "Run 已取消", (job, reason) => {
+        try { emitChannelSafe(entry, "background_job_cancelled", { runId, threadId: entry.threadId || null, jobId: job.jobId, reason }, { persist: true }); } catch {}
+      });
+    }
     let runtimeAborted = false;
     try {
       await piRuntimeManager.abort(entry.runtimeId, entry.session);

@@ -18,6 +18,7 @@ import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
 import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves, startOwnerHeartbeat, stopOwnerHeartbeat, setRunLifecycleInvalidator } from "./runs.mjs";
+import { markInterruptedJobs } from "./后台任务.mjs";
 import { attachRunTimingMeta, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
@@ -6360,6 +6361,13 @@ httpServer = app.listen(PORT, HOST, () => {
   // 本实例开始提供服务后才写心跳：只有真正在跑的实例才应被视为 Run 的存活 owner，
   // 一次性脚本/测试进程即使创建过 Run 也不应阻止后续恢复。
   startOwnerHeartbeat();
+  // 后台任务不自动重跑：把上个进程遗留的 running 标为 interrupted，任务中心如实展示。
+  try {
+    const interrupted = markInterruptedJobs();
+    if (interrupted) console.warn(`[jobs] 已将 ${interrupted} 个遗留后台任务标记为 interrupted（不会自动重跑）。`);
+  } catch (error) {
+    console.warn(`[jobs] 恢复后台任务状态失败：${String(error?.message || error).slice(0, 200)}`);
+  }
 });
 // SSE 连接由 15 秒 heartbeat 保活；关闭 Node 默认的请求/Socket 空闲超时，
 // 避免长文档任务超过默认时限后断流，而 Agent 实际仍在继续执行。

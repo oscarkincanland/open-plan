@@ -107,6 +107,13 @@ const REGISTRY = [
   { type: "run_budget_blocked", lifecycle: true, persist: true, note: "运行预算硬阻断（硬预算/重复无进展/连续失败）" },
   { type: "tool_gate_denied", lifecycle: true, persist: true, note: "工具被把关扩展单点拒绝（U2，扩展 tool_call 拦截，Run 继续执行）" },
 
+  // ---- 后台任务（2026-11-04）----
+  // 工具超过阈值仍未完成时转入后台；模型继续其他步骤，完成/失败/取消各有事件。
+  { type: "tool_backgrounded", lifecycle: true, persist: true, note: "工具已转后台（jobId/kind/命令摘要）", schema: { required: ["jobId", "kind"], types: { jobId: "string", kind: "string", command: "string" } } },
+  { type: "background_job_finished", lifecycle: true, persist: true, note: "后台任务完成（jobId/exitCode/摘要）", schema: { required: ["jobId"], types: { jobId: "string", exitCode: "number", summary: "string" } } },
+  { type: "background_job_failed", lifecycle: true, persist: true, note: "后台任务失败（jobId/错误）", schema: { required: ["jobId", "error"], types: { jobId: "string", error: "string" } } },
+  { type: "background_job_cancelled", lifecycle: true, persist: true, note: "后台任务取消（jobId/原因）", schema: { required: ["jobId"], types: { jobId: "string", reason: "string" } } },
+
   // ---- 上下文预算（U1/U6）----
   { type: "context_usage", lifecycle: true, persist: false, note: "回合边界精确上下文用量（U1，getContextUsage 实测，高频不落盘）" },
   { type: "compaction_failed", lifecycle: true, persist: true, note: "上下文压缩失败（U6，含原因与是否中止，不再静默）" },
