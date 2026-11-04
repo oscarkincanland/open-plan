@@ -86,6 +86,7 @@
     "test:chat-timeline": "node scripts/会话流时间线测试.mjs",
     "test:run-budget": "node scripts/运行预算测试.mjs",
     "test:doc-engine": "node scripts/文档引擎测试.mjs",
+    "test:native-text": "node scripts/原生文本编辑测试.mjs",
     "test:office-route": "node scripts/Office路由与澄清测试.mjs",
     "test:office-clarify": "node scripts/Office澄清闸门测试.mjs",
     "test:office-format": "node scripts/Office排版规范测试.mjs",

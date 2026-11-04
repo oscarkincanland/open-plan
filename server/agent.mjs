@@ -2117,6 +2117,14 @@ execute: async (_toolCallId, params, signal) => {
             writeEvent("officecli_failed", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, command: args.slice(0, 8), code: error.code, exitCode: r.code, message: detail });
             throw error;
           }
+          writeEvent("office_engine_selected", {
+            runId: ctx.runId,
+            threadId: ctx.threadId,
+            workspace: ctx.workspace,
+            engine: r.engine === "native" ? "native" : "cli",
+            command: parsed.command,
+            file: parsed.file || "",
+          });
           const body = limitToolText(r.stdout + (r.stderr || ""));
           const hint = entry.currentFile
             ? `\n[当前工作文件: ${entry.currentFile}]`

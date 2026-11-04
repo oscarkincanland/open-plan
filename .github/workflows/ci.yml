@@ -156,6 +156,9 @@ jobs:
       - name: 后台任务（2 分钟阈值 / 完成回执 / 取消 / 重启中断）
         run: node scripts/CI运行测试.mjs 后台任务测试
 
+      - name: 原生文本编辑（简单段落/样式走原生，批注等仍走 CLI）
+        run: node scripts/CI运行测试.mjs 原生文本编辑测试
+
       - name: 产物文件类型图标（docx 等按类型出图，不回退通用图标）
         run: node scripts/CI运行测试.mjs 产物图标测试
 
