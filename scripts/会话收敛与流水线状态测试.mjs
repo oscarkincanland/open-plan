@@ -78,6 +78,16 @@ test("思考正文使用 12px，比正文更小", () => {
   assert.equal(match[1], "12", "思考正文字号应为 12px");
 });
 
+test("思考文本做展示层空格/空行归一化，不再撑大字间距", () => {
+  assert.match(chatPanel, /function normalizeThinkingText/, "缺少思考文本归一化");
+  assert.match(chatPanel, /normalizeThinkingText\(item\.text\)/, "时间流路径应使用归一化文本");
+  assert.match(chatPanel, /normalizeThinkingText\(block\.text\)/, "过程路径应使用归一化文本");
+  const rule = styles.match(/\.tl-thinking-text \{[^}]*\}/)?.[0] || "";
+  assert.match(rule, /white-space: pre-line/, "思考正文应使用 pre-line 折叠多余空白");
+  assert.match(rule, /line-height: 1\.5/, "思考行距应收到 1.5");
+  assert.match(rule, /letter-spacing: 0/, "思考正文不应额外字距");
+});
+
 test("打字机支持 autoScroll，并按用户滚动位置暂停/恢复跟随", () => {
   assert.match(typewriter, /autoScroll = false/, "TypewriterText 应接受 autoScroll");
   assert.match(typewriter, /followTailRef\.current = el\.scrollHeight - el\.scrollTop - el\.clientHeight <= 24/, "应在滚动时更新跟随意图");
@@ -85,7 +95,7 @@ test("打字机支持 autoScroll，并按用户滚动位置暂停/恢复跟随",
 });
 
 test("实时思考在两个渲染路径都启用打字机+跟随尾部", () => {
-  assert.match(chatPanel, /<TypewriterText text=\{item\.text\} enabled autoScroll className="tl-thinking-text" \/>/, "时间流路径应启用");
+  assert.match(chatPanel, /<TypewriterText text=\{thinkingText\} enabled autoScroll className="tl-thinking-text" \/>/, "时间流路径应启用");
   assert.match(chatPanel, /<TypewriterText text=\{text\} enabled autoScroll className="tl-thinking-text" \/>/, "折叠过程路径应启用");
 });
 

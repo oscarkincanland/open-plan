@@ -5199,6 +5199,21 @@ function readableProgressText(value) {
     .join("\n");
 }
 
+/**
+ * 思考文本排版收敛：模型偶尔会在汉字之间/行尾插入空格、连续空行，
+ * pre-wrap 会原样保留，表现为“字间距很大、行距很散”。这里只做展示层归一化：
+ * 去掉汉字之间的空白、压缩连续空行与行尾空格，不改正文/最终答复。
+ */
+function normalizeThinkingText(value) {
+  return String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t]+(?=\n)/g, "")
+    .replace(/([\u3400-\u9fff])\s+(?=[\u3400-\u9fff])/g, "$1")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+}
+
 function SafeMarkdown({ text, onOpenFile, artifacts }) {
   const [showRaw, setShowRaw] = useState(false);
   if (!text) return null;
@@ -5962,7 +5977,8 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
       case "thinking": {
         // F2-b：流式思考——折叠态=单行跑马灯滚动预览（复用既有跑马灯，纳入动效闸门），展开态=打字机。
         const isLiveThinking = streaming && item === runTimeline[lastThinkingIndex];
-        const tail = String(item.text || "").replace(/\s+/g, " ").trim();
+        const thinkingText = normalizeThinkingText(item.text);
+        const tail = thinkingText.replace(/\s+/g, " ").trim();
         const previewText = tail.length > 60 ? `…${tail.slice(-60)}` : tail;
         const objNode = isLiveThinking
           ? <span className="tl-think-preview"><跑马灯文本 text={previewText} active title={tail} /></span>
@@ -5970,8 +5986,8 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
         return (
           <TimelineRow key={item.id} icon={item.icon} verb={item.verb} obj={objNode} objTitle={item.obj} timeText={item.timeText} state={item.state}>
             {isLiveThinking
-              ? <TypewriterText text={item.text} enabled autoScroll className="tl-thinking-text" />
-              : <div className="tl-thinking-text">{item.text}</div>}
+              ? <TypewriterText text={thinkingText} enabled autoScroll className="tl-thinking-text" />
+              : <div className="tl-thinking-text">{thinkingText}</div>}
           </TimelineRow>
         );
       }
@@ -6058,7 +6074,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   const renderProcessBlock = ({ block, blockIndex, processOrder }) => {
     const key = block.id || `block-${blockIndex}`;
     if (block.type === "thinking") {
-      const text = String(block.text || "");
+      const text = normalizeThinkingText(block.text);
       if (!text.trim()) return null;
       const live = streaming && processOrder === lastThinkingBlockIndex;
       const tail = text.replace(/\s+/g, " ").trim();

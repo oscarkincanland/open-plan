@@ -11038,9 +11038,10 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .tl-thinking-text {
   padding: 6px 8px;
   font-size: 12px;
-  line-height: 1.6;
+  line-height: 1.5;
+  letter-spacing: 0;
   color: var(--dim);
-  white-space: pre-wrap;
+  white-space: pre-line;
   overflow-wrap: anywhere;
   max-height: 220px;
   overflow-y: auto;
