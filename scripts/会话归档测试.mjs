@@ -144,6 +144,13 @@ test("对话栏历史抽屉也接到归档回调", () => {
   assert.match(chat, /onBatchArchive=\{onBatchArchiveSession/);
 });
 
+test("项目卡「最近会话」行也有 ⋮（重命名/归档/删除）", () => {
+  assert.match(sidebar, /openProjectSessionMenu/);
+  assert.match(sidebar, /project-session-more/);
+  assert.match(sidebar, /setHistoryEditSessionId\(session\.id\)/);
+  assert.match(styles, /\.project-session-more \{/);
+});
+
 test("⋮ 菜单与归档历史有样式", () => {
   assert.match(styles, /\.session-menu-btn \{/);
   assert.match(styles, /\.archive-settings-section \{/);

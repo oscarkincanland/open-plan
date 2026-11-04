@@ -432,6 +432,37 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
   const filesLoading = loadStatus?.files === "loading";
   const projectsLoading = loadStatus?.projects === "loading";
   const projectSessions = (project) => sessions.filter((session) => session.projectId === project.id || samePath(session.cwd, project.rootPath));
+
+  // 2026-11-03：项目卡「最近会话」也提供 ⋮ 操作（此前只有编辑名称，归档入口看不到）。
+  const openProjectSessionMenu = (event, project, session) => {
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const running = RUNNING_SESSION_STATUSES.has(session.runStatus);
+    setContextMenu({
+      x: Math.max(8, rect.right - 196),
+      y: rect.bottom + 4,
+      items: [
+        {
+          label: "重命名",
+          icon: "penTool",
+          onClick: () => { setHistoryProjectId(project.id); setHistoryEditSessionId(session.id); setModal("history"); },
+        },
+        {
+          label: running ? "运行中不可归档" : "归档",
+          icon: "bookmark",
+          disabled: running || !onArchiveSession,
+          onClick: () => { if (onArchiveSession) onArchiveSession(session.id, true); },
+        },
+        { separator: true },
+        {
+          label: "删除",
+          icon: "trash",
+          danger: true,
+          onClick: async () => { if (await askConfirm("确认删除此会话?")) await onDeleteSession?.(session.id); },
+        },
+      ],
+    });
+  };
   const historyProject = projects.find((project) => project.id === historyProjectId) || currentProject;
   const historySessions = historyProject ? projectSessions(historyProject) : [];
 
@@ -1012,7 +1043,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                         />
                         <small>{session.runStatus === "running" ? "执行中" : formatTime(session.modified)}</small>
                       </button>
-                      <button type="button" className="project-session-edit" onClick={() => { setHistoryProjectId(project.id); setHistoryEditSessionId(session.id); setModal("history"); }} title="编辑会话名称" aria-label="编辑会话名称"><Icon name="penTool" size={12} /></button>
+                      <button type="button" className="project-session-more" onClick={(event) => openProjectSessionMenu(event, project, session)} title="会话操作" aria-label="会话操作" aria-haspopup="menu"><Icon name="more" size={13} /></button>
                     </div>
                   ))}
                   {projectSessions(project).length > 4 && <button type="button" className="project-history-more" onClick={() => { setHistoryProjectId(project.id); setModal("history"); }}>还有 {projectSessions(project).length - 4} 个会话</button>}
