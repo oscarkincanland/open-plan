@@ -576,7 +576,7 @@ function ensureRunBudget(entry) {
   if (!entry) return null;
   const runId = entry.activeRunId || null;
   if (!entry.runBudget || entry.runBudgetRunId !== runId) {
-    entry.runBudget = createRunBudget({ runId });
+    entry.runBudget = createRunBudget({ runId, unlimited: RUNTIME_FLAGS.runBudgetUnlimited });
     entry.runBudgetRunId = runId;
     entry.budgetStopped = false;
     entry.toolArgsById = entry.toolArgsById || new Map();
@@ -4111,7 +4111,7 @@ execute: async (_toolCallId, params, signal) => {
           // 判定与文案统一来自 server/轮次预算.mjs。
           // 已请求取消的 Run 不再提醒——此时鼓励"汇报进度"会与收尾意图相反。
           if (entry && !this.isRunStopping(entry.clientId)) {
-            const noticeKind = turnNoticeKind(entry.turnCount);
+            const noticeKind = turnNoticeKind(entry.turnCount, { budget: !RUNTIME_FLAGS.runBudgetUnlimited });
             if (noticeKind) {
               const notice = turnNoticeText(noticeKind, entry.turnCount, { interval: TURN_PROGRESS_INTERVAL });
               emitChannelSafe(entry, "steer", { source: noticeKind, message: notice, turnCount: entry.turnCount });

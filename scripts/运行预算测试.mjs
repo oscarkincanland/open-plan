@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { turnNoticeKind } from "../server/轮次预算.mjs";
 import {
   createRunBudget,
   noteTurn,
@@ -18,6 +19,7 @@ import {
   noteToolResult,
   evaluateToolGate,
   evaluateTurnGate,
+  enterRestrictedMode,
   grantBudget,
   fingerprintArgs,
   stableStringify,
@@ -147,6 +149,40 @@ test("有效时长达到硬预算时工具与回合都被拦", () => {
   noteEffective(s, 1200);
   assert.equal(evaluateToolGate(s, { toolName: "write", args: { path: "/x" } }).code, "TIME_BUDGET_HARD");
   assert.equal(evaluateTurnGate(s).code, "TIME_BUDGET_HARD");
+});
+
+console.log("\n▶ 无上限模式");
+test("无上限：回合/工具/时长都不再拦截，计数仍然保留", () => {
+  const s = createRunBudget({ unlimited: true });
+  for (let i = 0; i < 500; i += 1) noteTurn(s);
+  for (let i = 0; i < 1000; i += 1) noteToolResult(s, { toolName: "read", args: { path: `/f${i}` }, ok: true });
+  noteEffective(s, 10 * 60 * 60 * 1000);
+  assert.equal(evaluateTurnGate(s).level, null, "无上限不应有回合硬预算");
+  assert.equal(evaluateToolGate(s, { toolName: "write", args: { path: "/new" } }).allow, true, "无上限不应拦工具");
+  assert.equal(s.turns, 500, "回合计数仍保留");
+  assert.equal(s.toolCalls, 1000, "工具计数仍保留");
+  assert.equal(budgetSnapshot(s).unlimited, true);
+});
+test("无上限仍保留同一操作连续失败护栏", () => {
+  const s = createRunBudget({ unlimited: true });
+  const args = { path: "/x/a.docx", command: "view" };
+  noteToolResult(s, { toolName: "bash", args, ok: false, error: "boom" });
+  noteToolResult(s, { toolName: "bash", args, ok: false, error: "boom" });
+  const gate = evaluateToolGate(s, { toolName: "bash", args });
+  assert.equal(gate.allow, false, "无上限不等于允许死循环");
+  assert.equal(gate.code, "REPEAT_FAILURE");
+});
+test("无上限不进入受限收尾", () => {
+  const s = createRunBudget({ unlimited: true });
+  enterRestrictedMode(s);
+  assert.equal(s.restricted, false, "无上限模式不应进入受限收尾");
+});
+test("无上限不再注入 25/45 提醒，只保留周期进度", () => {
+  assert.equal(turnNoticeKind(25, { budget: true }), "turn-budget");
+  assert.equal(turnNoticeKind(45, { budget: true }), "turn-budget-hard");
+  assert.equal(turnNoticeKind(25, { budget: false }), null);
+  assert.equal(turnNoticeKind(45, { budget: false }), null);
+  assert.equal(turnNoticeKind(30, { budget: false }), "turn-progress");
 });
 
 console.log("\n▶ 静态契约");

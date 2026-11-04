@@ -25,12 +25,16 @@ export function turnNoticeKind(turnCount, {
   soft = TURN_BUDGET_SOFT,
   hard = TURN_BUDGET_HARD,
   minTurns = TURN_PROGRESS_MIN_TURNS,
+  budget = true,
 } = {}) {
   const turn = Number(turnCount || 0);
   if (!Number.isFinite(turn) || turn <= 0) return null;
-  // 关键点优先：25/45 轮是明确的收尾节点，不能被周期播报顶掉
-  if (turn === soft) return "turn-budget";
-  if (turn === hard) return "turn-budget-hard";
+  // 无上限模式只保留周期进度小结，不再注入 25/45 的预算/收尾提醒。
+  if (budget) {
+    // 关键点优先：25/45 轮是明确的收尾节点，不能被周期播报顶掉
+    if (turn === soft) return "turn-budget";
+    if (turn === hard) return "turn-budget-hard";
+  }
   if (interval > 0 && turn >= minTurns && turn % interval === 0) return "turn-progress";
   return null;
 }

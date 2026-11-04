@@ -20,6 +20,7 @@ import {
   noteToolResult,
   noteTurn,
 } from "../运行预算.mjs";
+import { RUNTIME_FLAGS } from "../运行开关.mjs";
 
 const GATE_MARKER = "[工具门禁]";
 
@@ -30,7 +31,7 @@ export function isToolGateRejection(text) {
 
 export default function workbenchGateExtension(pi) {
   // 会话级预算状态（扩展实例每会话一份；runId 在扩展层不可见，置空）。
-  const budget = createRunBudget({ runId: null });
+  const budget = createRunBudget({ runId: null, unlimited: RUNTIME_FLAGS.runBudgetUnlimited });
   const toolArgsById = new Map();
 
   pi.on("turn_start", () => {

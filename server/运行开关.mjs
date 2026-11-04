@@ -65,6 +65,9 @@ const BROWSER_ATOMIC = readFlag("OAW_BROWSER_ATOMIC");
 
 /** 只读快照：进程内唯一事实。模块加载时解析一次（服务生命周期内不热更）。 */
 export const RUNTIME_FLAGS = Object.freeze({
+  /** 运行预算：默认无上限（不再按 25/45 回合、80/160 工具、45/90 分钟强制收尾）。
+      显式 OAW_RUN_BUDGET_UNLIMITED=0 可恢复旧的限额行为。 */
+  runBudgetUnlimited: readFlagDefault("OAW_RUN_BUDGET_UNLIMITED", true),
   /** U2+U6：Pi 把关扩展（ToolCallEvent 单工具拦截 + 压缩生命周期事件增强） */
   piToolGateExtension: readFlag("OAW_PI_TOOL_GATE"),
   /** U5：bash 侧车执行（operations 派发到子进程） */

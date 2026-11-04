@@ -66,10 +66,11 @@ function defaults(limits = {}) {
   };
 }
 
-/** 新建一次运行的预算状态。 */
-export function createRunBudget({ runId = null, limits = {} } = {}) {
+/** 新建一次运行的预算状态。unlimited=true 时不设回合/工具/时长上限，仅保留计数与操作级护栏。 */
+export function createRunBudget({ runId = null, limits = {}, unlimited = false } = {}) {
   return {
     runId,
+    unlimited: Boolean(unlimited),
     limits: defaults(limits),
     turns: 0,
     toolCalls: 0,
@@ -128,7 +129,7 @@ export function grantBudget(state, { turns = 0, tools = 0 } = {}) {
  * 受限模式只拦"改文件"，放行只读与收尾交互——让模型还能汇报结论、问用户、收尾。
  */
 export function enterRestrictedMode(state) {
-  if (!state) return state;
+  if (!state || state.unlimited) return state;
   state.restricted = true;
   return state;
 }
@@ -173,12 +174,15 @@ export function evaluateToolGate(state, { toolName = "", args = null } = {}) {
   const toolLimitSoft = limits.toolSoft + state.budgetBonus.tools;
   const toolLimitHard = limits.toolHard + state.budgetBonus.tools;
 
-  // 硬预算：停止新的任务工具（执行层负责让当前写入安全收尾）。
-  if (state.toolCalls >= toolLimitHard || state.hardStopped) {
-    return { allow: false, code: "TOOL_BUDGET_HARD", level: "hard", reason: `工具调用已达硬预算（${state.toolCalls}/${toolLimitHard}），停止新的任务工具，仅允许安全收尾` };
-  }
-  if (state.effectiveMs >= limits.effectiveHardMs) {
-    return { allow: false, code: "TIME_BUDGET_HARD", level: "hard", reason: `有效执行时长已达硬预算（${Math.round(state.effectiveMs / 1000)}s/${Math.round(limits.effectiveHardMs / 1000)}s）` };
+  // 无上限：不做回合/工具/时长拦截，但保留下面的“同一操作连续失败/重复无进展”护栏。
+  if (!state.unlimited) {
+    // 硬预算：停止新的任务工具（执行层负责让当前写入安全收尾）。
+    if (state.toolCalls >= toolLimitHard || state.hardStopped) {
+      return { allow: false, code: "TOOL_BUDGET_HARD", level: "hard", reason: `工具调用已达硬预算（${state.toolCalls}/${toolLimitHard}），停止新的任务工具，仅允许安全收尾` };
+    }
+    if (state.effectiveMs >= limits.effectiveHardMs) {
+      return { allow: false, code: "TIME_BUDGET_HARD", level: "hard", reason: `有效执行时长已达硬预算（${Math.round(state.effectiveMs / 1000)}s/${Math.round(limits.effectiveHardMs / 1000)}s）` };
+    }
   }
 
   const key = fingerprintArgs({ tool: toolName, args });
@@ -206,7 +210,7 @@ export function evaluateToolGate(state, { toolName = "", args = null } = {}) {
     }
   }
 
-  const level = state.toolCalls >= toolLimitSoft ? "soft" : null;
+  const level = !state.unlimited && state.toolCalls >= toolLimitSoft ? "soft" : null;
   return { allow: true, code: null, level, reason: level ? `工具调用接近软预算（${state.toolCalls}/${toolLimitSoft}）` : "" };
 }
 
@@ -236,6 +240,7 @@ export function noteToolResult(state, { toolName = "", args = null, ok = true, e
  * @returns {{level: "soft"|"hard"|null, code: string|null, reason: string}}
  */
 export function evaluateTurnGate(state) {
+  if (state.unlimited) return { level: null, code: null, reason: "" };
   const limits = state.limits;
   const turnLimitSoft = limits.turnSoft + state.budgetBonus.turns;
   const turnLimitHard = limits.turnHard + state.budgetBonus.turns;
@@ -270,6 +275,7 @@ export function budgetSnapshot(state) {
     waitingMs: state.waitingMs,
     hardStopped: state.hardStopped,
     restricted: Boolean(state.restricted),
+    unlimited: Boolean(state.unlimited),
     bonus: { ...state.budgetBonus },
     lastCall: state.lastCall ? { tool: state.lastCall.tool, count: state.lastCall.count, failCount: state.lastCall.failCount, ok: state.lastCall.ok } : null,
   };
