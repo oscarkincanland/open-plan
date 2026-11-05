@@ -637,7 +637,7 @@ export function extractSessionLinks(messages = []) {
   return [...seen.values()];
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, agentReady = true, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "", onTeamChange }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, agentReady = true, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "", onTeamChange, onOpenSettings }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   // 草稿按 thread 恢复（交互 3）：模块导航会卸载本组件，重挂载时从缓存取回未发送内容。
@@ -4723,7 +4723,7 @@ case "runtime_connecting":
                     <span>模型切换为 <b>{modelDisplayName(roundModel)}</b></span>
                   </div>
                 )}
-                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} clientId={clientId} threadId={threadId} sessionId={sessionId} isLastAssistant={m?.role === "assistant" && m.id === lastAssistantVisibleId} versionSwitching={versionSwitching} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onAskExpired={markAskExpired} onResend={handleMessageResend} onEditMessage={handleEditMessage} onForkMessage={handleForkMessage} onRegenerate={handleRegenerateMessage} onSwitchVersion={handleSwitchVersion} onToggleTool={toggleToolExpanded} expandedToolIds={expandedToolIds} runSummary={runSummary} executionFlow={executionFlow} />
+                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} clientId={clientId} threadId={threadId} sessionId={sessionId} isLastAssistant={m?.role === "assistant" && m.id === lastAssistantVisibleId} versionSwitching={versionSwitching} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onAskExpired={markAskExpired} onResend={handleMessageResend} onEditMessage={handleEditMessage} onForkMessage={handleForkMessage} onRegenerate={handleRegenerateMessage} onSwitchVersion={handleSwitchVersion} onToggleTool={toggleToolExpanded} expandedToolIds={expandedToolIds} runSummary={runSummary} executionFlow={executionFlow} onOpenSettings={onOpenSettings} />
               </React.Fragment>
             );
            }); })()}
@@ -5738,7 +5738,7 @@ function LiveRunSummaryBar({ m }) {
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onAskExpired, onResend, onEditMessage, onForkMessage, onRegenerate, onSwitchVersion, isLastAssistant = false, versionSwitching = false, index, prevRole, clientId, threadId, sessionId = "", runSummary = null, executionFlow = null }) {
+function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onAskExpired, onResend, onEditMessage, onForkMessage, onRegenerate, onSwitchVersion, isLastAssistant = false, versionSwitching = false, index, prevRole, clientId, threadId, sessionId = "", runSummary = null, executionFlow = null, onOpenSettings }) {
   if (m.role === "system") {
     if (m.summary) {
       const runId = m.runId || null;
@@ -6390,6 +6390,9 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                 )}
                 {runInterruption?.action === "retry" && (
                   <button type="button" className="btn-xs" onClick={() => onRegenerate?.(m)}>重试</button>
+                )}
+                {runInterruption?.action === "open_settings" && onOpenSettings && (
+                  <button type="button" className="btn-xs" onClick={() => onOpenSettings()}>打开设置</button>
                 )}
               </div>
             )}

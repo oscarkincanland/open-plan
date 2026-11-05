@@ -2272,6 +2272,7 @@ export default function App() {
       onOpenRunArtifacts={openArtifactsForRun}
       onOpenSubagent={openSubagentDetail}
       onSubagentUpdate={handleSubagentUpdate}
+      onOpenSettings={() => setActiveModule("settings")}
       onTeamChange={setAgentTeam}
       onModeChange={setConversationMode}
       onPhaseChange={setConversationPhase}
