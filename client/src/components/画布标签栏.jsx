@@ -129,6 +129,10 @@ export default function 画布标签栏({
               >
                 <Icon name={tab.icon || "file"} size={13} />
                 <span className="canvas-tab-title">{tab.title || "未命名"}</span>
+                {tab.badge !== undefined && tab.badge !== null && tab.badge !== "" && (
+                  <span className="canvas-tab-badge" title={tab.badgeTitle || `活跃 ${tab.badge}`}>{tab.badge}</span>
+                )}
+                {tab.alert && <i className="canvas-tab-alert" title="团队需要关注" aria-label="团队需要关注" />}
                 {tab.dirty && <i className="canvas-tab-dirty" title="有未保存修改" aria-label="有未保存修改" />}
                 {isBrowser && browserActivityPing > 0 && !active && <i className="canvas-tab-dot" aria-hidden="true" />}
               </button>

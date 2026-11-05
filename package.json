@@ -206,6 +206,8 @@
     "test:env": "node scripts/环境能力测试.mjs",
     "test:hook-events": "node scripts/Hook事件层测试.mjs",
     "test:subagent-profile": "node scripts/子代理profile与后台测试.mjs",
+    "test:team": "node scripts/团队编排器测试.mjs",
+    "test:team-panel": "node scripts/团队面板测试.mjs",
     "test:tool-error": "node scripts/工具错误契约测试.mjs",
     "test:config-priority": "node scripts/配置优先级测试.mjs",
     "test:workflow-journal": "node scripts/工作流日志测试.mjs",

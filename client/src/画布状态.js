@@ -14,7 +14,7 @@ export const CANVAS_STORAGE_KEY = "oaw_canvas_v2";
 export const CANVAS_WIDTH_KEY = "oaw_canvas_w";
 export const CANVAS_SIDE_WIDTH_KEY = "oaw_canvas_side_w";
 
-export const SINGLETON_TAB_KINDS = new Set(["artifacts", "changes", "browser", "objects", "workflows", "mapPreview"]);
+export const SINGLETON_TAB_KINDS = new Set(["artifacts", "changes", "browser", "objects", "workflows", "mapPreview", "team"]);
 
 
 const VIEW_META = Object.freeze({
@@ -25,6 +25,7 @@ const VIEW_META = Object.freeze({
   workflows: { title: "工作流", icon: "flow" },
   mapPreview: { title: "地图预览", icon: "map" },
   subagent: { title: "子代理", icon: "robot" },
+  team: { title: "团队", icon: "user" },
 });
 
 export function viewTabMeta(kind) {
@@ -154,6 +155,7 @@ function sanitizeTab(tab) {
   }
   if (kind === "subagent") return null; // 临时标签不恢复
   if (kind === "mapPreview") return null; // 会话地图预览跟随当前会话，不跨会话恢复
+  if (kind === "team") return null; // 团队跟随当前会话/Run，不写入 localStorage，避免指向新会话
   if (!VIEW_META[kind]) return null;
   return {
     ...createViewTab(kind, tab.payload || {}),

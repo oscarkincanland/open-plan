@@ -31,6 +31,8 @@ const OFFICE_TOOLS = Object.freeze([
 const REVIEW_TOOLS = Object.freeze([
   "read", "grep", "find", "ls", "ask_user", "kb_search", "kb_read", "context_read", "skills_search", "skills_read",
   "officecli", "write", "edit", "review_copy", "review_source_apply", "todo",
+  // 2026-11-04：Review 可创建只读专家团队（worker 由团队编排器降级为 scout，不会越权写文件）。
+  "team_spawn", "team_send", "team_wait", "team_list", "team_task",
 ]);
 const AGENT_TOOLS = Object.freeze([
   ...OFFICE_TOOLS,
@@ -45,6 +47,8 @@ const AGENT_TOOLS = Object.freeze([
   "skill_draft",
   // P2-A：编辑流水线（生成 Word/PPT 初稿的原生流水线，仅 Work 模式）
   "editorial_pipeline",
+  // 2026-11-04：Agent Teams（Work 可写；Review 白名单另列，Chat 只读查看不提供工具）
+  "team_spawn", "team_send", "team_wait", "team_list", "team_task",
   // 场景化分析模板（确定性编排，产出图层统计 + Word 报告；由 OAW_MAP_TEMPLATES 控制启用）
   "map_template",
   "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close",
@@ -335,6 +339,19 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
   // 子代理能力只在 Chat 与 Work 声明；与 toolPolicyForMode 的 run_subagent 白名单保持一致，
   // 避免"声明了却调不到"（Office / Review 不暴露 run_subagent）。
   if (mode === "chat" || mode === "agent") capabilities.push({ id: "subagent", label: "子代理", status: "available", required: false, provider: "pi", reason: "可派发隔离的只读子 Agent 并行处理资料阅读/审阅" });
+  // Agent Teams：Work / Review 可创建（Review 只读），Chat 只能查看历史团队，不能创建。
+  if (mode === "agent" || mode === "review") {
+    capabilities.push({
+      id: "team",
+      label: "专家团队",
+      status: "available",
+      required: false,
+      provider: "pi",
+      reason: mode === "review"
+        ? "可创建只读审阅团队（Lead + 最多 2 名队友），共享任务板；不越权写文件"
+        : "可创建 Lead + 最多 2 名队友的专家小组，共享任务板与消息；写操作仍逐次审批",
+    });
+  }
   // 地图能力只在 Chat（只读）与 Work（可写）声明；Office 专注文档、Review 依赖本地材料，
   // 两者的工具白名单里都没有地图工具，声明了就成了"说得到做不到"（X1 的同类问题）。
   const mapAvailable = map && (mode === "chat" || mode === "agent");

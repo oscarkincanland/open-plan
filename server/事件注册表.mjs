@@ -82,6 +82,18 @@ const REGISTRY = [
   { type: "subagent_blocked", lifecycle: true, persist: true, note: "子代理因等待用户审批而阻塞（默认关）", schema: { required: ["childId"], types: { childId: "string", kind: "string", tool: "string" } } },
   { type: "subagent_unblocked", lifecycle: true, persist: true, note: "子代理阻塞解除（审批已决，默认关）", schema: { required: ["childId"], types: { childId: "string", kind: "string", tool: "string" } } },
 
+  // ---- Agent Teams（Team Lite，2026-11-04）----
+  // Team 只属于一个 Run；事件带 teamId/runId，前端据此重建只读 roster 与任务板。
+  { type: "team_started", lifecycle: true, persist: true, note: "团队创建（Lead/人数上限/模式）", schema: { required: ["teamId", "leadId", "mode"], types: { teamId: "string", leadId: "string", mode: "string", maxMembers: "number", maxTasks: "number" } } },
+  { type: "team_member_spawned", lifecycle: true, persist: true, note: "团队队友创建", schema: { required: ["teamId", "member"], types: { teamId: "string", member: "object", role: "string", readOnly: "boolean" } } },
+  { type: "team_member_status", lifecycle: true, persist: true, note: "团队队友状态/当前活动", schema: { required: ["teamId", "memberId", "status"], types: { teamId: "string", memberId: "string", status: "string", activity: "string" } } },
+  { type: "team_member_result", lifecycle: true, persist: true, note: "团队队友本轮结果（含会话轨迹）", schema: { required: ["teamId", "memberId", "status"], types: { teamId: "string", memberId: "string", status: "string", output: "string", transcript: "array", isError: "boolean" } } },
+  { type: "team_message_queued", lifecycle: true, persist: true, note: "团队消息入队/投递", schema: { required: ["teamId", "messageId", "to"], types: { teamId: "string", messageId: "string", to: "string", from: "string", bytes: "number" } } },
+  { type: "team_message_delivered", lifecycle: true, persist: true, note: "团队消息已投递给队友", schema: { required: ["teamId", "messageId", "to"], types: { teamId: "string", messageId: "string", to: "string", from: "string" } } },
+  { type: "team_wait_finished", lifecycle: true, persist: false, note: "team_wait 返回（边沿触发/超时）", schema: { required: ["teamId"], types: { teamId: "string", timedOut: "boolean", changed: "boolean", noProgress: "boolean" } } },
+  { type: "team_task_updated", lifecycle: true, persist: true, note: "共享任务板变更（revision CAS）", schema: { required: ["teamId", "task", "action"], types: { teamId: "string", task: "object", action: "string", actorId: "string" } } },
+  { type: "team_closed", lifecycle: true, persist: true, note: "团队关闭（Run 结束/取消）", schema: { required: ["teamId", "reason"], types: { teamId: "string", reason: "string" } } },
+
   // ---- Editorial Pipeline（方案 §5.2）----
   // 流水线每步产出中间产物并独立发事件，前端展示为可折叠阶段条。
   { type: "pipeline_started", lifecycle: true, persist: true, note: "编辑流水线开始（Planner→Writer→Formatter→Evaluator）" },

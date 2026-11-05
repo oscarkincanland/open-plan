@@ -36,7 +36,7 @@ test("能力契约 v3：每个能力都声明 provider", () => {
   }
 });
 test("能力 ID 全部来自方案枚举或既有模式能力", () => {
-  const allowed = new Set(["chat", "office", "agent", "review", "document", "knowledge", "officecli", "office_generate", "template", "reviewEvidence", "subagent", "map", "skills", "skill_drafts", "editorial_pipeline"]);
+  const allowed = new Set(["chat", "office", "agent", "review", "document", "knowledge", "officecli", "office_generate", "template", "reviewEvidence", "subagent", "team", "map", "skills", "skill_drafts", "editorial_pipeline"]);
   for (const mode of TASK_MODES) {
     const plan = planTaskCapabilities({ text: "生成一份 Word 报告", task: { mode }, references: [] });
     for (const capability of plan.capabilities) assert.ok(allowed.has(capability.id), `未知能力 ${capability.id}`);
@@ -97,6 +97,19 @@ test("subagent 只在 chat/agent 声明；agent 白名单静态含 run_subagent"
   for (const mode of TASK_MODES) {
     assert.equal(toolPolicyForMode(mode).tools.includes("run_subagent"), false);
   }
+});
+
+test("团队只在 Work/Review 声明并可调用；Chat 只读查看不暴露 team_*", () => {
+  const teamTools = ["team_spawn", "team_send", "team_wait", "team_list", "team_task"];
+  for (const mode of ["agent", "review"]) {
+    const plan = planTaskCapabilities({ text: "多角色协作审阅", task: { mode } });
+    assert.ok(plan.capabilities.some((c) => c.id === "team"), `${mode} 应声明 team`);
+    for (const tool of teamTools) assert.ok(toolPolicyForMode(mode).tools.includes(tool), `${mode} 缺少 ${tool}`);
+  }
+  const chat = toolPolicyForMode("chat");
+  const chatPlan = planTaskCapabilities({ text: "多角色协作审阅", task: { mode: "chat" } });
+  assert.equal(chatPlan.capabilities.some((c) => c.id === "team"), false, "Chat 不应声明 team");
+  for (const tool of teamTools) assert.equal(chat.tools.includes(tool), false, `Chat 不应暴露 ${tool}`);
 });
 
 console.log("\n▶ editorial_pipeline 契约一致性（P2-A）");

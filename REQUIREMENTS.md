@@ -90,7 +90,8 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 - 与 Pi Agent 对话：文本、图片输入、模型切换、思考强度三档。
 - 图片粘贴/拖入：支持剪贴板 items 与 files 两种来源；同一张图去重；最多 8 张；大图自动压缩（最长边 1600，JPEG 0.85）并展示压缩前后大小；非视觉模型发送前二次确认。
 - 模型目录 90+，支持视觉模型标记；运行中切换模型排队，本轮结束后生效并显示分割线。
-- Agent 工具：文档、知识库、地图、联网搜索、内置浏览器、子代理、编辑流水线等按模式开放。
+- Agent 工具：文档、知识库、地图、联网搜索、内置浏览器、子代理、专家团队、编辑流水线等按模式开放。
+- 专家团队（Agent Teams）：Work / Review 可由 Agent 创建 Lead + 最多 2 名具名队友（总人数上限 3），共享任务板与消息；Chat 只能只读查看历史团队，不创建。团队绑定当前 Run，Run 结束即关闭；队友写文件仍走现有审批，Review 的 worker 自动降级为只读。
 - 主动询问（ask_user）：任务不明确时弹窗提问，带快捷选项与超时回执。
 - 中断排空：中断先进入排空窗口，再收束，不把半句话吞到下一轮。
 - 审批：写操作、危险操作按策略请求确认；自动批准不覆盖显式 deny。
@@ -103,6 +104,7 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 - ask_user 回答后任务继续；超时有回执。
 - 中断后时间线完整、可恢复；不出现“假完成”。
 - 审批归属清晰，子代理写回带来源标签。
+- 团队：Work/Review 能创建最多 3 人（含 Lead）的团队；Chat 无创建入口但可查看历史团队；顶栏 chip 与画布“团队”标签同步显示成员/任务/失败状态；关闭标签不终止团队，Run 结束团队关闭；面板只读。
 - 切换会话时旧内容不残留；resume 慢/失败不阻塞历史阅读，失败后不能继续发送。
 
 ### R3 对话流与运行可信度
@@ -416,7 +418,7 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 | 需求 | 主要落点 | 主要验证 |
 |---|---|---|
 | R1 文档办公 | `client/src/components/DocViewer.jsx`、`DocxViewer.jsx`、`PptxViewer.jsx`、`ExcelGrid.jsx`、`server/文档引擎.mjs` | `test:doc-engine`、`test:preview-identity`、`npm run verify` |
-| R2 Agent 协作 | `server/agent.mjs`、`server/Pi运行时管理.mjs`、`client/src/components/ChatPanel.jsx` | `test:capability-contract`、`test:pi-config`、`test:abort-drain` |
+| R2 Agent 协作 | `server/agent.mjs`、`server/团队编排器.mjs`、`server/Pi运行时管理.mjs`、`client/src/components/ChatPanel.jsx`、`TeamPanel.jsx`、`client/src/团队投影.js` | `test:capability-contract`、`test:team`、`test:team-panel`、`test:pi-config`、`test:abort-drain` |
 | R3 对话流/运行 | `client/src/运行展示投影.js`、`ChatPanel.jsx`、`server/runs.mjs` | `test:chat-flow`、`test:conclusion`、`test:run-trace` |
 | R4 上下文引用 | `server/context.mjs`、`client/src/App.jsx` | `test:main-flow`、`npm run verify` |
 | R5 会话管理 | `server/index.mjs` 会话路由、`SessionSidebar.jsx` | `test:startup`、`test:interaction-owner` |

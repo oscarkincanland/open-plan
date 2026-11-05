@@ -26,6 +26,8 @@ import MemoryTab from "./components/MemoryTab.jsx";
 import 对象栏 from "./components/对象栏.jsx";
 import 工作流启动器 from "./components/工作流启动器.jsx";
 import 子代理详情面板 from "./components/子代理详情面板.jsx";
+import TeamHeaderChip from "./components/TeamHeaderChip.jsx";
+import TeamPanel from "./components/TeamPanel.jsx";
 import MiniMapPreview from "./components/MiniMapPreview.jsx";
 import { createDocTab, createViewTab, createSubagentTab, openCanvasTab, closeCanvasTab, reorderCanvasTabs, loadCanvasState, saveCanvasState, saveCanvasWidth, docTabId } from "./画布状态.js";
 import { sideDrawerAllowed } from "./画布抽屉.js";
@@ -393,6 +395,10 @@ export default function App() {
   // 自动打开被“用户正在看别的文件/正在输入”挡住时，记录新产物入口，避免静默丢失。
   const [artifactNotice, setArtifactNotice] = useState(null); // { path, name, runId, at }
   const [browserFullscreen, setBrowserFullscreen] = useState(false);
+  // Agent Teams：ChatPanel 的 team_* 事件投影；顶栏 chip 与画布“团队”标签共用。
+  const [agentTeam, setAgentTeam] = useState(null);
+  const teamDismissedRef = useRef("");
+  const teamTabIdRef = useRef("");
   // 工作区画布：一个容器 + 浏览器式标签，取代 previewOpen/browserPanelOpen/filesTabOpen/newchatTabOpen 四个独立开关。
   const [canvasTabs, setCanvasTabs] = useState([]);
   const [canvasActiveId, setCanvasActiveId] = useState("");
@@ -512,6 +518,57 @@ export default function App() {
     setCanvasCollapsed(false);
   }, []);
 
+  const openTeamTab = useCallback(() => {
+    if (!agentTeam) return;
+    teamDismissedRef.current = "";
+    const tab = createViewTab("team", { teamId: agentTeam.id });
+    tab.badge = agentTeam.status === "closed" ? undefined : (agentTeam.counts?.activeMembers ?? 1);
+    tab.badgeTitle = `团队 ${agentTeam.counts?.activeMembers || 0}/${agentTeam.counts?.members || 0}`;
+    tab.alert = ["attention", "failed"].includes(String(agentTeam.status || ""));
+    setCanvasTabs((prev) => openCanvasTab(prev, tab).tabs);
+    setCanvasActiveId(tab.id);
+    setCanvasCollapsed(false);
+    window.setTimeout(() => {
+      const title = document.getElementById("team-panel-title");
+      if (title) title.focus();
+    }, 40);
+  }, [agentTeam]);
+
+  // 团队标签跟随当前 Run：自动补建但不抢焦点；用户显式关闭后只通过 chip 重开。
+  useEffect(() => {
+    if (!agentTeam?.id) {
+      setCanvasTabs((prev) => prev.filter((tab) => tab.kind !== "team"));
+      setCanvasActiveId((prev) => (prev === "view:team" ? "" : prev));
+      teamTabIdRef.current = "";
+      return;
+    }
+    if (teamTabIdRef.current !== agentTeam.id) {
+      teamTabIdRef.current = agentTeam.id;
+      teamDismissedRef.current = "";
+    }
+    const hadTabs = canvasTabsRef.current.length > 0;
+    const badge = agentTeam.status === "closed" ? undefined : (agentTeam.counts?.activeMembers ?? 1);
+    const alert = ["attention", "failed"].includes(String(agentTeam.status || ""));
+    setCanvasTabs((prev) => {
+      const existing = prev.find((tab) => tab.kind === "team");
+      if (existing) {
+        return prev.map((tab) => tab.kind === "team"
+          ? { ...tab, badge, badgeTitle: `团队 ${badge}/${agentTeam.counts?.members || 0}`, alert }
+          : tab);
+      }
+      if (teamDismissedRef.current === agentTeam.id) return prev;
+      const tab = createViewTab("team", { teamId: agentTeam.id });
+      tab.badge = badge;
+      tab.badgeTitle = `团队 ${badge}/${agentTeam.counts?.members || 0}`;
+      tab.alert = alert;
+      return openCanvasTab(prev, tab).tabs;
+    });
+    // 画布本来没有标签时不要把团队标签当作“打开画布”：保留收起状态，等用户点 chip。
+    if (!hadTabs) setCanvasCollapsed(true);
+    // canvasBooted：刷新时画布恢复会先整体替换 tabs，团队标签要在恢复完成后补回来。
+    // 注意不要依赖 currentWorkspace：它在本组件更后面才声明，放进依赖数组会触发 TDZ。
+  }, [agentTeam, canvasBooted]);
+
   const activateCanvasTabById = useCallback((id) => {
     if (!id) return;
     canvasTabManualAtRef.current = Date.now();
@@ -528,6 +585,10 @@ export default function App() {
     const result = closeCanvasTab(canvasTabs, canvasActiveId, id);
     setCanvasTabs(result.tabs);
     setCanvasActiveId(result.activeId);
+    if (tab?.kind === "team") {
+      // 关闭只销毁视图，不结束团队；同一 Run 内不自动复活，chip 可重新打开。
+      teamDismissedRef.current = agentTeam?.id || tab.payload?.teamId || "";
+    }
     if (tab?.kind === "doc") {
       if (activeTab === tab.docId) {
         if (docAbortRef.current) { try { docAbortRef.current.abort(); } catch {} docAbortRef.current = null; }
@@ -540,7 +601,7 @@ export default function App() {
       setBrowserFullscreen(false);
     }
     focusCanvasAfterCloseRef.current = true;
-  }, [activeTab, canvasActiveId, canvasTabs]);
+  }, [activeTab, canvasActiveId, canvasTabs, agentTeam?.id]);
 
   useEffect(() => {
     if (!focusCanvasAfterCloseRef.current) return;
@@ -665,6 +726,8 @@ export default function App() {
   const [sessionResumeRetrying, setSessionResumeRetrying] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState(null); // 当前会话 id（用于界面恢复）
   const currentSession = sessions.find((session) => session.id === currentSessionId) || null;
+  // 团队是会话/Run 级只读投影：切会话先清空，避免旧团队 chip/标签指向新会话。
+  useEffect(() => { setAgentTeam(null); }, [currentSessionId]);
   const [docLoading, setDocLoading] = useState(false); // 文档加载中
   const restoredRef = useRef(false); // 界面状态恢复标记（避免重复/过早保存）
   const sessionsRef = useRef([]);
@@ -2209,6 +2272,7 @@ export default function App() {
       onOpenRunArtifacts={openArtifactsForRun}
       onOpenSubagent={openSubagentDetail}
       onSubagentUpdate={handleSubagentUpdate}
+      onTeamChange={setAgentTeam}
       onModeChange={setConversationMode}
       onPhaseChange={setConversationPhase}
       onBrowserActivity={handleBrowserActivity}
@@ -2471,6 +2535,11 @@ export default function App() {
               </button>
             </div>
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
+            <TeamHeaderChip
+              team={agentTeam}
+              active={activeCanvasTab?.kind === "team" && canvasOpen}
+              onOpen={openTeamTab}
+            />
             {/* v0.13.8：顶栏搜索入口——聚焦既有命令面板（Ctrl/Cmd+K 同源），不新建搜索后端 */}
             <提示气泡 label="搜索（命令面板）">
               <button
@@ -2804,6 +2873,11 @@ export default function App() {
                 {workflowsOpen && (
                   <div className={`app-canvas-body canvas-body-workflows ${activeCanvasTab?.kind === "workflows" ? "" : "canvas-hidden"}`}>
                     <工作流启动器 onClose={closeWorkflows} />
+                  </div>
+                )}
+                {canvasTabs.some((tab) => tab.kind === "team") && (
+                  <div className={`app-canvas-body canvas-body-team ${activeCanvasTab?.kind === "team" ? "" : "canvas-hidden"}`}>
+                    <TeamPanel team={agentTeam} onOpenTranscript={openSubagentDetail} />
                   </div>
                 )}
                 {canvasTabs.filter((tab) => tab.kind === "subagent").map((tab) => (

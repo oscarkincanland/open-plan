@@ -37,6 +37,7 @@ import ArtifactCard from "./会话流/ArtifactCard.jsx";
 import { TypewriterText } from "./会话流/useTypewriter.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
 import { buildRunTimeline, describeRunFold, splitCompletionSummary } from "../会话流投影.js";
+import { reduceTeamEvent, teamFromEvents } from "../团队投影.js";
 
 // O-P3：浏览器"写操作类"工具白名单 —— 只有这些会拉起内置浏览器侧栏；
 // browser_close / browser_tabs / browser_snapshot / browser_screenshot 等查看或收尾动作不拉起。
@@ -635,7 +636,7 @@ export function extractSessionLinks(messages = []) {
   return [...seen.values()];
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, agentReady = true, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "" }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, agentReady = true, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "", onTeamChange }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   // 草稿按 thread 恢复（交互 3）：模块导航会卸载本组件，重挂载时从缓存取回未发送内容。
@@ -1009,6 +1010,15 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   // SSE 通道代际：Runtime/会话重建后服务端序号从 1 重新开始，游标必须按代际隔离
   const streamIdsRef = useRef(new Map());
   const activeRunIdRef = useRef(null);
+  // Agent Teams 只读投影：业务状态只来自 team_* 事件；App 的顶栏 chip / 画布面板共用这份快照。
+  const teamRef = useRef(null);
+  const onTeamChangeRef = useRef(onTeamChange);
+  onTeamChangeRef.current = onTeamChange;
+  const teamHydrateKeyRef = useRef("");
+  const emitTeam = useCallback((next) => {
+    teamRef.current = next || null;
+    try { onTeamChangeRef.current?.(next || null); } catch {}
+  }, []);
   const runtimeConnectingEventRef = useRef(null);
   // 发送请求后立即标记运行态，不能等 React 的 busy 状态提交；
   // 否则首批 run_admitted/model_request_started 事件会被误当成历史事件丢弃。
@@ -1360,6 +1370,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       setMessages(normalizedHistory);
       const latestRun = [...normalizedHistory].reverse().find((item) => item?.runId && item?.runStatus);
       const isLiveRun = Boolean(latestRun && LIVE_RUN_STATUSES.has(latestRun.runStatus));
+      // 历史水合时用 Run 事件重建团队；没有 team_* 事件则清空，避免把上一条会话的团队带进来。
+      emitTeam(teamFromEvents(latestRun?.events || []));
       const latestAssistant = [...normalizedHistory].reverse().find((item) => item?.role === "assistant");
       for (const message of normalizedHistory) {
         if (message?.role === "assistant" && message?.id) {
@@ -1520,8 +1532,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       todoItems,
       busy,
       editMode,
+      team: teamRef.current,
     });
     const cached = threadCacheRef.current.get(threadId);
+    // 团队跟随会话：优先用历史 Run 事件重建；否则回到该 thread 的本地缓存。
+    const hydratedTeam = teamFromEvents((hydratedRun?.events || []).filter((event) => String(event?.type || "").startsWith("team_")));
+    emitTeam(hydratingHistory ? hydratedTeam : (cached?.team || null));
     seedFinishedRuns(threadId, hydratingHistory ? hydratedMessages : (cached?.messages || []));
     if (!hydratingHistory) {
       setMessages(cached?.messages || []);
@@ -1578,6 +1594,30 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     pendingScrollRestoreRef.current = (savedScroll != null && !hydratedIsLive) ? savedScroll : null;
     previousThreadRef.current = threadId;
   }, [historyMessages, historyThreadId, threadId]);
+
+  // 刷新/切回已完成会话时，历史消息默认不携带完整 Run 事件；单独向服务端要
+  // includeEvents=latest，保证 Chat/Work/Review 都能只读看到上一轮团队快照。
+  useEffect(() => {
+    if (!threadId || !clientId || teamRef.current || runInProgressRef.current) return undefined;
+    const key = `${threadId}:${sessionId || ""}`;
+    if (teamHydrateKeyRef.current === key) return undefined;
+    teamHydrateKeyRef.current = key;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const result = await listRuns(threadId, 8, { cwd: workspace, includeEvents: "latest" });
+        if (cancelled) return;
+        const runs = (Array.isArray(result?.runs) ? result.runs : [])
+          .filter((run) => !run?.clientId || run.clientId === clientId)
+          .sort((a, b) => String(b.finishedAt || b.startedAt || "").localeCompare(String(a.finishedAt || a.startedAt || "")));
+        for (const run of runs) {
+          const team = teamFromEvents(run?.events || []);
+          if (team) { emitTeam(team); return; }
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [threadId, clientId, sessionId, workspace, historyMessages, emitTeam]);
 
   // 新建会话：清空消息
     const handleNewSession = useCallback(() => {
@@ -2370,6 +2410,17 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     if (eventRunId && !activeRunIdRef.current && !["connected", "capability_plan", "run_finished"].includes(type)) {
       activeRunIdRef.current = eventRunId;
     }
+    // Agent Teams：team_* 事件只更新只读投影，不进入消息气泡，也不改变运行态。
+    // 独立于 FLOW_EVENT_TYPES，保证团队面板在后台 Run/重连回放时也能重建。
+    if (type.startsWith("team_")) {
+      const nextTeam = reduceTeamEvent(teamRef.current, {
+        type,
+        data,
+        seq: Number(envelope.seq || envelope.id || 0) || 0,
+        at: envelope.at,
+      });
+      if (nextTeam !== teamRef.current) emitTeam(nextTeam);
+    }
     if (type !== "connected") agentEventAtRef.current = Date.now();
     // 首字延迟：首个 SSE 事件、首个正文增量分别打点（方案 §3.5）。
     // 这两个时刻与服务端的 provider 事件成对，可以把“服务端慢”和“前端渲染慢”分开。
@@ -2474,6 +2525,8 @@ case "runtime_connecting":
           // Run ID 全局唯一；这里防御性移除，允许同一 ID 的恢复/重试重新进入运行态。
           finishedRunIdsRef.current.delete(String(data.runId));
           setRunState((s) => ({ ...s, runId: data.runId }));
+          // 新 Run 默认没有团队；team_started 会在本 Run 内重新建立。
+          if (teamRef.current?.runId && String(teamRef.current.runId) !== String(data.runId)) emitTeam(null);
         }
         // 新的一轮任务开始：上一轮的系统提示摘要不再跟随，避免长期堆在顶部
         clearSystemNotes();
