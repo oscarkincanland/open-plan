@@ -154,11 +154,11 @@ test("只读任务不注入写作路由", () => {
 test("技能计数与 OfficeCLI 约束单一来源（O-28）", () => {
   const source = fs.readFileSync(path.join(ROOT, "server", "agent.mjs"), "utf8");
   assert.equal(source.includes("67 个办公"), false);
-  // 技能计数必须来自目录实况，不得写死数字：既接受直接调用形态，
-  // 也接受先取目录再取长度的形态（topSkillsPromptLine 的 catalog.length）。
-  const usesLiveCatalog = /localSkillCatalog\(\)\.length/.test(source)
-    || /const\s+catalog\s*=\s*localSkillCatalog\(\);[\s\S]{0,400}?catalog\.length/.test(source);
-  assert.ok(usesLiveCatalog, "技能计数必须来自 localSkillCatalog() 的实际长度");
+  // 技能计数必须来自目录实况，不得写死数字（技能目录模块负责扫描）。
+  const usesLiveCatalog = /localSkillCatalog\([^)]*\)\.length/.test(source)
+    || /const\s+catalog\s*=\s*localSkillCatalog\([^)]*\);[\s\S]{0,400}?catalog\.length/.test(source)
+    || /listSkillCatalog\(/.test(source);
+  assert.ok(usesLiveCatalog, "技能计数必须来自实际目录扫描");
   assert.equal((source.match(/ALWAYS operate on office documents/g) || []).length, 1);
 });
 

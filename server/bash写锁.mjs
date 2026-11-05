@@ -86,16 +86,51 @@ function resolveTarget(raw, cwd, workspace) {
   return isInside(workspace, target) ? target : null;
 }
 
+const GIT_WRITE_SUBCOMMANDS = new Set([
+  "add", "am", "apply", "checkout", "cherry-pick", "clean", "clone", "commit", "config",
+  "fetch", "gc", "init", "merge", "mv", "prune", "pull", "push", "rebase", "reset",
+  "restore", "revert", "rm", "stash", "switch", "tag", "worktree",
+]);
+// 这些子命令会改工作树，无法只靠 .git 锁保护；加 .git 锁并标记 unscoped，
+// 由调用方发 write_scope_unknown 提醒（与 DSH 的“bash 不受版本守卫保护”一致）。
+const GIT_WORKTREE_SUBCOMMANDS = new Set([
+  "checkout", "clean", "merge", "pull", "rebase", "reset", "restore", "revert", "switch", "worktree",
+]);
+
+function gitSubcommand(segment) {
+  for (const token of segment.slice(1)) {
+    if (token === "-C" || token === "-c" || token === "--git-dir" || token === "--work-tree") continue;
+    if (token.startsWith("-")) continue;
+    return token.toLowerCase();
+  }
+  return "";
+}
+
 /**
- * 推导一条 bash 命令的写目标（绝对路径）。
- * 返回 [] 表示只读/无需加锁；返回 [workspace] 表示无法推导、保守回退。
+ * 推导一条 bash 命令的写计划。
+ *
+ * 返回值：
+ *   targets  能静态确定的绝对路径（命令执行期间加锁）
+ *   unscoped 是否存在“无法静态推导的写入”；true 时**不再锁工作区根**
+ *   reason   无法推导的原因（用于 write_scope_unknown 事件）
+ *   git      git 子命令（无则空串）
+ *
+ * 这是 2026-11-04 的核心改动：早先无法推导时回退 [workspace]，导致
+ * `node build.js` / `npm run build` / `bash -c` 让整个工作区串行。
  */
-export function bashWriteTargets(command, { cwd = process.cwd(), workspace = process.cwd() } = {}) {
+export function bashWritePlan(command, { cwd = process.cwd(), workspace = process.cwd() } = {}) {
   const root = path.resolve(workspace);
   let currentCwd = path.resolve(cwd && isInside(root, path.resolve(cwd)) ? cwd : root);
   const targets = new Set();
-  let fallback = false;
+  let unscoped = false;
+  let reason = "";
+  let git = "";
 
+  const markUnscoped = (why) => {
+    if (unscoped) return;
+    unscoped = true;
+    reason = String(why || "unknown_write");
+  };
   const add = (raw) => {
     const target = resolveTarget(raw, currentCwd, root);
     if (target) targets.add(target);
@@ -115,46 +150,75 @@ export function bashWriteTargets(command, { cwd = process.cwd(), workspace = pro
     }
     const cmd = String(segment[0] || "").toLowerCase();
     if (cmd === "bash" || cmd === "sh" || cmd === "cmd" || cmd === "powershell" || cmd === "pwsh") {
-      // -c 包裹的脚本无法静态推导，保守回退
-      if (segment.includes("-c") || segment.includes("/c") || segment.includes("-Command")) fallback = true;
+      // -c 包裹的脚本无法静态推导：不再回退工作区根，只标记 unscoped。
+      if (segment.includes("-c") || segment.includes("/c") || segment.includes("-Command")) markUnscoped("shell_wrapper");
+      continue;
+    }
+    if (cmd === "git") {
+      const sub = gitSubcommand(segment);
+      git = sub || git;
+      if (sub && GIT_WRITE_SUBCOMMANDS.has(sub)) {
+        // git 写操作只锁 .git，避免挡住同一工作区的文件编辑；
+        // 会改工作树的子命令额外标记 unscoped，由上层提示协调。
+        add(path.join(root, ".git"));
+        if (GIT_WORKTREE_SUBCOMMANDS.has(sub)) markUnscoped(`git_worktree:${sub}`);
+      } else if (!sub) {
+        markUnscoped("git_without_subcommand");
+      }
       continue;
     }
     if (!WRITE_COMMANDS.has(cmd) && cmd !== "sed" && cmd !== "perl" && cmd !== "dd") {
-      if (cmd && !READ_ONLY_COMMANDS.has(cmd) && !cmd.includes("=")) fallback = true;
+      if (cmd && !READ_ONLY_COMMANDS.has(cmd)) markUnscoped(`unknown_command:${cmd}`);
       continue;
     }
     const args = segment.slice(1).filter((token) => !isOption(token));
     if (cmd === "cp" || cmd === "install") {
       // 只锁目标（最后一个非选项参数）；源文件只读
       if (args.length >= 2) add(args[args.length - 1]);
+      else markUnscoped(`${cmd}_without_target`);
       continue;
     }
     if (cmd === "mv") {
       // 源和目标都可能被改（重命名/覆盖）
-      args.forEach(add);
+      if (args.length) args.forEach(add);
+      else markUnscoped("mv_without_target");
       continue;
     }
     if (cmd === "sed" || cmd === "perl") {
       if (segment.includes("-i") || segment.some((token) => /^-i/.test(token))) {
         if (args.length) add(args[args.length - 1]);
+        else markUnscoped(`${cmd}_without_target`);
       }
       continue;
     }
     if (cmd === "dd") {
       const of = segment.find((token) => /^of=/.test(token));
       if (of) add(of.slice(3));
-      else fallback = true;
+      else markUnscoped("dd_without_of");
       continue;
     }
     if (cmd === "tee") {
-      args.forEach(add);
+      if (args.length) args.forEach(add);
+      else markUnscoped("tee_without_target");
       continue;
     }
     // rm / unlink / touch / mkdir / rmdir / truncate
     args.forEach(add);
-    if (!args.length) fallback = true;
+    if (!args.length) markUnscoped(`${cmd}_without_target`);
   }
 
-  if (fallback && !targets.size) targets.add(root);
-  return [...targets].sort();
+  return {
+    targets: [...targets].sort(),
+    unscoped,
+    reason,
+    git,
+  };
+}
+
+/**
+ * 兼容旧调用：只返回目标数组。
+ * 无法推导时返回 []（不再回退工作区根）；需要 unscoped 信息请用 bashWritePlan。
+ */
+export function bashWriteTargets(command, options = {}) {
+  return bashWritePlan(command, options).targets;
 }

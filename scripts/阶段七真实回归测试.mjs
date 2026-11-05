@@ -136,15 +136,16 @@ try {
     summary.errors[name] = result;
   }
 
-  // 同一文件由两个 Run 并发写入时，第二个 Run 必须收到结构化冲突错误。
+  // 2026-11-04：stage 只写暂存，两个 Run 可以并行；覆盖冲突由发布期 baseRevision CAS 处理。
   const first = beginRun({ clientId: "phase7", threadId: "concurrent-a", cwd: workspace, task: task("并发写入 A") });
   const second = beginRun({ clientId: "phase7", threadId: "concurrent-b", cwd: workspace, task: task("并发写入 B") });
   const target = path.join(workspace, "并发目标.txt");
   stageWrite({ runId: first.id, workspace, targetPath: target, content: "A", threadId: first.threadId });
-  assert.throws(() => stageWrite({ runId: second.id, workspace, targetPath: target, content: "B", threadId: second.threadId }), (error) => error.code === "WRITE_CONFLICT");
+  const secondStage = stageWrite({ runId: second.id, workspace, targetPath: target, content: "B", threadId: second.threadId });
+  assert.equal(secondStage.ok, true, "第二个 Run 应能并行暂存同一文件");
   finishRun(first.id, { status: "cancelled", error: "并发回归清理" });
   finishRun(second.id, { status: "cancelled", error: "并发回归清理" });
-  summary.concurrentWrite = "WRITE_CONFLICT";
+  summary.concurrentWrite = "stage-parallel";
 
   // 取消必须丢弃暂存文件并释放锁，不能留下半成品。
   const cancel = beginRun({ clientId: "phase7", threadId: "cancel", cwd: workspace, task: task("取消清理") });

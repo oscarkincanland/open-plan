@@ -427,7 +427,7 @@ test("流截断但有产物 → 按「部分完成」收尾，而不是「本轮
 console.log("\n▶ 写入通道与台账精度");
 
 test("officecli 调用前把引用到的暂存文件按需物化", () => {
-  assert.match(agent源, /materializeStagedReferences\(\{ runId: ctx\.runId, workspace: ctx\.workspace, paths: referenced \}\)/, "officecli 前必须物化被引用的暂存文件");
+  assert.match(agent源, /materializeStagedReferences\(\{ runId: ctx\.runId, workspace: ctx\.workspace, paths: referenced(?:, onEvent: writeEvent)? \}\)/, "officecli 前必须物化被引用的暂存文件");
   // v0.11.52 起参数处理（分词 / 引用识别 / 输出目录）抽到纯函数模块，便于单测；
   // agent.mjs 仍要把它接上，物化链路才算完整。
   assert.match(agent源, /import \{ collectReferencedPaths, ensureOfficeOutputDirs, parseOfficeArgs as parseArgs \} from "\.\/office参数\.mjs"/, "agent.mjs 要接上参数处理模块");

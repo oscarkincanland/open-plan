@@ -352,8 +352,8 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
     });
   }
   if (workflow) capabilities.push({ id: "skills", label: "Skills / 工作流", status: "planned", required: Boolean(task.workflowId), provider: "native", reason: task.workflowId ? `工作流 ${task.workflowId} 声明了技能依赖` : "本轮出现工作流或技能意图" });
-  else if (skillsRouting === "discover") capabilities.push({ id: "skills", label: "Skills 发现", status: "available", required: false, provider: "native", reason: "复杂任务：允许先 skills_search，命中后按需读取" });
-  if (skillDraftsRouting === "enabled") capabilities.push({ id: "skill_drafts", label: "技能草稿", status: "available", required: false, provider: "native", reason: "复杂任务 + 项目允许：可生成草稿，安装需用户确认" });
+  else if (skillsRouting === "preflight" || skillsRouting === "catalog") capabilities.push({ id: "skills", label: "Skills 目录", status: "available", required: false, provider: "native", reason: "每轮注入技能目录，模型按任务匹配读取" });
+  if (skillDraftsRouting === "enabled") capabilities.push({ id: "skill_drafts", label: "技能草稿", status: "available", required: false, provider: "native", reason: "项目允许生成草稿；安装需用户确认" });
   return {
     version: 3,
     mode,

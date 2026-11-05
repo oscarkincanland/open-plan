@@ -7,12 +7,11 @@
 import assert from "node:assert/strict";
 import {
   DEFAULT_SKILL_MAX_BYTES,
-  TOP_SKILLS_IN_PROMPT,
+  buildSkillCatalog,
   buildSkillInjection,
   normalizeSkillUsage,
   bumpSkillUsage,
   rankSkillsByUsage,
-  pickTopSkills,
 } from "../server/Skill注入.mjs";
 
 let failed = 0;
@@ -67,22 +66,38 @@ test("rankSkillsByUsage 按频次降序、同频次按名称升序", () => {
   assert.deepEqual(ranked, ["zzz", "aaa", "mmm", "unused"]);
 });
 
-test("pickTopSkills 有使用记录时按频次取前 N", () => {
-  const skills = Array.from({ length: 12 }, (_, i) => ({ name: `s${String(i).padStart(2, "0")}` }));
-  const usage = { s03: 9, s01: 5, s11: 2 };
-  const top = pickTopSkills(skills, usage, { limit: 3 }).map((s) => s.name);
-  assert.deepEqual(top, ["s03", "s01", "s11"]);
+test("buildSkillCatalog：workspace/project 优先，同 scope 按频次", () => {
+  const out = buildSkillCatalog({
+    skills: [
+      { name: "user-hot", description: "用户常用", sourceScope: "user" },
+      { name: "proj", description: "项目", sourceScope: "project" },
+      { name: "ws", description: "工作区", sourceScope: "workspace" },
+    ],
+    usage: { "user-hot": 99 },
+  });
+  assert.ok(out.text.indexOf("`ws`") < out.text.indexOf("`proj`"));
+  assert.ok(out.text.indexOf("`proj`") < out.text.indexOf("`user-hot`"));
+  assert.equal(out.count, 3);
+  assert.equal(out.included, 3);
 });
 
-test("pickTopSkills 冷启动回退默认优先级且只取目录中存在的", () => {
-  const skills = [{ name: "pptx" }, { name: "docx" }, { name: "unknown-skill" }];
-  const top = pickTopSkills(skills, {}, { limit: 2 }).map((s) => s.name);
-  assert.deepEqual(top, ["docx", "pptx"]);
-  assert.equal(pickTopSkills([], {}).length, 0);
+test("buildSkillCatalog：预算不足时截断但保留合法闭合", () => {
+  const skills = Array.from({ length: 40 }, (_, i) => ({
+    name: `skill-${String(i).padStart(2, "0")}`,
+    description: "很长的描述".repeat(30),
+    sourceScope: "user",
+  }));
+  const out = buildSkillCatalog({ skills, budgetBytes: 800 });
+  assert.equal(out.truncated, true);
+  assert.ok(out.bytes <= 900, `预算附近，实际 ${out.bytes}`);
+  assert.ok(out.text.includes("</available_skills>"));
 });
 
-test("TOP_SKILLS_IN_PROMPT 保持小清单", () => {
-  assert.ok(TOP_SKILLS_IN_PROMPT <= 8);
+test("buildSkillCatalog：空目录返回合法空清单", () => {
+  const out = buildSkillCatalog({ skills: [] });
+  assert.equal(out.count, 0);
+  assert.equal(out.included, 0);
+  assert.ok(out.text.includes("<available_skills>"));
 });
 
 process.exitCode = failed ? 1 : 0;

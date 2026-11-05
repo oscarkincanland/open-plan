@@ -6,6 +6,7 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { listWorkspace, searchWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace, isInside } from "./workspace.mjs";
 import { computeChatWindowStart } from "./会话窗口.mjs";
+import { listSkillCatalog } from "./技能目录.mjs";
 import { ACTIVE_SESSION_STATUSES, archiveHeaderPatch, shouldIncludeArchived, sortArchivedSessions } from "./会话归档.mjs";
 import { initializeWorkspace } from "./工作区初始化.mjs";
 import { RUNTIME_CONSTITUTION_VERSION } from "./智能体运行宪法.mjs";
@@ -2687,69 +2688,25 @@ function classifySkill(name, desc = "") {
   return "other";
 }
 
-// 扫描用户所有 skills 目录（含 .pi/agent/skills、.agents/skills、项目 .agents/skills）
-const SKILL_ROOTS = [
-  path.join(AGENT_DIR, "skills"),
-  path.join(process.env.USERPROFILE || os.homedir(), ".agents", "skills"),
-  path.join(process.env.USERPROFILE || os.homedir(), ".claude", "skills"),
-  path.join(PROJECT_DIR, ".agents", "skills"),
-  path.join(PROJECT_DIR, ".pi", "skills"),
-  path.join(PROJECT_DIR, ".claude", "skills"),
-  // 用户实际工作根目录（项目目录的上一级）的 .claude skills：相对推导，避免写死某台机器的路径
-  path.resolve(PROJECT_DIR, "..", ".claude", "skills"),
-];
-// scanSkills 在每次 prompt admission 都会被调用；技能目录内容在会话期间基本不变，
-// 用根目录 mtime 签名 + 短 TTL 缓存，避免每轮读取数百个 SKILL.md 拖慢首字节。
-const SKILLS_CACHE_TTL_MS = 30000;
-let skillsCache = { signature: "", results: null, expiresAt: 0 };
-
-function skillsRootSignature() {
-  let sig = "";
-  for (const root of SKILL_ROOTS) {
-    try { sig += `${root}:${fs.statSync(root).mtimeMs};`; } catch { sig += `${root}:missing;`; }
-  }
-  return sig;
-}
-
-function scanSkills() {
-  const nowMs = Date.now();
-  const signature = skillsRootSignature();
-  if (skillsCache.results && skillsCache.signature === signature && nowMs < skillsCache.expiresAt) {
-    return skillsCache.results;
-  }
-  const out = [];
-  const seen = new Set();
-  for (const root of SKILL_ROOTS) {
-    if (!fs.existsSync(root)) continue;
-    for (const e of fs.readdirSync(root, { withFileTypes: true })) {
-      if (!e.isDirectory()) continue;
-      const skillDir = path.join(root, e.name);
-      const skillFile = path.join(skillDir, "SKILL.md");
-      if (!fs.existsSync(skillFile)) continue;
-      if (seen.has(e.name)) continue;
-      seen.add(e.name);
-      // 解析 frontmatter 里的 description
-      let desc = "";
-      try {
-        const content = fs.readFileSync(skillFile, "utf8");
-        const m = content.match(/^---\s*\n([\s\S]*?)\n---/);
-        if (m) {
-          const dm = m[1].match(/description:\s*["']?([^"'\n]+)/);
-          if (dm) desc = dm[1].trim();
-        }
-      } catch {}
-      out.push({
-        name: e.name,
-        description: desc,
-        path: skillDir,
-        source: root.includes(".agents") ? "agents" : root.includes(".pi") ? "pi" : "pi-agent",
-        category: classifySkill(e.name, desc),
-      });
-    }
-  }
-  const sorted = out.sort((a, b) => a.name.localeCompare(b.name));
-  skillsCache = { signature, results: sorted, expiresAt: nowMs + SKILLS_CACHE_TTL_MS };
-  return sorted;
+// 技能目录统一由 server/技能目录.mjs 扫描（workspace > project > user，按文件 mtime 缓存）。
+// 这里只做 API 投影：把 path 规范成 skill 目录，并补 category/source 展示标签。
+function scanSkills(workspace = getWorkspace()) {
+  return listSkillCatalog({
+    agentDir: AGENT_DIR,
+    userProfile: process.env.USERPROFILE || os.homedir(),
+    projectDir: PROJECT_DIR,
+    workspace,
+  })
+    .filter((item) => path.basename(item.path) === "SKILL.md")
+    .map((item) => ({
+      name: item.name,
+      description: item.description,
+      path: path.dirname(item.path),
+      source: item.source.includes(".agents") ? "agents" : item.source.includes(".pi") ? "pi" : "pi-agent",
+      category: classifySkill(item.name, item.description),
+      scope: item.sourceScope,
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function preflightSkill(name, skills = scanSkills()) {
@@ -4844,7 +4801,7 @@ app.post("/api/agent/prompt", async (req, res) => {
         : [...new Set([...projectSkills, ...(Array.isArray(taskInput?.skills) ? taskInput.skills : []), ...mentionedSkills])];
       // 普通 Agent 问答不需要在 admission 阶段扫描所有 SKILL.md；只有显式工作流/技能
       // 依赖才加载技能目录，避免首次对话把本地扫描延迟叠加到模型首事件之前。
-      const skills = (workflowId || requestedSkills.length) ? await timed("scanSkills", async () => scanSkills()) : [];
+      const skills = (workflowId || requestedSkills.length) ? await timed("scanSkills", async () => scanSkills(runWorkspace)) : [];
       const workflow = workflowId ? getWorkflow(workflowId, skills) : null;
       preflight = requestedMode === "chat"
         ? { ok: true, workflow: null, required: [], checks: [], missing: [], message: "Chat 不执行 Skills 依赖预检" }
@@ -5092,7 +5049,7 @@ async function startContinuation(sourceRun, action) {
   const goal = String(oldTask.goal || "").trim();
   const references = resolveReferences(oldTask.references || sourceRun.references || [], goal, entry.workspace || sourceRun.cwd || getWorkspace());
   const workflowId = oldTask.workflowId || null;
-  const skills = scanSkills();
+  const skills = scanSkills(entry.workspace || sourceRun.cwd || getWorkspace());
   const workflow = workflowId ? getWorkflow(workflowId, skills) : null;
   const preflight = preflightSkills({ workflowId, requestedSkills: [], skills });
   if ((workflowId || oldTask.workflowId) && !preflight.ok) {
@@ -6347,7 +6304,9 @@ function emitChannel(entry, type, data) {
   // capability_plan/run_finished 已由 recordRunEvent/finishRun 写入 Store，
   // 其余由 HTTP 层补发的摘要/错误/文件事件在这里进入根级事件流。
   if (! ["capability_plan", "run_finished"].includes(type)) {
-    appendEvent({ clientId: entry.clientId, threadId: entry.threadId, runId: eventData.runId, type, data: eventData });
+    // entry.clientId 是 agentKey(client::thread) 复合键；根级事件流按原始 client 过滤，
+    // 这里必须落原始 client + thread，否则 run_admitted/agent_error 等会查不到。
+    appendEvent({ clientId: entry.eventClientId || entry.clientId, threadId: entry.threadId, runId: eventData.runId, type, data: eventData });
   }
   // run_finished 是所有终态路径的收口：在这里结算首字延迟样本，
   // 避免每条失败/取消/成功分支各结算一次或漏结算。

@@ -3,7 +3,8 @@
  * bash 写锁范围测试（2026-11-04）
  *
  * 守护：同一工作区并发两个任务时，A 任务写自己的产物不应阻塞 B 任务清理
- * 自己的临时文件；同一文件的写仍然互斥。无法静态推导的命令保守回退工作区锁。
+ * 自己的临时文件；同一文件的写仍然互斥。无法静态推导的命令不再回退工作区根，
+ * 而是标记 unscoped（advisory），避免长任务整区阻塞。
  *
  * 用法：node scripts/bash写锁测试.mjs
  */
@@ -11,7 +12,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { bashWriteTargets } from "../server/bash写锁.mjs";
+import { bashWritePlan, bashWriteTargets } from "../server/bash写锁.mjs";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "oaw-bash-lock-"));
 process.env.OAW_WRITE_LOCK_DIR = path.join(tmp, ".locks");
@@ -52,9 +53,29 @@ test("只读命令不需要写锁", () => {
   assert.deepEqual(bashWriteTargets("ls -la", { cwd: ws, workspace: ws }), []);
   assert.deepEqual(bashWriteTargets("find . -name '*.md'", { cwd: ws, workspace: ws }), []);
 });
-test("无法推导的脚本命令保守回退工作区根", () => {
-  assert.deepEqual(bashWriteTargets("node build.js", { cwd: ws, workspace: ws }), [path.resolve(ws)]);
-  assert.deepEqual(bashWriteTargets("bash -c 'echo x > y'", { cwd: ws, workspace: ws }), [path.resolve(ws)]);
+test("无法推导的脚本命令只标记 unscoped，不再锁工作区根", () => {
+  const nodePlan = bashWritePlan("node build.js", { cwd: ws, workspace: ws });
+  assert.deepEqual(nodePlan.targets, []);
+  assert.equal(nodePlan.unscoped, true);
+  assert.match(nodePlan.reason, /unknown_command:node/);
+  const shellPlan = bashWritePlan("bash -c 'echo x > y'", { cwd: ws, workspace: ws });
+  assert.deepEqual(shellPlan.targets, []);
+  assert.equal(shellPlan.unscoped, true);
+  assert.equal(shellPlan.reason, "shell_wrapper");
+});
+
+test("git 写命令只锁 .git；会改工作树的子命令标记 unscoped", () => {
+  const commit = bashWritePlan("git commit -m x", { cwd: ws, workspace: ws });
+  assert.deepEqual(commit.targets, [path.join(path.resolve(ws), ".git")]);
+  assert.equal(commit.unscoped, false);
+  assert.equal(commit.git, "commit");
+  const checkout = bashWritePlan("git checkout .", { cwd: ws, workspace: ws });
+  assert.deepEqual(checkout.targets, [path.join(path.resolve(ws), ".git")]);
+  assert.equal(checkout.unscoped, true);
+  assert.match(checkout.reason, /git_worktree:checkout/);
+  const status = bashWritePlan("git status", { cwd: ws, workspace: ws });
+  assert.deepEqual(status.targets, []);
+  assert.equal(status.unscoped, false);
 });
 
 console.log("\n▶ 并发隔离");
@@ -79,5 +100,5 @@ test("同一文件仍互斥", () => {
 });
 
 fs.rmSync(tmp, { recursive: true, force: true });
-console.log(failed ? "\nbash 写锁范围测试：存在失败项" : "\nbash 写锁范围测试：全部通过（8 例）");
+console.log(failed ? "\nbash 写锁范围测试：存在失败项" : "\nbash 写锁范围测试：全部通过（9 例）");
 process.exit(failed ? 1 : 0);

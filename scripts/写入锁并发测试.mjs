@@ -146,27 +146,22 @@ await test("stageWriteWithRetry 不冲突时立即写入", async () => {
   releaseRunLocks("run_Q");
 });
 
-await test("既有语义：暂存锁持有到 Run 结束，会挡住其他 Run 的 bash 工作区根锁", async () => {
-  // 暂存锁按设计持有到 Run 结束（防止同一 Run 的暂存产物与其他 Run 交错发布）。
-  // 因此它会挡住其他 Run 的工作区根锁（bash）。这是既有行为，不是本次修复引入的；
-  // 本次修复只保证"写入路径遇到冲突会等待"而不是"立刻失败"。
+await test("2026-11-04：暂存写只持有瞬间锁，不再挡住其他 Run", async () => {
+  // 新语义：stageWrite 写完 staging 立即释放；其他 Run 可以立刻取同一文件/工作区根锁。
+  // 发布阶段的冲突由 baseRevision + 冲突副本处理（见并发写入与版本冲突测试）。
   const scoped = fs.mkdtempSync(path.join(os.tmpdir(), "oaw-lock-scope-"));
-  let blocked = "";
   try {
-    stageWrite({ runId: "run_scope_owner", workspace: scoped, targetPath: path.join(scoped, "a.md"), content: "x", kind: "write" });
-    try {
-      acquireWriteLock({ workspace: scoped, targetPath: scoped, runId: "run_scope_other", kind: "bash" });
-    } catch (error) {
-      blocked = `${error.code}: ${error.message}`;
-    }
-    releaseRunLocks("run_scope_owner");
-    const afterRelease = acquireWriteLock({ workspace: scoped, targetPath: scoped, runId: "run_scope_other2", kind: "bash" });
-    releaseWriteLock(afterRelease);
+    const first = stageWrite({ runId: "run_scope_owner", workspace: scoped, targetPath: path.join(scoped, "a.md"), content: "x", kind: "write" });
+    assert.equal(first?.ok, true);
+    const rootLock = acquireWriteLock({ workspace: scoped, targetPath: scoped, runId: "run_scope_other", kind: "bash" });
+    releaseWriteLock(rootLock);
+    const second = stageWrite({ runId: "run_scope_other", workspace: scoped, targetPath: path.join(scoped, "a.md"), content: "y", kind: "write" });
+    assert.equal(second?.ok, true, "另一个 Run 应能立即暂存同一文件");
   } finally {
     releaseRunLocks("run_scope_owner");
+    releaseRunLocks("run_scope_other");
     fs.rmSync(scoped, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
   }
-  assert.match(blocked, /WRITE_CONFLICT/, `暂存锁应挡住其他 Run 的工作区根锁，实际 ${blocked || "无错误"}`);
 });
 
 fs.rmSync(workspace, { recursive: true, force: true });

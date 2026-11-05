@@ -970,10 +970,19 @@ export function recordRunEvent(id, type, data = {}) {
     return recordRunFinalText(id, data?.text, { source: data?.source || "agent", messageId: data?.messageId || null })?.run || null;
   }
   run.events = Array.isArray(run.events) ? run.events : [];
-  if (["write_started", "artifact_staged", "artifact_materialized"].includes(type) && data && typeof data === "object" && data.path) {
+  if (["write_started", "artifact_staged", "artifact_materialized", "artifact_conflict"].includes(type) && data && typeof data === "object") {
     run.touchedPaths = Array.isArray(run.touchedPaths) ? run.touchedPaths : [];
-    const trackedPath = normalizeTrackedPath(run, data.path);
-    if (!run.touchedPaths.includes(trackedPath)) run.touchedPaths.push(trackedPath);
+    // bash 可一次写多个目标：data.path 是主路径，data.paths 是完整写域。
+    // 冲突副本也要记入台账，否则产物面板看不到“另一份内容”。
+    const candidates = [
+      data.path,
+      data.conflictPath,
+      ...(Array.isArray(data.paths) ? data.paths : []),
+    ].filter(Boolean);
+    for (const value of candidates) {
+      const trackedPath = normalizeTrackedPath(run, value);
+      if (trackedPath && !run.touchedPaths.includes(trackedPath)) run.touchedPaths.push(trackedPath);
+    }
   }
   updateStepFromEvent(run, type, data);
   if (type === "runtime_health" && data && typeof data === "object") {
@@ -1248,6 +1257,8 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
   // 并发收尾（例如 SSE 重放、后台异常兜底、取消请求同时到达）只能落一次终态。
   // 否则第二次会重复发布/丢失产物并再次追加 run_finished，前端恢复时就会出现两条结论。
   if (isTerminalRun(run)) {
+    // 终态早退也要释放本次 Run 可能残留的锁（重复收尾/并发收尾路径）。
+    releaseRunLocks(run.id);
     rememberTerminalRun(id, true);
     activeRunIndex.delete(id);
     return run;

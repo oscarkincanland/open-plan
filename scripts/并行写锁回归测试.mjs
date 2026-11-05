@@ -28,7 +28,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const 读取 = (...段) => fs.readFileSync(path.join(ROOT, ...段), "utf8");
 
 const { isReadonlyBash } = await import(new URL(`file:///${ROOT.replace(/\\/g, "/")}/server/office规范/执行闸门.mjs`).href);
-const { bashWriteTargets } = await import(new URL(`file:///${ROOT.replace(/\\/g, "/")}/server/bash写锁.mjs`).href);
+const { bashWritePlan, bashWriteTargets } = await import(new URL(`file:///${ROOT.replace(/\\/g, "/")}/server/bash写锁.mjs`).href);
 const { acquireWriteLock, acquireWriteLockWithRetry, releaseWriteLock } = await import(new URL(`file:///${ROOT.replace(/\\/g, "/")}/server/写入协调.mjs`).href);
 
 let failed = 0;
@@ -91,10 +91,15 @@ test("重定向 / cd 链 / rm / cp / mv / sed -i / dd / tee 都能推导真实�
   assert.deepEqual(targets("echo x | tee -a log.txt").map(rel), ["log.txt"]);
 });
 
-test("通配符锁父目录；无法推导时回退工作区根", () => {
+test("通配符锁父目录；无法推导时只标记 unscoped", () => {
   assert.deepEqual(targets("rm -rf .work/*").map(rel), [".work"]);
-  assert.deepEqual(targets("node app.js"), [path.resolve(ws)]);
-  assert.deepEqual(targets("bash -c 'echo hi > x'"), [path.resolve(ws)]);
+  assert.deepEqual(targets("node app.js"), []);
+  assert.equal(bashWritePlan("node app.js", { cwd: ws, workspace: ws }).unscoped, true);
+  assert.deepEqual(targets("bash -c 'echo hi > x'"), []);
+  assert.equal(bashWritePlan("bash -c 'echo hi > x'", { cwd: ws, workspace: ws }).reason, "shell_wrapper");
+  const commit = bashWritePlan("git commit -m x", { cwd: ws, workspace: ws });
+  assert.deepEqual(commit.targets, [path.join(path.resolve(ws), ".git")]);
+  assert.equal(commit.unscoped, false);
 });
 
 test("只读命令不产生写目标", () => {
@@ -152,10 +157,11 @@ await testAsync("目录锁与子文件重叠即冲突", async () => {
 
 console.log("\n▶ D. 接线契约");
 
-test("agent 的 bash 写锁使用命令目标推导（withBashWriteLocks + bashWriteTargets）", () => {
+test("agent 的 bash 写锁使用命令目标推导（withBashWriteLocks + bashWritePlan）", () => {
   const agent = 读取("server", "agent.mjs");
-  assert.match(agent, /import \{ bashWriteTargets \} from "\.\/bash写锁\.mjs"/, "agent 应引入 bash 写目标推导");
-  assert.match(agent, /withBashWriteLocks\(ctx, "bash", effectiveCommand, cwd/, "bash 写锁应按命令目标加锁");
+  assert.match(agent, /import \{ bashWritePlan \} from "\.\/bash写锁\.mjs"/, "agent 应引入 bash 写目标推导");
+  assert.match(agent, /bashWritePlan\(command, \{ cwd: cwd \|\| ctx\.workspace, workspace: ctx\.workspace \}\)/, "bash 写锁应按命令目标加锁");
+  assert.match(agent, /write_scope_unknown/, "无法推导时应发 write_scope_unknown 事件");
 });
 
 test("只读判定含 git 子命令白名单与 command -v 分支", () => {

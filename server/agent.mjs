@@ -88,7 +88,8 @@ import {
   stagedAccess,
   writeWorkspaceFile,
 } from "./写入协调.mjs";
-import { bashWriteTargets } from "./bash写锁.mjs";
+import { bashWritePlan } from "./bash写锁.mjs";
+import { revisionOf, sameRevision } from "./文件版本.mjs";
 // officecli 的参数处理（分词 / 暂存文件引用 / 输出目录）抽成纯函数模块，便于单测。
 import { collectReferencedPaths, ensureOfficeOutputDirs, parseOfficeArgs as parseArgs } from "./office参数.mjs";
 import {
@@ -136,9 +137,9 @@ import { buildExtractionPrompt } from "./记忆抽取调度.mjs";
 import { buildContextSections, renderContextSections, sectionSummary } from "./上下文段落.mjs";
 import { dispatchHooks } from "./Hook事件层.mjs";
 import { normalizeToolError, toolError } from "./工具错误.mjs";
-import { buildSkillInjection, normalizeSkillUsage, bumpSkillUsage, rankSkillsByUsage, pickTopSkills } from "./Skill注入.mjs";
+import { buildSkillCatalog, buildSkillInjection, normalizeSkillUsage, bumpSkillUsage, rankSkillsByUsage } from "./Skill注入.mjs";
 import { buildSubagentProfile } from "./子代理配置.mjs";
-import { skillRootCandidates } from "./资源发现.mjs";
+import { listSkillCatalog } from "./技能目录.mjs";
 import {
   BACKGROUND_AFTER_MS,
   appendJobOutput,
@@ -471,48 +472,14 @@ function limitToolText(value, max = TOOL_OUTPUT_MAX_CHARS) {
 }
 
 // Chat 的 Skills 检索只读本地 SKILL.md，不把目录扫描交给模型自行猜路径。
-// 这样既能复用 Pi/Agents 的技能目录，也避免外部路径被 read 工具误用。
-function localSkillRootCandidates() {
-  return skillRootCandidates({
+// 目录来源与缓存统一在 server/技能目录.mjs：workspace > project > user，按文件 mtime 失效。
+function localSkillCatalog(workspace = "") {
+  return listSkillCatalog({
     agentDir: AGENT_DIR,
     userProfile: process.env.USERPROFILE || os.homedir(),
     projectDir: PROJECT_DIR,
+    workspace: workspace || getWorkspace(),
   });
-}
-
-function localSkillRoots() {
-  return localSkillRootCandidates().map((item) => item.path);
-}
-
-function localSkillCatalog() {
-  const result = [];
-  const seen = new Set();
-  for (const rootInfo of localSkillRootCandidates()) {
-    const root = rootInfo.path;
-    if (!fs.existsSync(root)) continue;
-    let entries = [];
-    try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || seen.has(entry.name)) continue;
-      const file = path.join(root, entry.name, "SKILL.md");
-      if (!fs.existsSync(file)) continue;
-      let content = "";
-      try { content = fs.readFileSync(file, "utf8"); } catch { continue; }
-      const frontmatter = content.match(/^---\s*\n([\s\S]*?)\n---/);
-      const description = frontmatter?.[1]?.match(/description:\s*["']?([^"'\n]+)/)?.[1]?.trim() || "";
-      seen.add(entry.name);
-      result.push({
-        name: entry.name,
-        description,
-        path: file,
-        source: rootInfo.kind,
-        sourceScope: rootInfo.source,
-        sourcePath: root,
-        sourceRank: rootInfo.rank,
-      });
-    }
-  }
-  return result.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // 技能使用频次：skills_read 每次真实读取时 +1，持久化到 APP_DATA_DIR/集成/skill-usage.json
@@ -540,18 +507,9 @@ function recordSkillUsage(name) {
   } catch {}
 }
 
-// 常用技能提示词短清单：只注入最常用的少数几个（冷启动回退默认优先级 ∩ 目录），不做全目录注入。
-function topSkillsPromptLine() {
-  const catalog = localSkillCatalog();
-  const top = pickTopSkills(catalog, readSkillUsage());
-  if (!top.length) return "";
-  const items = top.map((skill) => `${skill.name}（${String(skill.description || "无简介").slice(0, 40)}）`).join("、");
-  return `- **常用技能（优先）**: 全目录共 ${catalog.length} 个技能，其中最常用：${items}。任务匹配清单中的技能时，直接用 skills_read 读取其 SKILL.md 并遵循流程；清单之外的技能先用 skills_search 确认存在，不要凭空假设技能不存在。`;
-}
-
-function searchLocalSkills(query = "", limit = 12) {
+function searchLocalSkills(query = "", limit = 12, workspace = "") {
   const words = String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const skills = localSkillCatalog();
+  const skills = localSkillCatalog(workspace);
   const matched = words.length
     ? skills.filter((skill) => words.every((word) => `${skill.name} ${skill.description}`.toLowerCase().includes(word)))
     : skills;
@@ -586,6 +544,12 @@ function toolFingerprint(name, args) {
 // ===== E02 运行预算接线 =====
 // 默认 soft：只产出可见的预算事件与提醒；设为 hard 时，硬预算命中会用 abort 停止本 Run。
 const RUN_BUDGET_ENFORCE = String(process.env.OAW_RUN_BUDGET_ENFORCE || "soft").toLowerCase();
+// 2026-11-04 并发改造：默认 advisory（读过才校验，未读允许覆盖）；
+// 设为 strict 时，覆盖已存在文件前必须先 read，对齐 DSH/ZCode 的读后写守卫。
+const FS_OBSERVATION_MODE = String(process.env.OAW_FS_OBSERVATION || "advisory").toLowerCase();
+// bash 无法静态推导写目标时：advisory 不锁工作区根（默认，长任务不再整区阻塞）；
+// strict 恢复旧的“未知命令锁工作区根”行为。
+const BASH_SCOPE_MODE = String(process.env.OAW_BASH_SCOPE || "advisory").toLowerCase();
 
 /** 取（或按新 Run 重建）当前 entry 的预算状态。 */
 function ensureRunBudget(entry) {
@@ -1374,8 +1338,6 @@ class AgentManager extends EventEmitter {
       throw error;
     }
     const initialModel = resolveInitialModel(modelRuntime, options.modelSpec);
-    // 常用技能短清单在会话创建时快照一次（与下方目录长度注入同一时机）。
-    const skillsPromptLine = topSkillsPromptLine();
     let entry; // 在下方创建，供 officeTool 闭包引用
     const enabledExtensionConfig = enabledPiExtensionEntries();
     // U2+U6：把关扩展（工具级拦截 + 压缩失败可见化）。flag off（默认）时不加载，
@@ -1383,20 +1345,6 @@ class AgentManager extends EventEmitter {
     const builtInExtensionPaths = RUNTIME_FLAGS.piToolGateExtension
       ? [path.join(PROJECT_DIR, "server", "pi-extensions")]
       : [];
-    // 2026-11-03 技能策略：简单任务只用默认短清单；复杂任务才开发现/草稿钩子。
-    const taskPlan = options.task?.capabilityPlan || null;
-    const skillsRouting = String(taskPlan?.routing?.skills || "default");
-    const skillDraftRouting = String(taskPlan?.routing?.skillDrafts || "off");
-    const skillPolicyLines = skillsRouting === "discover"
-      ? [
-          "- **技能发现（复杂任务）**: 动手前先调用一次 `skills_search`（limit ≤5）；只对前 1–2 个描述真正匹配的 Skill 调用 `skills_read`，每轮最多 2 次。未命中直接继续，不要为了用技能反复搜索。",
-          ...(skillDraftRouting === "enabled"
-            ? ["- **技能草稿（需用户确认）**: 若发现可复用流程，可用 `skill_draft` 生成草稿；草稿只写入 `.oaw/skill-drafts/`，不会进入技能库，安装必须由用户在技能管理里确认。"]
-            : []),
-        ]
-      : skillsRouting === "off"
-        ? ["- **技能策略**: 本轮不自动检索 Skills；只使用用户显式 `@技能[...]` 指定的技能。"]
-        : ["- **技能策略（简单任务）**: 只使用默认技能清单中的技能，不要调用 `skills_search`；用户显式 `@技能[...]` 除外。"];
     const loader = new DefaultResourceLoader({
       cwd: workspace,
       agentDir: AGENT_DIR,
@@ -1441,8 +1389,7 @@ class AgentManager extends EventEmitter {
               "- **模板引用（@模板）**: 用户以 `@模板[文件名或相对路径]` 引用模板库中的模板时，优先使用本轮结构化引用里的 `context_read(refId)` 读取，避免只凭模板标题猜路径；若需兼容旧版本，再用 find 在 `templates/`、`_报告模板/` 和 `.claude/skills/` 下按文件名包含匹配搜索，找到后用 read 读取全文，作为撰写文档的结构与风格参考。产出保存到当前工作区（见 .agent-context.md）。用户以 `@模板目录[相对路径]` 引用整个模板目录时（如 `@模板目录[templates/opendesign/templates/html-ppt-tech-sharing]`），用 find 列出该目录下所有文件并逐个 read 理解其风格与结构，产出时保持该风格。",
               "- **规划素材库（traffic-material）**: 模板库在**项目目录**下（不在当前工作区）：绝对路径 `" + PROJECT_DIR + "/templates/traffic-material/`，内置 14 份交通规划详版模板（00_总览通用规范、01_年度工作报告、02_五年发展规划、03_规划文本条文式、04_工程可行性研究报告、05_线位论证预可、06_选址用地预审、07_交通影响评价、08_汇报材料、09_物流园区规划、10_规划研究报告、11_PPT汇报、12_素材库深挖）。用户要求撰写交通规划/工可/汇报/年度报告等文档时，**用 read 工具读取该绝对路径下的对应模板作为结构参考**（如 04_工程可行性研究报告模板.md、08_汇报材料模板.md），产出保存到当前工作区。完整列表可用 GET /api/templates?category=sucaiku 查看。",
               "- **模板库（OpenDesign HTML PPT）**: 项目 `templates/opendesign/` 内置 157 个 HTML 模板（64 款 html-ppt-* 演示风格 + landing/dashboard 等），每个模板目录含 example.html 首页可直接预览（模版库页面已接入）。用户要求生成 PPT/演示/海报/网页作品时，优先用 read 工具读取 `templates/opendesign/<模板名>/example.html` 作为风格与结构参考（如 html-ppt-zhangzara-studio、html-ppt-tech-sharing、html-ppt-pitch-deck、html-ppt-taste-editorial），产出应保存到当前工作区。",
-              ...(skillsPromptLine ? [skillsPromptLine] : []),
-              ...skillPolicyLines,
+              "- **技能策略**: 每轮动态上下文会给出当前可用技能目录（workspace/project 优先）；用户点名技能或任务明显匹配某条 description 时，先 `skills_read(name)` 读取全文再动手；目录被截断或不确定技能是否存在时，再用 `skills_search`。不要根据摘要脑补技能正文。",
               "- When you modify a document, confirm what changed. Files are auto-refreshed in the browser.",
               "",
               // 项目记忆（仅 memory/*.md）——工作区 AGENTS.md 已由 Pi 原生上下文加载一次，不重复注入。
@@ -1468,6 +1415,52 @@ class AgentManager extends EventEmitter {
       return { runId, workspace: entry.workspace, threadId: entry.threadId, kind };
     };
     const writeEvent = (type, data) => emitChannelSafe(entry, type, data);
+
+    // 2026-11-04：读后写版本观察（DSH/ZCode 的 optimistic guard）。
+    // 只记录“本轮 Run 内读过哪些文件、读时目标是什么版本”；写暂存前比对，
+    // 发现外部改动就要求重新读取。默认 advisory：没读过不拦，只做发布期 CAS。
+    const observationKey = (targetPath) => {
+      const resolved = path.resolve(String(targetPath || ""));
+      return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    };
+    const observationFor = (targetPath) => {
+      const runId = entry?.activeRunId || null;
+      if (entry.readRevisionRunId !== runId) {
+        entry.readRevisions = new Map();
+        entry.readRevisionRunId = runId;
+      }
+      const key = observationKey(targetPath);
+      return {
+        has: entry.readRevisions.has(key),
+        value: entry.readRevisions.get(key),
+        current: revisionOf(targetPath),
+        key,
+      };
+    };
+    const recordObservation = (targetPath) => {
+      const state = observationFor(targetPath);
+      entry.readRevisions.set(state.key, state.current);
+      return state.current;
+    };
+    const assertWritableObservation = (targetPath) => {
+      const state = observationFor(targetPath);
+      const relative = path.relative(entry.workspace || workspace, targetPath).replace(/\\/g, "/") || ".";
+      if (state.has && !sameRevision(state.current, state.value)) {
+        const error = new Error("文件在读取后已被其他会话或外部程序修改，请重新读取后再写入");
+        error.code = "FS_STALE_VERSION";
+        error.details = { path: relative, expected: state.value, actual: state.current };
+        writeEvent("write_stale", { runId: entry?.activeRunId || null, path: relative, code: error.code, expected: state.value, actual: state.current });
+        throw error;
+      }
+      if (!state.has && state.current !== null && FS_OBSERVATION_MODE === "strict") {
+        const error = new Error("覆盖已存在文件前必须先读取：请先 read 该文件，再写入");
+        error.code = "FS_NOT_OBSERVED";
+        error.details = { path: relative, actual: state.current };
+        writeEvent("write_stale", { runId: entry?.activeRunId || null, path: relative, code: error.code, actual: state.current });
+        throw error;
+      }
+      return state.current;
+    };
 
     /** Office 执行闸门上下文（计划 008）：路由、管线产出、澄清待回答。 */
     const officeGateContext = () => ({
@@ -1595,7 +1588,13 @@ class AgentManager extends EventEmitter {
     };
     const managedReadTool = createReadToolDefinition(workspace, {
       operations: {
-        readFile: async (absolutePath) => fs.promises.readFile(resolveReadablePath({ runId: entry?.activeRunId, workspace: entry?.workspace || workspace, targetPath: absolutePath })),
+        readFile: async (absolutePath) => {
+          const readable = resolveReadablePath({ runId: entry?.activeRunId, workspace: entry?.workspace || workspace, targetPath: absolutePath });
+          const content = await fs.promises.readFile(readable);
+          // 记录的是“真实目标”的版本，而不是 staging 副本；写暂存前用它判断外部改动。
+          try { recordObservation(absolutePath); } catch {}
+          return content;
+        },
         access: async (absolutePath) => fs.promises.access(stagedAccess({ runId: entry?.activeRunId, workspace: entry?.workspace || workspace, targetPath: absolutePath }), fs.constants.R_OK),
         detectImageMimeType: async (absolutePath) => {
           const ext = path.extname(absolutePath).toLowerCase();
@@ -1619,6 +1618,7 @@ class AgentManager extends EventEmitter {
             entry, tool: "write", input: String(absolutePath || ""),
             runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
           });
+          assertWritableObservation(absolutePath);
           return stageWriteWithRetry({ ...ctx, targetPath: absolutePath, content, onEvent: writeEvent });
         },
       },
@@ -1628,18 +1628,21 @@ class AgentManager extends EventEmitter {
         access: async (absolutePath) => {
           const ctx = activeWriteContext("edit");
           assertReviewWriteAllowed(absolutePath, "edit");
-          // 同一文件的并发编辑用退避等待，超过窗口才按冲突报错
-          await acquireWriteLockWithRetry({ ...ctx, targetPath: absolutePath, kind: "edit" });
+          // 这里只做可读性检查；写锁由 stageWriteWithRetry 的短锁负责，
+          // 早先在这里取锁不释放会把文件锁到 Run 结束。
           return fs.promises.access(resolveReadablePath({ ...ctx, targetPath: absolutePath }), fs.constants.R_OK);
         },
         readFile: async (absolutePath) => {
           const ctx = activeWriteContext("edit");
-          return fs.promises.readFile(resolveReadablePath({ ...ctx, targetPath: absolutePath }));
+          const content = await fs.promises.readFile(resolveReadablePath({ ...ctx, targetPath: absolutePath }));
+          try { recordObservation(absolutePath); } catch {}
+          return content;
         },
         writeFile: async (absolutePath, content) => {
           assertReviewWriteAllowed(absolutePath, "edit");
           enforceOfficeGate("edit", { path: absolutePath });
           enforceBudgetRestriction(entry, "edit", { mutating: true });
+          assertWritableObservation(absolutePath);
           return stageWriteWithRetry({ ...activeWriteContext("edit"), targetPath: absolutePath, content, onEvent: writeEvent });
         },
       },
@@ -1702,7 +1705,20 @@ class AgentManager extends EventEmitter {
       }
     };
     const withBashWriteLocks = async (ctx, kind, command, cwd, action) => {
-      const targets = bashWriteTargets(command, { cwd: cwd || ctx.workspace, workspace: ctx.workspace });
+      const plan = bashWritePlan(command, { cwd: cwd || ctx.workspace, workspace: ctx.workspace });
+      const useWorkspaceFallback = plan.unscoped && BASH_SCOPE_MODE === "strict";
+      const targets = useWorkspaceFallback ? [ctx.workspace] : plan.targets;
+      if (plan.unscoped && !useWorkspaceFallback) {
+        writeEvent("write_scope_unknown", {
+          runId: ctx.runId,
+          threadId: ctx.threadId,
+          workspace: ctx.workspace,
+          command: String(command || "").slice(0, 300),
+          reason: plan.reason || "unknown_write",
+          git: plan.git || null,
+          scope: "advisory",
+        });
+      }
       const tokens = [];
       try {
         for (const target of targets) {
@@ -1714,6 +1730,23 @@ class AgentManager extends EventEmitter {
             kind,
           }));
         }
+        // 把可推导的目标一并写进台账，产物归属才能按本轮实际写域过滤；
+        // 否则 bash 只知道“写过工作区”，并行会话的文件会被吸进本轮产物。
+        const trackedPaths = targets
+          .map((target) => path.relative(ctx.workspace, target).replace(/\\/g, "/"))
+          .filter((relative) => relative && relative !== "." && !relative.startsWith("../"));
+        writeEvent("write_started", {
+          runId: ctx.runId,
+          threadId: ctx.threadId,
+          workspace: ctx.workspace,
+          path: trackedPaths[0] || ".",
+          paths: trackedPaths,
+          kind, command: String(command || "").slice(0, 500),
+        });
+        writeEvent("write_locked", {
+          runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace,
+          path: trackedPaths[0] || ".", paths: trackedPaths, kind,
+        });
         return await action();
       } finally {
         for (const token of tokens.reverse()) releaseWriteLock(token);
@@ -1763,7 +1796,7 @@ class AgentManager extends EventEmitter {
           // bash 只认真实磁盘：先把本轮暂存文件物化，避免 write 后 bash 看不到而反复重写。
           try {
             const stagedPaths = listStagedFiles(ctx.runId).map((item) => item.path).filter(Boolean);
-            const materialized = materializeStagedReferences({ runId: ctx.runId, workspace: ctx.workspace, paths: stagedPaths });
+            const materialized = materializeStagedReferences({ runId: ctx.runId, workspace: ctx.workspace, paths: stagedPaths, onEvent: writeEvent });
             if (materialized.length) {
               writeEvent("artifact_materialized", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, paths: materialized, reason: "bash_visibility" });
             }
@@ -1807,8 +1840,6 @@ class AgentManager extends EventEmitter {
           const operationPromise = readonlyBash
             ? runBash()
             : withBashWriteLocks(ctx, "bash", effectiveCommand, cwd, async () => {
-                writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", command: effectiveCommand.slice(0, 500) });
-                writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash" });
                 try {
                   return await runBash();
                 } catch (error) {
@@ -1946,7 +1977,7 @@ execute: async (_toolCallId, params, signal) => {
         let referenced = [];
         try {
           referenced = collectReferencedPaths(args);
-          const materialized = materializeStagedReferences({ runId: ctx.runId, workspace: ctx.workspace, paths: referenced });
+          const materialized = materializeStagedReferences({ runId: ctx.runId, workspace: ctx.workspace, paths: referenced, onEvent: writeEvent });
           if (materialized.length) {
             writeEvent("artifact_materialized", { runId: ctx.runId, threadId: ctx.threadId, paths: materialized, reason: "officecli_read" });
           }
@@ -2747,7 +2778,7 @@ execute: async (_toolCallId, params, signal) => {
         limit: Type.Optional(Type.Number({ description: "最多返回条数，默认 12" })),
       }),
       execute: async (_toolCallId, params) => {
-        const results = searchLocalSkills(params.query || "", params.limit);
+        const results = searchLocalSkills(params.query || "", params.limit, entry?.workspace || getWorkspace());
         if (!results.length) return { content: [{ type: "text", text: "未找到匹配的 Skill。" }], details: {} };
         return {
           content: [{ type: "text", text: results.map((item) => `- ${item.name}（${item.source}）：${item.description || "无简介"}`).join("\n") }],
@@ -2765,7 +2796,7 @@ execute: async (_toolCallId, params, signal) => {
       }),
       execute: async (_toolCallId, params) => {
         const name = String(params.name || "").trim();
-        const skill = localSkillCatalog().find((item) => item.name === name);
+        const skill = localSkillCatalog(entry?.workspace || getWorkspace()).find((item) => item.name === name);
         if (!skill) return { content: [{ type: "text", text: `未找到 Skill：${name}` }], details: {} };
         recordSkillUsage(name);
         const raw = fs.readFileSync(skill.path, "utf8");
@@ -2791,12 +2822,12 @@ execute: async (_toolCallId, params, signal) => {
       },
     });
 
-    // 2026-11-03：技能草稿。只在复杂任务且项目设置 allowSkillDrafts=complex 时启用；
-    // 只写工作区 .oaw/skill-drafts，不进入技能库；安装必须由用户在技能管理里确认。
+    // 2026-11-04：技能草稿只受项目设置 allowSkillDrafts 控制（默认 on），
+    // 不再要求“复杂任务”；仍只写工作区 .oaw/skill-drafts，不进入技能库，安装需用户确认。
     const skillDraftTool = defineTool({
       name: "skill_draft",
       label: "技能草稿",
-      description: "把本轮可复用的流程写成技能草稿，供用户审核后安装。只写工作区 .oaw/skill-drafts，不修改技能库；未开启技能草稿或非复杂任务时调用会失败。",
+      description: "把本轮可复用的流程写成技能草稿，供用户审核后安装。只写工作区 .oaw/skill-drafts，不修改技能库；项目关闭技能草稿时调用会失败。",
       parameters: Type.Object({
         name: Type.String({ description: "技能名（小写字母/数字/短横线，2-64 字符），例如 od-quality-check" }),
         description: Type.String({ description: "一句话说明适用场景（≤200 字）" }),
@@ -2806,7 +2837,7 @@ execute: async (_toolCallId, params, signal) => {
       execute: async (_toolCallId, params) => {
         const allowed = entry?.task?.capabilityPlan?.routing?.skillDrafts === "enabled";
         if (!allowed) {
-          return { content: [{ type: "text", text: "本轮未开启技能草稿（需要复杂任务 + 项目设置「技能草稿=仅复杂任务」）。" }], details: { denied: true } };
+          return { content: [{ type: "text", text: "当前项目已关闭技能草稿（项目设置 → 技能草稿）。" }], details: { denied: true } };
         }
         const slug = String(params.name || "").trim().toLowerCase();
         const description = String(params.description || "").trim();
@@ -3726,7 +3757,7 @@ execute: async (_toolCallId, params, signal) => {
           entry.clarificationPreview = null;
           // 预览前把暂存文件物化到磁盘，确保前端打开的是最新内容。
           try {
-            const materialized = materializeStagedReferences({ runId: entry.activeRunId, workspace: entry.workspace, paths: [previewFile] });
+            const materialized = materializeStagedReferences({ runId: entry.activeRunId, workspace: entry.workspace, paths: [previewFile], onEvent: writeEvent });
             if (materialized.length) {
               emitChannelSafe(entry, "artifact_materialized", { runId: entry.activeRunId, workspace: entry.workspace, paths: materialized, reason: "ask_preview" });
             }
@@ -3909,7 +3940,11 @@ execute: async (_toolCallId, params, signal) => {
           };
           const childReadTool = createReadToolDefinition(workspace, {
             operations: {
-              readFile: async (absolutePath) => fs.promises.readFile(await resolveSubagentReadablePath(absolutePath)),
+              readFile: async (absolutePath) => {
+                const content = await fs.promises.readFile(await resolveSubagentReadablePath(absolutePath));
+                try { recordObservation(absolutePath); } catch {}
+                return content;
+              },
               access: async (absolutePath) => fs.promises.access(await resolveSubagentReadablePath(absolutePath), fs.constants.R_OK),
               detectImageMimeType: async (absolutePath) => {
                 const ext = path.extname(absolutePath).toLowerCase();
@@ -3942,6 +3977,7 @@ execute: async (_toolCallId, params, signal) => {
                 } finally {
                   if (bubbleBlocked) emitChild("subagent_unblocked", { status: "running", kind: "approval", tool: "write", target: String(target || "").slice(0, 300) });
                 }
+                assertWritableObservation(target);
                 return stageWriteWithRetry({ ...ctx, targetPath: target, content, onEvent: writeEvent });
               },
             },
@@ -3950,11 +3986,19 @@ execute: async (_toolCallId, params, signal) => {
             operations: {
               access: async (absolutePath) => {
                 const target = resolveSubagentWritablePath(absolutePath);
-                await acquireWriteLockWithRetry({ ...activeWriteContext("edit"), targetPath: target, kind: "edit" });
                 return fs.promises.access(target, fs.constants.R_OK);
               },
-              readFile: async (absolutePath) => fs.promises.readFile(resolveSubagentWritablePath(absolutePath)),
-              writeFile: async (absolutePath, content) => stageWriteWithRetry({ ...activeWriteContext("edit"), targetPath: resolveSubagentWritablePath(absolutePath), content, onEvent: writeEvent }),
+              readFile: async (absolutePath) => {
+                const target = resolveSubagentWritablePath(absolutePath);
+                const content = await fs.promises.readFile(target);
+                try { recordObservation(target); } catch {}
+                return content;
+              },
+              writeFile: async (absolutePath, content) => {
+                const target = resolveSubagentWritablePath(absolutePath);
+                assertWritableObservation(target);
+                return stageWriteWithRetry({ ...activeWriteContext("edit"), targetPath: target, content, onEvent: writeEvent });
+              },
             },
           });
           const childCustomTools = [childReadTool, ...[childWriteTool, childEditTool, effRoleSpec.readOnly ? null : officeTool].filter(Boolean)];
@@ -4832,7 +4876,7 @@ execute: async (_toolCallId, params, signal) => {
       }
     }));
 
-    entry = { session, sessionManager: sessionManager || null, channel, busy: false, compacting: false, compactionKind: null, compactionPromise: null, compactionRunId: null, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, turnRunId: null, activeTools: new Map(), task: null, mode: "agent", modePolicy: null, modePolicyKey: "", mcpToolNames: mcpToolRegistrations.map((item) => item.name), mcpReadOnlyToolNames: mcpToolRegistrations.filter((item) => item.tool.annotations?.readOnlyHint === true && item.tool.annotations?.destructiveHint !== true).map((item) => item.name), piExtensionToolNames, hasSubagent: true, reviewConfirmed: false, reviewAwaitingConfirmation: false, reviewProtectedPaths: new Set(), reviewSources: [], lastAgentError: null, lastSettledError: null, lastAssistantText: "", lastFinalText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, activeToolCount: 0, lastPiEventAt: Date.now(), pendingAbortPromise: null, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, chainDepth: 0, promptChars: estimateRestoredContextChars(session), lastUsage: null, lastCompactionAt: 0, autoCompacting: false };
+    entry = { session, sessionManager: sessionManager || null, channel, busy: false, compacting: false, compactionKind: null, compactionPromise: null, compactionRunId: null, loader, clientId, eventClientId: options.eventClientId || (String(clientId).includes("::") ? String(clientId).split("::")[0] : clientId), workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, turnRunId: null, activeTools: new Map(), task: null, mode: "agent", modePolicy: null, modePolicyKey: "", mcpToolNames: mcpToolRegistrations.map((item) => item.name), mcpReadOnlyToolNames: mcpToolRegistrations.filter((item) => item.tool.annotations?.readOnlyHint === true && item.tool.annotations?.destructiveHint !== true).map((item) => item.name), piExtensionToolNames, hasSubagent: true, reviewConfirmed: false, reviewAwaitingConfirmation: false, reviewProtectedPaths: new Set(), reviewSources: [], readRevisions: new Map(), readRevisionRunId: null, lastAgentError: null, lastSettledError: null, lastAssistantText: "", lastFinalText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, activeToolCount: 0, lastPiEventAt: Date.now(), pendingAbortPromise: null, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, chainDepth: 0, promptChars: estimateRestoredContextChars(session), lastUsage: null, lastCompactionAt: 0, autoCompacting: false };
     try {
       emitChannelSafe(entry, "context_files_resolved", {
         workspace,
@@ -5352,6 +5396,19 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         dynamicText = this.buildDynamicContext(entry, entry.currentFile, sharedMemCtx);
         dynamicContextMs = Date.now() - dynamicContextStartedAt;
       } catch { dynamicContextMs = Date.now() - dynamicContextStartedAt; }
+      // 2026-11-04：技能目录每轮注入（不再用会话创建时的 top-8 快照）。
+      // skillsPolicy=off 时不注入；显式 @技能/工作流的 preflight 不受影响。
+      let skillsCatalogText = "";
+      try {
+        const skillsRouting = String(entry.task?.capabilityPlan?.routing?.skills || "catalog");
+        if (skillsRouting !== "off") {
+          const built = buildSkillCatalog({
+            skills: localSkillCatalog(entry.workspace || workspace),
+            usage: readSkillUsage(),
+          });
+          skillsCatalogText = built.text;
+        }
+      } catch {}
       const recoveredAnswers = consumeRecoveredAnswers(entry.clientId || "");
       const referencesSummary = entry.references.length
         ? `## 本轮结构化引用\n${contextSummary(entry.references)}\n请使用 context_read(refId) 按需读取引用内容；若状态为 missing/deferred，应明确告诉用户。`
@@ -5362,6 +5419,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       if (RUNTIME_FLAGS.contextSections) {
         const sections = buildContextSections({
           dynamicContext: dynamicText,
+          skillsCatalog: skillsCatalogText,
           taskSummary: taskBlock,
           referencesSummary,
           recoveredAnswers,
@@ -5374,6 +5432,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         });
       } else {
         if (dynamicText) text = dynamicText + "\n\n" + text;
+        if (skillsCatalogText) text = skillsCatalogText + "\n\n" + text;
         if (recoveredAnswers.length) {
           text = `## 恢复的用户回答\n${recoveredAnswers.map((a) => `- ${a.question}: ${a.answer}`).join("\n")}\n请把这些回答视为对上次中断提问的确认，并继续原任务。\n\n${text}`;
         }

@@ -96,7 +96,7 @@ function providerDraftFromConfig(config = null) {
 
 function ProjectSettingsSection({ project, projects = [], currentWorkspace = "", models = [], onProjectUpdated, onProjectSelect }) {
   const [projectDraft, setProjectDraft] = useState({ name: "", type: "综合项目", status: "进行中", description: "" });
-  const [settingsDraft, setSettingsDraft] = useState({ defaultModel: "", agentProfile: "通用 Agent", skills: [], skillsPolicy: "auto", allowSkillDrafts: "off", memoryPolicy: "approval_required", artifactPolicy: "validation_required" });
+  const [settingsDraft, setSettingsDraft] = useState({ defaultModel: "", agentProfile: "通用 Agent", skills: [], skillsPolicy: "auto", allowSkillDrafts: "on", memoryPolicy: "approval_required", artifactPolicy: "validation_required" });
   const [projectFilter, setProjectFilter] = useState({ query: "", type: "", status: "", pinned: false, pending: false, sort: "recent" });
   const [createOpen, setCreateOpen] = useState(false);
   const [newProject, setNewProject] = useState({ name: "", rootPath: currentWorkspace, type: "综合项目", status: "进行中", description: "" });
@@ -116,7 +116,7 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
       agentProfile: project?.settings?.agentProfile || "通用 Agent",
       skills: Array.isArray(project?.settings?.skills) ? project.settings.skills : [],
       skillsPolicy: project?.settings?.skillsPolicy || "auto",
-      allowSkillDrafts: project?.settings?.allowSkillDrafts || "off",
+      allowSkillDrafts: project?.settings?.allowSkillDrafts || "on",
       memoryPolicy: project?.settings?.memoryPolicy || "approval_required",
       artifactPolicy: project?.settings?.artifactPolicy || "validation_required",
     });
@@ -261,8 +261,9 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
             </select>
             <span className="sp-label">技能草稿</span>
             <select className="sp-select" value={settingsDraft.allowSkillDrafts} onChange={(e) => setSettingsDraft((value) => ({ ...value, allowSkillDrafts: e.target.value }))}>
-              <option value="off">关闭</option>
+              <option value="on">总是允许生成</option>
               <option value="complex">仅复杂任务允许生成</option>
+              <option value="off">关闭</option>
             </select>
           </div>
           <div className="sp-note">技能草稿只写工作区 `.oaw/skill-drafts`，安装到技能库必须由你在技能广场里确认。</div>

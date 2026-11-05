@@ -19,7 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8").replace(/\r\n/g, "\n");
 const { estimateTaskComplexity, resolveSkillsRouting, resolveSkillDraftRouting } = await import(pathToFileURL(path.join(ROOT, "server/任务复杂度.mjs")).href);
-const { DEFAULT_SKILL_PRIORITIES } = await import(pathToFileURL(path.join(ROOT, "server/Skill注入.mjs")).href);
+const { buildSkillCatalog } = await import(pathToFileURL(path.join(ROOT, "server/Skill注入.mjs")).href);
 
 let failed = 0;
 function test(name, fn) {
@@ -51,24 +51,25 @@ test("多材料/批量/工作流/审查升级为 complex", () => {
   assert.ok(result.reasons.length >= 2);
 });
 
-test("auto：简单 default，复杂 discover；显式技能 preflight", () => {
+test("auto：简单/复杂都注入 catalog；显式技能 preflight", () => {
   const simple = estimateTaskComplexity({ text: "读一下文件" });
   const complex = estimateTaskComplexity({ text: "汇总三份材料成完整报告" });
-  assert.equal(resolveSkillsRouting({ complexity: simple, task: {} }), "default");
-  assert.equal(resolveSkillsRouting({ complexity: complex, task: {} }), "discover");
+  assert.equal(resolveSkillsRouting({ complexity: simple, task: {} }), "catalog");
+  assert.equal(resolveSkillsRouting({ complexity: complex, task: {} }), "catalog");
   assert.equal(resolveSkillsRouting({ complexity: simple, task: { workflowId: "wf" } }), "preflight");
   assert.equal(resolveSkillsRouting({ complexity: simple, text: "@技能[docx]" }), "preflight");
 });
 
-test("off 关闭自动检索，always 总是检索", () => {
+test("off 关闭目录注入，always 仍走 catalog", () => {
   const simple = estimateTaskComplexity({ text: "读一下文件" });
   assert.equal(resolveSkillsRouting({ complexity: simple, task: { projectSettings: { skillsPolicy: "off" } } }), "off");
-  assert.equal(resolveSkillsRouting({ complexity: simple, task: { projectSettings: { skillsPolicy: "always" } } }), "discover");
+  assert.equal(resolveSkillsRouting({ complexity: simple, task: { projectSettings: { skillsPolicy: "always" } } }), "catalog");
 });
 
-test("草稿钩子只在复杂任务且 allowSkillDrafts=complex 时开启", () => {
+test("草稿默认允许；complex 仅复杂任务；off 关闭", () => {
   const simple = estimateTaskComplexity({ text: "读一下文件" });
   const complex = estimateTaskComplexity({ text: "汇总三份材料成完整报告" });
+  assert.equal(resolveSkillDraftRouting({ complexity: simple, task: {} }), "enabled");
   assert.equal(resolveSkillDraftRouting({ complexity: simple, task: { projectSettings: { allowSkillDrafts: "complex" } } }), "off");
   assert.equal(resolveSkillDraftRouting({ complexity: complex, task: { projectSettings: { allowSkillDrafts: "complex" } } }), "enabled");
   assert.equal(resolveSkillDraftRouting({ complexity: complex, task: { projectSettings: { allowSkillDrafts: "off" } } }), "off");
@@ -76,18 +77,28 @@ test("草稿钩子只在复杂任务且 allowSkillDrafts=complex 时开启", () 
 
 console.log("\n▶ 默认清单与提示词");
 
-test("默认 8 个技能按项目校准，不再含 lark-*", () => {
-  assert.deepEqual(DEFAULT_SKILL_PRIORITIES, ["docx", "pptx", "xlsx", "pdf", "officecli", "baoyu-echarts", "frontend-design", "ultimate-ppt-master-skill"]);
-  assert.equal(DEFAULT_SKILL_PRIORITIES.length, 8);
-  assert.ok(!DEFAULT_SKILL_PRIORITIES.some((name) => name.startsWith("lark-")));
+test("每轮技能目录按 workspace/project 优先 + 预算截断", () => {
+  const built = buildSkillCatalog({
+    skills: [
+      { name: "user-tool", description: "用户技能", sourceScope: "user" },
+      { name: "proj-tool", description: "项目技能", sourceScope: "project" },
+      { name: "ws-tool", description: "工作区技能", sourceScope: "workspace" },
+    ],
+    usage: { "user-tool": 9 },
+    budgetBytes: 1024,
+  });
+  assert.ok(built.text.indexOf("ws-tool") < built.text.indexOf("proj-tool"), "workspace 应排在 project 前");
+  assert.ok(built.text.indexOf("proj-tool") < built.text.indexOf("user-tool"), "project 应排在 user 前");
+  assert.match(built.text, /skills_read\(name\)/);
 });
 
 const agent = read("server/agent.mjs");
 const task = read("server/task.mjs");
-test("提示词区分简单/复杂；简单任务禁止 skills_search", () => {
-  assert.match(agent, /技能策略（简单任务）.*不要调用 `skills_search`/);
-  assert.match(agent, /技能发现（复杂任务）.*先调用一次 `skills_search`/);
-  assert.match(agent, /每轮最多 2 次/);
+test("提示词固定为每轮目录 + 模型判断，不再区分简单/复杂", () => {
+  assert.match(agent, /每轮动态上下文会给出当前可用技能目录/);
+  assert.match(agent, /buildSkillCatalog\(/);
+  assert.doesNotMatch(agent, /技能策略（简单任务）.*不要调用 `skills_search`/);
+  assert.doesNotMatch(agent, /技能发现（复杂任务）.*先调用一次 `skills_search`/);
 });
 
 test("task.mjs 输出 complexity 与 routing.skills/skillDrafts", () => {

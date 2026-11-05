@@ -40,11 +40,14 @@ export function resolveSkillsRouting({ complexity, task = {}, text = "" } = {}) 
   const explicit = Boolean(task?.workflowId) || SKILL_REF.test(String(text || ""));
   if (explicit) return "preflight";
   if (policy === "off") return "off";
-  if (policy === "always") return "discover";
-  return complexity?.level === "complex" ? "discover" : "default";
+  // 2026-11-04：不再按复杂度裁剪技能目录；catalog=每轮注入目录，由模型判断。
+  return "catalog";
 }
 
 export function resolveSkillDraftRouting({ complexity, task = {} } = {}) {
-  const allow = String(task?.projectSettings?.allowSkillDrafts || "off") === "complex";
-  return allow && complexity?.level === "complex" ? "enabled" : "off";
+  // 2026-11-04：草稿只由项目设置决定；默认 on（仍只写工作区草稿，安装需用户确认）。
+  const policy = String(task?.projectSettings?.allowSkillDrafts || "on");
+  if (policy === "off") return "off";
+  if (policy === "on") return "enabled";
+  return complexity?.level === "complex" ? "enabled" : "off";
 }

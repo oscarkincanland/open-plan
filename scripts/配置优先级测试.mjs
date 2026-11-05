@@ -64,7 +64,13 @@ test("技能根目录读取侧带 source/kind", () => {
   const kinds = roots.map((item) => item.kind);
   assert.ok(kinds.includes("user.agents"));
   assert.ok(kinds.includes("project.pi"));
-  assert.ok(roots.findIndex((item) => item.kind === "user.agents") < roots.findIndex((item) => item.kind === "project.pi"));
+  // 2026-11-04：workspace/project 优先于 user（DSH 语义），同名技能先到先得。
+  assert.ok(roots.findIndex((item) => item.kind === "project.pi") < roots.findIndex((item) => item.kind === "user.agents"));
+  const withWorkspace = skillRootCandidates({ agentDir: "/app/agent", userProfile: "/home/u", projectDir: "/work/proj", workspace: "/work/task" });
+  const workspaceKinds = withWorkspace.map((item) => item.kind);
+  assert.ok(workspaceKinds.includes("workspace.zcode"));
+  assert.ok(workspaceKinds.includes("workspace.agents"));
+  assert.ok(workspaceKinds.indexOf("workspace.zcode") < workspaceKinds.indexOf("project.pi"));
 });
 
 test("优先级描述可读", () => {
