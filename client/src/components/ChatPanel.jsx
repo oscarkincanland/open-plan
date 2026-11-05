@@ -1016,9 +1016,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const onTeamChangeRef = useRef(onTeamChange);
   onTeamChangeRef.current = onTeamChange;
   const teamHydrateKeyRef = useRef("");
-  const emitTeam = useCallback((next) => {
+  const emitTeam = useCallback((next, source = "event") => {
     teamRef.current = next || null;
-    try { onTeamChangeRef.current?.(next || null); } catch {}
+    try { onTeamChangeRef.current?.(next || null, { source }); } catch {}
   }, []);
   const runtimeConnectingEventRef = useRef(null);
   // 发送请求后立即标记运行态，不能等 React 的 busy 状态提交；
@@ -1371,8 +1371,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       setMessages(normalizedHistory);
       const latestRun = [...normalizedHistory].reverse().find((item) => item?.runId && item?.runStatus);
       const isLiveRun = Boolean(latestRun && LIVE_RUN_STATUSES.has(latestRun.runStatus));
-      // 历史水合时用 Run 事件重建团队；没有 team_* 事件则清空，避免把上一条会话的团队带进来。
-      emitTeam(teamFromEvents(latestRun?.events || []));
+      // 历史水合只负责“发现团队”；事件窗口可能截掉 team_started，不能因此清空
+      // 已由 latest Run 详情恢复的团队。真正切会话的清空由 thread effect 负责。
+      const historyTeam = teamFromEvents(latestRun?.events || []);
+      if (historyTeam) emitTeam(historyTeam, "hydrate");
       const latestAssistant = [...normalizedHistory].reverse().find((item) => item?.role === "assistant");
       for (const message of normalizedHistory) {
         if (message?.role === "assistant" && message?.id) {
@@ -1538,7 +1540,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     const cached = threadCacheRef.current.get(threadId);
     // 团队跟随会话：优先用历史 Run 事件重建；否则回到该 thread 的本地缓存。
     const hydratedTeam = teamFromEvents((hydratedRun?.events || []).filter((event) => String(event?.type || "").startsWith("team_")));
-    emitTeam(hydratingHistory ? hydratedTeam : (cached?.team || null));
+    emitTeam(hydratingHistory ? hydratedTeam : (cached?.team || null), "hydrate");
     seedFinishedRuns(threadId, hydratingHistory ? hydratedMessages : (cached?.messages || []));
     if (!hydratingHistory) {
       setMessages(cached?.messages || []);
@@ -1600,7 +1602,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   // includeEvents=latest，保证 Chat/Work/Review 都能只读看到上一轮团队快照。
   useEffect(() => {
     if (!threadId || !clientId || teamRef.current || runInProgressRef.current) return undefined;
-    const key = `${threadId}:${sessionId || ""}`;
+    // 按 thread 去重：sessionId/historyMessages 的后续更新不能取消正在进行的 Run 详情请求。
+    const key = threadId;
     if (teamHydrateKeyRef.current === key) return undefined;
     teamHydrateKeyRef.current = key;
     let cancelled = false;
@@ -1611,17 +1614,25 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         const runs = (Array.isArray(result?.runs) ? result.runs : [])
           .filter((run) => !run?.clientId || run.clientId === clientId)
           .sort((a, b) => String(b.finishedAt || b.startedAt || "").localeCompare(String(a.finishedAt || a.startedAt || "")));
-        for (const run of runs) {
-          const team = teamFromEvents(run?.events || []);
-          if (team) { emitTeam(team); return; }
+        const latest = runs[0];
+        if (!latest) return;
+        // listRuns 的 includeEvents=latest 只给最近一段事件窗口；team_started 可能已被
+        // 截掉，不能只凭这段窗口判断“没有团队”。单独取 latest Run 详情重建。
+        let team = teamFromEvents(latest.events || []);
+        if (!team) {
+          const detail = await getRun(latest.id);
+          if (cancelled) return;
+          team = teamFromEvents(detail?.run?.events || []);
         }
+        if (team) emitTeam(team, "hydrate");
       } catch {}
     })();
     return () => { cancelled = true; };
-  }, [threadId, clientId, sessionId, workspace, historyMessages, emitTeam]);
+  }, [threadId, clientId, emitTeam]);
 
   // 新建会话：清空消息
     const handleNewSession = useCallback(() => {
+      emitTeam(null, "event");
       setMessages([]);
       setMessageWindowSize(MAX_VISIBLE_MESSAGES);
       setBusy(false);

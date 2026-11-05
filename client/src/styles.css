@@ -12648,8 +12648,9 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   .team-header-chip { max-width: 74px; padding: 0 8px; }
 }
 @media (max-width: 760px) {
-  .team-header-chip-count { display: none; }
-  .team-header-chip { max-width: 36px; padding: 0 8px; }
+  /* 移动/窄窗顶栏很挤，但团队入口不能只剩一个无文字图标：保留“图标 + 活跃/总数”。 */
+  .team-header-chip { max-width: 68px; padding: 0 7px; gap: 4px; background: var(--panel2-bg); border-color: var(--border); }
+  .team-header-chip-count { display: inline; }
 }
 /* 画布最大化时中间对话列变窄：chip 只留图标+计数，避免顶栏右缘裁切。 */
 .app.canvas-maximized .team-header-chip-text { display: none; }

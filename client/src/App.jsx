@@ -397,8 +397,13 @@ export default function App() {
   const [browserFullscreen, setBrowserFullscreen] = useState(false);
   // Agent Teams：ChatPanel 的 team_* 事件投影；顶栏 chip 与画布“团队”标签共用。
   const [agentTeam, setAgentTeam] = useState(null);
+  const teamSourceRef = useRef("event");
   const teamDismissedRef = useRef("");
   const teamTabIdRef = useRef("");
+  const handleTeamChange = useCallback((next, meta = {}) => {
+    teamSourceRef.current = meta?.source === "hydrate" ? "hydrate" : "event";
+    setAgentTeam(next || null);
+  }, []);
   // 工作区画布：一个容器 + 浏览器式标签，取代 previewOpen/browserPanelOpen/filesTabOpen/newchatTabOpen 四个独立开关。
   const [canvasTabs, setCanvasTabs] = useState([]);
   const [canvasActiveId, setCanvasActiveId] = useState("");
@@ -547,6 +552,9 @@ export default function App() {
       teamDismissedRef.current = "";
     }
     const hadTabs = canvasTabsRef.current.length > 0;
+    // 刷新/切回会话时从历史事件恢复团队：画布原本没有其他标签就主动展示团队面板，
+    // 否则用户会以为“刷新后团队消失了”。实时 team_started 仍然不抢焦点。
+    const shouldAutoOpen = teamSourceRef.current === "hydrate" && !hadTabs;
     const badge = agentTeam.status === "closed" ? undefined : (agentTeam.counts?.activeMembers ?? 1);
     const alert = ["attention", "failed"].includes(String(agentTeam.status || ""));
     setCanvasTabs((prev) => {
@@ -563,8 +571,13 @@ export default function App() {
       tab.alert = alert;
       return openCanvasTab(prev, tab).tabs;
     });
-    // 画布本来没有标签时不要把团队标签当作“打开画布”：保留收起状态，等用户点 chip。
-    if (!hadTabs) setCanvasCollapsed(true);
+    if (shouldAutoOpen) {
+      setCanvasActiveId("view:team");
+      setCanvasCollapsed(false);
+    } else if (!hadTabs) {
+      // 实时 team_started：只出现 chip，不等同于“打开画布”，保留收起状态。
+      setCanvasCollapsed(true);
+    }
     // canvasBooted：刷新时画布恢复会先整体替换 tabs，团队标签要在恢复完成后补回来。
     // 注意不要依赖 currentWorkspace：它在本组件更后面才声明，放进依赖数组会触发 TDZ。
   }, [agentTeam, canvasBooted]);
@@ -726,8 +739,8 @@ export default function App() {
   const [sessionResumeRetrying, setSessionResumeRetrying] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState(null); // 当前会话 id（用于界面恢复）
   const currentSession = sessions.find((session) => session.id === currentSessionId) || null;
-  // 团队是会话/Run 级只读投影：切会话先清空，避免旧团队 chip/标签指向新会话。
-  useEffect(() => { setAgentTeam(null); }, [currentSessionId]);
+  // 团队清空由 ChatPanel 的 thread 切换统一负责（它就是投影来源）；App 不再按
+  // currentSessionId 二次清空，避免与 ChatPanel 恢复/拉取团队的事件竞争。
   const [docLoading, setDocLoading] = useState(false); // 文档加载中
   const restoredRef = useRef(false); // 界面状态恢复标记（避免重复/过早保存）
   const sessionsRef = useRef([]);
@@ -2273,7 +2286,7 @@ export default function App() {
       onOpenSubagent={openSubagentDetail}
       onSubagentUpdate={handleSubagentUpdate}
       onOpenSettings={() => setActiveModule("settings")}
-      onTeamChange={setAgentTeam}
+      onTeamChange={handleTeamChange}
       onModeChange={setConversationMode}
       onPhaseChange={setConversationPhase}
       onBrowserActivity={handleBrowserActivity}

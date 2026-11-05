@@ -137,11 +137,20 @@ test("App 同时挂顶栏 chip 与画布团队面板", () => {
   assert.match(source, /openTeamTab/);
 });
 
-test("ChatPanel 刷新/切回会话时用 latest Run 事件重建只读团队", () => {
+test("ChatPanel 刷新/切回会话时用 latest Run 详情重建只读团队", () => {
   const source = read("client/src/components/ChatPanel.jsx");
   assert.match(source, /includeEvents:\s*"latest"/);
-  assert.match(source, /teamFromEvents\(run\?\.events/);
+  assert.match(source, /getRun\(latest\.id\)/);
+  assert.match(source, /teamFromEvents\(detail\?\.run\?\.events/);
   assert.match(source, /onTeamChange/);
+});
+
+test("刷新恢复 team 时画布无其他标签则自动展示团队，窄屏保留计数", () => {
+  const app = read("client/src/App.jsx");
+  assert.match(app, /shouldAutoOpen/);
+  assert.match(app, /teamSourceRef\.current === "hydrate"/);
+  const css = read("client/src/styles.css");
+  assert.match(css, /@media \(max-width: 760px\)[\s\S]*team-header-chip-count \{ display: inline; \}/);
 });
 
 test("团队面板只读：无 fetch/SSE/团队写工具", () => {
