@@ -38,6 +38,7 @@ import { TypewriterText } from "./会话流/useTypewriter.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
 import { buildRunTimeline, describeRunFold, splitCompletionSummary } from "../会话流投影.js";
 import { reduceTeamEvent, teamFromEvents } from "../团队投影.js";
+import { stripToolMarkup, hasToolMarkup } from "../工具标签清洗.js";
 
 // O-P3：浏览器"写操作类"工具白名单 —— 只有这些会拉起内置浏览器侧栏；
 // browser_close / browser_tabs / browser_snapshot / browser_screenshot 等查看或收尾动作不拉起。
@@ -3818,6 +3819,8 @@ case "runtime_connecting":
           client: clientId,
           thread: threadId,
           text: fullText,
+          // 能力规划只读用户原始意图；完整 prompt 仍走 text（含当前文件/地图/引用/附件）。
+          intentText: text,
           images: imgs,
           attachments: atts,
           references: sendReferences,
@@ -5772,13 +5775,16 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   const isUser = m.role === "user";
   const blocks = m.blocks || [];
   const streaming = m.status === "streaming";
-  const authoritativeFinalText = String(
+  const authoritativeFinalTextRaw = String(
     m.authoritativeFinalText
       || m.finalText
       || runSummary?.finalText
       || [...(Array.isArray(runSummary?.events) ? runSummary.events : [])].reverse().find((event) => event?.type === "assistant_final" && String(event?.data?.text || "").trim())?.data?.text
       || "",
   ).trim();
+  // 模型偶尔把 <ask_user .../> 等工具意图写进正文；不能当成果渲染。
+  const authoritativeFinalText = stripToolMarkup(authoritativeFinalTextRaw);
+  const toolMarkupStripped = Boolean(authoritativeFinalTextRaw && hasToolMarkup(authoritativeFinalTextRaw) && !authoritativeFinalText);
   // 本轮展示投影只算一次：结论内嵌产物与结果卡（tab）共用，避免重复归约事件流。
   const runCardSource = useMemo(
     () => (runSummary ? { ...runSummary, authoritativeFinalText } : null),
@@ -5804,9 +5810,10 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
       }
     }
   }
-  // 无权威终稿时，最后一个文本块是旧消息的答案候选；有终稿时使用匹配到的文本块。
-  const finalAnswerBlockIndex = finalTextBlockIndex >= 0 ? finalTextBlockIndex : lastTextBlockIndex;
-  const replaceLegacyFinalCandidate = Boolean(authoritativeFinalText && !streaming && finalTextBlockIndex < 0 && lastTextBlockIndex >= 0);
+  // 终稿边界：只有权威终稿匹配到的文本块才从时间流隐藏并单独渲染。
+  // 没有权威终稿时不再把最后一段进度文本升级为“答案”（这是“think 变成果”的主因）。
+  const finalAnswerBlockIndex = finalTextBlockIndex;
+  const replaceLegacyFinalCandidate = false;
   // B02 回答详细程度：唯一答案出口在消息气泡，因此收窄只作用于此处，且只在非流式时生效。
   const answerDetail = useAppearance().answerDetail;
   const [answerExpanded, setAnswerExpanded] = useState(false);
@@ -5963,7 +5970,20 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   );
   // 总结展示条件：终稿已从时间流隐藏（匹配到文本块）→ 用终稿渲染；否则终稿/完成摘要存在即渲染。
   const showTimelineSummary = timelinePath && !streaming && (finalTextIsSummary || Boolean(timelineSummarySource));
+  const runInterruption = m.interruption || runSummary?.interruption || null;
+  const finalAnswerMissing = !streaming && !authoritativeFinalText && (
+    runInterruption?.kind === "final_text_missing"
+    || toolMarkupStripped
+    || (Array.isArray(timelineCompletion?.incomplete) && timelineCompletion.incomplete.includes("final_answer_missing"))
+  );
   const timelineActionNeeded = timelinePath && runCardView ? (() => {
+    if (runInterruption?.kind === "final_text_missing") return null;
+    if (runInterruption?.kind === "provider_auth") return { kind: "failed", text: runInterruption.label || "模型鉴权失败，请更新 API Key" };
+    if (runInterruption?.kind === "provider_config") return { kind: "failed", text: runInterruption.label || "模型配置不兼容，本轮未执行" };
+    if (runInterruption?.kind === "service_restart") return { kind: "cancelled", text: runInterruption.label || "服务重启导致中断，可继续" };
+    if (runInterruption?.kind === "budget_hard") return { kind: "partial", text: runInterruption.label || "已达回合上限，进入受限收尾" };
+    if (runInterruption?.kind === "pipeline_timeout") return { kind: "failed", text: runInterruption.label || "流水线超时，未产出终稿" };
+    if (runInterruption?.kind === "watchdog") return { kind: "failed", text: runInterruption.label || "模型无响应，已自动中止" };
     if (runCardView.lifecycle === "waiting_approval") return { kind: "approval", text: runCardView.progress?.waitingReason || "等待你审批后继续" };
     if (runCardView.lifecycle === "waiting_user") return { kind: "ask", text: runCardView.progress?.waitingReason || "等待你回答后继续" };
     if (timelineCompletion?.status === "blocked") return { kind: "blocked", text: "有受阻项需要你先处理" };
@@ -6339,6 +6359,17 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
               </RunFoldBar>
             )}
             {timelineInteractionItems.map(renderTimelineInteraction)}
+            {finalAnswerMissing && (
+              <div className="final-answer-missing" role="status">
+                <div className="fam-title"><Icon name="info" size={13} /> 本轮没有最终答复</div>
+                <p>模型只输出了思考，没有给出正文结论；过程记录仍保留在上方执行过程中。</p>
+                {toolMarkupStripped && <p>模型输出的工具调用标签格式不正确，已忽略。</p>}
+                <div className="fam-actions">
+                  <button type="button" className="btn-xs primary" onClick={() => onResend?.("继续")}>继续</button>
+                  <button type="button" className="btn-xs" onClick={() => onRegenerate?.(m)}>重试</button>
+                </div>
+              </div>
+            )}
             {showTimelineSummary && (
               <SummaryBlock
                 body={summaryBody}
@@ -6351,9 +6382,15 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
               onOpenFile={onOpenFile}
               onOpenPanel={onOpenRunArtifacts ? () => onOpenRunArtifacts(runSummary?.runId || m.runId) : undefined}
             />
-            {timelineActionNeeded && (
+            {timelineActionNeeded && !finalAnswerMissing && (
               <div className={`run-result-action ${timelineActionNeeded.kind}`}>
                 <Icon name="arrowRight" size={12} /> {timelineActionNeeded.text}
+                {runInterruption?.action === "continue" && (
+                  <button type="button" className="btn-xs" onClick={() => onResend?.("继续")}>继续</button>
+                )}
+                {runInterruption?.action === "retry" && (
+                  <button type="button" className="btn-xs" onClick={() => onRegenerate?.(m)}>重试</button>
+                )}
               </div>
             )}
             {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
@@ -6390,6 +6427,17 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                   </button>
                 )}
               </>
+            )}
+            {finalAnswerMissing && (
+              <div className="final-answer-missing" role="status">
+                <div className="fam-title"><Icon name="info" size={13} /> 本轮没有最终答复</div>
+                <p>模型只输出了思考，没有给出正文结论。</p>
+                {toolMarkupStripped && <p>模型输出的工具调用标签格式不正确，已忽略。</p>}
+                <div className="fam-actions">
+                  <button type="button" className="btn-xs primary" onClick={() => onResend?.("继续")}>继续</button>
+                  <button type="button" className="btn-xs" onClick={() => onRegenerate?.(m)}>重试</button>
+                </div>
+              </div>
             )}
             {/* 规范顺序：执行过程（可折叠）在上，结论与产物在下，且不随过程折叠隐藏 */}
             {runSummary && (

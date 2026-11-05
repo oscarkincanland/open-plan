@@ -1,15 +1,15 @@
 /**
- * Office 执行闸门（计划 008 / P0-1、P0-2）。
+ * Office 执行闸门（计划 008 / P0-1、P0-2；2026-11-05-017 收敛）。
  *
- * 目的：把"必须走编辑流水线、必须先澄清"从提示词建议变成工具边界的硬约束。
- * 只在 OAW_OFFICE_FORMAT 开启、且当前 Run 的路由是 template/generate 时生效；
- * 关闭开关或非写作路由时完全放行，行为与基线一致。
+ * 目的：把“必须走编辑流水线、必须先澄清、read 路由只读”从提示词建议变成
+ * 工具边界的硬约束。Office CLI 的命令级判定统一由 OfficeCLI调用规约.mjs 提供。
  */
+import { officeCliPolicy, isMutatingOfficecli, officecliCommand } from "./OfficeCLI调用规约.mjs";
 
 const OFFICE_BINARY = /\.(?:docx|pptx)$/i;
 const SCRIPT_FILE = /\.(?:mjs|cjs|js|py)$/i;
-const READONLY_OFFICECLI = new Set(["view", "get", "query", "validate", "dump", "help", "watch", "unwatch", "save", "close", "refresh"]);
-const MUTATING_OFFICECLI = new Set(["create", "add", "set", "batch", "import", "remove", "move", "swap", "delete"]);
+
+export { isMutatingOfficecli } from "./OfficeCLI调用规约.mjs";
 
 /** bash 只读命令白名单（逐段判定，见 bashSegmentIsReadonly）。 */
 const READONLY_BASH_COMMANDS = new Set([
@@ -163,7 +163,7 @@ const DOCX_GENERATION = [
   /\bpandoc\b[^\n]*\.(?:docx|pptx)/i,
   /\b(?:soffice|libreoffice)\b[^\n]*(?:--convert|--headless)/i,
   /(?:^|[^|])(?:>|>>)\s*[^\n]*\.(?:docx|pptx)\b/i,
-  /\b(?:cp|copy|mv|move|zip|tar)\b[^\n]*\.(?:docx|pptx)\b/i,
+  // 复制/移动/打包不是“生成 docx”：复制走 review_copy 或普通拷贝，不应被管线闸门拦截。
   /\bunzip\b(?!\s+(?:-p|-l))/i,
   /\bofficecli\b/i,
 ];
@@ -211,21 +211,6 @@ export function isDocxGenerationCommand(command) {
   return DOCX_GENERATION.some((pattern) => pattern.test(text));
 }
 
-function officecliCommand(args) {
-  const text = String(args || "").trim();
-  if (!text) return "";
-  return text.split(/\s+/)[0].toLowerCase();
-}
-
-export function isMutatingOfficecli(args) {
-  const command = officecliCommand(args);
-  return MUTATING_OFFICECLI.has(command);
-}
-
-function isMarkdownImport(args) {
-  return /\badd\b[\s\S]*--type\s+markdown\b/i.test(String(args || ""));
-}
-
 function isWriteTool(tool, input = {}) {
   if (tool === "write" || tool === "edit") return true;
   if (tool === "editorial_pipeline") return true;
@@ -245,7 +230,25 @@ function isWriteTool(tool, input = {}) {
 export function classifyToolCall({ tool = "", input = {}, context = {} } = {}) {
   const { route, officeFormat, pipelineProduced = false, clarificationPending = null, mode = "agent", manualAllowed = false } = context;
 
-  // 开关关闭 / 非写作路由 / Chat / Review：完全放行
+  // Office CLI 的判定不再依赖 officeFormat 开关：read 路由必须只读，edit 路由放行，
+  // template/generate 才受澄清与流水线约束。这样“开关关闭”不会变成写入后门。
+  if (tool === "officecli") {
+    const args = String(input.args || "");
+    if (hasAllowManual(args)) return allow({ args: stripAllowManual(args) });
+    const policy = officeCliPolicy({
+      mode,
+      route,
+      command: officecliCommand(args),
+      args,
+      pipelineProduced,
+      clarificationPending,
+      manualAllowed,
+    });
+    if (!policy.allowed) return block(policy.code, policy.reason, policy.suggestion);
+    return allow();
+  }
+
+  // 非 Office CLI 工具：开关关闭 / 非写作路由 / Chat / Review 完全放行（基线行为）。
   if (!officeFormat) return allow();
   if (mode === "chat" || mode === "review") return allow();
   if (route !== "template" && route !== "generate" && route !== "edit") return allow();
@@ -276,26 +279,6 @@ export function classifyToolCall({ tool = "", input = {}, context = {} } = {}) {
         "OFFICE_PIPELINE_REQUIRED",
         "写作路由下禁止用 bash 生成/转换 Office 文档（node 生成脚本、python-docx、pandoc、重定向、officecli）。",
         "请改用 editorial_pipeline：它会按模板/场景直写 docx，并自动做目录、页码与规则闸门。",
-      );
-    }
-    return allow();
-  }
-
-  if (tool === "officecli") {
-    const args = String(input.args || "");
-    if (hasAllowManual(args)) return allow({ args: stripAllowManual(args) });
-    if (isMarkdownImport(args)) {
-      return block(
-        "OFFICE_PIPELINE_REQUIRED",
-        "写作路由下禁止用 officecli add --type markdown 转换后手工调样式。",
-        "已有 Markdown 时请用 editorial_pipeline 的 sourceMarkdown，让管线统一排版与验收。",
-      );
-    }
-    if (isMutatingOfficecli(args) && !pipelineProduced) {
-      return block(
-        "OFFICE_PIPELINE_REQUIRED",
-        "文档尚未由编辑流水线生成，禁止直接用 officecli 创建或改样式。",
-        "先调用 editorial_pipeline 生成初稿；生成后再用 officecli 做精修。",
       );
     }
     return allow();

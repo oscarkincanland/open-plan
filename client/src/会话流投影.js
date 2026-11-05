@@ -167,7 +167,8 @@ export function buildRunTimeline({ blocks = [], trace = null } = {}) {
         break;
       }
       case "text":
-        items.push({ kind: "text", id, cap: "阶段结论", text: String(block.text || "") });
+        // 模型正文中间态是进度，不是成果；只有 assistant_final 才进入“结论”区。
+        items.push({ kind: "text", id, cap: "进度", text: String(block.text || "") });
         break;
       case "tool": {
         // 轨迹里同名/同 id 的工具结果合并回块：历史恢复时块可能没拿到结果。

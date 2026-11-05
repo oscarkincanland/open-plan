@@ -19,6 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8").replace(/\r\n/g, "\n");
 const { estimateTaskComplexity, resolveSkillsRouting, resolveSkillDraftRouting } = await import(pathToFileURL(path.join(ROOT, "server/任务复杂度.mjs")).href);
+const { planTaskCapabilities, routeTaskIntent, stripAutoContextPrefix } = await import(pathToFileURL(path.join(ROOT, "server/task.mjs")).href);
 const { buildSkillCatalog } = await import(pathToFileURL(path.join(ROOT, "server/Skill注入.mjs")).href);
 
 let failed = 0;
@@ -142,6 +143,79 @@ test("@技能 与 #技能 两个解析器都归一", () => {
   const index = read("server/index.mjs");
   assert.match(context, /\[@#\]技能/);
   assert.match(index, /\[@#\]技能/);
+});
+
+console.log("\n▶ 意图文本与 Office 路由");
+
+const DOCX = "松阳/2浙西南公铁智慧多式联运枢纽港（物流基地）项目可行性研究（修改稿）.docx";
+
+test("stripAutoContextPrefix 去掉当前文件/地图/附件/注入上下文，保留用户正文", () => {
+  const raw = [
+    "[当前打开文件: " + DOCX + "]",
+    "[当前地图项目: zhejiang]",
+    "[已上传附件: a.docx]",
+    "## 当前检索上下文",
+    "旧检索内容",
+    "## 本轮任务",
+    "读取一下这个文本做如下修改：1.1.名称改成新名称",
+  ].join("\n");
+  const text = stripAutoContextPrefix(raw);
+  assert.equal(text.includes("当前打开文件"), false);
+  assert.equal(text.includes("当前检索上下文"), false);
+  assert.equal(text.includes("旧检索内容"), false);
+  assert.match(text, /读取一下这个文本做如下修改/);
+});
+
+test("文件名含“可行性研究”不再把编辑意图判成 template", () => {
+  const text = `[当前打开文件: ${DOCX}]\n读取一下这个文本做如下修改：1.1.名称改成新名称`;
+  const plan = planTaskCapabilities({
+    text: stripAutoContextPrefix(text),
+    task: { mode: "agent", currentFile: DOCX },
+  });
+  assert.equal(plan.route, "edit");
+  assert.equal(plan.clarification.shouldAsk, false);
+});
+
+test("既有 Office 文件 + 编辑意图优先于模板关键词", () => {
+  const intent = routeTaskIntent({
+    text: "按可行性研究报告模板修改这份报告",
+    task: { mode: "agent", currentFile: DOCX },
+  });
+  assert.equal(intent.route, "edit");
+});
+
+test("没有既有文件时模板关键词仍走 template", () => {
+  const intent = routeTaskIntent({
+    text: "按可行性研究报告模板写一份新的可研报告",
+    task: { mode: "agent", currentFile: null },
+  });
+  assert.equal(intent.route, "template");
+});
+
+test("短句“继续修改”沿用上一轮 edit 路由", () => {
+  const intent = routeTaskIntent({
+    text: "继续修改",
+    task: { mode: "agent", currentFile: DOCX },
+    previousRoute: "edit",
+  });
+  assert.equal(intent.route, "edit");
+});
+
+test("短句“继续”在上一轮 edit 时仍走 edit", () => {
+  const intent = routeTaskIntent({
+    text: "继续",
+    task: { mode: "agent", currentFile: DOCX },
+    previousRoute: "edit",
+  });
+  assert.equal(intent.route, "edit");
+});
+
+test("没有上一轮路由时“继续”不擅自写文件", () => {
+  const intent = routeTaskIntent({
+    text: "继续",
+    task: { mode: "agent", currentFile: DOCX },
+  });
+  assert.equal(intent.route, "read");
 });
 
 console.log(failed ? "\n任务复杂度与技能策略测试：存在失败\n" : "\n任务复杂度与技能策略测试：全部通过\n");

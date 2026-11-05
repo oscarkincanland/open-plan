@@ -8,7 +8,7 @@
  */
 import assert from "node:assert/strict";
 import { buildRunTimeline, describeRunFold, splitCompletionSummary, summarizeTimeline, toolObjectText, toolStateOf, advanceTypewriter } from "../client/src/会话流投影.js";
-import { associateRunMessages, mergeRunSummaries } from "../client/src/运行展示投影.js";
+import { associateRunMessages, mergeRunSummaries, upsertRunSummaryMessage } from "../client/src/运行展示投影.js";
 import { reduceRunTrace, resolveRunElapsedMs } from "../client/src/运行轨迹.js";
 
 let failed = 0;
@@ -35,7 +35,7 @@ test("thinking/text/tool/process_note 按原顺序投影", () => {
   });
   assert.deepEqual(items.map((i) => i.kind), ["thinking", "text", "tool", "text", "sys"]);
   assert.equal(items[0].icon, "brain");
-  assert.equal(items[1].cap, "阶段结论");
+  assert.equal(items[1].cap, "进度");
   assert.equal(items[4].text, "该给进度小结了");
   assert.ok(items[4].text.startsWith("该给"));
 });
@@ -306,6 +306,38 @@ test("消息原顺序不被重排（缺时间戳的消息不跳到最前）", ()
     runCard("run-B", { startedAt: "2026-10-31T12:19:59.000Z" }),
   ]);
   assert.deepEqual(merged.filter((item) => item.role !== "system").map((item) => item.id), ["u1", "a1", "u2"]);
+});
+
+test("失败卡带真实错误：不再只显示“任务执行失败”", () => {
+  const [card] = upsertRunSummaryMessage([], {
+    runId: "run-auth-failed",
+    status: "failed",
+    error: '401 {"type":"error","error":{"type":"authentication_error","message":"invalid api key"}}',
+    completion: { status: "failed", source: "inferred", summary: "任务执行失败" },
+  });
+  assert.match(card.text, /401 invalid api key/);
+  assert.match(card.completion.summary, /401 invalid api key/);
+  assert.equal(card.error.includes("authentication_error"), true);
+});
+
+test("窗口之前已收尾的总结卡不追加到本页末尾；窗口内卡片按 finishedAt 落点", () => {
+  const messages = [
+    historyMsg("u1", "user", "2026-10-31T12:20:00.000Z"),
+    historyMsg("a1", "assistant", "2026-10-31T12:20:05.000Z"),
+    historyMsg("u2", "user", "2026-10-31T12:30:00.000Z"),
+    historyMsg("a2", "assistant", "2026-10-31T12:30:05.000Z"),
+  ];
+  const merged = mergeRunSummaries(messages, [
+    runCard("run-old", { startedAt: "2026-10-31T12:09:00.000Z", finishedAt: "2026-10-31T12:10:00.000Z", status: "completed" }),
+    runCard("run-mid", { startedAt: "2026-10-31T12:19:50.000Z", finishedAt: "2026-10-31T12:22:00.000Z", status: "failed" }),
+    runCard("run-last", { startedAt: "2026-10-31T12:29:50.000Z", finishedAt: "2026-10-31T12:31:00.000Z", status: "completed" }),
+  ]);
+  assert.deepEqual(
+    merged.map((item) => item.id),
+    ["u1", "a1", "run-summary-run-mid", "u2", "a2", "run-summary-run-last"],
+    "旧卡必须留给更早分页，不能堆到当前页末尾",
+  );
+  assert.ok(!merged.some((item) => item.id === "run-summary-run-old"));
 });
 
 // ---------- 9. 会话恢复一致性回归（S1/S2/S3 验收口径） ----------

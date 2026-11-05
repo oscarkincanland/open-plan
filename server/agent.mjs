@@ -50,6 +50,7 @@ import { resolveReferences, readReference, contextSummary } from "./context.mjs"
 import { recordRunEvent, updateRunTodo, getRun, isRunTerminal } from "./runs.mjs";
 import { markRunTiming, attachRunTimingSpans } from "./首字延迟.mjs";
 import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode, routeTaskIntent, allModeToolNames } from "./task.mjs";
+import { finalAnswerState } from "./终稿.mjs";
 import { classifyToolCall, isReadonlyBash, isMutatingOfficecli } from "./office规范/执行闸门.mjs";
 import { probeBashAvailability, bashUnavailableError, bashWorkspaceRule, resolveBashShell } from "./环境能力.mjs";
 
@@ -946,6 +947,27 @@ function localModelProviders() {
 }
 
 /**
+ * 模型能力兼容覆盖。
+ *
+ * 背景：opencode-go 的 claude-haiku-5-5 不接受 Anthropic SDK 的
+ * `thinking.type=enabled`（400: use thinking.type.adaptive + output_config.effort）。
+ * 本仓库不修改 Pi SDK / node_modules；在读取模型对象时关闭该模型的 reasoning，
+ * 让 Pi 不再发送 thinking 参数。模型目录刷新后仍然生效。
+ */
+const MODEL_COMPAT_OVERRIDES = Object.freeze({
+  "opencode-go/claude-haiku-5-5": Object.freeze({ reasoning: false }),
+  "PLAN_OPENCODE_ZEN_GO/claude-haiku-5-5": Object.freeze({ reasoning: false }),
+});
+
+function applyModelCompatibility(model) {
+  if (!model || typeof model !== "object") return model;
+  const spec = `${model.provider || ""}/${model.id || ""}`;
+  const override = MODEL_COMPAT_OVERRIDES[spec];
+  if (!override) return model;
+  return { ...model, ...override };
+}
+
+/**
  * 读取 Pi 的本地动态模型目录。
  * 某些 Pi SDK 版本会因内置目录时间戳较新而忽略 models-store overlay，
  * 但 TUI 仍然会直接使用这份缓存。工作台需要与 TUI 保持同一份目录。
@@ -957,7 +979,7 @@ function localStoredModels(providers = localModelProviders()) {
     if (!providers.has(provider) || !Array.isArray(entry?.models)) continue;
       for (const model of entry.models) {
        if (!model || typeof model !== "object" || model.enabled === false || !String(model.id || "").trim()) continue;
-      models.push({ ...model, provider: model.provider || provider });
+      models.push(applyModelCompatibility({ ...model, provider: model.provider || provider }));
     }
   }
   return models;
@@ -983,8 +1005,8 @@ function resolveInitialModel(modelRuntime, requestedSpec = "") {
   if (separator <= 0 || separator === spec.length - 1) return null;
   const provider = spec.slice(0, separator);
   const id = spec.slice(separator + 1);
-  return modelRuntime?.getModel?.(provider, id)
-    || localStoredModels().find((item) => item.provider === provider && item.id === id)
+  return applyModelCompatibility(modelRuntime?.getModel?.(provider, id))
+    || applyModelCompatibility(localStoredModels().find((item) => item.provider === provider && item.id === id))
     || null;
 }
 
@@ -4987,6 +5009,7 @@ execute: async (_toolCallId, params, signal) => {
         case "message_end":
           if (entry && ev.message?.role === "assistant") {
             entry.lastAssistantText = assistantText(ev.message);
+            entry.lastAssistantState = finalAnswerState(ev.message);
             if (!ev.message.errorMessage && ev.message.stopReason !== "error") entry.firstResponseReceived = true;
             if (ev.message.errorMessage || ev.message.stopReason === "error") {
               entry.lastAgentError = ev.message.errorMessage || "模型调用失败";
@@ -5004,7 +5027,12 @@ execute: async (_toolCallId, params, signal) => {
           {
             const messages = Array.isArray(ev.messages) ? ev.messages : [];
             const message = [...messages].reverse().find((item) => item?.role === "assistant");
-            entry.lastAssistantText = assistantText(message) || entry.lastAssistantText || "";
+            // 终稿必须取最后一条 assistant 的正文。不要再 `|| entry.lastAssistantText`
+            // 兜底：最后一条只有 thinking 时，旧兜底会把上一段进度文本当成终稿。
+            if (message) {
+              entry.lastAssistantText = assistantText(message);
+              entry.lastAssistantState = finalAnswerState(message);
+            }
             if (message?.errorMessage || message?.stopReason === "error") {
               entry.lastAgentError = message.errorMessage || "模型调用失败";
             }
@@ -5552,6 +5580,8 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.lastAgentError = null;
     entry.lastSettledError = null;
     entry.lastAssistantText = "";
+    entry.lastAssistantState = null;
+    entry.finalAnswerNudged = false;
     entry.lastPiEventAt = Date.now();
     // 只有尚未收到本轮模型/工具事件时，才允许对抛出的传输异常重放 prompt。
     // 一旦已经开始工具调用，绝不重复提交，避免副作用被执行两次。
@@ -5808,6 +5838,34 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
                 message: "模型连接已恢复",
                 source: "workbench-settled",
               });
+            }
+            // 终稿兜底：模型有时会以 stopReason=stop 结束，但 content 里只有
+            // thinking、没有 text。对用户来说这等于“没有答复”；补一次正文回合，
+            // 同一 Run 最多一次，避免模型反复只思考时无限循环。
+            if (entry.lastAssistantState?.thinkingOnly && !entry.finalAnswerNudged && !entry.cancelRequested) {
+              entry.finalAnswerNudged = true;
+              emitChannelSafe(entry, "final_text_missing", {
+                runId: entry.activeRunId || null,
+                reason: "thinking_only",
+                recovering: true,
+              });
+              try {
+                await promptWithFirstEventTimeout(
+                  entry,
+                  "[系统提醒] 你刚才只输出了思考，没有给用户正文答复。请直接用正文给出最终答复；不要只输出思考，也不要重复已经完成的工具调用。",
+                  {},
+                );
+              } catch (nudgeError) {
+                // 补正文失败不改变原任务结果；后续按 final_text_missing 收尾。
+                entry.lastSettledError = null;
+              }
+              if (entry.lastAssistantState?.thinkingOnly) {
+                emitChannelSafe(entry, "final_text_missing", {
+                  runId: entry.activeRunId || null,
+                  reason: "thinking_only",
+                  recovering: false,
+                });
+              }
             }
             break;
           } catch (e) {
@@ -6469,7 +6527,8 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     const mr = await this.modelRuntime();
     // 优先使用 Pi Runtime；当 SDK 忽略了较新的 models-store overlay 时，
     // 回退到同一份本地缓存，保证列表中的模型都可以被实际选中。
-    const model = mr.getModel(provider, id) || localStoredModels().find((item) => item.provider === provider && item.id === id);
+    const model = applyModelCompatibility(mr.getModel(provider, id))
+      || applyModelCompatibility(localStoredModels().find((item) => item.provider === provider && item.id === id));
     if (!model) throw new Error("model not found: " + specText);
     try {
       await piRuntimeManager.setModel(entry.runtimeId, entry.session, model);
@@ -6484,8 +6543,8 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       if (!fallback || fallback === specText || !info.retryable) throw error;
       const [fallbackProvider, ...fallbackIdParts] = fallback.split("/");
       const fallbackId = fallbackIdParts.join("/");
-      const fallbackModel = mr.getModel(fallbackProvider, fallbackId)
-        || localStoredModels().find((item) => item.provider === fallbackProvider && item.id === fallbackId);
+      const fallbackModel = applyModelCompatibility(mr.getModel(fallbackProvider, fallbackId))
+        || applyModelCompatibility(localStoredModels().find((item) => item.provider === fallbackProvider && item.id === fallbackId));
       if (!fallbackModel) throw error;
       await piRuntimeManager.setModel(entry.runtimeId, entry.session, fallbackModel);
       entry.modelFallbackSpec = fallback;
@@ -6596,7 +6655,8 @@ async listModelCatalog({ maxAgeMs = MODEL_CATALOG_CACHE_MS } = {}) {
     const available = [...await mr.getAvailable()].filter((m) => providers.has(m.provider) && m.enabled !== false);
     const availableKeys = new Set(available.map((m) => `${m.provider}/${m.id}`));
     const authErrors = getCredentialErrors();
-    const normalize = (m) => {
+    const normalize = (raw) => {
+      const m = applyModelCompatibility(raw);
       const authError = authErrors[m.provider] || null;
       return {
         id: m.provider + "/" + m.id,

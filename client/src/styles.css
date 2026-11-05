@@ -10716,6 +10716,25 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .run-result-action.failed { color: var(--error); }
 .run-result-action.approval,
 .run-result-action.ask { color: var(--accent); }
+
+/* 终稿缺失：thinking-only 回合不能显示成空白，也不能把进度文本当成果 */
+.final-answer-missing {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 42%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warning) 7%, var(--panel));
+  color: var(--text);
+}
+.final-answer-missing .fam-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.final-answer-missing p { margin: 5px 0 0; font-size: 11px; color: var(--muted); line-height: 1.55; }
+.final-answer-missing .fam-actions { display: flex; gap: 6px; margin-top: 8px; }
 /* 内部文件在清单里弱化，不与交付物争夺注意力 */
 .summary-product.role-internal { opacity: .6; }
 .summary-product.role-deliverable { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }

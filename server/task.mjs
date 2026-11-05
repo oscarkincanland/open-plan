@@ -168,6 +168,39 @@ function containsAny(text, words) {
   return words.some((word) => text.includes(String(word).toLowerCase()));
 }
 
+/**
+ * 去掉前端自动拼接的上下文前缀，只保留用户原始意图。
+ *
+ * 背景：ChatPanel 会把 `[当前打开文件: ...]`、地图视图、附件、检索上下文等
+ * 拼进发给 Pi 的 text；这些前缀不能参与能力规划，否则“可行性研究.docx”
+ * 会让任何一句“继续”都命中模板路由。旧客户端没有 intentText 时用本函数兜底。
+ */
+export function stripAutoContextPrefix(text = "") {
+  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  const out = [];
+  let inInjectedBlock = false;
+  for (const rawLine of lines) {
+    const line = String(rawLine || "");
+    const trimmed = line.trim();
+    if (/^##\s*(当前检索上下文|已注入上下文)\s*$/.test(trimmed)) {
+      inInjectedBlock = true;
+      continue;
+    }
+    if (inInjectedBlock) {
+      if (/^##\s+/.test(trimmed)) inInjectedBlock = false;
+      else continue;
+    }
+    if (/^\[(?:当前打开文件|当前地图项目|当前地图视图|已上传附件):/.test(trimmed)) continue;
+    const mention = trimmed.match(/^@智能体\[[^\]]+\]\s*([\s\S]*)$/);
+    if (mention) {
+      if (mention[1].trim()) out.push(mention[1]);
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join("\n").trim();
+}
+
 function collectContext({ text = "", task = {}, references = [], attachments = [] } = {}) {
   const mode = normalizeTaskMode(task.mode);
   const source = String(text || "").toLowerCase();
@@ -191,7 +224,7 @@ function collectContext({ text = "", task = {}, references = [], attachments = [
  * 四路由判定（O-02）：template / edit / generate / read。
  * @returns {{route:"template"|"edit"|"generate"|"read", reason:string, template:object|null, scene:object, needsFile:boolean}}
  */
-export function routeTaskIntent({ text = "", task = {}, references = [], attachments = [] } = {}) {
+export function routeTaskIntent({ text = "", task = {}, references = [], attachments = [], previousRoute = null } = {}) {
   const ctx = collectContext({ text, task, references, attachments });
   const scene = selectScene(text);
   const template = ctx.mode === "chat" ? null : matchTemplate({ text, references: ctx.refList });
@@ -202,17 +235,45 @@ export function routeTaskIntent({ text = "", task = {}, references = [], attachm
   if (ctx.mode === "review") {
     return { route: "read", reason: "Review 只读审查：不生成或改写用户文档", template: null, scene, needsFile: false };
   }
-  if (template && (ctx.templateIntent || ctx.output || ctx.officeRefExists)) {
+
+  // 短句延续：当前文件是 Office、上一轮是写作路由时，“继续/继续修改”沿用上一轮，
+  // 不再重新按文件名匹配模板。服务重启后 previousRoute 可由最近 Run 恢复。
+  const followUp = /^(继续|接着|往下|继续修改|继续完成|接着改|继续做完|继续处理)/.test(String(text || "").trim());
+  if (followUp && ctx.officeRefExists && ["edit", "template", "generate"].includes(String(previousRoute || ""))) {
+    return {
+      route: previousRoute,
+      reason: `延续上一轮写作路由（${previousRoute}）`,
+      template: previousRoute === "template" ? template : null,
+      scene,
+      needsFile: false,
+    };
+  }
+
+  // 编辑优先：既有 Office 文件 + 编辑意图，即使文本命中模板关键词也走 edit。
+  // 这是“可研报告.docx + 继续修改”被误判成模板生成的主修复。
+  if (ctx.officeRefExists && ctx.editIntent) {
+    return { route: "edit", reason: "既有 Office 文件 + 编辑意图：走 CLI 精确定位", template: null, scene, needsFile: false };
+  }
+
+  const explicitTemplate = Boolean(template && template.source === "explicit");
+  if (explicitTemplate && (ctx.templateIntent || ctx.output || ctx.officeRefExists)) {
     return {
       route: "template",
-      reason: `命中模板 ${template.file}（${template.source === "explicit" ? "显式引用" : "文体关键词"}）`,
+      reason: `显式引用模板 ${template.file}（${template.file}）`,
       template,
       scene,
       needsFile: false,
     };
   }
-  if (ctx.officeRefExists && ctx.editIntent) {
-    return { route: "edit", reason: "既有 Office 文件 + 编辑意图：走 CLI 精确定位", template: null, scene, needsFile: false };
+  // 模板关键词只在“没有既有 Office 文件”时用于新建；有既有文件时优先 edit。
+  if (template && !ctx.officeRefExists && (ctx.templateIntent || ctx.output)) {
+    return {
+      route: "template",
+      reason: `命中模板 ${template.file}（文体关键词，新建文档）`,
+      template,
+      scene,
+      needsFile: false,
+    };
   }
   if (ctx.editIntent && !ctx.officeRefExists) {
     return { route: "read", reason: "编辑意图但未指定文件：先向用户确认目标文件", template: null, scene, needsFile: true };
@@ -265,9 +326,9 @@ export function assessClarification({ text = "", route = "read", template = null
 }
 
 /** 根据输入和引用生成可解释的本轮能力计划，供 Run、前端和 Pi prompt 共用。 */
-export function planTaskCapabilities({ text = "", task = {}, references = [], attachments = [] } = {}) {
+export function planTaskCapabilities({ text = "", task = {}, references = [], attachments = [], previousRoute = null } = {}) {
   const ctx = collectContext({ text, task, references, attachments });
-  const intent = routeTaskIntent({ text, task, references, attachments });
+  const intent = routeTaskIntent({ text, task, references, attachments, previousRoute });
   const clarification = assessClarification({ text, route: intent.route, template: intent.template, scene: intent.scene });
   const { mode, source, refList, document, output } = ctx;
   // Chat 模式下识别到写作意图时，前端提示切换到 Work（不改变只读边界）。

@@ -290,7 +290,11 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
             </span>
             <span className="session-time">
               {s.mode && <span className={`session-mode mode-${s.mode === "office" ? "agent" : s.mode}`}>{s.mode === "chat" ? "Chat" : s.mode === "review" ? "Review" : "Work"}</span>}
-              {s.runStatus && s.runStatus !== "idle" ? ({ running: "执行中", queued: "排队中", waiting_user: "等待回答", recovering: "恢复中", cancel_requested: "正在中断", completed: "已完成", failed: "失败", aborted: "已中断" }[s.runStatus] || s.runStatus) : formatTime(s.modified)}
+              {s.runStatus && s.runStatus !== "idle" ? (
+                s.runStatus === "failed" && s.lastSuccessfulRunAt
+                  ? <span title={`最近一次成功：${formatTime(s.lastSuccessfulRunAt)}`}>最近失败（此前已完成）</span>
+                  : ({ running: "执行中", queued: "排队中", waiting_user: "等待回答", recovering: "恢复中", cancel_requested: "正在中断", completed: "已完成", failed: "失败", aborted: "已中断" }[s.runStatus] || s.runStatus)
+              ) : formatTime(s.modified)}
               {s.artifactCount > 0 && <span className="session-artifact-count"> · 产物 {s.artifactCount}</span>}
             </span>
           </>

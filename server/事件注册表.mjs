@@ -151,6 +151,7 @@ const REGISTRY = [
   { type: "task_completed", lifecycle: true, persist: true, legacy: true, note: "历史事件：显式完成声明（显式完成声明已停用，仅历史会话回放使用）" },
   { type: "agent_summary", lifecycle: true, persist: true, note: "本轮总结" },
   { type: "assistant_final", lifecycle: true, persist: true, note: "最终回答文本" },
+  { type: "final_text_missing", lifecycle: true, persist: true, note: "模型只输出思考/没有正文终稿（recovering=true 表示正在补一次正文）", schema: { required: ["reason"], types: { reason: "string", recovering: "boolean", runId: "string" } } },
   { type: "agent_end", lifecycle: true, persist: true, note: "Agent 收尾" },
   { type: "todo_updated", lifecycle: true, persist: true, note: "待办更新" },
   { type: "step_updated", lifecycle: true, persist: true, note: "步骤状态更新" },

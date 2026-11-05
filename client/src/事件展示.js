@@ -35,7 +35,7 @@ export const STAGE_ONLY_EVENTS = new Set([
   "run_started", "prompt", "runtime_health", "stats", "token", "heartbeat", "message_start", "message_end",
   "runtime_connecting", "run_admitting", "run_admitted", "model_request_started", "agent_started",
   "turn_started", "turn_ended", "agent_turn_end", "mode_policy", "thinking_level", "capability_plan",
-  "agent_end", "assistant_final", "text_boundary", "thinking_boundary", "tool_call_progress",
+  "agent_end", "assistant_final", "final_text_missing", "text_boundary", "thinking_boundary", "tool_call_progress",
 ]);
 
 /**

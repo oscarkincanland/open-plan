@@ -1731,6 +1731,7 @@ function publicRunView(run, { includeEvents = true, eventByteBudget = 0 } = {}) 
   }
   return {
     ...publicRun,
+    interruption: classifyRunInterruption(publicRun),
     actions: {
       canCancel: ["running", "queued", "waiting_user", "recovering"].includes(publicRun.status),
       canResume: ["recovering", "failed", "cancelled", "aborted"].includes(publicRun.status),
@@ -1741,6 +1742,50 @@ function publicRunView(run, { includeEvents = true, eventByteBudget = 0 } = {}) 
     currentStep: steps.find((step) => step.id === publicRun.currentStepId) || steps.find((step) => step.status === "running") || null,
     workspaceSnapshot: { beforeFiles: Object.keys(before?.files || {}).length, afterFiles: Object.keys(after?.files || {}).length },
   };
+}
+
+// 任务中心列表、徽标计数只需要状态摘要：完整 Run 视图（步骤/待办/事件/引用）
+// 单条可达数十 KB，列表一次 50 条就是 1MB 级响应，而明细点击时另有单条加载。
+export function classifyRunInterruption(view = {}) {
+  const cancelReason = String(view.cancelReason || "");
+  const errorText = String(
+    typeof view.error === "string"
+      ? view.error
+      : view.error?.message || view.error?.error || "",
+  );
+  const recoveryText = String(view.recovery?.reason || "");
+  const combined = `${errorText}\n${recoveryText}`;
+  const events = Array.isArray(view.events) ? view.events : [];
+  const finalText = String(view.finalText || "").trim()
+    || [...events].reverse().find((event) => event?.type === "assistant_final" && String(event?.data?.text || "").trim())?.data?.text
+    || "";
+  const hasEvent = (type, predicate = () => true) => events.some((event) => event?.type === type && predicate(event?.data || {}));
+
+  if (/用户/.test(cancelReason)) {
+    return { kind: "user_cancel", label: "已停止生成", detail: cancelReason, action: "continue" };
+  }
+  if (/401|403|invalid\s*api\s*key|authentication|unauthori[sz]ed/i.test(combined)) {
+    return { kind: "provider_auth", label: "模型鉴权失败，请更新 API Key", detail: errorText.slice(0, 240), action: "open_settings" };
+  }
+  if (/thinking\.type\.enabled|invalid_request_error|not supported for this model/i.test(combined)) {
+    return { kind: "provider_config", label: "模型配置不兼容，本轮未执行", detail: errorText.slice(0, 240), action: "open_settings" };
+  }
+  if (/服务重启|service restart/i.test(combined)) {
+    return { kind: "service_restart", label: "服务重启导致中断，可继续", detail: recoveryText.slice(0, 240), action: "continue" };
+  }
+  if (hasEvent("run_budget_blocked", (data) => /BUDGET_HARD/.test(String(data?.code || "")))) {
+    return { kind: "budget_hard", label: "已达回合上限，进入受限收尾", detail: "继续将增加预算", action: "continue" };
+  }
+  if (/流水线.*(?:超时|超过|未完成)|子\s*Agent\s*执行超过|writer.*(?:超时|超过|未完成)/i.test(combined)) {
+    return { kind: "pipeline_timeout", label: "流水线超时，未产出终稿", detail: recoveryText.slice(0, 240), action: "retry" };
+  }
+  if (/模型连接超过|模型流式输出超过|MODEL_TIMEOUT|MODEL_STREAM_TIMEOUT/i.test(combined)) {
+    return { kind: "watchdog", label: "模型无响应，已自动中止", detail: combined.slice(0, 240), action: "retry" };
+  }
+  if (view.status === "completed" && !finalText) {
+    return { kind: "final_text_missing", label: "模型只输出了思考，没有最终答复", detail: "过程记录已保留", action: "continue" };
+  }
+  return { kind: "unknown", label: "本轮未正常结束", detail: combined.slice(0, 240), action: "retry" };
 }
 
 // 任务中心列表、徽标计数只需要状态摘要：完整 Run 视图（步骤/待办/事件/引用）
@@ -1760,6 +1805,7 @@ export function runSummaryView(view) {
     finalText: view.finalText || "",
     summarySource: view.completion?.summary ? "completion" : view.summary ? "run" : view.finalText ? "final" : "none",
     completion: view.completion || null,
+    interruption: classifyRunInterruption(view),
     sessionId: view.sessionId || null,
     threadId: view.threadId || null,
     projectId: view.projectId || null,

@@ -25,7 +25,7 @@ import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, l
 import { markInterruptedJobs } from "./后台任务.mjs";
 import { attachRunTimingMeta, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
-import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
+import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities, stripAutoContextPrefix } from "./task.mjs";
 import { workspaceTrustSummary, setWorkspaceTrust } from "./项目信任.mjs";
 import { runtimeFlagsSnapshot, RUNTIME_FLAGS } from "./运行开关.mjs";
 import { summarizeRunUsage, exportObservabilityJson } from "./观测导出.mjs";
@@ -3990,6 +3990,12 @@ app.get("/api/sessions", (req, res) => {
     for (const run of recentRuns) {
       if (run.sessionId && !latestRunBySession.has(run.sessionId)) latestRunBySession.set(run.sessionId, run);
     }
+    // 最近一次成功 Run：一次失败重试不应抹掉“此前已完成”的事实。
+    const lastSuccessBySession = new Map();
+    for (const run of recentRuns) {
+      if (!run.sessionId || lastSuccessBySession.has(run.sessionId)) continue;
+      if (run.status === "completed") lastSuccessBySession.set(run.sessionId, run);
+    }
     // 同一 cwd 的项目查询按请求记忆化
     const projectByCwd = new Map();
     const projectForCwd = (cwd) => {
@@ -4047,6 +4053,10 @@ app.get("/api/sessions", (req, res) => {
           title,
           runStatus: latestRun?.status || "idle",
           runId: latestRun?.id || null,
+          lastRunStatus: latestRun?.status || "idle",
+          lastSuccessfulRunAt: lastSuccessBySession.get(id)?.finishedAt || lastSuccessBySession.get(id)?.startedAt || null,
+          lastSuccessfulRunId: lastSuccessBySession.get(id)?.id || null,
+          lastSuccessfulRunStatus: lastSuccessBySession.get(id)?.status || null,
           mode: latestRun?.mode || "",
           lastRunAt: latestRun?.finishedAt || latestRun?.startedAt || null,
           artifactCount: latestRun?.artifactCount || 0,
@@ -4718,13 +4728,18 @@ app.post("/api/agent/prompt", async (req, res) => {
   // 首字延迟分项（方案 §3.5）：服务端收到请求的时刻。runId 要到 beginRun 才有，
   // 因此先在请求作用域内取时间戳，admission 就绪后再连同 runId 一起登记。
   const serverReceivedAt = Date.now();
-  const { client, thread, text, images, attachments, references, effort, model: requestedModel, task: taskInput, latency: clientLatency } = req.body || {};
+  const { client, thread, text, intentText, images, attachments, references, effort, model: requestedModel, task: taskInput, latency: clientLatency } = req.body || {};
   const hasImages = Array.isArray(images) && images.some((img) => img?.data);
   const hasAttachments = Array.isArray(attachments) && attachments.some((att) => att?.data);
   if (!client || (!String(text || "").trim() && !hasImages && !hasAttachments)) {
     return res.status(400).json({ error: "text, image, or attachment required" });
   }
   const normalizedText = String(text || "").trim() || (hasImages ? "[图片消息]" : "[附件消息]");
+  // 能力规划只读用户原始意图：intentText 由前端单独发送；旧客户端退回到
+  // task.goal，最后才剥离自动上下文前缀。fullText 仍原样交给 Pi 做提示词。
+  const planningText = String(intentText || taskInput?.goal || "").trim()
+    || stripAutoContextPrefix(normalizedText)
+    || normalizedText;
     const key = agentKey(client, thread);
     const requestedWorkspace = normalizeWorkspace(taskInput?.workspace || taskInput?.cwd || getWorkspace()) || getWorkspace();
     // 准入阶段的细分计时：粗分项只说"准入慢"，这里回答"慢在等什么"（运行时/写探针/快照/写记录）。
@@ -4733,7 +4748,7 @@ app.post("/api/agent/prompt", async (req, res) => {
       const started = Date.now();
       try { return await fn(); } finally { admissionSpans[name] = Date.now() - started; }
     };
-    const initialWritePlan = planTaskCapabilities({ text: normalizedText, task: taskInput || {}, attachments });
+    const initialWritePlan = planTaskCapabilities({ text: planningText, task: taskInput || {}, attachments });
     let writeAccessPreflight = null;
     try {
       writeAccessPreflight = await timed("writeProbe", async () => requireWorkspaceWriteForTask(initialWritePlan, requestedWorkspace));
@@ -4815,7 +4830,26 @@ app.post("/api/agent/prompt", async (req, res) => {
       skills: requestedSkills,
       workflowId,
     };
-    capabilityPlan = planTaskCapabilities({ text: normalizedText, task: effectiveTaskInput, references: resolved, attachments });
+    const previousOfficeRoute = entry?.lastOfficeRoute || (() => {
+      try {
+        const latest = listRuns({
+          threadId: entry?.threadId || thread || "",
+          cwd: runWorkspace,
+          limit: 1,
+        });
+        return latest?.[0]?.capabilityPlan?.route || null;
+      } catch {
+        return null;
+      }
+    })();
+    capabilityPlan = planTaskCapabilities({
+      text: planningText,
+      task: effectiveTaskInput,
+      references: resolved,
+      attachments,
+      previousRoute: previousOfficeRoute,
+    });
+    if (entry) entry.lastOfficeRoute = capabilityPlan.route;
       if (writeAccessPreflight) capabilityPlan.workspaceWrite = writeAccessPreflight;
       if (capabilityPlan.routing.officecli === "preferred") {
         capabilityPlan.officecli = await timed("officecliPrecheck", () => checkOfficecli());
@@ -6374,6 +6408,7 @@ function recordProcessFault(kind, error) {
 async function shutdownService(reason, exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
+  serviceExitReason = String(reason || "shutdown");
   console.warn(`[service] 正在关闭（${reason}）...`);
   try { await agentManager.disposeAll(); } catch (error) { recordProcessFault("shutdown_dispose_failed", error); }
   try { await closeMcpConnections(); } catch (error) { recordProcessFault("shutdown_mcp_failed", error); }
@@ -6420,6 +6455,23 @@ process.on("uncaughtException", (error) => {
 // 由具体 Agent/HTTP 链路完成有限重试和错误收敛。
 process.on("unhandledRejection", (reason) => {
   recordProcessFault("unhandled_rejection", reason);
+});
+
+// 进程退出原因落盘：exit 后无法再写业务事件，但下次排查“任务为什么自己中断”
+// 需要知道是服务退出还是模型/任务失败。只用同步 append，避免 exit 阶段丢日志。
+let serviceExitReason = "";
+process.on("exit", (code) => {
+  try {
+    const file = path.join(PROJECT_DIR, "运行日志", "服务退出.log");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, JSON.stringify({
+      time: new Date().toISOString(),
+      code,
+      uptimeSec: Math.round(process.uptime()),
+      reason: serviceExitReason || (code ? "unexpected_exit" : "normal_exit"),
+      pid: process.pid,
+    }) + "\n", "utf8");
+  } catch {}
 });
 
 httpServer = app.listen(PORT, HOST, () => {

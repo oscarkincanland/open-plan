@@ -218,6 +218,10 @@ App.jsx（总编排：会话、工作区、模式、三栏布局、懒加载）
 
 运行状态（`completed / failed / cancelled / aborted`）与任务完成状态（`success / partial / blocked / failed / cancelled`）必须分开表达；不得用“运行结束”替代“任务达成”。
 
+终稿边界：模型运行中的 `text` 条目一律标“进度”，只有 `assistant_final` / 权威终稿进入结论区；无终稿时显示“本轮没有最终答复”，不得把最后一段进度文本或 thinking 当成果。模型把 `<ask_user .../>` 等工具标签写进正文时，显示前剥离，不按 Markdown 渲染。
+
+中断分类：`final_text_missing / provider_auth / provider_config / service_restart / budget_hard / pipeline_timeout / watchdog / user_cancel` 分别给出原因与动作，不得统一显示“中断/失败”。
+
 **Run 级会话流（一轮一块）**
 
 - 一轮只保留一个执行过程折叠单元；运行中默认展开，结束后默认收起。

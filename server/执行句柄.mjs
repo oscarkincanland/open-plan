@@ -99,7 +99,16 @@ export async function waitForFlush(before, workspace = getWorkspace()) {
 // 完成语义：一律按 Run 终态推断（source:"inferred"），结论文本取模型最终答复。
 // 显式完成声明工具（complete_task）已于 2026-11-03 移除，这里不再有"显式优先"分支。
 export function resolveRunCompletion(entry, runStatus, { artifacts = 0, validations = [], runId = null, finalText = "" } = {}) {
-  return inferCompletion({ runStatus, artifacts, validations, finalText: finalText || entry?.lastFinalText || "" });
+  const effectiveFinalText = finalText || entry?.lastFinalText || "";
+  const completion = inferCompletion({ runStatus, artifacts, validations, finalText: effectiveFinalText });
+  // thinking-only 回合：模型想完了但没有正文终稿。不能报 success，也不能用
+  // 上一段进度文本冒充终稿；标成 partial，让前后端按“没有最终答复”处理。
+  if (runStatus === "completed" && !String(effectiveFinalText).trim() && entry?.lastAssistantState?.thinkingOnly) {
+    completion.status = "partial";
+    completion.summary = "模型只输出了思考，没有给出最终答复";
+    completion.incomplete = [...new Set([...(completion.incomplete || []), "final_answer_missing"])];
+  }
+  return completion;
 }
 
 export function getRunFinalText(run) {
