@@ -19,43 +19,128 @@ const CodeViewer = React.lazy(() => import("./CodeViewer.jsx"));
 const ICONS = { docx: "doc", xlsx: "xls", xls: "xls", pptx: "ppt", md: "md", html: "html", htm: "html", txt: "txt", pdf: "pdf", png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", bmp: "image", svg: "image", avif: "image" };
 const ANNO_SAVE_DEBOUNCE = 800;
 
-// 在 iframe 文档的 body 中查找首个匹配 text 的文本节点并按 wrapType 包裹
-function wrapFirstTextMatch(rootDoc, text, wrapType, note) {
-  if (!rootDoc || !rootDoc.body || !text) return false;
-  const className = wrapType === "highlight" ? "oa-anno-hl" : "oa-anno-cm";
-  const tag = wrapType === "highlight" ? "mark" : "u";
-  const walker = rootDoc.createTreeWalker(rootDoc.body, NodeFilter.SHOW_TEXT, {
+// ===== 标注定位模型（2026-11-06，替换「纯文本首匹配」）=====
+// 旧实现只存 `text` 且恢复时取文档里**第一个**匹配：同一句话出现两次就必然标错，
+// 且选区跨文本节点时 surroundContents 直接抛错、标注静默丢失。
+// 现在额外存「上下文（前后各 30 字）+ 出现序号」，恢复时按锚点择优。
+const ANNO_CONTEXT_CHARS = 30;
+
+/** 收集容器内全部文本节点与累计偏移，用于把 (节点, 偏移) 换算成绝对字符位置。 */
+function collectTextNodes(root) {
+  const entries = [];
+  let total = 0;
+  try {
+    const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    let node;
+    while ((node = walker.nextNode())) {
+      const len = node.nodeValue ? node.nodeValue.length : 0;
+      entries.push({ node, start: total, end: total + len });
+      total += len;
+    }
+  } catch { /* 非 DOM 容器 */ }
+  return { entries, total, text: entries.map((e) => e.node.nodeValue || "").join("") };
+}
+
+/** 记录选区锚点：文本 + 前文 + 后文 + 在全文中的出现序号。 */
+function buildAnnotationAnchor(root, range) {
+  try {
+    const text = range.toString();
+    if (!text || !text.trim()) return null;
+    const { entries, text: full } = collectTextNodes(root);
+    // 选区起点换算成绝对偏移（起点不在文本节点时退化为 -1 → 只用 occurrence=0）
+    let abs = -1;
+    for (const entry of entries) {
+      if (entry.node === range.startContainer) { abs = entry.start + range.startOffset; break; }
+    }
+    if (abs < 0) return { text: text.trim(), before: "", after: "", occurrence: 0 };
+    const before = full.slice(Math.max(0, abs - ANNO_CONTEXT_CHARS), abs);
+    const after = full.slice(abs + text.length, abs + text.length + ANNO_CONTEXT_CHARS);
+    const occurrence = full.slice(0, abs).split(text).length - 1;
+    return { text: text.trim(), before, after, occurrence };
+  } catch {
+    return null;
+  }
+}
+
+/** 在文档里找出某段文本的全部「单节点内」匹配（跨节点的匹配无法安全包裹，跳过）。 */
+function findAllTextMatches(root, text) {
+  const out = [];
+  if (!root || !text) return out;
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       if (!node.nodeValue || !node.nodeValue.includes(text)) return NodeFilter.FILTER_REJECT;
-      // 已包裹则跳过（防止重复包裹）
+      // 已包裹的跳过，避免重复包裹
       let p = node.parentNode;
-      while (p && p !== rootDoc.body) {
-        if (p.nodeType === 1 && p.classList) {
-          if (p.classList.contains("oa-anno-hl") || p.classList.contains("oa-anno-cm")) {
-            return NodeFilter.FILTER_REJECT;
-          }
+      while (p && p !== root) {
+        if (p.nodeType === 1 && p.classList
+          && (p.classList.contains("oa-anno-hl") || p.classList.contains("oa-anno-cm"))) {
+          return NodeFilter.FILTER_REJECT;
         }
         p = p.parentNode;
       }
       return NodeFilter.FILTER_ACCEPT;
     },
   });
-  let node = walker.nextNode();
-  if (!node) return false;
-  const idx = node.nodeValue.indexOf(text);
-  if (idx < 0) return false;
-  const range = rootDoc.createRange();
+  let node;
+  while ((node = walker.nextNode())) {
+    const value = node.nodeValue || "";
+    let from = 0;
+    for (;;) {
+      const idx = value.indexOf(text, from);
+      if (idx < 0) break;
+      out.push({ node, idx });
+      from = idx + text.length;
+    }
+  }
+  return out;
+}
+
+/** 把匹配包裹成高亮/批注元素。 */
+function wrapTextMatch(match, wrapType, note) {
+  const doc = match.node.ownerDocument;
+  const className = wrapType === "highlight" ? "oa-anno-hl" : "oa-anno-cm";
+  const tag = wrapType === "highlight" ? "mark" : "u";
+  const length = String(match.text || "").length;
+  if (!length) return false;
   try {
-    range.setStart(node, idx);
-    range.setEnd(node, idx + text.length);
-    const wrap = rootDoc.createElement(tag);
+    const range = doc.createRange();
+    range.setStart(match.node, match.idx);
+    range.setEnd(match.node, match.idx + length);
+    const wrap = doc.createElement(tag);
     wrap.className = className;
     if (wrapType === "comment" && note) wrap.title = note;
     range.surroundContents(wrap);
     return true;
-  } catch (e) {
+  } catch {
     return false;
   }
+}
+
+/**
+ * 按锚点恢复一条标注：优先选「上下文匹配」的候选，其次按出现序号，最后退回首个匹配。
+ * 返回是否成功包裹。
+ */
+function wrapAnnotatedText(root, anno) {
+  const text = anno?.text;
+  if (!root || !text) return false;
+  const matches = findAllTextMatches(root, text);
+  if (!matches.length) return false;
+  for (const match of matches) match.text = text;
+
+  if (typeof anno.occurrence === "number" && anno.occurrence >= 0 && anno.occurrence < matches.length) {
+    // 序号命中且上下文也对得上 → 直接采用（最强证据）
+    const candidate = matches[anno.occurrence];
+    const value = candidate.node.nodeValue || "";
+    const before = value.slice(Math.max(0, candidate.idx - ANNO_CONTEXT_CHARS), candidate.idx);
+    const after = value.slice(candidate.idx + text.length, candidate.idx + text.length + ANNO_CONTEXT_CHARS);
+    const contextOk = (!anno.before || before.endsWith(anno.before))
+      && (!anno.after || after.startsWith(anno.after));
+    if (contextOk) return wrapTextMatch(candidate, anno.type, anno.note);
+    // 上下文不符（文档被 Agent 改过）→ 序号仍可用
+    if (wrapTextMatch(candidate, anno.type, anno.note)) return true;
+  }
+  // 无锚点的旧数据 / 序号越界 → 首个匹配（保持向后兼容）
+  return wrapTextMatch(matches[0], anno.type, anno.note);
 }
 
 // 在 iframe load 时按 annotations 列表逐个恢复 DOM 包裹
@@ -63,11 +148,7 @@ function restoreAnnotationsInDoc(rootDoc, annotations) {
   if (!rootDoc || !rootDoc.body || !annotations || !annotations.length) return;
   for (const a of annotations) {
     if (!a || !a.text) continue;
-    if (a.type === "highlight") {
-      wrapFirstTextMatch(rootDoc, a.text, "highlight", null);
-    } else if (a.type === "comment") {
-      wrapFirstTextMatch(rootDoc, a.text, "comment", a.note || "");
-    }
+    wrapAnnotatedText(rootDoc.body, a);
   }
 }
 
@@ -381,7 +462,8 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext, o
         return;
       }
       setAnnoInput(null);
-      setAnnoToolbar({ ...coords, text: text.trim() });
+      // 选区还在时就把锚点（上下文 + 出现序号）算好，保存后恢复才定位得准
+      setAnnoToolbar({ ...coords, text: text.trim(), anchor: buildAnnotationAnchor(innerDoc.body, range) });
     };
 
     const onScroll = () => {
@@ -444,6 +526,8 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext, o
         id: `${Date.now()}-h${Math.random().toString(36).slice(2, 6)}`,
         type: "highlight",
         text: annoToolbar.text,
+        // 锚点：上下文 + 出现序号，避免同文多处时恢复错位
+        ...(annoToolbar.anchor || {}),
         created: Date.now(),
       };
       setAnnotations((prev) => [...prev, newAnno]);
@@ -456,7 +540,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext, o
   // 进入批注输入态
   const handleCommentClick = useCallback(() => {
     if (!annoToolbar) return;
-    setAnnoInput({ mode: "comment", text: annoToolbar.text, value: "" });
+    setAnnoInput({ mode: "comment", text: annoToolbar.text, anchor: annoToolbar.anchor || null, value: "" });
   }, [annoToolbar]);
 
   // 进入交给 agent 输入态
@@ -514,6 +598,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext, o
         type: "comment",
         text: annoInput.text,
         note: val,
+        ...(annoInput.anchor || {}), // 锚点：上下文 + 出现序号
         created: Date.now(),
       };
       setAnnotations((prev) => [...prev, newAnno]);
