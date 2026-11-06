@@ -56,8 +56,11 @@ try {
   const indexSource = fs.readFileSync(path.join(repo, "server", "index.mjs"), "utf8");
   assert.match(indexSource, /\/api\/agent\/model\/probe/);
   const settingsSource = fs.readFileSync(path.join(repo, "client", "src", "components", "SettingsPanel.jsx"), "utf8");
-  assert.match(settingsSource, /providerOptions/);
-  assert.match(settingsSource, /连接测试/);
+  const modelPageSource = fs.readFileSync(path.join(repo, "client", "src", "components", "模型设置页.jsx"), "utf8");
+  assert.match(settingsSource, /<模型设置页/);
+  assert.match(modelPageSource, /probeAgentModel/);
+  assert.match(modelPageSource, /测试连接/);
+  assert.match(modelPageSource, /onModelChange/);
   const startupSource = fs.readFileSync(path.join(repo, "启动规聚服务.ps1"), "utf8");
   assert.match(startupSource, /LocalVersion/);
   assert.match(startupSource, /ExistingService\.version/);

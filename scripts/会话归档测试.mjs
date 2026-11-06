@@ -119,7 +119,7 @@ test("会话行操作收敛为 ⋮ 菜单，包含归档/恢复/永久删除", (
 });
 
 test("设置面板有独立「归档历史」tab 与批量恢复/删除", () => {
-  assert.match(settings, /\["archive", "归档历史"\]/);
+  assert.match(settings, /\["archive", "归档历史"/);
   assert.match(settings, /function ArchiveSettingsSection/);
   assert.match(settings, /listSessions\(\{ archived: "only" \}\)/);
   assert.match(settings, /批量恢复/);

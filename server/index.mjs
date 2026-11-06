@@ -1777,27 +1777,54 @@ app.delete("/api/agent/model-configs/:provider", async (req, res) => {
 });
 
 // 从供应商接口地址拉取模型列表（OpenAI 兼容 GET /models），供前端一键导入
-app.post("/api/agent/model-configs/fetch-models", async (req, res) => {
-  const { provider, baseUrl, apiKey } = req.body || {};
-  let url = String(baseUrl || "").trim().replace(/\/+$/, "");
-  let key = String(apiKey || "").trim();
-  if (!url && provider) {
-    const config = readModelsConfig() || {};
-    const entry = config.providers?.[provider];
-    url = String(entry?.baseUrl || "").trim().replace(/\/+$/, "");
-    const auth = listAuth() || {};
-    key = String(auth[provider]?.key || auth[provider]?.apiKey || auth[provider]?.token || "").trim();
+/** 把常见模型目录响应归一化为 [{ id, name }]：兼容 data[] / models[] / 裸数组，元素可为字符串或对象。 */
+function normalizeFetchedModelList(body) {
+  const raw = Array.isArray(body) ? body
+    : Array.isArray(body?.data) ? body.data
+      : Array.isArray(body?.models) ? body.models
+        : Array.isArray(body?.result?.data) ? body.result.data
+          : [];
+  const list = [];
+  const seen = new Set();
+  for (const item of raw) {
+    const id = String(typeof item === "string" ? item : item?.id || item?.model || item?.name || "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const name = typeof item === "object" && item
+      ? String(item.name || item.display_name || item.displayName || item.label || id).trim()
+      : id;
+    list.push({ id, name: name || id });
   }
-  if (!/^https?:\/\//i.test(url)) return res.status(400).json({ ok: false, error: "接口地址必须以 http:// 或 https:// 开头", code: "MODELS_FETCH_INVALID_URL" });
-  if (!key) return res.status(400).json({ ok: false, error: "缺少 API Key：请先保存凭据，或临时填写 Key", code: "MODELS_FETCH_NO_KEY" });
+  return list;
+}
+
+app.post("/api/agent/model-configs/fetch-models", async (req, res) => {
+  const { provider, baseUrl, apiKey, url: explicitUrl } = req.body || {};
+  let target = String(explicitUrl || "").trim();
+  let key = String(apiKey || "").trim();
+  if (!target) {
+    let url = String(baseUrl || "").trim().replace(/\/+$/, "");
+    if (!url && provider) {
+      const config = readModelsConfig() || {};
+      const entry = config.providers?.[provider];
+      url = String(entry?.baseUrl || "").trim().replace(/\/+$/, "");
+      const auth = listAuth() || {};
+      key = String(auth[provider]?.key || auth[provider]?.apiKey || auth[provider]?.token || "").trim();
+    }
+    target = `${url}/models`;
+  }
+  if (!/^https?:\/\//i.test(target)) return res.status(400).json({ ok: false, error: "接口地址必须以 http:// 或 https:// 开头", code: "MODELS_FETCH_INVALID_URL" });
   const adapter = createPiNetworkAdapter();
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
     let response;
     try {
-      response = await adapter.fetch(`${url}/models`, {
-        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      response = await adapter.fetch(target, {
+        // 目录接口可能公开（无需 Key）；有 Key 时才带 Authorization，避免把空 Bearer 发给公开端点。
+        headers: key
+          ? { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }
+          : { "Content-Type": "application/json" },
         signal: controller.signal,
       });
     } catch (error) {
@@ -1816,23 +1843,23 @@ app.post("/api/agent/model-configs/fetch-models", async (req, res) => {
         code: response.status === 401 || response.status === 403 ? "MODELS_FETCH_AUTH" : "MODELS_FETCH_FAILED",
       });
     }
-    const ids = Array.isArray(body?.data) ? body.data.map((item) => String(item?.id || "").trim()).filter(Boolean) : [];
-    if (!ids.length) return res.status(422).json({ ok: false, error: "接口未返回模型列表（响应缺少 data[]）", code: "MODELS_FETCH_EMPTY" });
-    const unique = [...new Set(ids)];
+    const entries = normalizeFetchedModelList(body);
+    if (!entries.length) return res.status(422).json({ ok: false, error: "接口未返回模型列表（支持 data[] / models[] / 数组）", code: "MODELS_FETCH_EMPTY" });
+    const unique = entries.map((item) => item.id);
     // 拉到的模型 ID 去 Pi 内置目录里对一遍：对上的直接带出上下文窗口 / 图片 / 思考能力，
     // 前端就不用一个个手填（对不上的仍可手填）。
-    const models = unique.map((id) => {
+    const models = entries.map(({ id, name }) => {
       const known = findBuiltinModel(id);
       return {
         id,
-        name: known?.name || id,
+        name: known?.name || name || id,
         contextWindow: known?.contextWindow || null,
         vision: known ? known.vision : null,
         reasoning: known ? known.reasoning : null,
         matchedProvider: known?.provider || null,
       };
     });
-    res.json({ ok: true, models, ids: unique, count: unique.length, matched: models.filter((model) => model.matchedProvider).length, fetchedAt: new Date().toISOString() });
+    res.json({ ok: true, models, ids: unique, count: unique.length, matched: models.filter((model) => model.matchedProvider).length, sourceUrl: target, fetchedAt: new Date().toISOString() });
   } catch (error) {
     res.status(500).json({ ok: false, error: String(error?.message || error).slice(0, 300), code: "MODELS_FETCH_UNEXPECTED" });
   } finally {

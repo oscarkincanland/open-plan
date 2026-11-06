@@ -165,26 +165,29 @@ const builtinList = {
 // ============================================================
 // 2. 界面层：两页拆分 + 内置库 + 会话导航弹层
 // ============================================================
-场景("设置面板：模型供应商与网络与代理拆成两页", () => {
+场景("设置面板：模型供应商与网络与搜索拆成两页", () => {
   const panel = read("client/src/components/SettingsPanel.jsx");
-  assert.match(panel, /\["providers", "模型供应商"\]/);
-  assert.match(panel, /\["network", "网络与代理"\]/);
+  assert.match(panel, /\["providers", "模型"/);
+  assert.match(panel, /\["network", "网络与搜索"/);
   assert.doesNotMatch(panel, /\["model", "自定义供应商 · 网络"\]/, "旧的合页标签应已移除");
   assert.match(panel, /settingsSection === "providers" &&/, "供应商页要独立渲染");
   assert.match(panel, /settingsSection === "network" &&/, "网络页要独立渲染");
   assert.match(panel, /id="settings-network"/);
   // 旧入口（initialSection="model"）要兼容映射到新页，避免外部跳转失效
   assert.match(panel, /initialSection === "model" \? "providers" : initialSection/);
+  // 模型页拆成独立组件，外壳只负责导航与装载
+  assert.match(panel, /<模型设置页/);
+  assert.match(read("client/src/components/模型设置页.jsx"), /model-page-body/);
   // 网络卡片只能在网络页里出现一次
   assert.equal((panel.match(/<strong>模型网络<\/strong>/g) || []).length, 1);
 });
 
 场景("我的供应商：测试连接 / 设为默认 / 品牌图标都在行内", () => {
-  const panel = read("client/src/components/SettingsPanel.jsx");
-  assert.match(panel, />测试连接</);
-  assert.match(panel, />设为默认</);
-  assert.match(panel, /agentSetDefaultModel/);
-  assert.match(panel, /providerIdentity\(config\.provider\)/);
+  const page = read("client/src/components/模型设置页.jsx");
+  assert.match(page, /测试连接/);
+  assert.match(page, /设为默认/);
+  assert.match(page, /agentSetDefaultModel/);
+  assert.match(page, /providerIdentity\(/);
 });
 
 场景("内置供应商库：可搜索、按登录方式筛选、一键添加", () => {
@@ -202,11 +205,11 @@ const builtinList = {
 });
 
 场景("账号登录区块：只列支持 OAuth 的供应商，并说明凭据怎么进来", () => {
-  const panel = read("client/src/components/SettingsPanel.jsx");
-  assert.match(panel, /账号登录（订阅制）/);
-  assert.match(panel, /loginMethods\?\.includes\("oauth"\)/);
-  assert.match(panel, /pi auth login 供应商id/);
-  assert.match(panel, /从本地 Pi 导入配置/);
+  const page = read("client/src/components/模型设置页.jsx");
+  assert.match(page, /账号登录（订阅制）/);
+  assert.match(page, /loginMethods\?\.includes\("oauth"\)/);
+  assert.match(page, /pi auth login \{provider\.id\}/);
+  assert.match(page, /从本地 Pi 导入配置/);
 });
 
 场景("品牌图形：vendored 数据文件 + ProviderIcon 合并，未知供应商走首字母兜底", () => {
