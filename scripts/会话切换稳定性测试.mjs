@@ -59,8 +59,11 @@ test("恢复失败时输入与发送禁用", () => {
 });
 
 test("agentReady=false 时不连接对话流", () => {
-  assert.match(chat, /if \(!agentReady\) return undefined;/);
-  assert.match(chat, /\[clientId, threadId, workspace, agentReady\]/);
+  // 2026-11-06：守卫由「只有 agentReady 才连」演进为「恢复中但本地已确认活跃 Run 时也要连」
+  // （streamAttachAllowed = agentReady || busy），避免切回运行中会话时冻结不刷新。
+  assert.match(chat, /const streamAttachAllowed = Boolean\(agentReady \|\| busy\);/);
+  assert.match(chat, /if \(!streamAttachAllowed\) return undefined;/);
+  assert.match(chat, /\[clientId, threadId, workspace, streamAttachAllowed\]/);
 });
 
 test("重试恢复成功/失败联动 agentReady", () => {

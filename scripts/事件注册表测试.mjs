@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SERVER_DIR = path.join(ROOT, "server");
 
-const { EVENT_REGISTRY, EVENT_TYPES, LIFECYCLE_EVENT_TYPES, DELTA_EVENT_TYPES, PERSISTED_TYPES, registrySummary } =
+const { EVENT_REGISTRY, EVENT_TYPES, LIFECYCLE_EVENT_TYPES, DELTA_EVENT_TYPES, PERSISTED_TYPES, RUN_RECORDED_TYPES, registrySummary } =
   await import("../server/事件注册表.mjs");
 const protocol = await import("../server/事件协议.mjs");
 
@@ -84,6 +84,32 @@ test("server 代码里发出的事件类型都已登记", () => {
     }
   }
   assert.equal(missing.size, 0, `未登记事件：${[...missing].map(([type, files]) => `${type}(${files.join(",")})`).join("、")}`);
+});
+
+test("runEvent 集合与收敛前的内联白名单一致（19 种基线）", () => {
+  // 2026-11-06：agent.mjs 的 emit 落 Run 判定从内联数组改为读注册表 runEvent 字段。
+  // 这条用例冻结迁移时的行为基线，防止收敛过程中悄悄改变"哪些事件进 Run 记录"。
+  const legacy = [
+    "agent_started", "turn_started", "turn_ended", "message_start", "message_end",
+    "tool_start", "tool_end", "tool_repeat_warning", "run_budget_notice", "run_budget_blocked",
+    "tool_gate_denied", "context_compacting", "context_compacted", "ask_user",
+    "agent_error", "agent_retry", "assistant_final", "agent_end", "stats",
+  ];
+  assert.equal(RUN_RECORDED_TYPES.size, legacy.length, `runEvent 数量 ${RUN_RECORDED_TYPES.size} ≠ 基线 ${legacy.length}`);
+  for (const type of legacy) assert.ok(RUN_RECORDED_TYPES.has(type), `${type} 应标记 runEvent`);
+  for (const type of RUN_RECORDED_TYPES) assert.ok(EVENT_TYPES.includes(type), `${type} 未在注册表登记`);
+});
+
+test("agent.mjs 不再维护内联 Run 事件白名单", () => {
+  const source = fs.readFileSync(path.join(SERVER_DIR, "agent.mjs"), "utf8");
+  assert.match(source, /RUN_RECORDED_TYPES\.has\(type\)/, "emit 应读注册表集合");
+  assert.doesNotMatch(source, /\["agent_started", "turn_started"/, "内联白名单应已删除");
+});
+
+test("runEvent 事件都声明了 lifecycle", () => {
+  for (const item of EVENT_REGISTRY) {
+    if (item.runEvent) assert.ok(item.lifecycle, `${item.type} 标记 runEvent 但未 lifecycle`);
+  }
 });
 
 const summary = registrySummary();

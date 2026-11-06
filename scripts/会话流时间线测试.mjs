@@ -7,7 +7,8 @@
  * 退出码: 0 = 全部通过, 1 = 有失败
  */
 import assert from "node:assert/strict";
-import { buildRunTimeline, describeRunFold, splitCompletionSummary, summarizeTimeline, toolObjectText, toolStateOf, advanceTypewriter } from "../client/src/会话流投影.js";
+import { assignTimelineTurns, buildRunTimeline, describeRunFold, splitCompletionSummary, summarizeTimeline, toolObjectText, toolStateOf, advanceTypewriter } from "../client/src/会话流投影.js";
+import { stripAnswerPrefill, stripToolMarkup } from "../client/src/工具标签清洗.js";
 import { associateRunMessages, mergeRunSummaries, upsertRunSummaryMessage } from "../client/src/运行展示投影.js";
 import { reduceRunTrace, resolveRunElapsedMs } from "../client/src/运行轨迹.js";
 
@@ -35,7 +36,7 @@ test("thinking/text/tool/process_note 按原顺序投影", () => {
   });
   assert.deepEqual(items.map((i) => i.kind), ["thinking", "text", "tool", "text", "sys"]);
   assert.equal(items[0].icon, "brain");
-  assert.equal(items[1].cap, "进度");
+  assert.equal(items[1].cap, "阶段小结");
   assert.equal(items[4].text, "该给进度小结了");
   assert.ok(items[4].text.startsWith("该给"));
 });
@@ -225,6 +226,62 @@ test("有分节但无「结论」：结论段从详细展开中移除，不出�
   assert.equal(r.conclusion, "交通专题地图已生成。");
   assert.equal(r.detail.includes("交通专题地图已生成。"), false);
   assert.ok(r.detail.includes("已知限制"));
+});
+
+// ---------- 6.1 多段结论不得被整节删除（2026-11-06 修复） ----------
+test("多段「## 结论」：首段提到结论位，其余段落与节标题保留在详细内容", () => {
+  const source = [
+    "## 结论",
+    "",
+    "首段：整体判断。",
+    "",
+    "第二段：关键数据与依据。",
+    "",
+    "## 产物",
+    "",
+    "- 报告.docx",
+  ].join("\n");
+  const r = splitCompletionSummary("", source);
+  assert.equal(r.conclusion, "首段：整体判断。");
+  assert.ok(r.detail.includes("第二段：关键数据与依据"), "第 2 段不得丢失");
+  assert.ok(r.detail.includes("## 结论"), "节标题与后续段落应保留");
+  assert.ok(r.detail.includes("报告.docx"), "其他分节应保留");
+  assert.equal(r.detail.includes("首段：整体判断。"), false, "首段不应重复出现");
+});
+
+test("「## 结论」下用 ### 子节展开：子节内容保留", () => {
+  const source = ["## 结论", "", "结论首段。", "", "### 依据", "", "- 证据一", "- 证据二"].join("\n");
+  const r = splitCompletionSummary("", source);
+  assert.equal(r.conclusion, "结论首段。");
+  assert.ok(r.detail.includes("### 依据"));
+  assert.ok(r.detail.includes("证据一"));
+});
+
+test("单段「## 结论」仍然整节移除，不出现「空标题」", () => {
+  const r = splitCompletionSummary("", "## 结论\n\n只有一段结论。\n\n## 下一步\n\n继续。");
+  assert.equal(r.conclusion, "只有一段结论。");
+  assert.equal(r.detail.includes("## 结论"), false);
+  assert.ok(r.detail.includes("## 下一步"));
+});
+
+// ---------- 6.2 终稿预填前缀清洗 ----------
+test("重复的 Final summary. 前缀被逐轮剥离", () => {
+  assert.equal(
+    stripAnswerPrefill("Final summary.Final summary.Final summary.结论正文。"),
+    "结论正文。",
+  );
+  assert.equal(stripAnswerPrefill("Summary: 结论正文。"), "结论正文。");
+  assert.equal(stripAnswerPrefill("最终总结：结论正文。"), "结论正文。");
+});
+
+test("不误删正常正文（用户要求以「总结」开头的内容保留）", () => {
+  assert.equal(stripAnswerPrefill("总结一下今天的三个决定。"), "总结一下今天的三个决定。");
+  assert.equal(stripAnswerPrefill("## 结论\n\n正文。"), "## 结论\n\n正文。");
+});
+
+test("与工具标签清洗串联：标签 + 预填前缀一起清", () => {
+  const cleaned = stripAnswerPrefill(stripToolMarkup("Final summary.<ask_user question=\"x\"/>结论。"));
+  assert.equal(cleaned, "结论。");
 });
 
 // ---------- 7. 打字机推进（精修计划 2026-10-31-002 F2） ----------
@@ -498,6 +555,62 @@ test("trace 的起止时间优先于 runSummary", () => {
 test("实时模式用 now - startedAt；无任何来源返回 0", () => {
   assert.equal(resolveRunElapsedMs({ live: true, now: Date.parse(at(60)), message: { startedAt: at(0) } }), 60_000);
   assert.equal(resolveRunElapsedMs({}), 0);
+});
+
+// ---------- 过程按 turn 分组（PRD R3 / DESIGN §6.1，决策 B1） ----------
+console.log("\n▶ 过程按 turn 分组");
+
+test("多轮 Run：工具按 toolCallId 归轮，思考/文本归到本轮，轮次变化处插分隔行", () => {
+  const items = buildRunTimeline({
+    blocks: [
+      { type: "thinking", id: "b1", text: "先想清楚" },
+      { type: "tool", id: "t1", toolCallId: "c1", name: "read", input: "a.md", done: true, isError: false },
+      { type: "thinking", id: "b2", text: "再看第二个" },
+      { type: "tool", id: "t2", toolCallId: "c2", name: "read", input: "b.md", done: true, isError: false },
+    ],
+  });
+  const events = [
+    ev("turn_started"), ev("tool_start", { toolCallId: "c1", name: "read" }),
+    ev("turn_started"), ev("tool_start", { toolCallId: "c2", name: "read" }),
+  ];
+  const view = assignTimelineTurns(items, events);
+  const dividers = view.filter((item) => item.kind === "turn-divider");
+  assert.deepEqual(dividers.map((item) => item.turn), [1, 2], "两轮应各有一个分隔行");
+  const tools = view.filter((item) => item.kind === "tool");
+  assert.equal(tools[0].block.toolCallId, "c1");
+  assert.equal(tools[1].block.toolCallId, "c2");
+  // 分隔行必须出现在各轮第一个条目之前
+  assert.equal(view[0].kind, "turn-divider");
+  const secondDividerIndex = view.findIndex((item) => item.kind === "turn-divider" && item.turn === 2);
+  assert.ok(secondDividerIndex > 0);
+  // 同一轮的思考出现在本轮工具之前，分隔行后应先是该轮的思考/文本，再接工具
+  const nextToolAfterDivider = view.slice(secondDividerIndex + 1).find((item) => item.kind === "tool");
+  assert.equal(nextToolAfterDivider.block.toolCallId, "c2");
+});
+
+test("单轮 Run：不插分隔行，原样返回", () => {
+  const items = buildRunTimeline({ blocks: [{ type: "tool", id: "t1", toolCallId: "c1", name: "read", input: "a.md", done: true }] });
+  const view = assignTimelineTurns(items, [ev("turn_started"), ev("tool_start", { toolCallId: "c1", name: "read" })]);
+  assert.equal(view.length, items.length);
+  assert.ok(view.every((item) => item.kind !== "turn-divider"));
+});
+
+test("无轮次事件（旧服务端 / 历史回放）：不分组、不报错", () => {
+  const items = buildRunTimeline({ blocks: [{ type: "thinking", id: "b1", text: "x" }, { type: "tool", id: "t1", toolCallId: "c1", name: "read", input: "a.md", done: true }] });
+  assert.equal(assignTimelineTurns(items, []).length, items.length);
+  assert.equal(assignTimelineTurns(items, null).length, items.length);
+});
+
+test("工具行缺 toolCallId 时按顺序归入相邻轮次，不丢条目", () => {
+  const items = buildRunTimeline({
+    blocks: [
+      { type: "tool", id: "t1", name: "read", input: "a.md", done: true },
+      { type: "tool", id: "t2", name: "read", input: "b.md", done: true },
+    ],
+  });
+  const events = [ev("turn_started"), ev("turn_started")];
+  const view = assignTimelineTurns(items, events);
+  assert.equal(view.filter((item) => item.kind === "tool").length, 2, "条目数不应变化");
 });
 
 console.log(failed ? "\n✗ 有失败用例" : "\n✓ 全部通过");

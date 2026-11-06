@@ -127,6 +127,11 @@ try {
   assert.equal(path.basename(compatResult.auth), "auth.json");
   assert.equal(path.resolve(compatResult.agent), path.resolve(root, "兼容Pi"));
 
+  // 套餐 provider（PLAN_OPENCODE_*）同样走 OpenCode 网关，连接测试必须带 session 头；
+  // 只按 opencode/opencode-go 判断会让套餐连接测试误报 MissingSessionID。
+  const runtimeSource = fs.readFileSync(path.join(projectRoot, "server", "Pi运行时管理.mjs"), "utf8");
+  assert.match(runtimeSource, /\/\^PLAN_OPENCODE\/i\.test\(provider\)/, "套餐 provider 必须按 OpenCode 网关处理");
+
   console.log("Pi 配置独立化测试通过");
 } finally {
   try { fs.rmSync(root, { recursive: true, force: true }); } catch {}

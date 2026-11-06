@@ -16,6 +16,7 @@
  */
 
 import { GLOBAL_MAX_STREAMS, globalStreamCount, registerQuotaStream, unregisterQuotaStream, requestOthersReleaseOptional, onRemoteReleaseRequest, resetQuotaStreams } from "./跨标签页流配额.js";
+import { getTabId } from "./标签页标识.js";
 
 /** 同时存活的流上限（单标签页）：留出至少 3 个槽位给普通请求，控制面不会被饿死。 */
 export const MAX_STREAMS = 3;
@@ -252,7 +253,9 @@ export function closeEventSourceQuietly(es, meta = {}) {
         const options = {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ client: meta.client || "", thread: meta.thread || "" }),
+          // P1-3（2026-11-06）：带上 tab，服务端才能只收本标签页的旧流；
+        // 否则多标签/迟到 close 会误杀同 client 的新流。
+        body: JSON.stringify({ client: meta.client || "", thread: meta.thread || "", tab: meta.tab || getTabId() }),
           keepalive: true,
         };
         if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {

@@ -6,12 +6,15 @@
  * 19 种事件"声明了但没落盘"、9 种事件"落盘但不受保护"的错位，重连回放无法重建回合
  * 边界、审批、模型回退等语义。
  *
- * 现在两处都从这张表派生：
+ * 现在三处都从这张表派生：
  *   lifecycle: true  → 写入通道历史时不允许被 token/tool_output 等增量挤出；
- *   persist:   true  → 写入 .oaw/events/事件流.jsonl，可在恢复会话时回放。
+ *   persist:   true  → 写入 .oaw/events/事件流.jsonl，可在恢复会话时回放；
+ *   runEvent:  true  → 额外写入该 Run 的 `run.events`（任务中心/回放读它）。
+ *                      此前这是 server/agent.mjs `emit()` 里的一份内联白名单，
+ *                      2026-11-06 收敛到本表（RUN_RECORDED_TYPES）。
  *
  * 约定（由 scripts/事件注册表测试.mjs 强制）：
- *   1. persist 的事件必须同时 lifecycle（能落盘的就值得保护）；
+ *   1. persist / runEvent 的事件必须同时 lifecycle（能落盘/能回放的都值得保护）；
  *   2. 代码里 emit/recordRunEvent/appendEvent/writeEvent 用到的事件类型必须登记，
  *      否则测试失败——新增事件不会再"只在一处处理"。
  */
@@ -35,22 +38,22 @@ const REGISTRY = [
   { type: "aborted", lifecycle: true, persist: true, note: "回合被中断", schema: { required: ["runId"], types: { runId: "string" } } },
 
   // ---- 回合 / 消息边界 ----
-  { type: "agent_started", lifecycle: true, persist: true, note: "Agent 回合开始" },
+  { type: "agent_started", lifecycle: true, runEvent: true, persist: true, note: "Agent 回合开始" },
   { type: "agent_turn_end", lifecycle: true, persist: true, note: "Agent 回合收尾统计" },
-  { type: "turn_started", lifecycle: true, persist: true, note: "模型回合开始" },
-  { type: "turn_ended", lifecycle: true, persist: true, note: "模型回合结束" },
-  { type: "message_start", lifecycle: true, persist: true, note: "助手消息开始" },
-  { type: "message_end", lifecycle: true, persist: true, note: "助手消息结束" },
+  { type: "turn_started", lifecycle: true, runEvent: true, persist: true, note: "模型回合开始" },
+  { type: "turn_ended", lifecycle: true, runEvent: true, persist: true, note: "模型回合结束" },
+  { type: "message_start", lifecycle: true, runEvent: true, persist: true, note: "助手消息开始" },
+  { type: "message_end", lifecycle: true, runEvent: true, persist: true, note: "助手消息结束" },
 
   // ---- 工具与写入 ----
-  { type: "tool_start", lifecycle: true, persist: true, note: "工具调用开始" },
-  { type: "tool_end", lifecycle: true, persist: true, note: "工具调用结束", schema: { required: ["name"], types: { name: "string", isError: "boolean" } } },
+  { type: "tool_start", lifecycle: true, runEvent: true, persist: true, note: "工具调用开始" },
+  { type: "tool_end", lifecycle: true, runEvent: true, persist: true, note: "工具调用结束", schema: { required: ["name"], types: { name: "string", isError: "boolean" } } },
   { type: "tool_call_progress", lifecycle: true, persist: false, note: "工具分段进度（高频）" },
   // ---- 内置浏览器步骤/读取（可观测性，2026-11-06 批次）----
   { type: "browser_step_start", lifecycle: true, persist: true, note: "浏览器步骤开始（browser_* 工具）", schema: { required: ["toolCallId", "kind"], types: { toolCallId: "string", kind: "string", url: "string", title: "string" } } },
   { type: "browser_step_end", lifecycle: true, persist: true, note: "浏览器步骤结束（done/error）", schema: { required: ["toolCallId", "kind", "status"], types: { toolCallId: "string", kind: "string", status: "string", durationMs: "number", url: "string", title: "string", error: "string" } } },
   { type: "browser_read", lifecycle: true, persist: true, note: "浏览器读取内容（snapshot/extract：字数/元素数/预览）", schema: { required: ["toolCallId", "kind"], types: { toolCallId: "string", kind: "string", url: "string", title: "string", chars: "number", elementCount: "number", preview: "string" } } },
-  { type: "tool_repeat_warning", lifecycle: true, persist: true, note: "同参数重复调用提醒" },
+  { type: "tool_repeat_warning", lifecycle: true, runEvent: true, persist: true, note: "同参数重复调用提醒" },
   { type: "completion_nudge", lifecycle: true, persist: true, legacy: true, note: "历史事件：收尾强制完成声明提醒（显式完成声明已停用，不再发射）" },
   { type: "write_started", lifecycle: true, persist: true, note: "写入开始（含锁）" },
   { type: "write_locked", lifecycle: true, persist: false, note: "写入已加锁（与 write_started 恒成对，不落盘省冗余）" },
@@ -106,14 +109,14 @@ const REGISTRY = [
   { type: "pipeline_finished", lifecycle: true, persist: true, note: "编辑流水线结束（交付产物/回环/失败终态）" },
 
   // ---- 审批 / 提问 ----
-  { type: "ask_user", lifecycle: true, persist: true, note: "向用户提问", schema: { required: ["askId", "question"], types: { askId: "string", question: "string", options: "array" } } },
+  { type: "ask_user", lifecycle: true, runEvent: true, persist: true, note: "向用户提问", schema: { required: ["askId", "question"], types: { askId: "string", question: "string", options: "array" } } },
   { type: "tool_approval_request", lifecycle: true, persist: true, note: "工具审批请求", schema: { required: ["id", "tool"], types: { id: "string", tool: "string", action: "string" } } },
   { type: "interaction_owner_changed", lifecycle: true, persist: true, note: "交互归属变更（Qoder P1-4 子代理接管，默认关）", schema: { required: ["owner"], types: { owner: "object", status: "string" } } },
   { type: "tool_approval_resolved", lifecycle: true, persist: true, note: "工具审批结果" },
 
   // ---- 通道与重试 ----
   { type: "model_request_started", lifecycle: true, persist: true, note: "向模型发起请求（回合锚点）" },
-  { type: "agent_retry", lifecycle: true, persist: true, note: "模型重试" },
+  { type: "agent_retry", lifecycle: true, runEvent: true, persist: true, note: "模型重试" },
   { type: "agent_retry_end", lifecycle: true, persist: true, note: "模型重试结束" },
   { type: "agent_model_fallback", lifecycle: true, persist: true, note: "通道切换到备用模型" },
   { type: "agent_model_fallback_failed", lifecycle: true, persist: true, note: "通道切换失败" },
@@ -123,9 +126,9 @@ const REGISTRY = [
   { type: "steer", lifecycle: true, persist: true, note: "运行中插话/系统提醒" },
 
   // ---- 运行预算（E02）----
-  { type: "run_budget_notice", lifecycle: true, persist: true, note: "运行预算软提醒（回合/工具接近软预算）" },
-  { type: "run_budget_blocked", lifecycle: true, persist: true, note: "运行预算硬阻断（硬预算/重复无进展/连续失败）" },
-  { type: "tool_gate_denied", lifecycle: true, persist: true, note: "工具被把关扩展单点拒绝（U2，扩展 tool_call 拦截，Run 继续执行）" },
+  { type: "run_budget_notice", lifecycle: true, runEvent: true, persist: true, note: "运行预算软提醒（回合/工具接近软预算）" },
+  { type: "run_budget_blocked", lifecycle: true, runEvent: true, persist: true, note: "运行预算硬阻断（硬预算/重复无进展/连续失败）" },
+  { type: "tool_gate_denied", lifecycle: true, runEvent: true, persist: true, note: "工具被把关扩展单点拒绝（U2，扩展 tool_call 拦截，Run 继续执行）" },
 
   // ---- 后台任务（2026-11-04）----
   // 工具超过阈值仍未完成时转入后台；模型继续其他步骤，完成/失败/取消各有事件。
@@ -139,10 +142,10 @@ const REGISTRY = [
   { type: "compaction_failed", lifecycle: true, persist: true, note: "上下文压缩失败（U6，含原因与是否中止，不再静默）" },
 
   // ---- 上下文与错误 ----
-  { type: "context_compacting", lifecycle: true, persist: true, note: "开始压缩上下文" },
-  { type: "context_compacted", lifecycle: true, persist: true, note: "压缩完成" },
+  { type: "context_compacting", lifecycle: true, runEvent: true, persist: true, note: "开始压缩上下文" },
+  { type: "context_compacted", lifecycle: true, runEvent: true, persist: true, note: "压缩完成" },
   { type: "context_compact_warning", lifecycle: true, persist: true, note: "压缩告警" },
-  { type: "agent_error", lifecycle: true, persist: true, note: "模型/Agent 错误" },
+  { type: "agent_error", lifecycle: true, runEvent: true, persist: true, note: "模型/Agent 错误" },
   { type: "runtime_error", lifecycle: true, persist: true, note: "运行环境错误" },
   { type: "runtime_health", lifecycle: true, persist: true, note: "运行健康快照" },
   { type: "officecli_failed", lifecycle: true, persist: true, note: "Office CLI 失败" },
@@ -154,12 +157,12 @@ const REGISTRY = [
   // ---- 完成语义与总结 ----
   { type: "task_completed", lifecycle: true, persist: true, legacy: true, note: "历史事件：显式完成声明（显式完成声明已停用，仅历史会话回放使用）" },
   { type: "agent_summary", lifecycle: true, persist: true, note: "本轮总结" },
-  { type: "assistant_final", lifecycle: true, persist: true, note: "最终回答文本" },
+  { type: "assistant_final", lifecycle: true, runEvent: true, persist: true, note: "最终回答文本" },
   { type: "final_text_missing", lifecycle: true, persist: true, note: "模型只输出思考/没有正文终稿（recovering=true 表示正在补一次正文）", schema: { required: ["reason"], types: { reason: "string", recovering: "boolean", runId: "string" } } },
-  { type: "agent_end", lifecycle: true, persist: true, note: "Agent 收尾" },
+  { type: "agent_end", lifecycle: true, runEvent: true, persist: true, note: "Agent 收尾" },
   { type: "todo_updated", lifecycle: true, persist: true, note: "待办更新" },
   { type: "step_updated", lifecycle: true, persist: true, note: "步骤状态更新" },
-  { type: "stats", lifecycle: true, persist: false, note: "用量统计（每回合一次，不落盘）" },
+  { type: "stats", lifecycle: true, runEvent: true, persist: false, note: "用量统计（每回合一次，不落盘）" },
 
   // ---- Review 证据链 ----
   { type: "map_action", lifecycle: true, persist: false, note: "地图分析/样式动作（前端实时更新，不落盘）" },
@@ -240,6 +243,7 @@ const byType = new Map();
 for (const item of REGISTRY) {
   if (byType.has(item.type)) throw new Error(`事件注册表存在重复类型：${item.type}`);
   if (item.persist && !item.lifecycle) throw new Error(`事件 ${item.type} 标记了 persist 但未标记 lifecycle（约定：能落盘的就值得保护）`);
+  if (item.runEvent && !item.lifecycle) throw new Error(`事件 ${item.type} 标记了 runEvent 但未标记 lifecycle（Run 记录同样需要抗淘汰）`);
   byType.set(item.type, Object.freeze({ ...item }));
 }
 
@@ -248,6 +252,8 @@ export const EVENT_REGISTRY = Object.freeze([...byType.values()]);
 export const EVENT_TYPES = Object.freeze([...byType.keys()]);
 /** 生命周期事件：通道历史中不被增量挤出 */
 export const LIFECYCLE_EVENT_TYPES = new Set(EVENT_REGISTRY.filter((item) => item.lifecycle).map((item) => item.type));
+/** 写入 Run 记录（run.events）的事件类型：agent.mjs 的 emit 落 Run 判定读此集合，不再维护内联白名单。 */
+export const RUN_RECORDED_TYPES = new Set(EVENT_REGISTRY.filter((item) => item.runEvent === true).map((item) => item.type));
 /** 高频增量：不落盘、可优先淘汰 */
 export const DELTA_EVENT_TYPES = new Set(EVENT_REGISTRY.filter((item) => !item.lifecycle && !item.persist).map((item) => item.type));
 /** 需要写入 .oaw/events 事件流的事件 */
@@ -298,6 +304,7 @@ export function registrySummary() {
     total: EVENT_REGISTRY.length,
     lifecycle: LIFECYCLE_EVENT_TYPES.size,
     persisted: PERSISTED_TYPES.size,
+    runRecorded: RUN_RECORDED_TYPES.size,
     delta: DELTA_EVENT_TYPES.size,
   };
 }

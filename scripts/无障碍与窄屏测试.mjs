@@ -349,6 +349,22 @@ console.log("\n▶ 最小点击目标与窄屏");
   assert.match(App, /window\.addEventListener\("resize", enforceNarrowLayout\)/, "窗口变化时应重新收口");
 });
 
+console.log("\n▶ 输入栏模式切换与侧栏收起偏好");
+
+检查("模式切换器位于输入栏而不是顶栏", () => {
+  assert.match(ChatPanel, /conversation-mode-switch composer-mode-switch/, "输入栏应有模式切换组");
+  assert.match(ChatPanel, /aria-label="对话工作模式"/);
+  assert.doesNotMatch(App, /className="conversation-mode-switch" role="group" aria-label="对话工作模式"/, "顶栏不应再保留第二份模式切换器");
+});
+
+检查("侧栏收起只在用户主动操作的宽屏状态下持久化", () => {
+  assert.match(App, /sidebarManualCollapsedRef/, "应记录主动收起偏好");
+  assert.match(App, /sidebarManualCollapsed: sidebarManualCollapsedRef\.current/, "保存时应写入主动收起标记");
+  assert.match(App, /saved\.sidebarManualCollapsed === true/, "恢复时应区分旧状态");
+  assert.match(App, /onCollapseSidebar=\{\(\) => \{ sidebarManualCollapsedRef\.current = true; setSidebarOpen\(false\); \}\}/);
+  assert.match(App, /else if \(!sidebarManualCollapsedRef\.current\) setSidebarOpen\(true\)/, "回到宽屏且未主动收起时应自动恢复侧栏");
+});
+
 console.log("\n▶ 启动稳定骨架与焦点归还");
 
 检查("未就绪区域显示稳定骨架而不是空结果", () => {

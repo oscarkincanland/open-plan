@@ -5048,7 +5048,7 @@ app.post("/api/agent/prompt", async (req, res) => {
       const cancelled = userAborted || getRun(run.id)?.status === "cancel_requested";
       const failureCompletion = resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations], runId: run.id });
       const failed = finishRun(run.id, { status: cancelled ? "cancelled" : "failed", sessionId: entry?.session?.sessionId || null, error: cancelled ? "用户请求取消" : e.message, summary: cancelled ? "任务已中断" : "Agent 执行失败", validations: [...validations, ...stagedValidations], completion: failureCompletion });
-      if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)), model: getRun(run.id)?.model || null, finalMessageId: getRun(run.id)?.finalMessageId || null });
+      if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: failed?.status || (cancelled ? "cancelled" : "failed"), error: failed?.error || null, verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)), model: getRun(run.id)?.model || null, finalMessageId: getRun(run.id)?.finalMessageId || null });
     }
     res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
     return;
@@ -5125,7 +5125,7 @@ async function executeContinuation({ key, entry, run, task, references, workflow
       references,
       status: finished?.status || status,
     });
-    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, reviewSources: entry.reviewSources || [], status: finished?.status || status, verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)), model: getRun(run.id)?.model || null, finalMessageId: getRun(run.id)?.finalMessageId || null });
+    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, reviewSources: entry.reviewSources || [], status: finished?.status || status, error: finished?.error || null, verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)), model: getRun(run.id)?.model || null, finalMessageId: getRun(run.id)?.finalMessageId || null });
     return finished;
   } catch (error) {
     const cancelled = getRun(run.id)?.status === "cancel_requested";
@@ -5282,11 +5282,18 @@ app.post("/api/agent/stream/close", (req, res) => {
   const body = req.body || {};
   const client = String(body.client || "");
   const thread = String(body.thread || "");
-  const victim = listServerStreams()
-    .filter((s) => s.path === "/api/agent/stream" && s.client === client && (s.thread || "") === thread)
+  const tab = String(body.tab || "");
+  // 2026-11-06（P1-3）：关闭请求必须带 tab，并跳过"刚刚建立"的流。
+  // 否则迟到/并发的 close 会把同标签页刚建立的新流误杀，形成"被踢→重连"抖动。
+  const candidates = listServerStreams()
+    .filter((s) => s.path === "/api/agent/stream" && s.client === client && (s.thread || "") === thread);
+  const scopedByTab = tab ? candidates.filter((s) => String(s.tab || "") === tab) : [];
+  const pool = scopedByTab.length ? scopedByTab : candidates;
+  const victim = pool
+    .filter((s) => Number(s.idleMs || 0) >= 800)
     .sort((a, b) => b.ageMs - a.ageMs)[0];
   if (victim) closeServerStreams({ id: victim.id });
-  res.json({ closed: victim ? 1 : 0 });
+  res.json({ closed: victim ? 1 : 0, deferred: victim ? 0 : pool.length });
 });
 
 // SSE stream per client
@@ -5405,6 +5412,29 @@ app.get("/api/agent/stream", async (req, res) => {
   // 5 秒粒度比默认 15 秒更适合浏览器切换会话后的半开连接检测；
   // 前端会把它当作传输层心跳，不会提前标记 Agent 已握手。
   heartbeat = setInterval(() => {
+    // P1-2（2026-11-06）：Runtime 换代后旧通道不再有新事件；主动告知并收流，
+    // 让客户端立刻重连到新通道，而不是"连接正常但永远无事件"。
+    try {
+      if (entry && !closed) {
+        const current = agentManager.peekRuntime?.(agentKey(client, thread));
+        if (current && current !== entry) {
+          write(`data: ${JSON.stringify({
+            type: "stream_resync",
+            at: new Date().toISOString(),
+            data: {
+              client,
+              thread,
+              reason: "generation_changed",
+              streamId: current?.channel?.streamId || "",
+              latest: Number(current?.channel?.seq || 0),
+            },
+          })}\n\n`);
+          cleanup();
+          try { res.end(); } catch {}
+          return;
+        }
+      }
+    } catch {}
     write(`event: heartbeat\ndata: ${JSON.stringify({ type: "heartbeat", at: new Date().toISOString() })}\n\n`);
     // P2-2：心跳间隔由开关提供，默认 5000 = 基线值（不设环境变量时行为完全不变）。
   }, RUNTIME_FLAGS.heartbeatChatMs);
@@ -5518,6 +5548,25 @@ try {
     }
   } else {
     replayHistory = entry.channel.history;
+  }
+  // 2026-11-06：切片回放必须说真话——否则客户端拿到"看似连续"的尾部，永远不会触发
+  // Run 对账（调查：切回/刷新后运行中会话冻结的服务端成因之一）。
+  if (lastId === 0 && replayHistory.length < entry.channel.history.length) {
+    const firstReplayId = replayHistory.length ? Number(replayHistory[0].id || 0) : latestId;
+    write(`data: ${JSON.stringify({
+      type: "stream_resync",
+      at: new Date().toISOString(),
+      data: {
+        client,
+        thread,
+        streamId: channelStreamId,
+        reason: "replay_window",
+        cursor: lastId,
+        earliest: firstReplayId,
+        latest: latestId,
+        skipped: entry.channel.history.length - replayHistory.length,
+      },
+    })}\n\n`);
   }
   for (const ev of replayHistory) if (ev.id > lastId) send(ev);
   write(`event: open\ndata: ${JSON.stringify({ historyId: entry.channel.seq, streamId: channelStreamId })}\n\n`);

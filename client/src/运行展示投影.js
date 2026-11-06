@@ -398,6 +398,15 @@ export function projectLegacyRunSummary(message = {}, events = [], options = {})
   return projectRunView(adaptLegacyRunSummary(message), Array.isArray(events) && events.length ? events : (message.events || []), options);
 }
 
+function readableRunError(error) {
+  const raw = String(error || "").trim();
+  if (!raw) return "";
+  const message = raw.match(/"message"\s*:\s*"([^"]+)"/)?.[1] || "";
+  const status = raw.match(/\b(?:4|5)\d\d\b/)?.[0] || "";
+  if (message) return [status, message].filter(Boolean).join(" ");
+  return raw.replace(/\s+/g, " ").slice(0, 240);
+}
+
 /**
  * 合并同一 Run 的实时摘要与终态事件。
  * agent_summary 通常先到，run_finished 随后补齐状态、结论和产物；
@@ -422,7 +431,12 @@ export function upsertRunSummaryMessage(messages = [], data = {}, {
         : status === "running" ? "执行中"
           : status === "completed" ? "完成"
             : "状态待同步";
-  const summaryText = String(data.summary || data.completion?.summary || previous?.text || `本轮任务${statusText}`).trim();
+  const rawSummary = String(data.summary || data.completion?.summary || previous?.text || `本轮任务${statusText}`).trim();
+  const errorText = String(data.error || previous?.error || "").trim();
+  const failureText = status === "failed" && errorText && (!rawSummary || rawSummary === "任务执行失败")
+    ? `任务执行失败：${readableRunError(errorText)}`
+    : "";
+  const summaryText = failureText || rawSummary;
   const incomingArtifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
   const artifacts = incomingArtifacts.length ? incomingArtifacts : null;
   const incomingProducts = Array.isArray(data.products) ? data.products : [];
@@ -449,7 +463,10 @@ export function upsertRunSummaryMessage(messages = [], data = {}, {
     eventCount: Number(data.eventCount || previous?.eventCount || 0),
     events: Array.isArray(data.events) ? data.events : (previous?.events || []),
     finalText: String(data.finalText || previous?.finalText || ""),
-    completion: data.completion || previous?.completion || null,
+    error: errorText,
+    completion: failureText
+      ? { ...(data.completion || previous?.completion || { status: "failed", source: "inferred" }), summary: failureText }
+      : (data.completion || previous?.completion || null),
     reviewSources: Array.isArray(data.reviewSources) ? data.reviewSources : (previous?.reviewSources || []),
     status: "done",
     summary: true,
@@ -604,18 +621,23 @@ export function mergeRunSummaries(messages = [], summaries = []) {
   const cards = (Array.isArray(summaries) ? summaries : [])
     .filter((card) => card?.role === "system" && card.summary)
     .sort((a, b) => timeOf(a?.startedAt || a?.createdAt) - timeOf(b?.startedAt || b?.createdAt));
+  const firstMessageMs = timeOf(list[0]?.createdAt) || 0;
   cards.forEach((card, cardIndex) => {
     // 收尾锚点：优先 finishedAt；运行中的卡用下一轮的 startedAt 作为「本轮到此为止」的上界。
     const end = timeOf(card?.finishedAt) || timeOf(cards[cardIndex + 1]?.startedAt);
+    // 当前窗口之前就已收尾的 Run：它的消息在更早分页里，不能塞进本页末尾。
+    // 早先 insertAt=0 被当成“没找到锚点”，又被改成 list.length，导致所有旧卡
+    // 连锁追加到当前消息流末尾——恢复会话后“失败卡堆在底部、每轮内容看不到”。
+    if (end && firstMessageMs && end < firstMessageMs) return;
     let insertAt = list.length;
     if (end) {
-      // 锚点 = 最后一条不晚于该时刻的消息之后；找不到锚点就追加到末尾。
-      insertAt = 0;
+      // 锚点 = 最后一条不晚于该时刻的消息之后；窗口内没有更早消息时放到最前。
+      let anchor = -1;
       for (let index = list.length - 1; index >= 0; index -= 1) {
         const time = timeOf(list[index]?.createdAt);
-        if (time && time <= end) { insertAt = index + 1; break; }
+        if (time && time <= end) { anchor = index; break; }
       }
-      if (!insertAt) insertAt = list.length;
+      insertAt = anchor >= 0 ? anchor + 1 : 0;
     }
     list.splice(insertAt, 0, card);
   });

@@ -98,8 +98,51 @@ function ArtifactFileChip({ path, label, artifact, onOpenFile }) {
   );
 }
 
+/** 递归取出 markdown 子节点里的纯文本（代码块复制用）。 */
+function extractText(node) {
+  if (node == null) return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join("");
+  if (node?.props?.children != null) return extractText(node.props.children);
+  return "";
+}
+
+/** 代码块容器：语言标签 + 复制按钮（DSH 的 sticky code banner 等价物，轻量版）。 */
+function MdCodeBlock({ lang, text, children }) {
+  const [copied, setCopied] = useState("");
+  const copy = async () => {
+    const value = String(text || "");
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied("已复制");
+    } catch {
+      setCopied("复制失败");
+    }
+    window.setTimeout(() => setCopied(""), 1600);
+  };
+  return (
+    <div className="md-code-wrap">
+      <div className="md-code-bar">
+        <span className="md-code-lang">{lang || "text"}</span>
+        <button type="button" className="md-code-copy" onClick={copy}>{copied || "复制"}</button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
 export default function MarkdownBody({ children, className = "", withToc = false, onTagClick, onWikilinkHover, onOpenFile, artifacts }) {
   const [heavyPlugins, setHeavyPlugins] = useState(null);
+  const [lightbox, setLightbox] = useState(null);
+
+  // 图片灯箱：Esc 关闭（点击遮罩也会关闭），避免大图只能靠放大页面看。
+  useEffect(() => {
+    if (!lightbox) return undefined;
+    const onKey = (event) => { if (event.key === "Escape") setLightbox(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightbox]);
 
   useEffect(() => {
     let cancelled = false;
@@ -160,9 +203,16 @@ export default function MarkdownBody({ children, className = "", withToc = false
               <table>{kids}</table>
             </div>
           ),
-          // 图片：最大宽度 + 圆角
+          // 图片：最大宽度 + 圆角；点击打开灯箱（Esc / 点遮罩关闭）
           img: ({ src, alt }) => (
-            <img src={src} alt={alt} loading="lazy" className="md-img" />
+            <button
+              type="button"
+              className="md-img-btn"
+              onClick={() => setLightbox({ src, alt: alt || "图片预览" })}
+              title="点击放大"
+            >
+              <img src={src} alt={alt} loading="lazy" className="md-img" />
+            </button>
           ),
           // 链接：[[目标]] 悬浮预览（知识库）；本轮产物 → 行内文件条；普通链接新窗口打开
           a: ({ href, children: kids }) => {
@@ -203,16 +253,28 @@ export default function MarkdownBody({ children, className = "", withToc = false
             }
             return <code {...props}>{kids}</code>;
           },
-          // 代码块：复制按钮
-          pre: ({ children: kids }) => (
-            <div className="md-code-wrap">
-              {kids}
-            </div>
-          ),
+          // 代码块：语言标签 + 复制（对 DSH 的代码条做轻量对齐）
+          pre: ({ children: kids }) => {
+            const codeEl = React.Children.toArray(kids)[0];
+            const className = String(codeEl?.props?.className || "");
+            const lang = /language-([\w-]+)/.exec(className)?.[1] || "";
+            return <MdCodeBlock lang={lang} text={extractText(codeEl?.props?.children)}>{kids}</MdCodeBlock>;
+          },
         }}
       >
         {processed}
       </ReactMarkdown>
+      {lightbox && (
+        <div className="md-lightbox" role="dialog" aria-modal="true" aria-label={lightbox.alt} onClick={() => setLightbox(null)}>
+          <button
+            type="button"
+            className="md-lightbox-close"
+            aria-label="关闭预览"
+            onClick={(event) => { event.stopPropagation(); setLightbox(null); }}
+          >关闭</button>
+          <img src={lightbox.src} alt={lightbox.alt} onClick={(event) => event.stopPropagation()} />
+        </div>
+      )}
     </div>
   );
 }

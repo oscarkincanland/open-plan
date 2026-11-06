@@ -24,6 +24,7 @@ import { RUNTIME_FLAGS, officeGateActiveFor } from "./运行开关.mjs";
 // Qoder P0-2：单帧体积护栏（纯函数；开关关闭时不参与任何逻辑）
 import { 工具输出分片, 工具输出帧上限 } from "./流连接.mjs";
 import { canonicalFromEnvelope } from "./事件规范化.mjs";
+import { RUN_RECORDED_TYPES } from "./事件注册表.mjs";
 import { isToolGateRejection } from "./pi-extensions/工作台把关.mjs";
 import { getBashSidecar } from "./内核侧车.mjs";
 import { AGENT_DIR, PROJECT_DIR, WORKSPACE_DIR, OFFICECLI, getWorkspace, normalizeWorkspace, isInside } from "./workspace.mjs";
@@ -61,17 +62,23 @@ const OFFICE_TOOL_RULE = "- ALWAYS operate on office documents through the `offi
 const TEAM_TOOL_RULE = "- **专家团队（Work/Review）**: 仅当任务确实需要多角色并行/交接（多章节写作、批量审阅、撰写—审阅—核验闭环）时，才用 `team_spawn` 创建 1–2 名具名队友（团队总人数最多 3，含 Lead）。简单问答、单文件修改、单步检索不要组队。团队工具是 `team_spawn`/`team_send`/`team_wait`/`team_list`/`team_task`；共享任务板用 `team_task create` 拆任务，队友用 `team_task claim/update` 推进。创建队友后必须 `team_wait` 等一次变化，不要轮询；不要嵌套团队，队友不能再创建队友。写文件仍按角色与既有审批，`writeScopes` 只是告警，不是授权。";
 
 /**
- * 输出策略（A03）：Chat / Work / Review 共用同一套收尾口径，避免系统提示各要求一套收尾。
+ * 输出策略（A03，2026-11-06 修订）：Chat / Work / Review 共用同一套结论口径。
  *   - 进度：始终短句、不复述工具、不用模板标签；
- *   - 最终答复：纯问答/审阅用 1-3 句短结论；产生成果（文件/报告/数据/改动）时用简洁 Markdown 讲清成果。
+ *   - 最终答复：所有模式统一「推荐骨架」——首段结论，再按内容取舍
+ *     （结论 / 关键结果 / 产物 / 验证 / 风险与未完成）；不强制逐节套用，但一旦用了某节标题就不得为空。
+ *   用户 2026-11-06 决定：Chat 与其他模式结论保持一致（此前 Chat 只允许 1-3 句）。
  * 返回可直接铺进系统提示的词条数组。
  */
-export function buildOutputPolicyLines({ mode = "work" } = {}) {
-  const normalized = String(mode || "work").toLowerCase();
-  const chatLike = normalized === "chat" || normalized === "review";
-  const finalLine = chatLike
-    ? "- **最终答复（重要）**: 完成任务后先直接说结论，用 1-3 句自然语言即可；不要输出固定的 Markdown 分段模板，也不要复述工具调用流水。只有用户明确要求详细展开时，才给出完整内容。"
-    : "- **最终答复（重要）**: 完成任务后先直接说结论。纯问答、闲聊或只读咨询用 1-3 句自然语言即可；**当本轮产生了文件、报告、数据、代码改动等成果时，用简洁但完整的 Markdown 把成果讲清楚**：可用小标题 + 要点列表，覆盖「做了什么 / 关键结果或发现 / 产物路径 / 如何验证 / 未完成项或风险」。不要把工具调用流水逐条复述，也不要用“读取来源 / 修改文件 / 产物 / 假设 / 下一步”这类固定模板标签，但成果本身要让用户不看任务详情也能明白。";
+export function buildOutputPolicyLines() {
+  const finalLine = [
+    "- **最终答复（重要）**: 完成任务后先用 1-3 行给出结论，再用**推荐骨架**展开（按内容取舍，不强制逐节套用；一旦使用某节标题，该节不得为空，也不得只有标题没有内容）：",
+    "  1. `## 结论`：判断或结果，首段 1-3 行；",
+    "  2. `## 关键结果`：并列结论用有序列表（1./2./3.），每条一行结论 + 关键数据支撑；三项以上对比用表格；",
+    "  3. `## 产物`：产物路径与用途（表格或列表）；",
+    "  4. `## 验证`：怎么验证的、验证结果（关键数字或检查项）；",
+    "  5. `## 风险与未完成`：没有就写「无」，有就列 1-2 条并给下一步。",
+    "  **纪律**：加粗只做行内强调，不得当小节标题；不要复述工具调用流水；不得把「进度小结 / 本轮无剩余动作 / 接下来我将」等过程口吻写进终稿；终稿语言与用户一致，不得混入英文内部推理。",
+  ].join("\n");
   return [
     "- **进度结论（重要）**: 长任务不要静默连续调用工具。每完成一个阶段（或收到系统进度提醒时），先用 1-3 句自然中文直接说明阶段结论、当前结果和下一步，再继续执行。第一句先说结论；不要输出 Markdown 标题、加粗、项目符号或“阶段总结/已完成/当前/下一步”模板标签，不要复述工具调用，也不要写“正在处理中”这类空话。",
     finalLine,
@@ -4900,7 +4907,9 @@ execute: async (_toolCallId, params, signal) => {
       }
       pushChannelEvent(channel, ev);
       channel.emitter.emit("event", ev);
-      if (scopedRunId && ["agent_started", "turn_started", "turn_ended", "message_start", "message_end", "tool_start", "tool_end", "tool_repeat_warning", "run_budget_notice", "run_budget_blocked", "tool_gate_denied", "context_compacting", "context_compacted", "ask_user", "agent_error", "agent_retry", "assistant_final", "agent_end", "stats"].includes(type)) {
+      // 落 Run 记录的事件类型由 server/事件注册表.mjs 的 runEvent 字段决定（单一事实源）；
+      // 此前这里是 19 个类型的内联白名单，新增事件容易只登记一处而漏记。
+      if (scopedRunId && RUN_RECORDED_TYPES.has(type)) {
         try { recordRunEvent(scopedRunId, type, data || {}); } catch {}
       }
     };
@@ -5430,6 +5439,12 @@ execute: async (_toolCallId, params, signal) => {
     const health = this.runtimeHealth(clientId);
     const staleError = ["PI_SETTLED_ERROR", "MODEL_TIMEOUT", "PI_RUNTIME_FAILED"].includes(String(health?.error?.code || ""));
     if (health?.status !== "failed" && health?.health?.status !== "failed" && !staleError) return existing;
+    // 2026-11-06：忙时禁止重建。restartRuntime 在 busy 时会抛错（见 restartRuntime），
+    // 异常冒泡到 SSE 路由会被写成 agent_error 并立即 end 连接，形成"重连→再失败"的循环。
+    // 此时保留现有 entry（degraded），让实时流继续挂在该通道上；等任务结束再按需恢复。
+    if (existing.busy || existing.compacting || existing.queuedCount > 0 || (existing.chainDepth || 0) > 0) {
+      return existing;
+    }
     const inFlight = this.recoveryPromises.get(clientId);
     if (inFlight) return inFlight;
     const recovery = (async () => {
@@ -5439,6 +5454,8 @@ execute: async (_toolCallId, params, signal) => {
       const currentHealth = this.runtimeHealth(clientId);
       const currentStale = ["PI_SETTLED_ERROR", "MODEL_TIMEOUT", "PI_RUNTIME_FAILED"].includes(String(currentHealth?.error?.code || ""));
       if (currentHealth?.status !== "failed" && currentHealth?.health?.status !== "failed" && !currentStale) return current;
+      // 单飞锁等待期间任务可能已开始：同样不得重建（会把正在跑的通道换掉）。
+      if (current.busy || current.compacting || current.queuedCount > 0 || (current.chainDepth || 0) > 0) return current;
       const failedModel = current.session?.model?.provider && current.session?.model?.id
         ? `${current.session.model.provider}/${current.session.model.id}`
         : "";
@@ -6552,6 +6569,11 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
 
   runtimeHealth(clientId) {
     return this.runtimeSnapshot(clientId) || { status: "missing", health: { status: "unknown", message: "Runtime 尚未创建" } };
+  }
+
+  /** 只读查看当前运行时（不创建、不恢复）。SSE 用它检测通道换代（P1-2）。 */
+  peekRuntime(clientId) {
+    return this.sessions.get(clientId) || null;
   }
 
   /**

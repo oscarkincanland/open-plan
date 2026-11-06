@@ -128,5 +128,12 @@ test("ChatPanel：running/streaming 摘要卡渲染 LiveRunSummaryBar，而不�
   assert.match(seg, /if \(m\.runStatus === "running" \|\| m\.status === "streaming"\) \{\s*\n\s*return <LiveRunSummaryBar m=\{m\} \/>;/, "Message 应对运行中卡分流到 LiveRunSummaryBar");
 });
 
+test("重试/回退不堆空气泡：复用上一条空助手气泡，终态清理", () => {
+  const chat = 读取("client", "src", "components", "ChatPanel.jsx");
+  assert.match(chat, /function assistantMessageHasContent\(message\)/, "缺少助手气泡内容判定");
+  assert.match(chat, /!assistantMessageHasContent\(last\)[\s\S]{0,60}\(last\.status === "error" \|\| last\.status === "streaming"\)/, "重试时应优先复用上一条空气泡");
+  assert.match(chat, /setMessages\(\(ms\) => ms\.filter\(\(m\) => m\.role !== "assistant" \|\| assistantMessageHasContent\(m\)\)\)/, "终态应清理没有内容的助手空气泡");
+});
+
 console.log(failed ? "\n✗ 会话窗口与运行卡回归测试存在失败" : "\n✓ 会话窗口与运行卡回归测试全部通过");
 process.exit(failed ? 1 : 0);

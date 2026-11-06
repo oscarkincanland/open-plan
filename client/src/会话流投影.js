@@ -168,7 +168,7 @@ export function buildRunTimeline({ blocks = [], trace = null } = {}) {
       }
       case "text":
         // 模型正文中间态是进度，不是成果；只有 assistant_final 才进入“结论”区。
-        items.push({ kind: "text", id, cap: "进度", text: String(block.text || "") });
+        items.push({ kind: "text", id, cap: "阶段小结", text: String(block.text || "") });
         break;
       case "tool": {
         // 轨迹里同名/同 id 的工具结果合并回块：历史恢复时块可能没拿到结果。
@@ -247,6 +247,73 @@ export function summarizeTimeline(items = []) {
 }
 
 /**
+ * 过程按 turn 分组（PRD R3 / DESIGN §6.1「过程展开内容按 turn 分组」，决策 B1）。
+ *
+ * 为什么在归约层做：时间流条目来自消息块（只有顺序，没有轮次），轮次只有事件流知道
+ * （`turn_started` 自增、`tool_start` 带 toolCallId）。这里用 toolCallId 把工具行
+ * 归到轮次，其余条目按"同一轮的过程出现在本轮工具之前"的顺序假设向前/向后归并，
+ * 纯函数、可单测，不引入新的状态。
+ *
+ * @param {Array} items buildRunTimeline 的产物
+ * @param {Array} events 本轮事件（含 turn_started / tool_start）
+ * @returns {Array} 每个条目带 `turn`，并在轮次变化处插入 `kind:"turn-divider"`；
+ *                  无轮次信息（单轮 / 旧服务端）时原样返回，不插入分隔行。
+ */
+export function assignTimelineTurns(items = [], events = []) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return list;
+  const turnByTool = new Map();
+  let turn = 0;
+  let sawTurnStarted = false;
+  for (const event of Array.isArray(events) ? events : []) {
+    const type = String(event?.type || "");
+    if (type === "turn_started") {
+      turn += 1;
+      sawTurnStarted = true;
+      continue;
+    }
+    if (type === "tool_start") {
+      const id = String(event?.data?.toolCallId || "");
+      if (id) turnByTool.set(id, Math.max(1, turn));
+    }
+  }
+  // 单轮或无轮次信息：不分组（保持既有「一条直铺时间流」的形态）。
+  if (!sawTurnStarted || turn < 2 || !turnByTool.size) return list;
+
+  const assigned = list.map((item) => {
+    if (item?.kind !== "tool") return { item, turn: null };
+    const id = String(item.block?.toolCallId || item.block?.id || "");
+    const turnIndex = id ? turnByTool.get(id) : null;
+    return { item, turn: Number.isFinite(turnIndex) ? turnIndex : null };
+  });
+
+  // 向后找：思考 / 文本 / 子代理通常出现在本轮工具调用之前，归到下一个已知轮次。
+  for (let i = assigned.length - 1; i >= 0; i -= 1) {
+    if (assigned[i].turn) continue;
+    for (let j = i + 1; j < assigned.length; j += 1) {
+      if (assigned[j].turn) { assigned[i].turn = assigned[j].turn; break; }
+    }
+  }
+  // 仍未归属（落在最后一个已知工具之后）：沿用前一个轮次。
+  let lastTurn = null;
+  for (const entry of assigned) {
+    if (entry.turn) lastTurn = entry.turn;
+    else if (lastTurn) entry.turn = lastTurn;
+  }
+
+  const out = [];
+  let currentTurn = null;
+  for (const entry of assigned) {
+    if (entry.turn && entry.turn !== currentTurn) {
+      currentTurn = entry.turn;
+      out.push({ kind: "turn-divider", id: `turn-divider-${entry.turn}`, turn: entry.turn });
+    }
+    out.push(entry.item);
+  }
+  return out;
+}
+
+/**
  * 折叠头呈述（会话流前端规范 §2.1 + ADR 0014）：把一轮 Run 的终态映射成状态点与一句文案。
  * 只做纯映射，不读时间、无副作用，Node 可直接单测。步数不进 label ——
  * 它由 RunFoldBar 单独渲染（字号与颜色比用时更弱）。
@@ -293,8 +360,18 @@ export function splitCompletionSummary(summary = "", finalText = "") {
     detail = detail.replace(pattern, "").trim();
   };
   if (conclusionSection) {
-    conclusion = firstParagraph(bodyOf(conclusionSection)) || bodyOf(conclusionSection).slice(0, 200);
-    removeSection(conclusionSection);
+    // 只把「结论」节的首段提到结论位；其余段落必须留在详细内容里。
+    // 此前是 firstParagraph + 整节 removeSection，会让多段结论的第 2 段起从页面消失。
+    const body = bodyOf(conclusionSection);
+    const paragraphs = body.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
+    conclusion = paragraphs[0] || body.slice(0, 200);
+    if (paragraphs.length <= 1) {
+      // 单段结论：整节移除，避免「## 结论 + 同一段」重复展示。
+      removeSection(conclusionSection);
+    } else {
+      // 多段结论：只移除首段文本，节标题与后续段落保留在详细内容中。
+      detail = detail.replace(conclusion, "").replace(/\n{3,}/g, "\n\n").trim();
+    }
   } else if (!titled.length) {
     const paragraphs = source.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
     conclusion = paragraphs[0] || source.slice(0, 200);

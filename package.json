@@ -43,6 +43,7 @@
     "test:pi-config-api": "node scripts/Pi配置接口测试.mjs",
     "test:closure": "node scripts/遗留十项测试.mjs",
     "test:chat-flow": "node scripts/对话流性能回归测试.mjs",
+    "test:stream-recovery": "node scripts/流恢复冻结回归测试.mjs",
     "test:ava-trust": "node scripts/AVA对话状态可信测试.mjs",
     "test:ava-queue": "node scripts/AVA对话队列测试.mjs",
     "test:ava-draft": "node scripts/AVA草稿持久化测试.mjs",
@@ -204,6 +205,7 @@
     "test:review-fixes": "node scripts/Review报错修复回归测试.mjs",
     "test:exec-handle": "node scripts/执行句柄契约测试.mjs",
     "test:tool-metadata": "node scripts/工具元数据契约测试.mjs",
+    "test:tool-presentation": "node scripts/工具展示映射测试.mjs",
     "test:permission-audit": "node scripts/权限决策审计测试.mjs",
     "test:tool-artifact": "node scripts/工具结果外置测试.mjs",
     "test:usage-ledger": "node scripts/用量归集测试.mjs",
@@ -235,6 +237,7 @@
     "test:image-paste": "node scripts/图片粘贴测试.mjs",
     "test:code-preview": "node scripts/源码预览测试.mjs",
     "test:chat-layout": "node scripts/会话流排版回归测试.mjs",
+    "test:md-preview": "node scripts/Markdown预览增强测试.mjs",
     "test:chat-text-split": "node scripts/会话流文本分块回归测试.mjs"
   },
   "dependencies": {

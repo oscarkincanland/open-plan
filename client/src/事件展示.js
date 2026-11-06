@@ -8,6 +8,7 @@
  * 约定：新增事件先在 EVENT_UI 登记（未登记的类型按兜底文案渲染），
  * 阶段推进由 phaseForEvent 驱动，ExecutionFlow 按阶段变化插入分组标题。
  */
+import { toolPresentationOf } from "./工具展示.js";
 
 /** 任务阶段：与 运行轨迹.js 的 trace.phase 保持一致 */
 export const PHASE_LABELS = Object.freeze({
@@ -362,11 +363,14 @@ const TOOL_IDENTITY_RULES = [
   [/^(complete_task)$/i, "check"],
 ];
 
-/** 工具名 → { icon, category }；category 仅用于说明与测试，渲染用 icon。 */
+/** 工具名 → { icon, category }；icon 优先取服务端工具元数据的 presentation，
+ *  未下发时回落到本文件的规则表（离线/旧服务端/历史会话）。category 仅用于说明与测试。 */
 export function toolIdentity(name) {
   const value = String(name || "").trim();
   if (!value) return { icon: "tool", category: "generic" };
   if (value === "__thinking__") return { icon: "brain", category: "thinking" };
+  const serverPresentation = toolPresentationOf(value);
+  if (serverPresentation?.icon) return { icon: serverPresentation.icon, category: "server" };
   for (const [pattern, icon] of TOOL_IDENTITY_RULES) {
     if (pattern.test(value)) return { icon, category: icon };
   }

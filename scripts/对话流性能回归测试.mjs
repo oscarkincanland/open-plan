@@ -101,7 +101,9 @@ try {
   assert.match(stylesSource, /\.message-process-scroll \.thinking-text \{ max-height: none; overflow: visible; \}/, "思考内容不得在过程滚动区内产生第二个滚动条");
   assert.match(chatPanelSource, /appendAssistantMessageBoundary/, "流式 assistant 消息边界应支持准确分离进度与终稿");
   assert.match(runProjectionSource, /export function associateRunMessages\(/, "历史对话需按真实用户消息边界关联到对应 Run");
-  assert.match(stylesSource, /\.message-process-scroll \{[^}]*max-height: 300px; overflow: auto/s, "过程面板应限制高度并在内部滚动");
+  // 2026-11-06：规则扩展为 display:grid + 双向 overflow 分离（纵向 auto / 横向 hidden），
+  // 语义未变（限高 + 内部滚动），断言随之放宽到「属性存在」而非固定顺序的全串。
+  assert.match(stylesSource, /\.message-process-scroll \{[^}]*max-height: 300px;[^}]*overflow-y: auto/s, "过程面板应限制高度并在内部滚动");
   assert.match(stylesSource, /\.message-process-scroll \.execution-flow-list-embedded \{ max-height: none; overflow: visible; padding: 0; border: 0; background: transparent; \}/, "SSE 事件列表应压平到外层滚动区，不再单独套框");
   assert.match(stylesSource, /\.execution-flow-embedded \{ min-width: 0; padding: 0; border: 0; background: transparent; \}/, "嵌入式事件轨迹不应额外增加分隔框");
   assert.match(stylesSource, /\.embedded-run-summary \{ display: block; min-width: 0; margin: 0; border: 0; background: transparent; \}/, "结构化总结也不应在过程流里再套第二层卡片");
@@ -138,7 +140,9 @@ try {
   assert.match(chatPanelSource, /const agentPhaseRef = useRef\(""\)/, "重复 token 不应反复触发相同的 React 状态更新");
   assert.match(chatPanelSource, /elapsedMs < 32/, "流式正文应合帧更新，避免每个 token 都触发 Markdown 渲染");
   assert.match(chatPanelSource, /const queueToolOutput = useCallback/);
-  assert.match(chatPanelSource, /case "tool_output":[\s\S]{0,220}queueToolOutput\(aid, data\)/, "工具输出增量应先合并，再批量更新消息");
+  // 2026-11-06：输出要回到「拥有该工具卡的那条消息」（hydrate 后实时尾部可能属于历史块），
+  // 因此分支内先用 findToolBlockOwner 定位，再 queueToolOutput(owner.messageId) 合并。
+  assert.match(chatPanelSource, /case "tool_output":[\s\S]{0,600}findToolBlockOwner\(data\.toolCallId\)[\s\S]{0,200}queueToolOutput\(owner\.messageId, data\)/, "工具输出增量应先归属工具卡所在消息，再合并批量更新");
   assert.match(agentSource, /entry\.busy \|\| entry\.compacting \|\| entry\.queuedCount > 0/, "压缩期间新消息必须被视为排队");
   assert.match(agentSource, /this\.resumePromises = new Map\(\)/, "重复恢复同一会话必须复用同一个 Runtime 创建 Promise");
   assert.match(agentSource, /this\.recoveryPromises = new Map\(\)/, "失效 Runtime 恢复必须按会话单飞，不能重复重启");
@@ -206,7 +210,8 @@ try {
   assert.match(chatPanelSource, /isLiveFold \? "is-live" : ""/, "运行中过程区应维持有界滚动容器");
   assert.doesNotMatch(chatPanelSource, /setEmbeddedExpanded\(Boolean\(running\)\)/, "事件列表不应随运行自动展开（默认折叠）");
   const livePlainStyles = fs.readFileSync(new URL("../client/src/styles.css", import.meta.url), "utf8").replace(/\r\n/g, "\n");
-  assert.match(livePlainStyles, /\.message-process-fold\.is-live \.message-process-scroll \{ max-height: 300px; overflow: auto; overscroll-behavior: contain; \}/, "运行中的过程使用单个有界滚动容器");
+  // 2026-11-06：双向 overflow 分离（纵向 auto / 横向 hidden），语义仍是「单个有界滚动容器」。
+  assert.match(livePlainStyles, /\.message-process-fold\.is-live \.message-process-scroll \{ max-height: 300px; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; \}/, "运行中的过程使用单个有界滚动容器");
   assert.match(livePlainStyles, /\.markdown-body p:has\(> br:only-child\) \{ display: none; \}/, "仅含换行的段落不应占位");
   assert.match(livePlainStyles, /\.result-tabbed/, "结果区页签应有独立视觉分节");
   assert.match(livePlainStyles, /\.product-card-main/, "产物卡片应有可点击主体样式");

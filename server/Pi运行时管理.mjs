@@ -473,6 +473,15 @@ export class PiRuntimeManager {
     const timer = setTimeout(() => controller.abort(), limit);
     const startedAt = Date.now();
     const sessionId = `probe-${crypto.randomUUID()}`;
+    // OpenCode 网关（内置 opencode/opencode-go，以及“套餐”接入的 PLAN_OPENCODE_*）
+    // 都要求 x-opencode-session；只按 provider id 判断会漏掉套餐 provider，
+    // 让连接测试误报 MissingSessionID。baseUrl 命中 opencode.ai 时同样按网关处理。
+    const isOpencodeGateway = (() => {
+      const provider = String(model?.provider || "");
+      if (provider === "opencode" || provider === "opencode-go") return true;
+      if (/^PLAN_OPENCODE/i.test(provider)) return true;
+      try { return new URL(model?.baseUrl).hostname === "opencode.ai"; } catch { return false; }
+    })();
     try {
       const response = await runtime.completeSimple(model, {
         messages: [{ role: "user", content: "Reply with OK only.", timestamp: Date.now() }],
@@ -489,7 +498,7 @@ export class PiRuntimeManager {
         // OpenCode Go 要求 x-opencode-session；Pi Agent 本身会自动传递
         // SessionManager 的 ID，这个独立探测也必须保持同一请求语义。
         sessionId,
-        ...(model?.provider === "opencode" || model?.provider === "opencode-go"
+        ...(isOpencodeGateway
           ? { headers: { "x-opencode-session": sessionId, "x-opencode-client": "pi" } }
           : {}),
       });

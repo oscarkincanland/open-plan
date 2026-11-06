@@ -25,6 +25,29 @@ import { appendJournal } from "./工作流日志.mjs";
 
 const PROJECT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const RUNS_DIR = process.env.OAW_RUNS_DIR || path.join(PROJECT_DIR, ".oaw", "runs");
+// Run 事件流上限：单个 Run 的事件记录超过上限时静默丢弃会让回放"少事件但无提示"，
+// 因此超限一律走 pushRunEvent 留痕（eventsTruncated / eventsDropped）。
+// 生命周期关键事件（run_finished / artifacts_validated / step_updated / todo_updated 等）
+// 仍按原逻辑直接 push，保证终态与验收事实不被丢弃。
+const RUN_EVENT_LIMIT = 800;
+
+/** 追加一条 Run 事件；超过上限时滚出最早的事件并留痕，避免回放静默缺事件。 */
+function pushRunEvent(run, event) {
+  if (!Array.isArray(run.events)) run.events = [];
+  if (run.events.length < RUN_EVENT_LIMIT) {
+    run.events.push(event);
+    return true;
+  }
+  // 2026-11-06：超限后保留「最近」而不是「最早」的事件。
+  // 旧实现直接丢弃新事件，导致长 Run 的 Run 记录永远停在早期（实测：运行中
+  // 70+ 次工具的一轮，记录里最后一条事件还停在 50 分钟前），刷新后的对账/
+  // 恢复拿不到"当前在做什么"，界面看起来卡死。
+  run.events.shift();
+  run.events.push(event);
+  run.eventsTruncated = true;
+  run.eventsDropped = Number(run.eventsDropped || 0) + 1;
+  return true;
+}
 // 工作区快照上限：工作区可能很大（本项目实测 11GB / 7.5 万文件）。快照用于回滚与
 // 变更检测，但绝不能因为"只看了前 1200 个文件"就报告"没有变更"。触顶时标记 truncated，
 // 并由运行窗口内的 mtime 扫描补齐产物检测（见 detectRecentWorkspaceFiles）。
@@ -942,7 +965,7 @@ export function recordRunFinalText(id, text, { source = "agent", messageId = nul
   run.eventSeq = seq;
   const data = { text: value, source, messageId: stableMessageId, version: 1, at: new Date().toISOString() };
   const event = { seq, type: "assistant_final", data, at: data.at };
-  if (run.events.length < 800) run.events.push(event);
+  pushRunEvent(run, event);
   run.finalText = value;
   run.finalMessageId = stableMessageId;
   run.finalTextVersion = 1;
@@ -996,7 +1019,7 @@ export function recordRunEvent(id, type, data = {}) {
   }
   const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
   run.eventSeq = seq;
-  if (run.events.length < 800) run.events.push({ seq, type, data, at: new Date().toISOString() });
+  pushRunEvent(run, { seq, type, data, at: new Date().toISOString() });
   // P2：事件写盘合并到 200ms；getRun/listRuns 读合并队列里的最新对象，
   // beginRun/finishRun/step/todo/终稿等生命周期仍走 saveRun 立即落盘。
   installRunSaveExitHook();
@@ -1457,7 +1480,26 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
     }
     const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
     run.eventSeq = seq;
-    const finishedData = { status: finalStatus, artifacts: artifacts.length, verificationStatus: run.verificationStatus, completion: run.completion || null, finalText: run.finalText || null, finalMessageId: run.finalMessageId || null, snapshotTruncated: Boolean(run.snapshotTruncated) };
+    // run_finished 的 artifacts 与 SSE / 客户端投影同形状（数组），此前写的是数量，
+    // 与事件注册表 schema（array）以及前端 run 总结卡（读 .path）不一致。
+    const finishedData = {
+      status: finalStatus,
+      artifacts: artifacts.slice(0, 50).map((item) => ({
+        artifactId: item?.artifactId || null,
+        path: String(item?.path || "").replace(/\\/g, "/"),
+        type: item?.type || null,
+        status: item?.status || null,
+        deliverable: item?.deliverable === true,
+        size: Number.isFinite(item?.size) ? item.size : null,
+      })),
+      artifactCount: artifacts.length,
+      verificationStatus: run.verificationStatus,
+      completion: run.completion || null,
+      finalText: run.finalText || null,
+      finalMessageId: run.finalMessageId || null,
+      snapshotTruncated: Boolean(run.snapshotTruncated),
+      eventsTruncated: Boolean(run.eventsTruncated),
+    };
     run.events.push({ seq, type: "run_finished", data: finishedData, at: run.finishedAt });
     const saved = saveRun(run);
     appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_finished", data: finishedData });
@@ -1802,6 +1844,8 @@ export function runSummaryView(view) {
     mode: view.mode || "",
     task: view.task ? { goal: view.task.goal || "", title: view.task.title || "" } : null,
     summary: view.summary || "",
+    // 失败卡需要真实错误（401/400/模型不兼容），不能只显示泛化的“任务执行失败”。
+    error: view.error || "",
     finalText: view.finalText || "",
     summarySource: view.completion?.summary ? "completion" : view.summary ? "run" : view.finalText ? "final" : "none",
     completion: view.completion || null,

@@ -2,6 +2,7 @@ import React, { lazy, Suspense, useState, useCallback, useEffect, useRef } from 
 import SessionSidebar from "./components/SessionSidebar.jsx";
 import ChatPanel, { normalizeHistoryMessages } from "./components/ChatPanel.jsx";
 import { mergeRunSummaries } from "./运行展示投影.js";
+import { applyToolMetadata } from "./工具展示.js";
 import Resizer from "./components/Resizer.jsx";
 const SkillsManager = lazy(() => import("./components/SkillsManager.jsx"));
 const AgentMarket = lazy(() => import("./components/AgentMarket.jsx"));
@@ -292,15 +293,33 @@ function buildHistoryMessages(entries = []) {
  * @param {Array} runs listRuns 返回的 Run 列表
  * @returns {Array} 可直接交给 mergeRunSummaries 的摘要消息
  */
-function buildRunSummaryMessages(runs = []) {
-  return [...(runs || [])]
+function readableRunError(error) {
+  const raw = String(error || "").trim();
+  if (!raw) return "";
+  const message = raw.match(/"message"\s*:\s*"([^"]+)"/)?.[1] || "";
+  const status = raw.match(/\b(?:4|5)\d\d\b/)?.[0] || "";
+  if (message) return [status, message].filter(Boolean).join(" ");
+  return raw.replace(/\s+/g, " ").slice(0, 240);
+}
+
+/** 失败摘要只有泛化文案时，把 Run 的真实错误带到卡片上，避免用户只看到“任务执行失败”。 */
+function failedRunSummary(run = {}) {
+  if (run.status !== "failed") return "";
+  const current = String(run.summary || "").trim();
+  if (current && current !== "任务执行失败") return "";
+  const reason = readableRunError(run.error || run.completion?.error);
+  return reason ? `任务执行失败：${reason}` : "";
+}
+
+function buildRunSummaryMessages(runs = []) {  return [...(runs || [])]
     .filter((run) => run?.status)
     .filter((run, index, list) => list.findIndex((item) => item.id === run.id) === index)
     .sort((a, b) => String(a.startedAt || "").localeCompare(String(b.startedAt || "")))
     .map((run, index, list) => ({
       id: `run-summary-${run.id}`,
       role: "system",
-      text: run.summary || run.finalText || (run.status === "running" ? "本轮任务仍在执行中" : `本轮任务${run.status === "failed" ? "失败" : run.status === "cancelled" ? "已取消" : "完成"}，处理 ${run.artifactCount ?? run.artifacts?.length ?? 0} 个文件`),
+      text: failedRunSummary(run) || run.summary || run.finalText || (run.status === "running" ? "本轮任务仍在执行中" : `本轮任务${run.status === "failed" ? "失败" : run.status === "cancelled" ? "已取消" : "完成"}，处理 ${run.artifactCount ?? run.artifacts?.length ?? 0} 个文件`),
+      error: run.error || run.completion?.error || "",
       products: (run.artifacts || []).map((a) => a.path).filter(Boolean),
       artifacts: run.artifacts || [],
       runId: run.id,
@@ -312,8 +331,13 @@ function buildRunSummaryMessages(runs = []) {
       runIndex: index + 1,
       runCount: list.length,
       runMode: run.task?.mode || "agent",
-      // 完成语义：显式 complete_task 或服务端推断结果
-      completion: run.completion || null,
+      // 完成语义：显式 complete_task 或服务端推断结果；失败时补真实错误，卡片不再只显示泛化文案。
+      completion: (() => {
+        const failure = failedRunSummary(run);
+        return failure
+          ? { ...(run.completion || { status: "failed", source: "inferred" }), summary: failure }
+          : (run.completion || null);
+      })(),
       finalText: run.finalText || "",
       summarySource: run.summarySource || "",
       durationMs: Number(run.durationMs) || 0,
@@ -333,6 +357,51 @@ function buildRunSummaryMessages(runs = []) {
       finishedAt: run.finishedAt || null,
       createdAt: run.finishedAt || run.startedAt || null,
     }));
+}
+
+/**
+ * 孤儿尾部补卡（2026-11-06）：取消/中断后仍会有 assistant 消息继续落盘，但它们晚于
+ * 最后一次 Run 的 finishedAt，没有任何 Run 记录可归属 → `associateRunMessages` 找不到
+ * 本轮，于是**每条消息各自退回一个「思考与工具过程」折叠头**（实测：取消后 6 条消息
+ * 各成一个折叠块，界面完全变形）。这里为「最后一张运行卡之后的 assistant」合成一张
+ * 「运行记录缺失（可能被中断）」卡，让这些消息归到同一轮，只渲染一个折叠头。
+ */
+function buildOrphanRunCards(messages = [], runCards = []) {
+  const timeOf = (value) => Date.parse(value || "") || 0;
+  const lastEnd = (Array.isArray(runCards) ? runCards : [])
+    .reduce((max, card) => Math.max(max, timeOf(card?.finishedAt || card?.startedAt)), 0);
+  const orphans = (Array.isArray(messages) ? messages : [])
+    .filter((message) => message?.role === "assistant" && (!lastEnd || timeOf(message.createdAt) > lastEnd));
+  if (!orphans.length) return [];
+  const first = orphans[0];
+  const last = orphans[orphans.length - 1];
+  const runId = `run-orphan-${String(first.id || last.id || "tail")}`;
+  return [{
+    id: `run-summary-${runId}`,
+    role: "system",
+    summary: true,
+    runId,
+    runStatus: "cancelled",
+    text: "本轮运行记录缺失（可能被中断），以下是过程与结论。",
+    status: "done",
+    runMode: "agent",
+    completion: null,
+    events: [],
+    artifacts: [],
+    references: [],
+    task: null,
+    startedAt: first.createdAt || null,
+    finishedAt: last.createdAt || null,
+    createdAt: last.createdAt || null,
+    durationMs: 0,
+    stepCount: orphans.length,
+    toolCount: 0,
+    artifactCount: 0,
+    eventCount: 0,
+    runIndex: (Array.isArray(runCards) ? runCards.length : 0) + 1,
+    runCount: (Array.isArray(runCards) ? runCards.length : 0) + 1,
+    synthetic: true,
+  }];
 }
 
 function sameWorkspacePath(a, b) {
@@ -383,7 +452,11 @@ export default function App() {
   const [tabs, setTabs] = useState([]); // [{ id, name, identity, kind, url?, sheets?, grids?, content? }]
   const [activeTab, setActiveTab] = useState(null); // 当前激活标签的 id（工作区 + 相对路径）
   const current = activeTab ? tabs.find((t) => (t.id || t.name) === activeTab) || null : null;
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // 侧栏“主动收起”偏好：只有用户在宽屏下主动收起才在刷新后保留。
+  // 旧版本把窄屏自动收起也写成 sidebarOpen:false，刷新后侧栏会一直消失；
+  // 缺 marker 的旧状态按展开处理，让已经“消失”的侧栏自动回来。
+  const sidebarManualCollapsedRef = useRef(loadUIState()?.sidebarManualCollapsed === true);
+  const [sidebarOpen, setSidebarOpen] = useState(() => !sidebarManualCollapsedRef.current);
   const [activeModule, setActiveModule] = useState(null); // 0.10 统一模块入口
   const [settingsModuleTab, setSettingsModuleTab] = useState("settings");
   const [settingsSection, setSettingsSection] = useState("model");
@@ -474,15 +547,30 @@ export default function App() {
     canvasTabsRef.current = canvasTabs;
   }, [canvasTabs]);
 
+  // 工具展示映射（verb / icon）：唯一事实源是服务端 工具元数据.presentation，
+  // 经 /api/harness/tools 下发。拉取失败静默，工具卡回落 ChatPanel 内置映射。
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/harness/tools")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && Array.isArray(data?.tools)) applyToolMetadata(data.tools);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   useEffect(() => {
     if (!browserOpen) setBrowserFullscreen(false);
   }, [browserOpen]);
 
-  // ≤768px 时侧栏与画布都是覆盖层；收起侧栏抽屉，避免盖住对话输入区。
+  // ≤768px 时侧栏与画布都是覆盖层：自动收起抽屉，避免盖住对话输入区。
+  // 自动收起不算用户的“主动收起”偏好；回到宽屏时若用户没主动收起就自动恢复。
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
     const enforceNarrowLayout = () => {
       if (window.innerWidth <= 768) setSidebarOpen(false);
+      else if (!sidebarManualCollapsedRef.current) setSidebarOpen(true);
     };
     enforceNarrowLayout();
     window.addEventListener("resize", enforceNarrowLayout);
@@ -1575,6 +1663,15 @@ export default function App() {
     setArtifactScope("session");
     setArtifactNotice(null);
     const loadSeq = ++sessionLoadSeqRef.current;
+    // 恢复/加载失败必须落到「有横幅 + 可重试」，不能静默停在 agentReady=false：
+    // 一旦停在 false，ChatPanel 的 SSE effect 会直接 return，界面永久没有实时流
+    // （2026-11-06 调查：切回运行中会话冻结的根因之一）。
+    const markSessionLoadFailed = (message, code = "") => {
+      if (loadSeq !== sessionLoadSeqRef.current) return;
+      setSessionResumeError({ sessionId: session.id, message, code, detail: null });
+      setAgentReady(false);
+      setHistoryLoading(false);
+    };
     // 选择历史同样推进统一导航代际：在途的新建/工作区切换不得覆盖本次结果。
     navGenerationRef.current += 1;
     // 会话自带工作区归属；先切换文件视图，再切换 thread，避免历史会话在另一个项目目录下恢复。
@@ -1661,6 +1758,7 @@ export default function App() {
       if (loadSeq !== sessionLoadSeqRef.current) return;
       if (!historyResult.ok) {
         notifyError("加载会话历史失败: " + (historyResult.error?.message || "未知错误"));
+        markSessionLoadFailed(`加载会话历史失败：${historyResult.error?.message || "未知错误"}`, "SESSION_HISTORY_FAILED");
         return;
       }
       const { d, runData } = historyResult;
@@ -1711,9 +1809,12 @@ export default function App() {
       // 它要按 toolCallId 回填到对应 Agent 工具卡，否则 Word/PPT 读取结果会被误认为用户输入。
       const msgs = buildHistoryMessages(d.entries || []);
       const runMessages = buildRunSummaryMessages(runData?.runs);
+      // 取消/中断后仍会写入的 assistant 没有 Run 记录可归属，补一张「运行记录缺失」卡，
+      // 否则它们每条各渲染一个「思考与工具过程」折叠头（2026-11-06 实测）。
+      const orphanCards = buildOrphanRunCards(msgs, runMessages);
       // Run 总结按收尾时间插回原始消息流。不能按 createdAt 全局排序：运行中的 Run
       // 只有 startedAt，会让总结卡跑到本轮消息之前，整轮因此拿不到 runId 并退回旧渲染。
-      const loadedHistory = normalizeHistoryMessages(mergeRunSummaries(msgs, runMessages));
+      const loadedHistory = normalizeHistoryMessages(mergeRunSummaries(msgs, [...runMessages, ...orphanCards]));
       sessionHistoryCacheRef.current.set(session.id, loadedHistory);
       const historyStart = Number(d.info?.historyStart || 0);
       const historyHasMore = Boolean(d.info?.historyHasMore);
@@ -1767,6 +1868,7 @@ export default function App() {
         window.__oawLastSessionError = { message: e?.message, stack: e?.stack, at: Date.now() };
       } catch {}
       if (loadSeq === sessionLoadSeqRef.current) notifyError("加载会话失败: " + e.message);
+      markSessionLoadFailed(`加载会话失败：${e.message}`, "SESSION_LOAD_FAILED");
     } finally {
       // 无论成功/失败都结束骨架屏（成功路径已提前置 false，这里兜住提前 return 与异常）。
       if (loadSeq === sessionLoadSeqRef.current) setHistoryLoading(false);
@@ -1789,8 +1891,9 @@ export default function App() {
       const runData = await listRuns("", 50, { sessionId });
       runMessages = buildRunSummaryMessages(runData?.runs);
     } catch {}
+    const appendedMessages = buildHistoryMessages(d.entries || []);
     const pageMessages = normalizeHistoryMessages(
-      mergeRunSummaries(buildHistoryMessages(d.entries || []), runMessages),
+      mergeRunSummaries(appendedMessages, [...runMessages, ...buildOrphanRunCards(appendedMessages, runMessages)]),
     );
     const messages = pageMessages;
     const info = d.info || {};
@@ -1864,13 +1967,15 @@ export default function App() {
     if (!silent) setSessionResumeRetrying(false);
   }, [clientId, currentSessionId, currentWorkspace, sessionResumeError, threadId]);
 
-  // A2（OAW_RESUME_AUTO_RETRY，默认关）：恢复遇忙（SESSION_BUSY）时自动等待任务结束后重试，
-  // 上限 10 分钟；等待时长在横幅展示，并提供"取消当前任务"直达入口。
+  // A2（2026-11-06 修订）：恢复失败后自动重试，不再依赖默认关闭的开关。
+  // 只对"等一会可能成功"的原因重试：SESSION_BUSY（任务占用）与空 code（超时/网络）。
+  // 工作区不匹配、会话不存在等确定性失败不重试，避免无意义轮询。
   const resumeWaitStartRef = useRef(0);
   const [resumeWaitSec, setResumeWaitSec] = useState(0);
   useEffect(() => {
-    const busy = flag("resumeAutoRetry") && sessionResumeError?.code === "SESSION_BUSY";
-    if (!busy) {
+    const code = String(sessionResumeError?.code || "");
+    const transient = Boolean(sessionResumeError) && (code === "SESSION_BUSY" || code === "");
+    if (!transient) {
       resumeWaitStartRef.current = 0;
       setResumeWaitSec(0);
       return undefined;
@@ -2191,7 +2296,9 @@ export default function App() {
       setCurrentDir("");
       void refreshFiles("");
       setActiveModule(null);
-      setSidebarOpen(saved.sidebarOpen !== false);
+      // 旧状态没有 sidebarManualCollapsed，说明可能是历史遗留的自动收起；默认展开。
+      sidebarManualCollapsedRef.current = saved.sidebarManualCollapsed === true;
+      setSidebarOpen(!sidebarManualCollapsedRef.current);
       // 清掉会触发旧行为的持久化字段，避免遗留值继续自动恢复。
       saveUIState({ ...saved, currentDir: "", lastSessionId: null });
       setUiRestored(true);
@@ -2247,6 +2354,7 @@ export default function App() {
       workspace: currentWorkspace,
       currentDir,
       sidebarOpen,
+      sidebarManualCollapsed: sidebarManualCollapsedRef.current,
     });
   }, [tabs, activeTab, activeModule, currentWorkspace, currentDir, sidebarOpen, currentSessionId, uiRestored]);
 
@@ -2434,7 +2542,11 @@ export default function App() {
         {/* 地图模式保留主布局挂载：对话面板必须常驻，否则进入/退出地图会卸载 ChatPanel，
             本地消息、SSE 游标与运行态全部丢失，服务端回放只会重建孤立总结卡。
             地图覆盖层由 .mp 负责遮罩，对话槽位在地图模式下用 CSS 固定到右侧。 */}
-        {!["knowledge", "templates"].includes(activeModule) && (
+        {/* 2026-11-06（P1-5）：知识库/模板库改为「隐藏」而非卸载主布局。
+            卸载会丢 ChatPanel 的 messages、SSE 游标与 streamGeneration，返回时只能
+            从 after=0 重连并受服务端 300 条回放上限影响（表现为"变样/丢内容"）。
+            app-main-shell 可见时 display:contents，不改变既有 flex 布局。 */}
+        <div className="app-main-shell" hidden={["knowledge", "templates"].includes(activeModule)}>
         <>
         {sidebarOpen && (
           <>
@@ -2488,7 +2600,7 @@ export default function App() {
               onBeforeOpenModal={closeExternalModules}
               onOpenCommandPalette={() => setPaletteOpen(true)}
               onToggleTheme={toggleTheme}
-              onCollapseSidebar={() => setSidebarOpen(false)}
+              onCollapseSidebar={() => { sidebarManualCollapsedRef.current = true; setSidebarOpen(false); }}
               theme={theme}
             />
             <Resizer side="left" min={180} max={400} cssVar="--sidebar-w" />
@@ -2498,7 +2610,7 @@ export default function App() {
           <div className="center-content">
             <div className="topbar">
               {!sidebarOpen && (
-                <button className="btn-sm topbar-sidebar-toggle" onClick={() => setSidebarOpen(true)} title="展开侧栏" aria-label="展开侧栏">
+                <button className="btn-sm topbar-sidebar-toggle" onClick={() => { sidebarManualCollapsedRef.current = false; setSidebarOpen(true); }} title="展开侧栏" aria-label="展开侧栏">
                   <Icon name="chevronRight" size={14} />
                 </button>
               )}
@@ -2507,47 +2619,8 @@ export default function App() {
               <span>{currentSession?.title || currentSession?.label || currentProject?.name || "新建 Agent 会话"}</span>
               {current?.name && <span className="topbar-file"> · {current.name}</span>}
             </span>
-            <div className="conversation-mode-switch" role="group" aria-label="对话工作模式">
-              <button
-                type="button"
-                className={`conversation-mode-option ${conversationMode === "chat" ? "active" : ""}`}
-                aria-pressed={conversationMode === "chat"}
-                title="Chat：只读问答和资料检索"
-                onClick={() => {
-                  const switched = chatInputRef.current?.setMode?.("chat");
-                  if (switched !== false) setConversationMode("chat");
-                }}
-              >
-                <Icon name="comment" size={15} />
-                <span>Chat</span>
-              </button>
-              <button
-                type="button"
-                className={`conversation-mode-option work ${conversationMode === "agent" ? "active" : ""}`}
-                aria-pressed={conversationMode === "agent"}
-                title="Work：允许 Agent 调用编辑工具；实际读写与联网仍受运行环境权限限制"
-                onClick={() => {
-                  const switched = chatInputRef.current?.setMode?.("agent");
-                  if (switched !== false) setConversationMode("agent");
-                }}
-              >
-                <Icon name="tool" size={15} />
-                <span>Work</span>
-              </button>
-              <button
-                type="button"
-                className={`conversation-mode-option review ${conversationMode === "review" ? "active" : ""}`}
-                aria-pressed={conversationMode === "review"}
-                title="Review：先依据实际读取的规范生成审查报告与安全副本，确认后才写回原文"
-                onClick={() => {
-                  const switched = chatInputRef.current?.setMode?.("review");
-                  if (switched !== false) setConversationMode("review");
-                }}
-              >
-                <Icon name="shield" size={15} />
-                <span>Review</span>
-              </button>
-            </div>
+            {/* 对话工作模式已移入输入栏工具条（ChatPanel），顶栏只保留会话状态与团队入口，
+                给标题留出完整宽度。 */}
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
             <TeamHeaderChip
               team={agentTeam}
@@ -2717,8 +2790,8 @@ export default function App() {
                 <Icon name="warning" size={14} />
                 <span>
                   历史已加载为只读：Agent 会话恢复失败（{sessionResumeError.message}），继续对话前请先重试恢复。
-                  {sessionResumeError.code === "SESSION_BUSY" && flag("resumeAutoRetry") && (
-                    <> 已等待 {resumeWaitSec}s，当前任务结束后将自动恢复{sessionResumeError.detail?.busyForMs ? `（任务已运行 ${Math.round(sessionResumeError.detail.busyForMs / 1000)}s）` : ""}。</>
+                  {resumeWaitSec > 0 && (
+                    <> 已等待 {resumeWaitSec}s，将自动重试{sessionResumeError.detail?.busyForMs ? `（任务已运行 ${Math.round(sessionResumeError.detail.busyForMs / 1000)}s）` : ""}。</>
                   )}
                 </span>
                 {sessionResumeError.code === "SESSION_BUSY" && sessionResumeError.detail?.activeRunId && (
@@ -2957,7 +3030,7 @@ export default function App() {
         <IntegrationsCenter kind={activeModule === "mcp" ? "mcp" : "pi"} open={activeModule === "mcp" || activeModule === "piPlugins"} onClose={closeExternalModules} />
         </DeferredModule>
         </>
-        )}
+        </div>
         {/* 重复入口已整合：预览/浏览器的唯一开关在顶栏，打开内容统一进入右侧画布页签 */}
          <DeferredModule label="命令面板">
         <CommandPalette

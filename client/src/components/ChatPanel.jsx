@@ -34,11 +34,13 @@ import TimelineRow from "./会话流/TimelineRow.jsx";
 import RunFoldBar from "./会话流/RunFoldBar.jsx";
 import SummaryBlock from "./会话流/SummaryBlock.jsx";
 import ArtifactCard from "./会话流/ArtifactCard.jsx";
+import RunChangesCard from "./会话流/RunChangesCard.jsx";
 import { TypewriterText } from "./会话流/useTypewriter.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
-import { buildRunTimeline, describeRunFold, splitCompletionSummary } from "../会话流投影.js";
+import { assignTimelineTurns, buildRunTimeline, describeRunFold, splitCompletionSummary, summarizeTimeline } from "../会话流投影.js";
+import { applyToolMetadata, toolPresentationOf } from "../工具展示.js";
 import { reduceTeamEvent, teamFromEvents } from "../团队投影.js";
-import { stripToolMarkup, hasToolMarkup } from "../工具标签清洗.js";
+import { stripAnswerPrefill, stripToolMarkup, hasToolMarkup } from "../工具标签清洗.js";
 
 // O-P3：浏览器"写操作类"工具白名单 —— 只有这些会拉起内置浏览器侧栏；
 // browser_close / browser_tabs / browser_snapshot / browser_screenshot 等查看或收尾动作不拉起。
@@ -450,6 +452,24 @@ function historyMessageScore(message) {
     + blocks.reduce((sum, block) => sum + String(block?.text || block?.output || block?.result || "").length + 40, 0);
 }
 
+/**
+ * 助手气泡是否真的有内容。重试/通道回退会为每次失败建立气泡，
+ * 失败尝试通常没有正文、图片或可见过程块；这些空气泡不应留在对话流里，
+ * 否则一轮失败会堆出多个只剩「复制」的旧式框。
+ */
+function assistantMessageHasContent(message) {
+  if (!message) return false;
+  if (String(message.text || "").trim() || message.authoritativeFinalText) return true;
+  if ((message.images || []).length) return true;
+  return (Array.isArray(message.blocks) ? message.blocks : []).some((block) => {
+    if (!block) return false;
+    if (block.type === "text" || block.type === "thinking") return Boolean(String(block.text || block.thinking || "").trim());
+    if (block.type === "tool") return Boolean(String(block.name || block.input || block.output || block.result || "").trim());
+    if (block.type === "subagent") return Boolean(String(block.task || block.activity || block.summary || "").trim());
+    return true;
+  });
+}
+
 export function normalizeHistoryMessages(items) {
   if (!Array.isArray(items)) return [];
   const result = [];
@@ -639,6 +659,9 @@ export function extractSessionLinks(messages = []) {
 
 export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, agentReady = true, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "", onTeamChange, onOpenSettings }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
+  // 供非渲染事件（重试复用气泡、终态清理）同步读取最新消息，避免依赖异步 state。
+  const messagesRef = useRef([]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   // 草稿按 thread 恢复（交互 3）：模块导航会卸载本组件，重挂载时从缓存取回未发送内容。
   const [input, setInput] = useState(() => readDraft(threadId));
@@ -1366,9 +1389,47 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       // 历史水合会整体替换 messages：已渲染的提问卡也被清掉，
       // 清空去重集合，让服务端握手补发/客户端对账能重新恢复它。
       liveAskIdsRef.current.clear();
+      // 2026-11-06：hydrate 前缓冲的回放事件不再冲刷——它们通常早于这份快照，
+      // 追加到快照之后会造成"旧事件排在新内容后面"的错位。快照本身是权威来源，
+      // 之后到达的实时事件继续按事件顺序追加。
+      replayBufferRef.current = [];
+      replayProbeRef.current = { pending: false, thread: null };
       const normalizedHistory = normalizeHistoryMessages(historyMessages);
       seedFinishedRuns(threadId, normalizedHistory);
-      setMessages(normalizedHistory);
+      // 2026-11-06：hydrate 不能把「尚未落盘的实时内容」冲掉。
+      // 旧实现 setMessages(normalizedHistory) 直接替换，正在流式的 thinking / 运行中工具行
+      // （JSONL 里还没写）会整块消失 —— 用户看到的就是「点击会话后思考栏和跑马灯没了」。
+      // 处理：保留当前 streaming 气泡追加到末尾，并按 toolCallId / 文本重叠去重已落盘内容。
+      const liveStreaming = (messagesRef.current || []).find((item) => item?.role === "assistant" && item?.status === "streaming");
+      let mergedHistory = normalizedHistory;
+      let keptLiveId = null;
+      if (liveStreaming) {
+        const hydratedToolIds = new Set();
+        let hydratedTextBlob = "";
+        for (const message of normalizedHistory) {
+          if (message?.role !== "assistant") continue;
+          for (const block of message.blocks || []) {
+            if (block?.type === "tool" && (block.toolCallId || block.id)) hydratedToolIds.add(String(block.toolCallId || block.id));
+            if ((block?.type === "text" || block?.type === "thinking") && block.text) hydratedTextBlob += `${block.text}\n`;
+          }
+        }
+        const keptBlocks = (liveStreaming.blocks || []).filter((block) => {
+          if (!block) return false;
+          if (block.type === "tool") return !hydratedToolIds.has(String(block.toolCallId || block.id || ""));
+          if (block.type === "text" || block.type === "thinking") {
+            const text = String(block.text || "").trim();
+            if (!text) return false;
+            // 已落盘的文本/思考里已包含这段内容 → 丢弃，避免恢复后出现重复
+            return !hydratedTextBlob.includes(text.slice(0, Math.min(80, text.length)));
+          }
+          return true;
+        });
+        if (keptBlocks.length) {
+          mergedHistory = [...normalizedHistory, { ...liveStreaming, blocks: keptBlocks }];
+          keptLiveId = liveStreaming.id;
+        }
+      }
+      setMessages(mergedHistory);
       const latestRun = [...normalizedHistory].reverse().find((item) => item?.runId && item?.runStatus);
       const isLiveRun = Boolean(latestRun && LIVE_RUN_STATUSES.has(latestRun.runStatus));
       // 历史水合只负责“发现团队”；事件窗口可能截掉 team_started，不能因此清空
@@ -1423,10 +1484,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         isLiveRun && latestAssistant?.runId && latestRun?.runId
         && String(latestAssistant.runId) === String(latestRun.runId),
       );
-      assistantIdRef.current = isLiveRun
+      // 保留下来的实时气泡就是新的流式锚点：思考/正文继续写进它（跑马灯不中断）。
+      assistantIdRef.current = keptLiveId || (isLiveRun
         ? (flag("replayRecover") || !liveAnchorMatchesRun ? null : (latestAssistant?.id || null))
-        : null;
-      lastAssistantIdRef.current = latestAssistant?.id || null;
+        : null);
+      lastAssistantIdRef.current = keptLiveId || latestAssistant?.id || null;
       streamBufRef.current = null;
       streamingMsgIdRef.current = assistantIdRef.current;
       if (textRevealRafRef.current) cancelAnimationFrame(textRevealRafRef.current);
@@ -1520,6 +1582,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   useEffect(() => {
     const previous = previousThreadRef.current;
     if (previous === threadId) return;
+    // 每次切入会话都允许重新做一次"是否有活跃 Run"的对账探测：
+    // 只按 thread 记一次会导致"切回第二次就再也不探测"，重新触发自举死锁。
+    if (threadId) replayProbedThreadsRef.current.delete(threadId);
     followLatestRef.current = true;
     runtimeConnectingEventRef.current = null;
     // 切到另一个会话：提问去重集合只对当前线程有意义，清空后重新进入才能恢复。
@@ -1729,6 +1794,22 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const patch = useCallback((id, fn) => {
     if (!mountedRef.current) return;
     setMessages((ms) => ms.map((m) => (m.id === id ? fn(m) : m)));
+  }, []);
+
+  // 2026-11-06：实时事件与历史 hydrate 混排修复。
+  // 刷新/切回时 SSE 回放的尾部可能早于 hydrate 快照，若直接追加到当前气泡，
+  // 就会出现「终端行夹在历史工具之间」的错位与重复卡。按 toolCallId 跨消息查找：
+  //   · 历史里已有同一 toolCallId 的块 → 更新那一块（不再新建）；
+  //   · 找不到才在当前气泡新建（真丢失时才显示「已恢复」）。
+  const findToolBlockOwner = useCallback((toolCallId) => {
+    if (!toolCallId) return null;
+    const messages = messagesRef.current || [];
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      const block = (message.blocks || []).find((item) => item.type === "tool" && (item.id === toolCallId || item.toolCallId === toolCallId));
+      if (block) return { messageId: message.id, block };
+    }
+    return null;
   }, []);
 
   // 实时运行结束后把 Pi 的 assistant entry 坐标回填到本地气泡，让“分叉/第 N 版”
@@ -2053,9 +2134,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   };
 
   // SSE 连接
+  // P1-1（2026-11-06）：attach 条件 = 恢复完成 或 本地已确认活跃 Run。
+  const streamAttachAllowed = Boolean(agentReady || busy);
   useEffect(() => {
-    // 历史可以先展示；恢复未完成时不要建立对话流，避免服务端先创建空 runtime。
-    if (!agentReady) return undefined;
+    // 历史可以先展示；恢复未完成且没有活跃 Run 时不要建连，避免服务端先创建空 runtime。
+    // 例外：本地已确认活跃 Run（busy 由对账探测命中）时必须连——运行中 runtime 一定已存在，
+    // attach 是安全的；否则 resume 失败会让正在跑的会话永久没有实时流（冻结的核心表现）。
+    if (!streamAttachAllowed) return undefined;
     const generation = streamGenerationRef.current + 1;
     streamGenerationRef.current = generation;
     let es = null;
@@ -2120,6 +2205,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     
     const connect = () => {
       if (!isCurrentGeneration()) return;
+      // P1-4：预算不足时不建连——否则会形成"不进预算表、却占同源连接"的黑流，
+      // 更容易把浏览器 6 槽占满，反过来让控制面请求（含 resume）排队超时。
+      if (!slot) {
+        if (!reconnectTimer) {
+          reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 1500);
+        }
+        return;
+      }
       resetReady();
       const serial = ++connectionSerial;
       let lastSignalAt = Date.now();
@@ -2236,7 +2329,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         streamReadyRef.current = null;
       }
     };
-  }, [clientId, threadId, workspace, agentReady]);
+  }, [clientId, threadId, workspace, streamAttachAllowed]);
 
   // 恢复/切换会话后拉取服务端保存的上下文用量，避免刷新后一直显示 0
   useEffect(() => {
@@ -2281,41 +2374,51 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     const runId = runState.runId;
     const activeStatuses = ["running", "queued", "waiting_user", "recovering", "cancel_requested", "finishing"];
     const shouldReconcile = busy || activeStatuses.includes(runState.status);
-    if (!runId && !shouldReconcile) {
-      // OAW_REPLAY_RECOVER（F1）：冷启动（无历史水合、本地 idle）时探测本 thread 是否
-      // 仍有执行中的 Run；命中则恢复运行上下文并冲刷探测期间缓冲的回放事件，使刷新后
-      // 的对话能重建“运行中”的实时内容。探测每 thread 仅一次，flag 关 = 基线行为。
-      if (flag("replayRecover") && threadId && !replayProbedThreadsRef.current.has(threadId)) {
-        replayProbedThreadsRef.current.add(threadId);
-        replayProbeRef.current = { pending: true, thread: threadId };
-        replayBufferRef.current = [];
-        const probeThread = threadId;
-        void (async () => {
-          try {
-            const result = await listRuns(probeThread, 12, { cwd: workspace });
-            if (replayProbeRef.current.thread !== probeThread) return; // 已切走：新探测接管
-            const live = (result?.runs || [])
-              .filter((item) => item?.clientId === clientId && activeStatuses.includes(item.status))
-              .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))[0] || null;
-            if (live) {
-              // F4：恢复的流式内容进新气泡，不续写历史最后一条 assistant（防跨轮拼接）
-              assistantIdRef.current = null;
-              runInProgressRef.current = true;
-              activeRunIdRef.current = live.id;
-              setBusy(true);
-              setRunState((s) => ({ ...s, status: live.status, runId: live.id, task: live.task || s.task, artifacts: live.artifacts || s.artifacts, references: live.references || s.references, mode: normalizeUiMode(live.task?.mode) }));
-              const nextTodos = live.todoVersion === 1 && Array.isArray(live.todos) ? live.todos : (Array.isArray(live.steps) ? live.steps : []);
-              if (nextTodos.length) setTodoItems(nextTodos);
-            }
-          } catch {}
-          replayProbeRef.current = { pending: false, thread: null };
-          const buffered = replayBufferRef.current;
-          replayBufferRef.current = [];
-          for (const ev of buffered) eventHandlerRef.current?.(ev);
-        })();
-      } else {
+    if (!shouldReconcile) {
+      // 2026-11-06 冻结修复：本地可能既没有 busy 也没有活跃状态，但对账探测不能再依赖
+      // 「本地已判定 live」（自举死锁）或默认关闭的 replayRecover 开关。每次切入会话
+      //（thread 变化时已清除标记）无条件探测一次：
+      //   · 命中活跃 Run → 恢复 busy/runState/activeRunId/执行轨迹，并冲刷缓冲的回放事件；
+      //   · 未命中 → 丢弃缓冲，避免把已完成历史重渲染成新气泡。
+      if (!threadId) {
         setTodoItems([]);
+        return undefined;
       }
+      if (replayProbedThreadsRef.current.has(threadId)) {
+        setTodoItems([]);
+        return undefined;
+      }
+      replayProbedThreadsRef.current.add(threadId);
+      replayProbeRef.current = { pending: true, thread: threadId };
+      replayBufferRef.current = [];
+      const probeThread = threadId;
+      void (async () => {
+        let live = null;
+        try {
+          const result = await listRuns(probeThread, 12, { cwd: workspace, includeEvents: "all" });
+          if (replayProbeRef.current.thread !== probeThread) return; // 已切走：新探测接管
+          live = (result?.runs || [])
+            .filter((item) => item?.clientId === clientId && activeStatuses.includes(item.status))
+            .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))[0] || null;
+          if (live) {
+            // F4：恢复的流式内容进新气泡，不续写历史最后一条 assistant（防跨轮拼接）
+            assistantIdRef.current = null;
+            runInProgressRef.current = true;
+            activeRunIdRef.current = live.id;
+            setBusy(true);
+            setRunState((s) => ({ ...s, status: live.status, runId: live.id, task: live.task || s.task, artifacts: live.artifacts || s.artifacts, references: live.references || s.references, mode: normalizeUiMode(live.task?.mode) }));
+            const nextTodos = live.todoVersion === 1 && Array.isArray(live.todos) ? live.todos : (Array.isArray(live.steps) ? live.steps : []);
+            if (nextTodos.length) setTodoItems(nextTodos);
+            // 运行动画/轨迹：历史 hydrate 走 fields=summary 拿不到 events，这里补上。
+            const flowEvents = Array.isArray(live.events) ? live.events : [];
+            if (flowEvents.length) replaceExecutionEvents(flowEvents);
+          }
+        } catch {}
+        replayProbeRef.current = { pending: false, thread: null };
+        const buffered = replayBufferRef.current;
+        replayBufferRef.current = [];
+        if (live) for (const ev of buffered) eventHandlerRef.current?.(ev);
+      })();
       return undefined;
     }
     let cancelled = false;
@@ -2399,9 +2502,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   function handleEvent(ev) {
     const envelope = ev?.event || ev || {};
     const { type, data = {} } = envelope;
-    // OAW_REPLAY_RECOVER：冷启动探测期间缓冲通道回放事件，探测完成后统一冲刷落点，
-    // 避免探测竞态窗口内到达的 token/tool 事件因 busy/idle 门闩被静默丢弃。
-    if (flag("replayRecover") && replayProbeRef.current.pending && replayProbeRef.current.thread === threadId && type !== "connected") {
+    // 冷启动/切回探测期间先缓冲通道回放事件，探测完成后统一冲刷：
+    // 避免探测竞态窗口内的 token/tool 事件因 busy/idle 门闩被静默丢弃（2026-11-06 冻结修复）。
+    if (replayProbeRef.current.pending && replayProbeRef.current.thread === threadId && type !== "connected") {
       if (replayBufferRef.current.length < 6000) replayBufferRef.current.push(ev);
       return;
     }
@@ -2460,9 +2563,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       lastAssistantIdRef.current = recoveredId;
       streamingMsgIdRef.current = recoveredId;
       streamBufRef.current = { text: "", thinking: "" };
+      // 恢复出来的气泡必须带上当前 Run 锚点：否则 timelinePath=false，实时尾部会落到
+      // 旧的 `.message-process-fold` 路径（"执行过程/实时" + 滚动容器），与正常运行形态不一致。
+      const recoveredRunId = activeRunIdRef.current || runState.runId || null;
       setMessages((ms) => ms.some((message) => message.id === recoveredId)
         ? ms
-        : [...ms, { id: recoveredId, role: "assistant", blocks: [], status: "streaming", images: [], createdAt: Date.now() }]);
+        : [...ms, { id: recoveredId, role: "assistant", runId: recoveredRunId || undefined, runStatus: runState.status || undefined, blocks: [], status: "streaming", images: [], createdAt: Date.now() }]);
       aid = recoveredId;
       return recoveredId;
     };
@@ -2509,12 +2615,12 @@ case "runtime_connecting":
         setRunState((s) => (s.status === "failed" ? s : { ...s, status: "failed" }));
         break;
       case "stream_resync":
-        // 游标与当前历史窗口已不连续（高频增量被淘汰）。触发 Run 对账，
-        // 用服务端 Run 终态与最终文本重建状态，而不是依赖已丢失的事件。
+        // 游标与当前历史窗口已不连续（高频增量被淘汰 / 首连只回放了尾部）。
+        // 不再要求"本地已知在运行"：清掉探测标记并重跑对账 effect，用服务端 Run 事实重建。
         setAgentPhase("事件流已重同步");
-        if (runInProgressRef.current || busy) {
-          window.dispatchEvent(new CustomEvent("oaw:force-reconcile"));
-        }
+        replayProbedThreadsRef.current.delete(threadId);
+        window.dispatchEvent(new CustomEvent("oaw:force-reconcile"));
+        setReplayFlagsTick((t) => t + 1);
         break;
       case "connected":
         runtimeConnectingEventRef.current = null;
@@ -2776,6 +2882,9 @@ case "runtime_connecting":
       // 工具调用开始：推入新 tool block（按 toolCallId 去重，重放不产生重复卡片）
       case "tool_start":
         if (data.name === "run_subagent") break;
+        // 历史 hydrate 已包含同一 toolCallId（回放的旧事件）：只更新那一块，不再新建，
+        // 避免把旧工具追加到新内容后面造成错位/重复。
+        if (findToolBlockOwner(data.toolCallId)) break;
         flushToolOutput();
         if (!aid) aid = ensureAssistant();
         // 工具卡要插到文本之前，先把打字机缓冲里未落定的文字并回上一段文本块：
@@ -2818,44 +2927,68 @@ case "runtime_connecting":
       case "tool_output":
       case "tool_output_delta":
         if (data.name === "run_subagent") break;
-        if (!aid) aid = ensureAssistant();
-        if (aid) queueToolOutput(aid, data);
+        {
+          // 输出要回到「拥有该工具卡的那条消息」：hydrate 后实时尾部属于历史块时，
+          // 不能再往当前气泡追加（否则输出与卡片分离、位置错乱）。
+          const owner = findToolBlockOwner(data.toolCallId);
+          if (owner) queueToolOutput(owner.messageId, data);
+          else if (!aid) aid = ensureAssistant();
+          if (!owner && aid) queueToolOutput(aid, data);
+        }
         break;
       // 工具结束：标记完成；找不到对应 start（历史被截断/重连丢失）时创建恢复卡片
       case "tool_end":
         if (data.name === "run_subagent") break;
         flushToolOutput();
-        if (!aid) aid = ensureAssistant();
-        if (aid) patch(aid, (m) => {
-          const blocks = [...(m.blocks || [])];
-          const tool = data.toolCallId
-            ? blocks.find((block) => block.type === "tool" && (block.id === data.toolCallId || block.toolCallId === data.toolCallId))
-            : [...blocks].reverse().find((block) => block.type === "tool" && (!data.name || block.name === data.name));
-          if (tool) {
-            tool.done = true;
-            tool.isError = !!data.isError;
-            if (data.result) tool.result = data.result;
-            if (tool.startTime) tool.duration = ((Date.now() - tool.startTime) / 1000).toFixed(1);
-          } else if (data.toolCallId || data.name) {
-            // tool_start 已被历史淘汰或重连丢失：创建带恢复标记的工具卡，
-            // 保证界面工具数量与实际执行一致，而不是静默丢弃。
-            blocks.push({
-              type: "tool",
-              id: data.toolCallId || newId(),
-              toolCallId: data.toolCallId || null,
-              name: data.name || "tool",
-              input: "",
-              output: "",
-              result: data.result || "",
-              done: true,
-              isError: !!data.isError,
-              startMissing: true,
-              startTime: null,
-              duration: null,
+        {
+          // 先跨消息找同一 toolCallId 的卡片：hydrate 快照里已有该工具时，
+          // 只更新它，绝不新建（否则同一工具会重复出现且位置错乱）。
+          const owner = findToolBlockOwner(data.toolCallId);
+          if (owner) {
+            patch(owner.messageId, (m) => {
+              const blocks = [...(m.blocks || [])];
+              const tool = blocks.find((block) => block.type === "tool" && (block.id === owner.block.id || block.toolCallId === data.toolCallId));
+              if (!tool) return m;
+              tool.done = true;
+              tool.isError = !!data.isError;
+              if (data.result) tool.result = data.result;
+              if (tool.startTime) tool.duration = ((Date.now() - tool.startTime) / 1000).toFixed(1);
+              return { ...m, blocks };
             });
+            break;
           }
-          return { ...m, blocks };
-        });
+          if (!aid) aid = ensureAssistant();
+          if (aid) patch(aid, (m) => {
+            const blocks = [...(m.blocks || [])];
+            const tool = data.toolCallId
+              ? blocks.find((block) => block.type === "tool" && (block.id === data.toolCallId || block.toolCallId === data.toolCallId))
+              : [...blocks].reverse().find((block) => block.type === "tool" && (!data.name || block.name === data.name));
+            if (tool) {
+              tool.done = true;
+              tool.isError = !!data.isError;
+              if (data.result) tool.result = data.result;
+              if (tool.startTime) tool.duration = ((Date.now() - tool.startTime) / 1000).toFixed(1);
+            } else if (data.toolCallId || data.name) {
+              // tool_start 已被历史淘汰或重连丢失：创建带恢复标记的工具卡，
+              // 保证界面工具数量与实际执行一致，而不是静默丢弃。
+              blocks.push({
+                type: "tool",
+                id: data.toolCallId || newId(),
+                toolCallId: data.toolCallId || null,
+                name: data.name || "tool",
+                input: "",
+                output: "",
+                result: data.result || "",
+                done: true,
+                isError: !!data.isError,
+                startMissing: true,
+                startTime: null,
+                duration: null,
+              });
+            }
+            return { ...m, blocks };
+          });
+        }
         break;
       // agent 主动提问（ask_user 工具）：追加问题卡片，用户回答后 agent 继续
       case "ask_user": {
@@ -2994,15 +3127,31 @@ case "runtime_connecting":
           setBusy(true);
           setRunState((s) => ({ ...s, status: "running" }));
         if (!assistantIdRef.current) {
-          const retryAid = newId();
-          assistantIdRef.current = retryAid;
-          lastAssistantIdRef.current = retryAid;
-          streamingMsgIdRef.current = retryAid;
-          streamBufRef.current = { text: "", thinking: "" };
-          setMessages((ms) => [...ms, {
-            id: retryAid, role: "assistant", blocks: [],
-            status: "streaming", images: [], createdAt: Date.now(),
-          }]);
+          // 失败尝试往往没有正文：优先复用上一条空气泡，而不是每次重试都新开一条。
+          // 一轮 6 次重试 + 1 次回退曾堆出多个只剩「复制」的旧式框。
+          const last = [...(messagesRef.current || [])].reverse().find((m) => m?.role === "assistant");
+          const reuseId = last?.id
+            && !assistantMessageHasContent(last)
+            && (last.status === "error" || last.status === "streaming")
+            ? last.id
+            : null;
+          if (reuseId) {
+            assistantIdRef.current = reuseId;
+            lastAssistantIdRef.current = reuseId;
+            streamingMsgIdRef.current = reuseId;
+            streamBufRef.current = { text: "", thinking: "" };
+            patch(reuseId, (m) => ({ ...m, status: "streaming", errorText: "", stopped: false }));
+          } else {
+            const retryAid = newId();
+            assistantIdRef.current = retryAid;
+            lastAssistantIdRef.current = retryAid;
+            streamingMsgIdRef.current = retryAid;
+            streamBufRef.current = { text: "", thinking: "" };
+            setMessages((ms) => [...ms, {
+              id: retryAid, role: "assistant", blocks: [],
+              status: "streaming", images: [], createdAt: Date.now(),
+            }]);
+          }
         } else {
           patch(assistantIdRef.current, (m) => ({ ...m, status: "streaming", errorText: "" }));
         }
@@ -3389,6 +3538,9 @@ case "runtime_connecting":
             // 从 streaming 收尾；否则它会永远停在四瓣/正在思考状态。
             const finalizeId = aid || lastAssistantIdRef.current;
             if (finalizeId) finishTextReveal(finalizeId);
+            // 终态只保留有内容的助手气泡；重试/回退留下的空气泡不再占据对话流，
+            // 失败原因由本轮结果卡统一说明（刷新后历史也会做同样的过滤）。
+            setMessages((ms) => ms.filter((m) => m.role !== "assistant" || assistantMessageHasContent(m)));
             assistantIdRef.current = null;
             streamingMsgIdRef.current = null;
           }
@@ -4645,7 +4797,7 @@ case "runtime_connecting":
         )}
 
         <div className="chat-stream-shell">
-          <div className="chat-body" ref={bodyRef} onScroll={updateScrollFollowState} aria-busy={historyHydrating || undefined}>
+          <div className="chat-body" data-task-orb={todoItems.length > 0 ? "true" : undefined} ref={bodyRef} onScroll={updateScrollFollowState} aria-busy={historyHydrating || undefined}>
           {/* 切换历史会话且缓存未命中：渲染骨架屏，替代此前的空白等待。
               只在还没有任何消息时出现，避免覆盖正在进行的对话。 */}
           {historyHydrating && messages.length === 0 && (
@@ -5076,6 +5228,32 @@ case "runtime_connecting":
             </div>
             {/* 左：工具审批模式（每次询问 / 自动批准） */}
             <ApprovalModeControl mode={approvalMode} saving={approvalModeSaving} onChange={changeApprovalMode} />
+            {/* 对话工作模式：从顶栏搬进输入栏，和审批、模型放在同一视线高度。
+                嵌入面板与地图紧凑模式已有各自的模式入口，这里不重复渲染。 */}
+            {!forcedMode && !embedded && !compact && (
+              <div className="conversation-mode-switch composer-mode-switch" role="group" aria-label="对话工作模式">
+                {["chat", "agent", "review"].map((mode) => {
+                  const meta = MODE_META[mode];
+                  const active = normalizeUiMode(editMode) === mode;
+                  return (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={`conversation-mode-option ${mode === "agent" ? "work" : mode === "review" ? "review" : ""} ${active ? "active" : ""}`}
+                      aria-pressed={active}
+                      title={meta.title}
+                      onClick={() => {
+                        setEditMode(mode);
+                        setRunState((state) => ({ ...state, mode }));
+                      }}
+                    >
+                      <Icon name={meta.icon} size={12} />
+                      <span>{meta.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             <span className="chat-toolbar-spacer" />
             {/* 右：上下文用量（含压缩入口）、模型与思考程度 */}
             <ContextUsageRing
@@ -5811,7 +5989,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
       || "",
   ).trim();
   // 模型偶尔把 <ask_user .../> 等工具意图写进正文；不能当成果渲染。
-  const authoritativeFinalText = stripToolMarkup(authoritativeFinalTextRaw);
+  const authoritativeFinalText = stripAnswerPrefill(stripToolMarkup(authoritativeFinalTextRaw));
   const toolMarkupStripped = Boolean(authoritativeFinalTextRaw && hasToolMarkup(authoritativeFinalTextRaw) && !authoritativeFinalText);
   // 本轮展示投影只算一次：结论内嵌产物与结果卡（tab）共用，避免重复归约事件流。
   const runCardSource = useMemo(
@@ -5824,6 +6002,11 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   );
   // 结论里可点击的产物：交付物优先，其余文件改动跟随；同一路径只留一条。
   const answerArtifacts = useMemo(() => artifactsFromView(runCardView), [runCardView]);
+  // 本轮改动（P2-1）：Run 展示投影里的 changes（去内部角色），供结论旁的「改动卡」使用。
+  const runChanges = useMemo(() => {
+    const list = Array.isArray(runCardView?.changes) ? runCardView.changes : [];
+    return list.filter((change) => change?.role !== "internal" && change?.path);
+  }, [runCardView]);
   // 最后一段文本块：无论最终答复是否已单独渲染，都不折进“执行过程”
   let lastTextBlockIndex = -1;
   blocks.forEach((block, index) => { if (block?.type === "text") lastTextBlockIndex = index; });
@@ -5951,6 +6134,17 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   const timelineEventsSource = timelinePath
     ? (Array.isArray(executionFlow?.events) && executionFlow.events.length ? executionFlow.events : (Array.isArray(runSummary?.events) ? runSummary.events : []))
     : [];
+  // 本轮用量：与「执行过程」同一事件源归约，折叠头不承载 token，放在总结页脚（DESIGN §6.1）。
+  const timelineUsageText = useMemo(() => {
+    if (!timelinePath || !timelineEventsSource.length) return "";
+    const totals = summarizeTurnMetrics(reduceTurnMetrics(timelineEventsSource));
+    return [
+      totals.turnCount ? `${totals.turnCount} 轮` : "",
+      Number.isFinite(totals.input) ? `输入 ${formatTokenCount(totals.input)} tokens` : "",
+      Number.isFinite(totals.output) ? `输出 ${formatTokenCount(totals.output)} tokens` : "",
+      Number.isFinite(totals.context) ? `上下文 ${formatTokenCount(totals.context)}` : "",
+    ].filter(Boolean).join(" · ");
+  }, [timelinePath, timelineEventsSource]);
   const runTraceForTimeline = useMemo(
     () => (timelinePath && timelineEventsSource.length ? reduceRunTrace(timelineEventsSource, m.runId) : null),
     [timelinePath, timelineEventsSource, m.runId],
@@ -5963,6 +6157,17 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     () => (timelinePath ? buildRunTimeline({ blocks: timelineBlocks, trace: runTraceForTimeline }) : []),
     [timelinePath, timelineBlocks, runTraceForTimeline],
   );
+  // 运行中「当前：动作」：取时间流里最后一个仍在执行的工具（规范 §2 / DESIGN §6.1）。
+  const runningLabel = useMemo(
+    () => (timelinePath ? summarizeTimeline(runTimeline).runningLabel : ""),
+    [timelinePath, runTimeline],
+  );
+  // 过程按 turn 分组（PRD R3 / DESIGN §6.1，决策 B1）：多轮 Run 在时间流里插入轮次分隔行；
+  // 单轮 / 无轮次信息时原样返回（不改变既有形态）。步数仍按未分组条目计算。
+  const runTimelineView = useMemo(
+    () => (timelinePath ? assignTimelineTurns(runTimeline, timelineEventsSource) : []),
+    [timelinePath, runTimeline, timelineEventsSource],
+  );
   // 「已运行 xx」：运行中按 startedAt 实时累加，结束后用实测总时长。
   // 不能整轮隐藏——用户需要一眼看到这一轮跑了多久；也不能再包回运行框。
   //
@@ -5974,12 +6179,9 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     : 0;
   const runElapsedText = (() => {
     if (!(runElapsedMs > 0)) return "";
-    // 等待时长占比高时标注，避免"跑了 2 小时"里其实 1 小时在等审批。
-    const waitingMs = Number(runTraceForTimeline?.waitingMs || 0);
-    const waitingNote = waitingMs > 0 && waitingMs >= runElapsedMs * 0.3
-      ? `（其中等待 ${formatDuration(waitingMs)}）`
-      : "";
-    return `已运行 ${formatDuration(runElapsedMs)}${waitingNote}`;
+    // 运行中补「当前：动作」，让进度从"时间在走"变成"在做什么"（规范 §2 / DESIGN §6.1）。
+    const currentNote = isTaskLive && runningLabel ? ` · 当前：${runningLabel}` : "";
+    return `已运行 ${formatDuration(runElapsedMs)}${currentNote}`;
   })();
   const timelineCompletion = runCardView?.outcome || runSummary?.completion || null;
   // 本轮结语以模型终稿为准：完成摘要在推断来源下由终稿生成，历史会话可能是工具结构化产物。
@@ -6034,7 +6236,10 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   // 运行中不渲染折叠头（直铺时间流），因此这里只处理终态。
   const runFold = describeRunFold({
     interrupted: runInterrupted,
-    failed: runCardView?.lifecycle === "failed",
+    // 兜底：历史轮可能没有 runCardView（详情未加载），此时按 Run 状态判定失败，
+    // 否则缺 runSummary 的失败轮会显示成「已完成」（审查报告 P2-6）。
+    failed: runCardView?.lifecycle === "failed"
+      || String(runSummary?.runStatus || m.runStatus || "").toLowerCase() === "failed",
     risky: timelineCompletion?.status === "blocked" || timelineCompletion?.status === "partial",
     elapsedMs: runElapsedMs,
   });
@@ -6071,9 +6276,10 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     }
     return null;
   };
+  // 时间流锚点一次算清：避免每个条目都对整个时间流做两次 reduce（O(n²)）。
+  const lastTextIndex = runTimeline.reduce((last, candidate, candidateIndex) => (candidate.kind === "text" ? candidateIndex : last), -1);
+  const lastThinkingIndex = runTimeline.reduce((last, candidate, candidateIndex) => (candidate.kind === "thinking" ? candidateIndex : last), -1);
   const renderTimelineItem = (item) => {
-    const lastTextIndex = runTimeline.reduce((last, candidate, candidateIndex) => (candidate.kind === "text" ? candidateIndex : last), -1);
-    const lastThinkingIndex = runTimeline.reduce((last, candidate, candidateIndex) => (candidate.kind === "thinking" ? candidateIndex : last), -1);
     switch (item.kind) {
       case "thinking": {
         // F2-b：流式思考——折叠态=单行跑马灯滚动预览（复用既有跑马灯，纳入动效闸门），展开态=打字机。
@@ -6113,8 +6319,31 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
             tool={item.block}
             expanded={expandedToolIds.has(toolExpandKey(item.block, item.id))}
             onToggle={() => onToggleTool?.(toolExpandKey(item.block, item.id))}
+            onOpenFile={onOpenFile}
           />
         );
+      case "ask": {
+        // 未决 ask 由折叠体外的 renderTimelineInteraction 常驻；已答 / 已过期折进时间流一行，可展开回看（规范 §6）。
+        const b = item.block || {};
+        if (!b.answer && !b.expired) return null;
+        const question = String(b.question || "").replace(/\s+/g, " ").trim().slice(0, 40);
+        return (
+          <TimelineRow key={item.id} icon="comment" verb={b.answer ? "已回答" : "已过期"} obj={question} state="ok">
+            <AskBlock block={b} clientId={clientId} threadId={threadId} />
+          </TimelineRow>
+        );
+      }
+      case "approval": {
+        // 同理：未决审批在折叠体外；已决审批在时间流里留一行只读回执。
+        const b = item.block || {};
+        if (!b.decision) return null;
+        const toolName = String(b.tool || b.name || "工具");
+        return (
+          <TimelineRow key={item.id} icon="shield" verb={b.decision === "deny" ? "已拒绝" : "已允许"} obj={toolName} state={b.decision === "deny" ? "err" : "ok"}>
+            <ApprovalBlock block={b} />
+          </TimelineRow>
+        );
+      }
       case "subagent": {
         // F3：子代理默认折叠为一行条目，展开才见完整卡。
         const b = item.block || {};
@@ -6134,6 +6363,10 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
       }
       case "pipeline":
         return <PipelineCard key={item.id} block={item.block} onOpenFile={onOpenFile} />;
+      case "turn-divider":
+        // 轮次之间只留间距，不显示「第 N 轮」文字或分隔线：分组还在，视觉噪声去掉
+        // （aria-label 仍给读屏用户轮次信息）。
+        return <div className="tl-turn-sep" key={item.id} role="separator" aria-label={`第 ${item.turn} 轮`} />;
       case "browser-steps":
         return <BrowserStepsCard key={item.id} steps={item.block.steps || []} />;
       case "sys":
@@ -6202,7 +6435,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     }
     if (block.type === "tool") {
       const key = toolExpandKey(block, `block-${blockIndex}`);
-      return <ToolCard key={key} tool={block} expanded={expandedToolIds.has(key)} onToggle={() => onToggleTool?.(key)} />;
+      return <ToolCard key={key} tool={block} expanded={expandedToolIds.has(key)} onToggle={() => onToggleTool?.(key)} onOpenFile={onOpenFile} />;
     }
     if (block.type === "subagent") return <SubagentCard key={key} block={block} onOpenDetail={onOpenSubagent} />;
     if (block.type === "pipeline") return <PipelineCard key={key} block={block} onOpenFile={onOpenFile} />;
@@ -6379,12 +6612,12 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
             {isTaskLive ? (
               <>
                 {runElapsedText && !showTimelineSummary && <div className="tl-elapsed">{runElapsedText}</div>}
-                <div className={`tl-list ${isTaskLive ? "is-live" : ""}`}>{runTimeline.map(renderTimelineItem)}</div>
+                <div className={`tl-list ${isTaskLive ? "is-live" : ""}`}>{runTimelineView.map(renderTimelineItem)}</div>
                 {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
               </>
             ) : (
-              <RunFoldBar state={runFold.state} label={runFold.label} steps={runTimeline.length} pendingLabel={runFoldPending} defaultOpen={runFold.state === "cancelled" || runFold.state === "err"}>
-                <div className="tl-list">{runTimeline.map(renderTimelineItem)}</div>
+              <RunFoldBar state={runFold.state} label={runFold.label} steps={runTimeline.length} pendingLabel={runFoldPending} defaultOpen={false}>
+                <div className="tl-list">{runTimelineView.map(renderTimelineItem)}</div>
                 {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
               </RunFoldBar>
             )}
@@ -6407,11 +6640,21 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                 artifacts={answerArtifacts}
               />
             )}
+            {!streaming && timelineUsageText && (
+              <div className="tl-metrics" role="status" aria-label="本轮用时与用量">{timelineUsageText}</div>
+            )}
             <ArtifactCard
               products={answerArtifacts || []}
               onOpenFile={onOpenFile}
               onOpenPanel={onOpenRunArtifacts ? () => onOpenRunArtifacts(runSummary?.runId || m.runId) : undefined}
             />
+            {!isTaskLive && runChanges.length > 0 && (
+              <RunChangesCard
+                changes={runChanges}
+                onOpenChanges={onOpenRunChanges ? () => onOpenRunChanges(runSummary?.runId || m.runId) : undefined}
+                onOpenFile={onOpenFile}
+              />
+            )}
             {timelineActionNeeded && !finalAnswerMissing && (
               <div className={`run-result-action ${timelineActionNeeded.kind}`}>
                 <Icon name="arrowRight" size={12} /> {timelineActionNeeded.text}
@@ -7476,6 +7719,8 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
       </div>
     );
   }
+  // 会话流统一以 embedded 挂载（会话流三处调用点均传 embedded=true）；下方非嵌入分支
+  // 保留给任务中心 / 诊断视图备用，当前无生产调用点，勿据此判断线上形态。
   if (embedded) {
     // 消息流里不再摊开 SSE 事件时间线（计划/执行/验证/交付 逐条事件属于诊断信息，
     // 右栏「事件」页签与任务中心保留完整轨迹）。这里只留需要用户知道的系统提示；
@@ -7627,24 +7872,43 @@ function TaskProgressCard({ tasks, running = false }) {
   }, [open, tasks.length]);
   const keepOpen = () => {
     if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
+    setOpen(true);
   };
   const scheduleClose = () => {
     if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
     closeTimerRef.current = window.setTimeout(() => setOpen(false), 350);
   };
+  const total = tasks.length;
+  const percent = total ? Math.round((done / total) * 100) : 0;
 
   return (
-    <div className={`task-card ${open ? "open" : ""}`} ref={cardRef} onMouseEnter={keepOpen} onMouseLeave={scheduleClose}>
-      <button type="button" className="task-head" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-label="查看任务进度">
-        <span className="task-chevron"><Icon name={open ? "chevronDown" : "chevronRight"} size={12} /></span>
-        <Icon name="list" size={12} />
-        <span className="task-title">任务</span>
-        <span className="task-progress">{done}/{tasks.length} 完成{failed ? ` · ${failed} 失败` : ""}</span>
+    <div
+      className={`task-card task-orb${open ? " open" : ""}${running ? " running" : ""}`}
+      ref={cardRef}
+      onMouseEnter={keepOpen}
+      onMouseLeave={scheduleClose}
+    >
+      <button
+        type="button"
+        className="task-orb-btn"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-label={`任务进度：${done}/${total} 完成${failed ? `，${failed} 项失败` : ""}`}
+        title={running ? "任务进行中，悬停查看任务清单" : "悬停查看任务清单"}
+      >
+        <span className="task-orb-ring" style={{ "--task-progress": percent }} aria-hidden="true" />
+        <span className="task-orb-core" aria-hidden="true">
+          {failed ? <Icon name="warning" size={12} /> : `${done}/${total}`}
+        </span>
       </button>
       {open && (
-        <div className="task-body" style={{ maxHeight: panelMaxHeight }}>
+        <div className="task-body task-orb-panel" style={{ maxHeight: panelMaxHeight }} role="dialog" aria-label="任务清单">
+          <div className="task-orb-head">
+            <span><Icon name="list" size={12} /> 任务</span>
+            <small>{done}/{total} 完成{failed ? ` · ${failed} 失败` : ""}</small>
+          </div>
           <div className="task-bar">
-            <div className="task-bar-fill" style={{ width: `${(done / tasks.length) * 100}%` }} />
+            <div className="task-bar-fill" style={{ width: `${percent}%` }} />
           </div>
           {tasks.map((t, i) => (
             <div key={t.id || i} className={`task-item ${t.done || ["completed", "skipped"].includes(t.status) ? "done" : ""} ${t.status === "failed" ? "failed" : ""}`}>
@@ -7670,6 +7934,14 @@ function toolPhrase(name, input, done) {
   arg = String(arg || "").trim();
   const tail = arg ? ` ${arg.slice(0, 60)}` : "";
   const loading = done ? "" : "正在";
+  // 单一事实源优先：服务端工具元数据的 presentation.verb（/api/harness/tools）。
+  // 未下发（离线 / 旧服务端 / 历史会话）时回落到下面的内置映射。
+  const serverPresentation = toolPresentationOf(name);
+  if (serverPresentation?.verb) {
+    // bash / officecli 历史上不加「正在」前缀，保持一致观感。
+    const prefix = (name === "bash" || name === "officecli") ? "" : loading;
+    return `${prefix}${serverPresentation.verb}${tail}`;
+  }
   switch (name) {
     case "read": return `${loading}读取文件${tail}`;
     case "write": return `${loading}写入文件${tail}`;
@@ -7805,14 +8077,71 @@ function toolExpandKey(block, fallback = "") {
 
 const EMPTY_TOOL_IDS = new Set();
 
-function ToolCard({ tool, expanded = false, onToggle }) {
+/**
+ * 工具展示分型（typed tool card）：把"读 / 搜 / 命令 / 编辑"四类工具的明细
+ * 渲染从一份通用 <pre> 拆开——读文档显示行号、搜索显示命中列表、命令行显示终端块。
+ * 只按工具名归类，不猜输入的自然语言。
+ */
+const TOOL_KIND_RULES = [
+  [/^(read|kb_read|context_read)$/i, "read"],
+  [/^(grep|glob|find|ls|kb_search|skills_search|web_search|webSearch)$/i, "search"],
+  [/^(bash|officecli|terminal|shell)$/i, "terminal"],
+  [/^(write|edit|review_source_apply|skill_draft)$/i, "edit"],
+];
+
+function toolKindOf(name) {
+  const value = String(name || "");
+  for (const [pattern, kind] of TOOL_KIND_RULES) {
+    if (pattern.test(value)) return kind;
+  }
+  return "generic";
+}
+
+/** 从工具输入里取可打开的文件路径；只在"看起来像路径"时采用，
+ *  避免把 bash 的命令字符串当成文件路径渲染成可点击按钮。 */
+function toolPathOf(input, kind = "generic") {
+  try {
+    const obj = typeof input === "object" && input ? input : JSON.parse(String(input || "{}"));
+    const explicit = obj.file_path || obj.filePath || obj.path;
+    if (typeof explicit === "string" && explicit.trim()) return explicit.trim();
+    if (kind === "terminal") return "";
+    const args = obj.args;
+    if (typeof args !== "string") return "";
+    const value = args.trim();
+    const looksLikePath = value && !/\s/.test(value) && /[\\/]|[.][A-Za-z0-9]{1,8}$/.test(value);
+    return looksLikePath ? value : "";
+  } catch {
+    return "";
+  }
+}
+
+function ToolCard({ tool, expanded = false, onToggle, onOpenFile }) {
   const { name, input, output, done, isError, duration } = tool;
+  // 运行中的工具显示「已运行 Xs」：长命令/长检索期间通道没有新事件，缺这个活性提示
+  // 用户会以为界面卡死（2026-11-06 实测：编译类 bash 静默数十秒）。
+  const [, setElapsedTick] = useState(0);
+  useEffect(() => {
+    if (done) return undefined;
+    const timer = window.setInterval(() => setElapsedTick((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [done]);
+  const pendingElapsed = !done && tool.startTime ? Math.max(0, Math.floor((Date.now() - tool.startTime) / 1000)) : 0;
   // 命令预览：bash/officecli 等命令行工具显示 $ 前缀
   // 注意：JSON.stringify(undefined) 返回 undefined，历史会话中 tool.input 可能缺失
   let inputStr = typeof input === "string" ? input : (input != null ? JSON.stringify(input, null, 2) : "");
+  // 命令类工具的输入在事件里是 JSON **字符串**（"{\"command\":\"cd ...\"}"），也可能已是对象；
+  // 两种形态都要取 command，标题行 `$ ...` 不能显示整段 JSON（真实数据见 2026-11-06 截图）。
+  let inputObject = typeof input === "object" && input ? input : null;
+  if (!inputObject && typeof input === "string" && /^\s*\{/.test(input)) {
+    try {
+      const parsed = JSON.parse(input);
+      if (parsed && typeof parsed === "object") inputObject = parsed;
+    } catch {}
+  }
   try {
-    if (typeof input === "object" && input?.args) {
-      inputStr = typeof input.args === "string" ? input.args : JSON.stringify(input.args);
+    if (inputObject) {
+      if (typeof inputObject.command === "string" && inputObject.command.trim()) inputStr = inputObject.command;
+      else if (inputObject.args != null) inputStr = typeof inputObject.args === "string" ? inputObject.args : JSON.stringify(inputObject.args);
     }
   } catch {}
   const isCmd = name === "bash" || name === "officecli" || name === "find" || name === "grep" || name === "ls" || name === "cat";
@@ -7822,6 +8151,26 @@ function ToolCard({ tool, expanded = false, onToggle }) {
   const fullInput = inputStr.replace(/\s+/g, " ").trim();
   const cmdPreview = isCmd ? `${fullInput.slice(0, 96)}${fullInput.length > 96 ? "…" : ""}` : fullInput.slice(0, 80);
   const outputPreview = output?.length > 300 ? output.slice(0, 300) + "..." : output;
+  // 折叠态结果摘要：此前工具卡只有「动词 + 对象」，成功后看不出读了几行 / 退出码 / 失败原因。
+  // 全部从已有 output/result 文本推导，不新增事件字段；拿不到就留空，不编造。
+  const resultText = String(output || tool.result || "");
+  const resultLineCount = resultText ? resultText.split(/\r?\n/).length : 0;
+  const resultFirstLine = resultText.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "";
+  const exitMatch = resultText.match(/(?:^|\n)\s*(?:exit\s*code|exitCode|exit_code)\s*[:=]?\s*(-?\d+)/i);
+  const toolKind = toolKindOf(name);
+  const toolPath = toolPathOf(input, toolKind);
+  // 明细分型渲染的上限：读文档最多列 400 行（超出给"还有 N 行"），避免大文件卡住渲染。
+  const READ_LINE_LIMIT = 400;
+  const readLines = toolKind === "read" && resultText ? resultText.split(/\r?\n/).slice(0, READ_LINE_LIMIT) : [];
+  const readHiddenLines = toolKind === "read" && resultLineCount > READ_LINE_LIMIT ? resultLineCount - READ_LINE_LIMIT : 0;
+  const searchHits = toolKind === "search" && resultText
+    ? resultText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+    : [];
+  let resultChip = "";
+  if (done && isError) resultChip = resultFirstLine ? resultFirstLine.slice(0, 60) : "执行失败";
+  else if (done && exitMatch) resultChip = `exit ${exitMatch[1]}`;
+  else if (done && (name === "read" || name === "kb_read") && resultLineCount > 1) resultChip = `${resultLineCount} 行`;
+  else if (done && toolKind === "search" && searchHits.length) resultChip = `${searchHits.length} 条`;
   // O-P5：browser_screenshot 结果内嵌截图回看（结果 JSON 的 details.file 指向服务端落盘文件）
   let shotInfo = null;
   if (done && !isError && name === "browser_screenshot") {
@@ -7854,13 +8203,20 @@ function ToolCard({ tool, expanded = false, onToggle }) {
         <ToolIdentityIcon name={name} size={12} className="tool-identity-inline" />
         {isMapTool && <span className="tool-map-badge" title="地图操作：结果会实时反映到地图上">地图</span>}
         <span className="tool-phrase" title={inputStr}>{toolPhrase(name, input, done)}</span>
+        {resultChip && <span className={`tool-result-chip${isError ? " err" : ""}`} title={resultFirstLine || resultChip}>{resultChip}</span>}
         {tool.startMissing && <span className="tool-recovered" title="开始事件已丢失，状态由结束事件恢复">已恢复</span>}
         {isCmd && <code className="cmd-code" title={fullInput}>$ {cmdPreview}</code>}
         {duration && <span className="tool-duration">{duration}s</span>}
+        {!done && pendingElapsed >= 1 && <span className="tool-pending-elapsed">已运行 {pendingElapsed}s</span>}
         <span className={`tool-chevron ${expanded ? "open" : ""}`}><Icon name="chevronRight" size={12} /></span>
       </div>
       {expanded && (
-        <div className="tool-detail">
+        <div className={`tool-detail tool-detail-${toolKind}`}>
+          {toolPath && (
+            <div className="tool-section tool-path-row">
+              <button type="button" className="tool-path" title={toolPath} onClick={() => onOpenFile?.(toolPath)}>{toolPath}</button>
+            </div>
+          )}
           {shotInfo && (
             <div className="tool-section tool-shot-preview">
               <div className="tool-section-label">截图回看</div>
@@ -7871,25 +8227,51 @@ function ToolCard({ tool, expanded = false, onToggle }) {
           {reconcilePending && (
             <div className="tool-section tool-reconcile-hint" role="status">画面暂不可达（面板重连中），操作已生效。</div>
           )}
-          {/* 输入参数 */}
-          {inputStr && (
+          {toolKind === "read" && readLines.length ? (
             <div className="tool-section">
-              <div className="tool-section-label">输入</div>
-              <pre className={`tool-code ${isCmd ? "cmd" : ""}`}>{inputStr}</pre>
+              <div className="tool-section-label">内容{resultLineCount ? ` · ${resultLineCount} 行` : ""}</div>
+              <ol className="tool-read-lines">
+                {readLines.map((line, index) => <li key={index}><code>{line || " "}</code></li>)}
+              </ol>
+              {readHiddenLines > 0 && (
+                <div className="tool-read-more">…还有 {readHiddenLines} 行未展开（可在文件预览查看完整内容）</div>
+              )}
             </div>
-          )}
-          {/* 配对结果（按 toolCallId 配对，pi PairedResult 风格） */}
-          {(output || tool.result) && (
+          ) : toolKind === "search" && searchHits.length ? (
             <div className="tool-section">
-              <div className="tool-section-label">{done ? "结果" : "输出"}</div>
-              <pre className={`tool-code ${isError ? "err" : ""}`}>{expanded ? (output || tool.result) : outputPreview}</pre>
+              <div className="tool-section-label">命中 · {searchHits.length} 条</div>
+              <ul className="tool-search-hits">
+                {searchHits.slice(0, 200).map((line, index) => <li key={index}><code>{line}</code></li>)}
+              </ul>
+              {searchHits.length > 200 && <div className="tool-search-more">…还有 {searchHits.length - 200} 条</div>}
             </div>
-          )}
-          {done && !output && !tool.result && (
+          ) : toolKind === "terminal" ? (
             <div className="tool-section">
-              <div className="tool-section-label">结果</div>
-              <pre className="tool-code empty">(no output)</pre>
+              <div className="tool-section-label">{done ? "输出" : "输出（实时）"}{exitMatch ? ` · exit ${exitMatch[1]}` : ""}</div>
+              <pre className={`tool-terminal ${isError ? "err" : ""}`}>{resultText || "(no output)"}</pre>
             </div>
+          ) : (
+            <>
+              {/* 通用工具：输入参数 + 配对结果（按 toolCallId 配对，pi PairedResult 风格） */}
+              {inputStr && (
+                <div className="tool-section">
+                  <div className="tool-section-label">输入</div>
+                  <pre className={`tool-code ${isCmd ? "cmd" : ""}`}>{inputStr}</pre>
+                </div>
+              )}
+              {(output || tool.result) && (
+                <div className="tool-section">
+                  <div className="tool-section-label">{done ? "结果" : "输出"}</div>
+                  <pre className={`tool-code ${isError ? "err" : ""}`}>{expanded ? (output || tool.result) : outputPreview}</pre>
+                </div>
+              )}
+              {done && !output && !tool.result && (
+                <div className="tool-section">
+                  <div className="tool-section-label">结果</div>
+                  <pre className="tool-code empty">(no output)</pre>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

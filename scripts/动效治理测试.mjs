@@ -103,7 +103,7 @@ for (const 名称 of 全部关键帧) {
 const 期望持续动画 = [
   "activity-marquee-sweep", "blink", "brain-pulse", "dot-breathe-soft",
   "marquee-neon", "marquee-scroll", "marquee-shine",
-  "mp-spin", "pulse", "pulse-status", "pulse-status-soft", "session-pulse", "spin", "streaming-label-breathe", "thinking-caret-blink",
+  "mp-spin", "pulse", "pulse-status", "pulse-status-soft", "session-pulse", "spin", "streaming-label-breathe", "thinking-caret-blink", "task-orb-spin",
 ];
 assert.deepEqual(
   [...无限动画].sort(),
@@ -128,6 +128,7 @@ const 持续动画宿主 = {
   "activity-marquee-sweep": [".message-process-fold.run-activity-fold.is-live > summary::after"],
   "thinking-caret-blink": [".thinking-process-inline.is-streaming .thinking-text::after"],
   "mp-spin": [".mp-spin"],
+  "task-orb-spin": [".task-orb.running .task-orb-ring"],
 };
 const 宿主清单 = new Set();
 for (const 宿主们 of Object.values(持续动画宿主)) for (const 宿主 of 宿主们) 宿主清单.add(宿主);

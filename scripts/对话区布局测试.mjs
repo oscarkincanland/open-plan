@@ -66,8 +66,17 @@ test("助手与用户正文 14/1.75，代码 12/1.65（v0.13.26 归一档）", (
   assert.match(css, /\.center-chat-slot \.markdown-body pre,\s*\n\.center-chat-slot \.markdown-body code \{ font-size: 12px; line-height: 1\.65; \}/);
 });
 
-test("任务卡与输入区同宽", () => {
-  assert.match(css, /\.center-chat-slot \.chat-compose > \.task-card \{\s*width: 100%;\s*max-width: var\(--msg-content-max\);/);
+test("任务进度改为输入框上方的居中浮动圆环", () => {
+  assert.match(css, /\.center-chat-slot \.chat-compose > \.task-orb \{\s*width: 38px;\s*max-width: 38px;\s*margin: 0;/);
+  assert.match(css, /\.chat-compose > \.task-orb \{[\s\S]{0,260}?left: 50%;[\s\S]{0,260}?transform: translateX\(-50%\);/);
+  assert.match(css, /\.task-orb\.running \.task-orb-ring \{ animation: task-orb-spin/);
+  assert.doesNotMatch(css, /\.chat-compose > \.task-card \{\s*width: min\(380px, 100%\);/, "旧的整行任务卡不应再占位");
+});
+
+test("画布标签关闭按钮贴右", () => {
+  const main = /\.canvas-tab-main \{([\s\S]*?)\}/.exec(css);
+  assert.ok(main, "缺少 .canvas-tab-main 规则");
+  assert.match(main[1], /flex:\s*1 1 auto;/, "标签主按钮应撑开，把关闭按钮推到右缘");
 });
 
 console.log(failed ? "\n✗ 对话区布局测试存在失败" : "\n✓ 对话区布局测试全部通过");

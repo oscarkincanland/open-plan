@@ -419,16 +419,21 @@ test("记忆建议不插主消息流，改挂结果卡入口", () => {
     const chat = buildOutputPolicyLines({ mode: "chat" }).join("\n");
     const review = buildOutputPolicyLines({ mode: "review" }).join("\n");
     const work = buildOutputPolicyLines({ mode: "work" }).join("\n");
-    assert.match(chat, /1-3 句/, "Chat 模式应为短结论");
-    assert.doesNotMatch(chat, /简洁但完整的 Markdown/, "Chat 模式不要求结构化成果");
-    assert.doesNotMatch(review, /简洁但完整的 Markdown/, "Review 模式同样短结论");
-    assert.match(work, /简洁但完整的 Markdown/, "Work 模式应要求结构化成果");
-    for (const [name, text] of [["chat", chat], ["review", review], ["work", work]]) {
+    const fallback = buildOutputPolicyLines().join("\n");
+    // 2026-11-06 用户决定：Chat 与其他模式结论保持一致，统一「推荐骨架」。
+    for (const [name, text] of [["chat", chat], ["review", review], ["work", work], ["default", fallback]]) {
+      assert.match(text, /## 结论/, `${name} 应包含推荐骨架的「结论」节`);
+      assert.match(text, /## 关键结果/, `${name} 应包含「关键结果」节`);
+      assert.match(text, /## 产物/, `${name} 应包含「产物」节`);
+      assert.match(text, /## 验证/, `${name} 应包含「验证」节`);
+      assert.match(text, /## 风险与未完成/, `${name} 应包含「风险与未完成」节`);
+      assert.match(text, /推荐骨架/, `${name} 应说明骨架是推荐而非强制`);
+      assert.match(text, /不得当小节标题/, `${name} 应约束加粗不能冒充标题`);
       assert.match(text, /进度结论（重要）/, `${name} 模式应共享同一条进度策略`);
     }
-    // 默认（未知模式）按 work 处理
-    assert.match(buildOutputPolicyLines().join("\n"), /简洁但完整的 Markdown/, "未指定模式应退化为 Work 策略");
-    ok("输出策略按模式统一（单一来源，Chat/Review 短结论 / Work 结构化成果）");
+    assert.equal(chat, work, "Chat 与 Work 的结论口径必须完全一致");
+    assert.doesNotMatch(chat, /不要输出固定的 Markdown 分段模板/, "不得再禁止结构化输出");
+    ok("输出策略按模式统一（Chat/Work/Review 同一套推荐骨架）");
   } catch (error) {
     bad(`输出策略按模式统一: ${error.message}`);
   }

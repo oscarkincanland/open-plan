@@ -25,6 +25,59 @@ function budget(maxInlineBytes, direction = "head", strategy = "artifact") {
   };
 }
 
+// ---- 展示元数据（verb/icon）----
+// 会话流工具卡的"动词 + 图标"以前由前端两处各维护一份：ChatPanel.jsx 的 toolPhrase
+// 与 事件展示.js 的 toolIdentity，新增工具会退化成「调用 xxx」或通用图标。
+// 2026-11-06 收敛到本表：能力事实与展示用同一张登记，前端经 /api/harness/tools 取用，
+// 取不到时才回落到前端的内置映射（离线/历史会话）。
+const PRESENTATION_OVERRIDES = new Map([
+  ["read", { verb: "读取文件", icon: "file" }],
+  ["context_read", { verb: "读取上下文", icon: "file" }],
+  ["write", { verb: "写入文件", icon: "edit" }],
+  ["edit", { verb: "编辑文件", icon: "edit" }],
+  ["bash", { verb: "执行命令", icon: "terminal" }],
+  ["officecli", { verb: "操作 Office 文档", icon: "doc" }],
+  ["grep", { verb: "搜索内容", icon: "search" }],
+  ["find", { verb: "查找文件", icon: "search" }],
+  ["ls", { verb: "查看文件列表", icon: "search" }],
+  ["glob", { verb: "查找文件", icon: "search" }],
+  ["kb_search", { verb: "搜索知识库", icon: "book" }],
+  ["kb_read", { verb: "读取知识库", icon: "book" }],
+  ["skills_search", { verb: "搜索 Skills", icon: "book" }],
+  ["skills_read", { verb: "读取 Skill 说明", icon: "book" }],
+  ["skill_draft", { verb: "生成技能草稿", icon: "book" }],
+  ["todo", { verb: "更新任务清单", icon: "list" }],
+  ["run_subagent", { verb: "子代理", icon: "flow" }],
+  ["editorial_pipeline", { verb: "编辑流水线", icon: "flow" }],
+  ["ask_user", { verb: "向你提问", icon: "comment" }],
+  ["memory_update", { verb: "更新记忆", icon: "book" }],
+  ["web_search", { verb: "联网搜索", icon: "search" }],
+  ["web_fetch", { verb: "抓取网页", icon: "search" }],
+  ["cad_read", { verb: "读取 CAD 图纸", icon: "doc" }],
+  ["cad_edit", { verb: "修改 CAD 图纸", icon: "edit" }],
+]);
+
+const PRESENTATION_RULES = [
+  [/^map_/, { verb: "地图操作", icon: "map" }],
+  [/^browser_/, { verb: "浏览器操作", icon: "globe" }],
+  [/^(job_|background_)/, { verb: "后台任务", icon: "history" }],
+  [/^(team_|teamTask)/, { verb: "团队协作", icon: "flow" }],
+  [/^(memory_|goal_)/, { verb: "记忆与目标", icon: "book" }],
+  [/^(review_|reviewCopy)/, { verb: "规范审查", icon: "shield" }],
+  [/^(terminal|shell)/, { verb: "执行命令", icon: "terminal" }],
+];
+
+/** 工具名 → { verb, icon }；未知工具给通用图标、verb 留空（前端回落「调用 <name>」）。 */
+function presentationFor(name) {
+  const key = String(name || "").trim();
+  const override = PRESENTATION_OVERRIDES.get(key);
+  if (override) return Object.freeze({ ...override });
+  for (const [pattern, value] of PRESENTATION_RULES) {
+    if (pattern.test(key)) return Object.freeze({ ...value });
+  }
+  return Object.freeze({ verb: null, icon: "tool" });
+}
+
 function meta(name, options = {}) {
   return Object.freeze({
     name,
@@ -39,6 +92,7 @@ function meta(name, options = {}) {
       denyPriority: Number(options.denyPriority || 0),
     },
     resultBudget: options.resultBudget || budget(30 * KB, "head", options.readOnly ? "truncate" : "artifact"),
+    presentation: options.presentation || presentationFor(name),
     notes: options.notes || "",
   });
 }

@@ -169,9 +169,9 @@ await test("结束后用时进折叠头，不再单占一行、也不再进总�
   assert.doesNotMatch(summaryBlock, /elapsedMs/, "总结块不再接收耗时");
 });
 
-await test("等待时长占比高时标注", () => {
-  assert.match(chatPanel, /waitingMs >= runElapsedMs \* 0\.3/);
-  assert.match(chatPanel, /其中等待/);
+await test("不再读取从未写入的 waitingMs（死字段已清理）", () => {
+  assert.doesNotMatch(chatPanel, /runTraceForTimeline\?\.waitingMs/, "waitingMs 从未被归约写入，读取即死代码");
+  assert.doesNotMatch(chatPanel, /其中等待/, "已移除从未生效的等待注记");
 });
 
 console.log("\n▶ 历史分页");
@@ -182,7 +182,10 @@ await test("分页结果回写 historyMessages（单一事实源）", () => {
 
 await test("旧页也合并 run 摘要", () => {
   assert.match(app, /buildRunSummaryMessages\(runData\?\.runs\)/);
-  assert.match(app, /mergeRunSummaries\(buildHistoryMessages\(d\.entries \|\| \[\]\), runMessages\)/);
+  // 2026-11-06：合并前先取历史消息（msgs），并补「运行记录缺失」孤儿卡、再做规范化。
+  assert.match(app, /buildHistoryMessages\(d\.entries \|\| \[\]\)/);
+  assert.match(app, /mergeRunSummaries\(msgs, \[\.\.\.runMessages, \.\.\.orphanCards\]\)/);
+  assert.match(app, /normalizeHistoryMessages\(mergeRunSummaries\(/);
 });
 
 await test("三态反馈可见（已加载 N / 已到最早 / 不支持）", () => {
@@ -283,6 +286,67 @@ await test("运行中直铺时间流，终态才折叠", () => {
   assert.match(chatPanel, /\{isTaskLive \? \(/);
   assert.match(chatPanel, /<RunFoldBar state=\{runFold\.state\} label=\{runFold\.label\} steps=\{runTimeline\.length\}/);
   assert.match(chatPanel, /const runFold = describeRunFold\(\{/);
+  // 规范 §2 / ADR 0014 §4.2：失败与取消也默认折叠，可执行动作靠折叠体外「需行动提示」承载。
+  assert.match(chatPanel, /defaultOpen=\{false\}/, "失败/取消轮也必须默认折叠");
+  assert.doesNotMatch(chatPanel, /defaultOpen=\{runFold\.state/, "不得按终态决定默认展开");
+});
+
+await test("已决 ask / 已决审批折叠为时间流一行，可展开回看", () => {
+  assert.match(chatPanel, /case "ask": \{/);
+  assert.match(chatPanel, /if \(!b\.answer && !b\.expired\) return null;/, "未决 ask 仍由折叠体外常驻渲染");
+  assert.match(chatPanel, /verb=\{b\.answer \? "已回答" : "已过期"\}/);
+  assert.match(chatPanel, /case "approval": \{/);
+  assert.match(chatPanel, /if \(!b\.decision\) return null;/, "未决审批仍由折叠体外常驻渲染");
+  assert.match(chatPanel, /verb=\{b\.decision === "deny" \? "已拒绝" : "已允许"\}/);
+  assert.ok(
+    chatPanel.indexOf('case "ask":') > chatPanel.indexOf("const renderTimelineItem"),
+    "已决交互行应渲染在时间流内部（折叠体里）",
+  );
+});
+
+await test("运行中显示「当前：动作」，结束后在总结页脚显示用量", () => {
+  assert.match(chatPanel, /summarizeTimeline\(runTimeline\)\.runningLabel/);
+  assert.match(chatPanel, /· 当前：\$\{runningLabel\}/);
+  assert.match(chatPanel, /className="tl-metrics"/);
+  assert.match(styles, /\.tl-metrics \{[^}]*?font-size: 12px/);
+});
+
+await test("工具卡折叠态有结果摘要（读取行数 / exit / 失败首行）", () => {
+  assert.match(chatPanel, /const resultText = String\(output \|\| tool\.result \|\| ""\)/);
+  assert.match(chatPanel, /const exitMatch = resultText\.match/);
+  assert.match(chatPanel, /className=\{`tool-result-chip/, "结果摘要徽标应渲染在工具卡头部");
+  assert.match(styles, /\.tool-result-chip \{[^}]*?color: var\(--muted\)/);
+  assert.match(styles, /\.tool-result-chip\.err \{ color: var\(--error\); \}/);
+});
+
+await test("工具卡按类型分叉：读（行号）/ 搜索（命中）/ 命令（终端）/ 文件路径", () => {
+  assert.match(chatPanel, /const TOOL_KIND_RULES = \[/);
+  assert.match(chatPanel, /function toolKindOf\(name\)/);
+  assert.match(chatPanel, /className="tool-read-lines"/);
+  assert.match(chatPanel, /className="tool-search-hits"/);
+  assert.match(chatPanel, /className=\{`tool-terminal/, "命令类工具应使用终端块");
+  assert.match(chatPanel, /className="tool-path"/, "带文件路径的工具应可点击打开");
+  assert.match(chatPanel, /onOpenFile=\{onOpenFile\}/, "ToolCard 应接收 onOpenFile");
+  assert.match(styles, /\.tool-read-lines \{[^}]*?max-height: 260px/);
+  assert.match(styles, /\.tool-terminal \{[^}]*?max-height: 280px/);
+});
+
+await test("多轮 Run 的过程按 turn 分组（只留间距、不显示轮次标签）", () => {
+  assert.match(chatPanel, /assignTimelineTurns\(runTimeline, timelineEventsSource\)/);
+  assert.match(chatPanel, /runTimelineView\.map\(renderTimelineItem\)/);
+  assert.match(chatPanel, /case "turn-divider":/);
+  // 视觉上不出现「第 N 轮」文字/分隔线；轮次只通过 aria-label 给读屏
+  assert.match(chatPanel, /aria-label=\{`第 \$\{item\.turn\} 轮`\}/);
+  assert.doesNotMatch(chatPanel, /<span>第 \{item\.turn\} 轮<\/span>/, "不得显示轮次文字");
+  assert.doesNotMatch(styles, /\.tl-turn-sep::before/, "不得画轮次分隔线");
+  const rule = styles.match(/\.tl-turn-sep \{[^}]*\}/)?.[0] || "";
+  assert.match(rule, /margin: 10px 0 4px/, "轮次之间只留间距");
+  // 步数仍按未分组条目计算，分隔行不计入
+  assert.match(chatPanel, /steps=\{runTimeline\.length\}/);
+});
+
+await test("折叠头 failed 判定有 runStatus 兜底（缺 runCardView 的历史失败轮）", () => {
+  assert.match(chatPanel, /String\(runSummary\?\.runStatus \|\| m\.runStatus \|\| ""\)\.toLowerCase\(\) === "failed"/);
 });
 
 await test("未决 ask / 审批渲染在折叠体之外", () => {
@@ -329,6 +393,16 @@ await test("步数带分隔符，读屏不会把「43 秒48 步」连读", () =>
   assert.match(runFoldBar, /<span className="run-fold-steps">· \{steps\} 步<\/span>/);
 });
 
+await test("旧过程折叠与 Run 折叠头同形态：无边框 / 背景 / 字符箭头", () => {
+  const rule = styles.match(/\.message-process-fold \{[^}]*\}/)?.[0] || "";
+  assert.ok(rule, "未找到 .message-process-fold 规则");
+  assert.doesNotMatch(rule, /border:/, "不应有外边框（规范 §2 / §11 禁止运行框）");
+  assert.doesNotMatch(rule, /background:/, "不应有背景块（规范 §2 / §11）");
+  assert.doesNotMatch(styles, /content: "›"/, "不应使用字符箭头（规范 §2.1，统一走 Icon）");
+  const summaryRule = styles.match(/\.message-process-fold > summary \{[^}]*\}/)?.[0] || "";
+  assert.match(summaryRule, /font-size: 12px/, "摘要行应回到 12px 档");
+});
+
 console.log("\n▶ 字号档位（规范 v2.0 §4）");
 
 await test("会话流字号只允许 12 / 14 / 16", () => {
@@ -340,6 +414,32 @@ await test("会话流字号只允许 12 / 14 / 16", () => {
   for (const size of sizes) {
     assert.ok(["12px", "14px", "16px"].includes(size), `会话流出现了档位外的字号：${size}`);
   }
+});
+
+await test("会话流次级明细字号下限 12px（工具卡 / 审批 / 子代理 / 流水线）", () => {
+  const floorStart = styles.indexOf("会话流字号下限");
+  const floorEnd = styles.indexOf("本轮用量", floorStart);
+  assert.ok(floorStart > 0 && floorEnd > floorStart, "应有一层「会话流字号下限」规则并标明结束锚点");
+  const floor = styles.slice(floorStart, floorEnd);
+  for (const selector of [
+    ".tool-card", ".tool-icon", ".tool-phrase", ".tool-code", ".cmd-code", ".tool-duration",
+    ".ask-receipt", ".ask-status", ".approval-status", ".approval-scope",
+    ".subagent-card", ".subagent-card-title small",
+    ".pipeline-card-title small", ".pipeline-card-status",
+    ".browser-steps-card", ".run-result-action", ".msg-streaming-status",
+  ]) {
+    assert.ok(floor.includes(selector), `字号下限规则应覆盖 ${selector}`);
+  }
+  const sizes = [...floor.matchAll(/font-size:\s*([0-9.]+px)/g)].map((m) => m[1]);
+  for (const size of sizes) {
+    assert.ok(["12px", "14px", "16px"].includes(size), `字号下限规则里出现了档位外字号：${size}`);
+  }
+});
+
+await test("思考正文回到 14px / --text（规范 §4）", () => {
+  const rule = styles.match(/\.tl-thinking-text \{[^}]*\}/)?.[0] || "";
+  assert.match(rule, /font-size: 14px/, "思考正文应为 14px");
+  assert.match(rule, /color: var\(--text\)/, "思考正文应使用正文色");
 });
 
 await test("会话流不再使用 em 相对字号", () => {
