@@ -162,3 +162,6 @@ desktop/dist-app2/
 /office-workspace/maps/*/agent/
 /office-workspace/maps/*/operations.jsonl
 /office-workspace/maps/*/map.baseline.json
+# 当前地图会话生成、但未纳入版本库的演示图层（本地保留）
+/office-workspace/maps/zhejiang-map/layers/traffic_flow_assigned.geojson
+/office-workspace/maps/zhejiang-map/layers/yiwu_heat_demo.geojson
