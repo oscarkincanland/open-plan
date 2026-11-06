@@ -126,6 +126,7 @@ import {
   browserTabs,
   browserType,
   browserWaitFor,
+  getBrowserSession,
 } from "./内置浏览器.mjs";
 import { CHANNEL_HISTORY_LIMIT, PROTOCOL_VERSION, createStreamId, pushChannelEvent } from "./事件协议.mjs";
 import { evaluateMemoryCandidate } from "./记忆准入.mjs";
@@ -2435,6 +2436,51 @@ execute: async (_toolCallId, params, signal) => {
     // ---- 内置浏览器（可视化操作，用户可在右侧“浏览器”面板实时观看并接管） ----
     const browserKeyOf = () => browserSessionKey(entry.clientId, entry.threadId);
     const browserToolResult = (text, details = {}) => ({ content: [{ type: "text", text }], details });
+    // T6：浏览器步骤/读取事件——统一包装 execute，采集“第几步・访问哪里・读了什么・耗时/失败”。
+    // 事件契约见 server/事件注册表.mjs（browser_step_start / browser_step_end / browser_read）。
+    const browserCurrentView = () => {
+      const session = getBrowserSession(browserKeyOf());
+      return session ? { url: session.state.url || "", title: session.state.title || "" } : { url: "", title: "" };
+    };
+    const emitBrowserStep = (event, data) => {
+      try { writeEvent(event, { toolCallId: data.toolCallId || null, ...data }); } catch {}
+    };
+    const withBrowserStep = (kind, execute) => async (toolCallId, params = {}) => {
+      const startedAt = Date.now();
+      const view = browserCurrentView();
+      emitBrowserStep("browser_step_start", { toolCallId, kind, url: view.url, title: view.title });
+      try {
+        const result = await execute(toolCallId, params);
+        const viewAfter = browserCurrentView();
+        emitBrowserStep("browser_step_end", { toolCallId, kind, status: "done", durationMs: Date.now() - startedAt, url: viewAfter.url, title: viewAfter.title });
+        return result;
+      } catch (error) {
+        const viewAfter = browserCurrentView();
+        emitBrowserStep("browser_step_end", { toolCallId, kind, status: "error", durationMs: Date.now() - startedAt, url: viewAfter.url, title: viewAfter.title, error: String(error?.message || error).slice(0, 200) });
+        throw error;
+      }
+    };
+    /** 读取类工具（snapshot/extract）发布 browser_read：字数与预览让用户“看到读了什么”。 */
+    const emitBrowserRead = (toolCallId, kind, payload, error = null) => {
+      try {
+        const view = browserCurrentView();
+        writeEvent("browser_read", {
+          toolCallId,
+          kind,
+          url: payload?.url || view.url,
+          title: payload?.title || view.title,
+          chars: typeof payload?.text === "string" ? payload.text.length : Number(payload?.chars) || 0,
+          elementCount: Array.isArray(payload?.elements) ? payload.elements.length : 0,
+          preview: String(payload?.text || "").slice(0, 300),
+          error: error ? String(error.message || error).slice(0, 200) : null,
+        });
+      } catch {}
+    };
+    /** T6：浏览器工具注册期统一包装：步骤开始/结束事件（不动工具内部实现）。 */
+    const wrapBrowserStepTool = (kind, tool) => defineTool({
+      ...tool,
+      execute: withBrowserStep(kind, tool.execute),
+    });
     const browserErrorText = (error) => {
       const message = String(error?.message || error);
       if (error?.code === "BROWSER_USER_TAKEOVER") {
@@ -2472,9 +2518,11 @@ execute: async (_toolCallId, params, signal) => {
       parameters: Type.Object({
         purpose: Type.Optional(Type.String({ description: "本次观察的目的（可选，便于记录）" })),
       }),
-      execute: async () => {
+      execute: async (toolCallId) => {
         try {
           const snap = await browserSnapshot(browserKeyOf());
+          // T6：快照即“读取”动作——把读到的字数/元素数/预览发给用户面板
+          emitBrowserRead(toolCallId, "snapshot", { url: snap.url, title: snap.title, text: snap.text, elements: snap.elements });
           const elementText = (snap.elements || []).join("\n") || "（没有找到可交互元素）";
           const text = `页面：${snap.title || ""}\nURL：${snap.url}\n\n可交互元素：\n${elementText}\n\n正文摘要：\n${(snap.text || "").slice(0, 1200)}`;
           return browserToolResult(limitToolText(text), { url: snap.url, title: snap.title, elements: (snap.elements || []).length });
@@ -2631,6 +2679,7 @@ execute: async (_toolCallId, params, signal) => {
       execute: async (_toolCallId, params) => {
         try {
           const result = await browserExtract(browserKeyOf(), { selector: params.selector, format: params.format, maxChars: params.maxChars });
+          emitBrowserRead(_toolCallId, "extract", { url: result.url, title: result.title, text: result.text, elements: [] }); // T6
           return browserToolResult(
             `已抽取 ${result.selector}（${result.chars} 字${result.truncated ? "，已截断" : ""}，format=${result.format}）：\n${result.text}`,
             result,
@@ -4806,7 +4855,7 @@ execute: async (_toolCallId, params, signal) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, jobStatusTool, jobCancelTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, skillDraftTool, contextReadTool, mapReadTool, mapDatasetsTool, mapLayerInfoTool, mapResetTool, mapProjectCreateTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, cadReadTool, cadEditTool, memoryUpdateTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, browserWaitForTool, browserActTool, browserExtractTool, browserSelectOptionTool, subagentTool, ...teamTools, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
+        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, jobStatusTool, jobCancelTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, skillDraftTool, contextReadTool, mapReadTool, mapDatasetsTool, mapLayerInfoTool, mapResetTool, mapProjectCreateTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, cadReadTool, cadEditTool, memoryUpdateTool, webSearchTool, webFetchTool, wrapBrowserStepTool("open", browserOpenTool), wrapBrowserStepTool("snapshot", browserSnapshotTool), wrapBrowserStepTool("click", browserClickTool), wrapBrowserStepTool("type", browserTypeTool), wrapBrowserStepTool("press", browserPressTool), wrapBrowserStepTool("scroll", browserScrollTool), wrapBrowserStepTool("screenshot", browserScreenshotTool), wrapBrowserStepTool("tabs", browserTabsTool), wrapBrowserStepTool("back", browserBackTool), wrapBrowserStepTool("close", browserCloseTool), wrapBrowserStepTool("wait", browserWaitForTool), wrapBrowserStepTool("act", browserActTool), wrapBrowserStepTool("extract", browserExtractTool), wrapBrowserStepTool("select", browserSelectOptionTool), subagentTool, ...teamTools, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
         tools: sessionToolNames,
       }));
     } catch (error) {

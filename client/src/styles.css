@@ -12938,3 +12938,25 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .oaw-cad-layer-count { font-size: 10px; color: var(--muted); }
 .oaw-cad-state { flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .oaw-cad-state.error { color: var(--warning); }
+
+/* ===== 浏览器任务时间线（T6，2026-11-06 批次）===== */
+.browser-steps-card { margin: 6px 0; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--panel-bg) 88%, transparent); overflow: hidden; }
+.browser-steps-card .bsc-head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 7px 10px; border: 0; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; text-align: left; }
+.browser-steps-card .bsc-head:hover { color: var(--text); }
+.browser-steps-card .bsc-title { flex: 1; min-width: 0; font-weight: 600; }
+.browser-steps-card .bsc-live { color: var(--accent); }
+.browser-steps-card .bsc-list { list-style: none; margin: 0; padding: 2px 8px 8px; display: flex; flex-direction: column; gap: 2px; }
+.browser-steps-card .bsc-row { border-radius: 6px; }
+.browser-steps-card .bsc-line { display: flex; align-items: center; gap: 6px; width: 100%; padding: 3px 6px; border: 0; background: transparent; color: var(--text); font-size: 12px; line-height: 1.5; cursor: pointer; text-align: left; border-radius: 6px; }
+.browser-steps-card .bsc-line.no-detail { cursor: default; }
+.browser-steps-card .bsc-line:not(.no-detail):hover { background: color-mix(in srgb, var(--border) 32%, transparent); }
+.browser-steps-card .bsc-state { display: inline-flex; align-items: center; width: 12px; justify-content: center; }
+.browser-steps-card .bsc-state.ok { color: var(--success, #2a9d5c); }
+.browser-steps-card .bsc-state.err { color: var(--warning); }
+.browser-steps-card .bsc-state.run { color: var(--accent); }
+.browser-steps-card .bsc-verb { flex: none; font-weight: 600; }
+.browser-steps-card .bsc-target { min-width: 0; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.browser-steps-card .bsc-chip { flex: none; font-size: 10px; color: var(--muted); background: color-mix(in srgb, var(--border) 30%, transparent); border-radius: 8px; padding: 0 6px; line-height: 16px; }
+.browser-steps-card .bsc-preview { margin: 2px 6px 4px 30px; padding: 6px 8px; border-left: 2px solid var(--border); color: var(--muted); font-size: 11px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+.browser-steps-card .bsc-error { margin: 0 6px 4px 30px; color: var(--warning); font-size: 11px; }
+.browser-steps-card .bsc-url { margin: 0 6px 4px 30px; color: color-mix(in srgb, var(--muted) 75%, transparent); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

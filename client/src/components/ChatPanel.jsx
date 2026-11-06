@@ -2756,6 +2756,23 @@ case "runtime_connecting":
         }
         break;
       }
+      // 浏览器任务时间线（T6）：browser_step_* / browser_read 聚合成一张过程卡，
+      // 不再在消息流里为每步刷一张工具卡。事件来自 agent.mjs 的 wrapBrowserStepTool。
+      case "browser_step_start":
+      case "browser_read":
+      case "browser_step_end":
+        if (!aid) aid = ensureAssistant();
+        if (aid) patch(aid, (m) => {
+          const blocks = [...(m.blocks || [])];
+          let block = blocks.find((item) => item.type === "browser-steps");
+          if (!block) {
+            block = { type: "browser-steps", id: "browser-steps", steps: [] };
+            blocks.push(block);
+          }
+          block.steps = reduceBrowserSteps(block.steps || [], type, data);
+          return { ...m, blocks };
+        });
+        break;
       // 工具调用开始：推入新 tool block（按 toolCallId 去重，重放不产生重复卡片）
       case "tool_start":
         if (data.name === "run_subagent") break;
@@ -5865,7 +5882,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     const timer = window.setInterval(() => setClockNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [isTaskLive]);
-  const processBlockTypes = new Set(["thinking", "tool", "subagent", "pipeline", "ask", "approval", "process_note"]);
+  const processBlockTypes = new Set(["thinking", "tool", "subagent", "pipeline", "ask", "approval", "process_note", "browser-steps"]);
   // 模型发言（text）不再归入过程区：它是这一小节的结论，必须留在消息正文里。
   // 过去只有"最后一个文本块"能留在外面，于是每写一段新小结，上一段就被折进
   // "思考与工具过程"，折叠后整轮只剩最终答复。现在只把思考、工具、审批、
@@ -6117,6 +6134,8 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
       }
       case "pipeline":
         return <PipelineCard key={item.id} block={item.block} onOpenFile={onOpenFile} />;
+      case "browser-steps":
+        return <BrowserStepsCard key={item.id} steps={item.block.steps || []} />;
       case "sys":
         return (
           <TimelineRow key={item.id} icon={item.icon} verb={item.verb} obj={item.obj} state={item.state} showState={false}>
@@ -7671,6 +7690,107 @@ function toolPhrase(name, input, done) {
     case "TaskUpdate": return `更新任务${tail}`;
     default: return `${loading}调用 ${name}${tail}`;
   }
+}
+
+// ========== 浏览器任务时间线（T6，2026-11-06 批次） ==========
+/**
+ * 把 browser_step_start / browser_read / browser_step_end 三类事件归并成时间线行。
+ * 按 toolCallId upsert：start 建行，read 附“读了什么”，end 定状态/耗时/失败原因。
+ */
+function reduceBrowserSteps(steps, type, data) {
+  const id = String(data?.toolCallId || "");
+  if (!id) return steps;
+  const next = [...steps];
+  let row = next.find((item) => item.toolCallId === id);
+  if (!row) {
+    row = { toolCallId: id, kind: String(data.kind || ""), status: "running", url: "", title: "", chars: 0, elementCount: 0, preview: "", durationMs: 0, error: "" };
+    next.push(row);
+  }
+  if (type === "browser_step_start") {
+    row.kind = String(data.kind || row.kind || "");
+    if (data.url) row.url = String(data.url);
+    if (data.title) row.title = String(data.title);
+  } else if (type === "browser_read") {
+    if (data.url) row.url = String(data.url);
+    if (data.title) row.title = String(data.title);
+    row.chars = Number(data.chars) || 0;
+    row.elementCount = Number(data.elementCount) || 0;
+    row.preview = String(data.preview || "").slice(0, 300);
+  } else if (type === "browser_step_end") {
+    row.status = String(data.status || "done");
+    row.durationMs = Number(data.durationMs) || 0;
+    if (data.url) row.url = String(data.url);
+    if (data.title) row.title = String(data.title);
+    row.error = String(data.error || "");
+  }
+  while (next.length > 30) next.shift(); // 单轮护栏：极端长流程不无限增长
+  return next;
+}
+
+const BROWSER_STEP_VERBS = {
+  open: "打开", snapshot: "读取页面", click: "点击", type: "输入", press: "按键",
+  scroll: "滚动", screenshot: "截图", tabs: "标签页", back: "后退", close: "关闭",
+  wait: "等待", act: "点击并等待", extract: "抽取正文", select: "选择下拉",
+};
+
+function browserStepHost(url) {
+  const value = String(url || "");
+  if (!value) return "";
+  try { return new URL(value).host.replace(/^www\./, ""); } catch { return value.slice(0, 40); }
+}
+
+/**
+ * 浏览器任务时间线卡：一行一步（动词 + 目标 + 读了 N 字 + 耗时/失败），
+ * 点行展开读取预览。挂在过程折叠区里，与工具卡同级。
+ */
+function BrowserStepsCard({ steps }) {
+  const [open, setOpen] = useState(true);
+  const [previewId, setPreviewId] = useState(null);
+  if (!Array.isArray(steps) || !steps.length) return null;
+  const running = steps.some((row) => row.status === "running");
+  return (
+    <div className="browser-steps-card" role="list" aria-label="浏览器任务时间线">
+      <button type="button" className="bsc-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        <Icon name="globe" size={12} />
+        <span className="bsc-title">浏览器任务 · {steps.length} 步{running ? "（进行中）" : ""}</span>
+        {running && <Icon name="loading" size={12} className="icon-loading bsc-live" />}
+        <span className={`tool-chevron ${open ? "open" : ""}`}><Icon name="chevronRight" size={12} /></span>
+      </button>
+      {open && (
+        <ol className="bsc-list">
+          {steps.map((row, index) => {
+            const verb = BROWSER_STEP_VERBS[row.kind] || String(row.kind || "浏览器操作");
+            const target = String(row.title || browserStepHost(row.url) || "");
+            const isRunning = row.status === "running";
+            const readable = Number(row.chars) > 0 || Number(row.elementCount) > 0;
+            const showPreview = previewId === row.toolCallId && row.preview;
+            return (
+              <li key={row.toolCallId || index} className={`bsc-row ${row.status === "error" ? "err" : ""}`}>
+                <button
+                  type="button"
+                  className={`bsc-line ${row.preview ? "" : "no-detail"}`}
+                  onClick={() => setPreviewId((v) => (v === row.toolCallId ? null : row.toolCallId))}
+                  disabled={!row.preview}
+                  aria-expanded={Boolean(showPreview)}
+                >
+                  <span className={`bsc-state ${isRunning ? "run" : row.status === "error" ? "err" : "ok"}`}>
+                    {isRunning ? <Icon name="loading" size={10} className="icon-loading" /> : <Icon name={row.status === "error" ? "close" : "check"} size={10} />}
+                  </span>
+                  <span className="bsc-verb">{verb}</span>
+                  {target && <span className="bsc-target">{target}</span>}
+                  {readable && <span className="bsc-chip">{row.elementCount ? `${row.elementCount} 个元素` : ""}{row.chars ? `${row.elementCount ? " · " : ""}${row.chars} 字` : ""}</span>}
+                  {!isRunning && row.durationMs > 0 && <span className="bsc-chip">{(row.durationMs / 1000).toFixed(1)}s</span>}
+                </button>
+                {showPreview && <div className="bsc-preview">{row.preview}{row.preview.length >= 300 ? "…" : ""}</div>}
+                {row.status === "error" && row.error && <div className="bsc-error">{row.error}</div>}
+                {row.url && <div className="bsc-url">{row.url}</div>}
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </div>
+  );
 }
 
 // ========== 工具调用行（Proma ToolUseBlock：状态图标 + 语义短语 + 展开详情） ==========

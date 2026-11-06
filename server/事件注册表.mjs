@@ -46,6 +46,11 @@ const REGISTRY = [
   { type: "tool_start", lifecycle: true, persist: true, note: "工具调用开始" },
   { type: "tool_end", lifecycle: true, persist: true, note: "工具调用结束", schema: { required: ["name"], types: { name: "string", isError: "boolean" } } },
   { type: "tool_call_progress", lifecycle: true, persist: false, note: "工具分段进度（高频）" },
+  // ---- 内置浏览器步骤/读取（可观测性，2026-11-06 批次）----
+  { type: "browser_step_start", lifecycle: true, persist: true, note: "浏览器步骤开始（browser_* 工具）", schema: { required: ["toolCallId", "kind"], types: { toolCallId: "string", kind: "string", url: "string", title: "string" } } },
+  { type: "browser_step_end", lifecycle: true, persist: true, note: "浏览器步骤结束（done/error）", schema: { required: ["toolCallId", "kind", "status"], types: { toolCallId: "string", kind: "string", status: "string", durationMs: "number", url: "string", title: "string", error: "string" } } },
+  { type: "browser_read", lifecycle: true, persist: true, note: "浏览器读取内容（snapshot/extract：字数/元素数/预览）", schema: { required: ["toolCallId", "kind"], types: { toolCallId: "string", kind: "string", url: "string", title: "string", chars: "number", elementCount: "number", preview: "string" } } },
+  { type: "browser_progress", lifecycle: true, persist: false, note: "浏览器等待/进度（高频，对齐 tool_call_progress 不落盘）", schema: { required: ["toolCallId", "phase"], types: { toolCallId: "string", phase: "string", detail: "string", elapsedMs: "number" } } },
   { type: "tool_repeat_warning", lifecycle: true, persist: true, note: "同参数重复调用提醒" },
   { type: "completion_nudge", lifecycle: true, persist: true, legacy: true, note: "历史事件：收尾强制完成声明提醒（显式完成声明已停用，不再发射）" },
   { type: "write_started", lifecycle: true, persist: true, note: "写入开始（含锁）" },

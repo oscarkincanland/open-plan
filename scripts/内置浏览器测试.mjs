@@ -270,7 +270,8 @@ await test("契约：新工具已登记（agent 定义 + task 单一事实源白
     assert.equal(quoted, 1, `agent.mjs 应只保留定义处 ${name}（白名单单一事实源在 task.mjs；实际 ${quoted} 处）`);
   }
   for (const toolVar of ["browserWaitForTool", "browserActTool", "browserExtractTool", "browserSelectOptionTool"]) {
-    assert.match(agent, new RegExp(`${toolVar},`), `customTools 缺少 ${toolVar}`);
+    // 2026-11-06 起 browser_* 工具经 wrapBrowserStepTool 包装注册（T6 步骤事件），兼容两种登记形态
+    assert.match(agent, new RegExp(`(wrapBrowserStepTool\\("[a-z]+", ${toolVar}\\))|(${toolVar},)`), `customTools 缺少 ${toolVar}`);
   }
   assert.match(flags, /browserAtomic/, "运行开关应含 browserAtomic");
   for (const key of ["browserAtomic", "browserWaitFor", "browserAct", "browserScrollContainer", "browserExtract", "browserSelectOption"]) {
@@ -542,6 +543,34 @@ await test("前端：隐藏不连帧流，phase 文案与 Blob 渲染路径", ()
   assert.match(panel, /URL\.revokeObjectURL\(frameUrlBacklogRef\.current\.shift\(\)\)/, "Blob URL 应按预算回收");
   const app = fs.readFileSync(path.join(ROOT, "client", "src", "App.jsx"), "utf8");
   assert.match(app, /visible=\{activeCanvasTab\?\.kind === "browser"\}/, "App 应把画布激活状态传给浏览器面板");
+});
+
+await test("步骤/读取事件：契约登记且 browser_* 工具统一包装", () => {
+  const registry = fs.readFileSync(path.join(ROOT, "server", "事件注册表.mjs"), "utf8");
+  for (const type of ["browser_step_start", "browser_step_end", "browser_read", "browser_progress"]) {
+    assert.match(registry, new RegExp(`type: "${type}"`), `${type} 应登记进事件注册表`);
+  }
+  assert.match(registry, /browser_progress[\s\S]{0,240}?persist: false/, "browser_progress 高频不落盘");
+  const agent = fs.readFileSync(path.join(ROOT, "server", "agent.mjs"), "utf8");
+  assert.match(agent, /const withBrowserStep = \(kind, execute\)/, "应有步骤包装器");
+  assert.match(agent, /const wrapBrowserStepTool = \(kind, tool\)/, "应有注册期包装");
+  assert.match(agent, /execute: withBrowserStep\(kind, tool\.execute\)/, "包装器应接管 execute");
+  assert.match(agent, /wrapBrowserStepTool\("open", browserOpenTool\)/, "注册表应替换为包装工具");
+  assert.doesNotMatch(agent, /, browserOpenTool,/, "原始工具不得重复注册");
+  assert.match(agent, /emitBrowserRead\(toolCallId, "snapshot"/, "snapshot 应发布 browser_read");
+  assert.match(agent, /emitBrowserRead\(_toolCallId, "extract"/, "extract 应发布 browser_read");
+});
+
+await test("前端时间线：browser-steps 过程卡聚合三类事件", () => {
+  const chat = fs.readFileSync(path.join(ROOT, "client", "src", "components", "ChatPanel.jsx"), "utf8");
+  assert.match(chat, /case "browser_step_start":[\s\S]{0,80}?case "browser_read":/, "SSE 分发应接步骤/读取事件");
+  assert.match(chat, /reduceBrowserSteps\(block\.steps \|\| \[\], type, data\)/, "聚合器应按 toolCallId 归并行");
+  assert.match(chat, /"browser-steps"[\]]\)[;,]?/, "过程块类型应包含 browser-steps");
+  assert.match(chat, /case "browser-steps":/, "过程区渲染应支持 browser-steps");
+  assert.match(chat, /function BrowserStepsCard\(/, "时间线卡组件应存在");
+  assert.match(chat, /BROWSER_STEP_VERBS/, "动词映射应存在");
+  const css = fs.readFileSync(path.join(ROOT, "client", "src", "styles.css"), "utf8");
+  assert.match(css, /\.browser-steps-card/, "时间线样式应存在");
 });
 
 await new Promise((resolve) => setTimeout(resolve, 400));
