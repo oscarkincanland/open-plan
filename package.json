@@ -240,10 +240,12 @@
     "test:platform-boundary": "node scripts/平台边界检查.mjs",
     "desktop:dev": "npm --prefix desktop run dev",
     "desktop:start": "npm --prefix desktop start",
-    "desktop:dist": "npm --prefix desktop run dist",
+    "desktop:dist": "node scripts/桌面/构建安装包.mjs",
     "desktop:prepare": "node scripts/桌面/准备随包二进制.mjs",
     "test:desktop": "node scripts/桌面端契约测试.mjs",
-    "desktop:pack": "npm --prefix desktop run pack"
+    "desktop:pack": "npm --prefix desktop run pack",
+    "desktop:zip": "node scripts/桌面/打包便携版.mjs",
+    "desktop:smoke": "node scripts/桌面/产物冒烟.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.1.0",

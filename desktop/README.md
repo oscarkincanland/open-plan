@@ -15,20 +15,32 @@ GuiJu.exe (Electron main)
 └─ server/服务入口.mjs     随机端口 + token → import server/index.mjs
 ```
 
-## 开发
+## 开发与构建
 
 ```powershell
-# 1) 先构建前端（桌面端加载 client/dist）
-npm run build
-
-# 2) 启动桌面端
-npm run desktop:dev
-
-# 3) 出安装包（NSIS，per-user）
-npm run desktop:dist
+npm run build            # 1) 构建前端（桌面端加载 client/dist）
+npm run desktop:dev      # 2) 启动桌面端（开发态）
+npm run desktop:dist     # 3) 出 NSIS 安装包（已内置受限环境规避逻辑）
+npm run desktop:zip      # 4) 出便携 ZIP（免安装，解压双击 GuiJu.exe）
+npm run desktop:smoke    # 5) 冒烟：对打包目录真发 HTTP 请求（28 项）
 ```
 
-产物：`desktop/release/GuiJu-Setup-<version>.exe`、`desktop/release/win-unpacked/`。
+产物（`desktop/dist-app/`）：
+
+| 文件 | 说明 |
+|---|---|
+| `GuiJu-Setup-<version>.exe` | NSIS 安装包（per-user，可选安装目录） |
+| `GuiJu-<version>-portable-x64.zip` | 便携版（解压即用） |
+| `win-unpacked/GuiJu.exe` | 目录版（调试用） |
+
+### 受限环境四个坑（已固化进 `scripts/桌面/构建安装包.mjs`）
+
+1. **缓存目录**：`ELECTRON_BUILDER_CACHE` 指到 `desktop/.cache-builder`（默认写 `%LOCALAPPDATA%` 会被拒）；
+2. **临时目录**：`TMP`/`TEMP` 指到 `desktop/.nsis-tmp`（否则 makensis 报 `!tempfile: Unable to create temporary file!`）；
+3. **压缩方式**：`--config.compression=store`（solid 压缩需 ~120MB mmap，受限环境报 `error creating mmap`）；
+4. **GUI/安装器本身**：受限沙箱不允许启动 GUI 进程与安装副作用 → 窗口与安装必须在真实桌面环境验证。
+
+另外：若环境里有 `ELECTRON_RUN_AS_NODE=1`，Electron 会退化成纯 Node（窗口起不来），构建/启动前需清除。
 
 ## 平台差异在哪
 
@@ -84,3 +96,17 @@ node scripts/桌面/准备随包二进制.mjs --write   # 用现有 bin/ 文件�
 - 若 Electron 二进制下载失败（GitHub 不通），用镜像：
   `$env:ELECTRON_MIRROR='https://npmmirror.com/mirrors/electron/'`。
 - 打包已用 `electronDist: node_modules/electron/dist` 复用本地 Electron，避免重复下载。
+
+
+## 冒烟验证
+
+`npm run desktop:smoke` 不启动 GUI，而是对**打包目录内的服务**真实发请求，覆盖：
+
+- 产物结构（8 项）：`GuiJu.exe`、`app.asar`、`server/index.mjs`、`服务器入口`、`client/dist/index.html`、`scripts/lib/tiler.mjs`、`node_modules/express`、`bin/清单.json`
+- 服务（2 项）：随机端口、API token
+- SPA（5 项）：`GET /` 200 + HTML + `#root` + 资源引用 + 资源可加载
+- API（5 项）：status / sessions / workspaces / models / browser/state 全 200
+- 鉴权（1 项）：无 token → 401
+- 运行开关（3 项）：`cadPreview=true`、`cadAgent=false`、status 可解析
+- 外部二进制（2 项）：解析到 `resources/bin`
+- 浏览器驱动（2 项）：未注入宿主时回落 `system`
