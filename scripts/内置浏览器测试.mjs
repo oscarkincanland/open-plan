@@ -503,6 +503,47 @@ if (LIVE) {
   console.log("\n（跳过真实浏览器链路：加 --live 运行）");
 }
 
+console.log("\n▶ 可观测性（动作广播与导航进度，2026-11-06 批次）");
+
+await test("agent-action 广播：写操作路径均发出动作事件", () => {
+  const src = fs.readFileSync(path.join(ROOT, "server", "内置浏览器.mjs"), "utf8");
+  assert.match(src, /emitAgentAction\(action\) \{/, "会话应有动作广播方法");
+  const anchor = src.indexOf("emitAgentAction(action) {");
+  const body = src.slice(0, anchor > 0 ? anchor : src.length);
+  for (const [label, method] of [["navigate", "async navigate(rawUrl)"], ["click", "async click(ref)"], ["type", "async type(ref"], ["press", "async press(key)"], ["scroll", "async scroll(direction"], ["scrollContainer", "async scrollContainer(selector"], ["back", "async back()"]]) {
+    const start = src.indexOf(method);
+    assert.ok(start > 0, `应存在 ${label} 方法`);
+    // 方法体可能较长（navigate/click 含完整等待逻辑），统一向前截 1600 字足以覆盖首段广播
+    const segment = src.slice(start, start + 1600);
+    assert.match(segment, /emitAgentAction\(/, `${label} 应发出 agent-action 广播`);
+  }
+  assert.ok(true);
+});
+
+await test("导航进度：state.phase 阶段字段与等待条件联动", () => {
+  const src = fs.readFileSync(path.join(ROOT, "server", "内置浏览器.mjs"), "utf8");
+  assert.match(src, /stateView\(\) \{[\s\S]{0,400}?phase: this\.state\.phase/, "stateView 应暴露 phase");
+  assert.match(src, /this\.state\.phase = "navigating"/, "navigate 应标记 navigating");
+  assert.match(src, /this\.state\.phase = "settling"/, "waitForLoad 应进入 settling 观察窗");
+  assert.match(src, /session\.state\.phase = "waiting-condition"/, "waitForCondition 应标记等待条件");
+  // 阶段结束必须清零：navigate 收尾、settle 结束、条件结束三类出口
+  assert.match(src, /this\.state\.phase = "";/, "阶段结束应清零");
+  assert.match(src, /session\.state\.phase = "";/, "等待条件结束应清零");
+});
+
+await test("前端：隐藏不连帧流，phase 文案与 Blob 渲染路径", () => {
+  const panel = fs.readFileSync(path.join(ROOT, "client", "src", "components", "内置浏览器面板.jsx"), "utf8");
+  assert.match(panel, /if \(!clientId \|\| !visible\) return undefined/, "画布非激活时不应建立帧流连接");
+  assert.match(panel, /\}, \[clientId, threadId, visible\]\)/, "订阅 effect 应依赖 visible");
+  assert.match(panel, /state\.phase === "navigating"/, "状态文案应区分导航阶段");
+  assert.match(panel, /state\.phase === "settling"/, "状态文案应区分稳定观察窗");
+  assert.match(panel, /state\.phase === "waiting-condition"/, "状态文案应区分等待条件");
+  assert.match(panel, /URL\.createObjectURL\(new Blob\(\[bytes\]/, "帧渲染应走 Blob URL 路径");
+  assert.match(panel, /URL\.revokeObjectURL\(frameUrlBacklogRef\.current\.shift\(\)\)/, "Blob URL 应按预算回收");
+  const app = fs.readFileSync(path.join(ROOT, "client", "src", "App.jsx"), "utf8");
+  assert.match(app, /visible=\{activeCanvasTab\?\.kind === "browser"\}/, "App 应把画布激活状态传给浏览器面板");
+});
+
 await new Promise((resolve) => setTimeout(resolve, 400));
 console.log(failed ? "\n内置浏览器测试：失败" : "\n内置浏览器测试：通过");
 process.exit(failed ? 1 : 0);

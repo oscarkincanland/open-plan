@@ -571,7 +571,7 @@ class BrowserSession {
     this.activeTargetId = null;
     this.tabs = [];
     this.tabsTimer = null;
-    this.state = { active: false, url: "about:blank", title: "", loading: false, viewport: { ...VIEWPORT }, startedAt: null, error: null };
+    this.state = { active: false, url: "about:blank", title: "", loading: false, phase: "", viewport: { ...VIEWPORT }, startedAt: null, error: null };
   }
 
   queueFrameBroadcast(frame) {
@@ -922,6 +922,8 @@ class BrowserSession {
       url: this.state.url,
       title: this.state.title,
       loading: this.state.loading,
+      // T5：长等待细分阶段（navigating | settling | waiting-condition），前端显示“在等什么”
+      phase: this.state.phase || "",
       viewport: this.state.viewport,
       frameSize: this.frame ? { width: this.frame.width || null, height: this.frame.height || null } : null,
       error: this.state.error,
@@ -933,6 +935,14 @@ class BrowserSession {
 
   emitState() {
     broadcast(this.key, "state", this.stateView());
+  }
+
+  /**
+   * T4：Agent 的可见操作下发给前端面板（虚拟鼠标/动作气泡）。
+   * 复活面板已存在但此前从未收到事件的 agent-action 渲染路径（内置浏览器面板.jsx agentAction）。
+   */
+  emitAgentAction(action) {
+    broadcast(this.key, "agent-action", { ...action, at: Date.now() });
   }
 
   /** 探活：复用外部实例时没有 exit 事件可依赖，必须主动确认 CDP 连接仍可用。 */
@@ -1228,16 +1238,20 @@ class BrowserSession {
     }
     if (!ready) return false;
     // 内容稳定窗口：正文长度与元素数连续两次采样不变即认为脚本注入已落定。
+    this.state.phase = "settling"; // T5：进入稳定观察窗
+    this.emitState();
     const budget = Math.max(0, Math.min(Number(settleMs) || 0, deadline - Date.now()));
     const settleDeadline = Date.now() + budget;
     let previous = "";
     while (Date.now() < settleDeadline) {
       let metric = "";
       try { metric = String(await this.evaluate(NAV_CONTENT_PROBE) || ""); } catch {}
-      if (metric && metric === previous) return true;
+      if (metric && metric === previous) { this.state.phase = ""; this.emitState(); return true; }
       previous = metric;
       await sleep(NAV_SETTLE_POLL_MS);
     }
+    this.state.phase = "";
+    this.emitState();
     return true;
   }
 
@@ -1247,6 +1261,8 @@ class BrowserSession {
     await this.ensureStarted();
     this.state.loading = true;
     this.state.url = url;
+    this.state.phase = "navigating"; // T5
+    this.emitAgentAction({ kind: "navigate", url }); // T4
     this.emitState();
     // 导航前记录当前文档身份与地址：仅当目标确实是另一个文档时才要求
     // timeOrigin 变化（否则同文档的 hash 跳转会被误判成"没换页"而白等 8 秒）。
@@ -1256,6 +1272,7 @@ class BrowserSession {
     await this.cdp.send("Page.navigate", { url });
     await this.waitForLoad(NAV_TIMEOUT_MS, { previousOrigin: sameDocument ? 0 : Number(before?.origin || 0) });
     this.state.loading = false;
+    this.state.phase = ""; // T5：导航等待结束（含超时）统一清零
     if (this.state.error && this.state.error.startsWith("页面加载超时")) this.state.error = null;
     await this.refreshTitle().catch(() => {});
     this.emitState();
@@ -1285,6 +1302,13 @@ class BrowserSession {
     const point = { x: Math.round(box.x), y: Math.round(box.y) };
     // 点击前记录文档身份：点链接/提交按钮会触发导航，需要等新文档而不是当前页的 complete。
     const previousOrigin = Number(await this.evaluate("Number(performance.timeOrigin) || 0").catch(() => 0)) || 0;
+    // T4：广播虚拟鼠标位置与点击目标，让面板实时呈现 Agent 的动作
+    this.emitAgentAction({
+      kind: "click",
+      nx: point.x / Math.max(1, this.state.viewport.width),
+      ny: point.y / Math.max(1, this.state.viewport.height),
+      text: box.text,
+    });
     await this.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, button: "none", clickCount: 0 });
     await this.cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1 });
     await this.cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1 });
@@ -1308,6 +1332,7 @@ class BrowserSession {
       return true;
     })()`);
     if (!focused) throw new Error(`页面上没有编号 ${safe} 的元素，请重新 browser_snapshot`);
+    this.emitAgentAction({ kind: "type", text: String(text ?? "") }); // T4
     await this.cdp.send("Input.insertText", { text: String(text ?? "") });
     if (submit) {
       await this.press("Enter");
@@ -1331,6 +1356,7 @@ class BrowserSession {
     };
     const info = map[keyName] || map.Enter;
     await this.ensureStarted();
+    this.emitAgentAction({ kind: "key", key: keyName }); // T4
     // 回车常触发搜索/表单提交（必然导航）：记录文档身份，等的是新页而不是当前页。
     const previousOrigin = Number(await this.evaluate("Number(performance.timeOrigin) || 0").catch(() => 0)) || 0;
     const base = { key: keyName, code: info.code, windowsVirtualKeyCode: info.keyCode, nativeVirtualKeyCode: info.keyCode };
@@ -1347,6 +1373,7 @@ class BrowserSession {
 
   async scroll(direction = "down", amount = 600) {
     const delta = direction === "up" ? -Math.abs(amount) : Math.abs(amount);
+    this.emitAgentAction({ kind: "scroll", direction }); // T4
     const value = await this.evaluate(`(() => { window.scrollBy(0, ${Number(delta) || 600}); return { y: window.scrollY, height: document.body.scrollHeight }; })()`);
     await sleep(400);
     return value || {};
@@ -1358,6 +1385,7 @@ class BrowserSession {
    */
   async scrollContainer(selector, direction = "down", amount = 600) {
     const delta = direction === "up" ? -Math.abs(amount) : Math.abs(amount);
+    this.emitAgentAction({ kind: "scroll", direction, selector }); // T4
     const value = await this.evaluate(`(() => {
       const el = document.querySelector(${JSON.stringify(String(selector))});
       if (!el) return { found: false };
@@ -1414,6 +1442,7 @@ class BrowserSession {
 
   async back() {
     await this.ensureStarted();
+    this.emitAgentAction({ kind: "back" }); // T4
     const previousOrigin = Number(await this.evaluate("Number(performance.timeOrigin) || 0").catch(() => 0)) || 0;
     await this.evaluate("history.back()");
     await sleep(800);
@@ -1559,15 +1588,21 @@ async function waitForCondition(session, condition, { timeoutMs = 15000, interva
   const deadline = startedAt + Math.max(1000, Number(timeoutMs) || 15000);
   const interval = Math.max(100, Number(intervalMs) || 300);
   const readView = () => session.evaluate("({ url: location.href, title: document.title })").catch(() => null);
+  session.state.phase = "waiting-condition"; // T5
+  session.emitState();
   while (Date.now() < deadline) {
     let matched = false;
     try { matched = (await session.evaluate(expr)) === true; } catch {}
     if (matched) {
+      session.state.phase = "";
+      session.emitState();
       const view = await readView();
       return { matched: true, kind, elapsedMs: Date.now() - startedAt, url: view?.url || session.state.url, title: view?.title || session.state.title };
     }
     await sleep(interval);
   }
+  session.state.phase = "";
+  session.emitState();
   const view = await readView();
   return { matched: false, kind, elapsedMs: Date.now() - startedAt, url: view?.url || session.state.url, title: view?.title || session.state.title };
 }

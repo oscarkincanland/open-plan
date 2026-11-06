@@ -555,9 +555,13 @@ export default function BrowserPanel({ clientId, threadId, visible = true, fulls
 
   const statusText = useMemo(() => {
     if (!state.active) return "未启动";
+    // T5：长等待细分阶段，“在等什么”直接可见
+    if (state.phase === "navigating") return "正在导航…";
+    if (state.phase === "settling") return "稳定内容中…";
+    if (state.phase === "waiting-condition") return "等待条件…";
     if (state.loading) return "加载中…";
     return "运行中";
-  }, [state.active, state.loading]);
+  }, [state.active, state.loading, state.phase]);
 
   if (!state.active && !frame) {
     return (
