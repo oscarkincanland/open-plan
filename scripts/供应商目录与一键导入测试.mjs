@@ -3,8 +3,8 @@
  * Pi 内置供应商目录 · 一键添加 · 登录方式区分 测试
  *
  * 覆盖：
- *   1. 目录数据质量：41 个供应商 / 1142 个模型；上下文窗口按指数解析（1e6 而不是 1）；
- *      登录方式是权威清单（9 个支持账号登录），不再靠关键字邻近猜测；
+ *   1. 目录数据质量：内置供应商 / 模型数量来自目录实况（不写死总数）；上下文窗口按指数解析（1e6 而不是 1）；
+ *      登录方式是权威清单，不再靠关键字邻近猜测；
  *   2. 能力反查：按模型 ID 自动带出上下文窗口 / 图片 / 思考（含带前缀的写法）；
  *   3. 一键导入配置：Base URL / 协议 / 模型能力自动生成；云凭证类供应商明确拒绝并给原因；
  *   4. 接口层：/api/agent/provider-catalog（列表 + 详情 + 导入 + 设为默认）在临时数据目录里跑通，
@@ -44,12 +44,35 @@ async function 接口场景(name, fn) {
 // ============================================================
 const catalog = loadBuiltinCatalog();
 const list = builtinProviderList();
+const builtinTotalModels = catalog.providers.reduce((sum, provider) => sum + provider.models.length, 0);
 
-场景("目录：41 个供应商 / 1142 个模型 / 有生成时间", () => {
-  assert.equal(list.providers.length, 41, `供应商数量应为 41，实际 ${list.providers.length}`);
-  assert.equal(list.totalModels, 1142, `模型总数应为 1142，实际 ${list.totalModels}`);
-  assert.ok(list.generatedAt, "目录应带生成时间，便于判断是否需要重新提取");
+// 计数口径：内置快照 server/Pi内置供应商.json 是入库的确定性数据（41 家 / 1142 模型）；
+// 合并列表 builtinProviderList() 还会叠加本地未入库的 models.dev 拉取缓存
+// （server/models-dev-目录.json），开发者一旦拉过目录就会变成几百家。
+// 因此规模类断言必须落在内置快照上，合并列表只断言结构与能力。
+const builtinList = {
+  providers: catalog.providers,
+  totalModels: catalog.providers.reduce((count, provider) => count + provider.models.length, 0),
+};
+
+场景("内置目录快照：41 个供应商 / 1142 个模型 / 有生成时间", () => {
+  assert.equal(builtinList.providers.length, 41, `内置快照供应商数量应为 41，实际 ${builtinList.providers.length}`);
+  assert.equal(builtinList.totalModels, 1142, `内置快照模型总数应为 1142，实际 ${builtinList.totalModels}`);
+  assert.ok(catalog.generatedAt, "目录应带生成时间，便于判断是否需要重新提取");
+  assert.equal(catalog.error, null);
+});
+
+场景("合并目录：结构完整且覆盖内置快照", () => {
+  assert.ok(list.providers.length >= builtinList.providers.length, "合并列表不应少于内置快照");
+  assert.ok(list.totalModels >= builtinList.totalModels, "合并列表的模型数不应少于内置快照");
+  assert.ok(list.generatedAt, "合并目录应带生成时间");
   assert.equal(list.error, null);
+  for (const provider of list.providers) {
+    assert.ok(provider.id, "合并目录里的每个供应商都应有 id");
+    // 合并列表是摘要形态：模型总数在 modelCount，摘要在 sampleModels。
+    assert.equal(typeof provider.modelCount, "number", `${provider.id} 应带模型数量`);
+    assert.ok(Array.isArray(provider.sampleModels), `${provider.id} 的模型摘要应是数组`);
+  }
 });
 
 场景("上下文窗口按指数解析（1e6 → 1000000，不是 1）", () => {
@@ -142,26 +165,29 @@ const list = builtinProviderList();
 // ============================================================
 // 2. 界面层：两页拆分 + 内置库 + 会话导航弹层
 // ============================================================
-场景("设置面板：模型供应商与网络与代理拆成两页", () => {
+场景("设置面板：模型供应商与网络与搜索拆成两页", () => {
   const panel = read("client/src/components/SettingsPanel.jsx");
-  assert.match(panel, /\["providers", "模型供应商"\]/);
-  assert.match(panel, /\["network", "网络与代理"\]/);
+  assert.match(panel, /\["providers", "模型"/);
+  assert.match(panel, /\["network", "网络与搜索"/);
   assert.doesNotMatch(panel, /\["model", "自定义供应商 · 网络"\]/, "旧的合页标签应已移除");
   assert.match(panel, /settingsSection === "providers" &&/, "供应商页要独立渲染");
   assert.match(panel, /settingsSection === "network" &&/, "网络页要独立渲染");
   assert.match(panel, /id="settings-network"/);
   // 旧入口（initialSection="model"）要兼容映射到新页，避免外部跳转失效
   assert.match(panel, /initialSection === "model" \? "providers" : initialSection/);
+  // 模型页拆成独立组件，外壳只负责导航与装载
+  assert.match(panel, /<模型设置页/);
+  assert.match(read("client/src/components/模型设置页.jsx"), /model-page-body/);
   // 网络卡片只能在网络页里出现一次
   assert.equal((panel.match(/<strong>模型网络<\/strong>/g) || []).length, 1);
 });
 
 场景("我的供应商：测试连接 / 设为默认 / 品牌图标都在行内", () => {
-  const panel = read("client/src/components/SettingsPanel.jsx");
-  assert.match(panel, />测试连接</);
-  assert.match(panel, />设为默认</);
-  assert.match(panel, /agentSetDefaultModel/);
-  assert.match(panel, /providerIdentity\(config\.provider\)/);
+  const page = read("client/src/components/模型设置页.jsx");
+  assert.match(page, /测试连接/);
+  assert.match(page, /设为默认/);
+  assert.match(page, /agentSetDefaultModel/);
+  assert.match(page, /providerIdentity\(/);
 });
 
 场景("内置供应商库：可搜索、按登录方式筛选、一键添加", () => {
@@ -179,11 +205,11 @@ const list = builtinProviderList();
 });
 
 场景("账号登录区块：只列支持 OAuth 的供应商，并说明凭据怎么进来", () => {
-  const panel = read("client/src/components/SettingsPanel.jsx");
-  assert.match(panel, /账号登录（订阅制）/);
-  assert.match(panel, /loginMethods\?\.includes\("oauth"\)/);
-  assert.match(panel, /pi auth login 供应商id/);
-  assert.match(panel, /从本地 Pi 导入配置/);
+  const page = read("client/src/components/模型设置页.jsx");
+  assert.match(page, /账号登录（订阅制）/);
+  assert.match(page, /loginMethods\?\.includes\("oauth"\)/);
+  assert.match(page, /pi auth login \{provider\.id\}/);
+  assert.match(page, /从本地 Pi 导入配置/);
 });
 
 场景("品牌图形：vendored 数据文件 + ProviderIcon 合并，未知供应商走首字母兜底", () => {
@@ -302,8 +328,11 @@ try {
   await 接口场景("接口：目录列表带登录方式与已配置状态，且不含任何 Key 明文", async () => {
     const { status, body } = await 请求("/api/agent/provider-catalog");
     assert.equal(status, 200);
-    assert.equal(body.providers.length, 41);
-    assert.equal(body.summary.oauth, 9);
+    // 接口返回的是"内置快照 + 本地 models.dev 缓存"的合并目录，缓存不入库，
+    // 因此规模按合并目录的实况断言（实况等式已隐含"不少于内置快照"的下限）。
+    assert.equal(body.providers.length, list.providers.length, "接口应返回合并目录的实况数量");
+    const oauthCount = list.providers.filter((provider) => provider.loginMethods.includes("oauth")).length;
+    assert.equal(body.summary.oauth, oauthCount, "OAuth 数量应来自目录实况");
     assert.ok(body.summary.importable >= 35);
     const text = JSON.stringify(body);
     assert.doesNotMatch(text, /"(key|apiKey|secret|token)"\s*:\s*"[^"]{6,}"/, "目录响应不得出现凭据明文");
@@ -320,8 +349,16 @@ try {
     const { status, body } = await 请求("/api/agent/provider-catalog/deepseek");
     assert.equal(status, 200);
     assert.equal(body.provider.id, "deepseek");
-    assert.equal(body.provider.models.length, 2);
-    assert.equal(body.provider.models[0].contextWindow, 1_000_000);
+    // 详情同样是合并目录，模型条数随本地 models.dev 缓存变化，
+    // 因此按内置快照的实际模型数断言下限。
+    const deepseekBuiltin = catalog.providers.find((provider) => provider.id === "deepseek");
+    assert.ok(
+      body.provider.models.length >= deepseekBuiltin.models.length,
+      `deepseek 详情应至少包含内置的 ${deepseekBuiltin.models.length} 个模型，实际 ${body.provider.models.length}`,
+    );
+    const flash = body.provider.models.find((model) => model.id === "deepseek-flash");
+    assert.ok(flash, "deepseek-flash 应出现在详情里");
+    assert.equal(flash.contextWindow, 1_000_000);
     const missing = await 请求("/api/agent/provider-catalog/不存在");
     assert.equal(missing.status, 404);
   });
@@ -428,6 +465,13 @@ try {
   await 停服务();
   try { fs.rmSync(temporaryRoot, { recursive: true, force: true }); } catch {}
 }
+
+场景("源码：模型目录短 TTL 缓存，凭据变更可失效", () => {
+  const agent = read("server/agent.mjs");
+  assert.match(agent, /MODEL_CATALOG_CACHE_MS/, "模型目录应有短 TTL 缓存");
+  assert.match(agent, /_buildModelCatalog/, "目录构建应拆到独立方法，便于缓存");
+  assert.match(agent, /invalidateModelCatalogCache\(\)/, "刷新/凭据变更应主动失效目录缓存");
+});
 
 console.log(failed ? "\n有失败项 ✗" : "\n全部通过 ✓");
 process.exit(failed ? 1 : 0);

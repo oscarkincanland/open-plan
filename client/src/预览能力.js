@@ -43,6 +43,18 @@ export const PREVIEW_CAPABILITIES = Object.freeze({
     editable: "只读值网格",
   },
   pdf: { level: "full", label: "PDF", detail: "浏览器 PDF 查看器。", editable: "只读" },
+  dxf: {
+    level: "partial",
+    label: "CAD · SVG 预览",
+    detail: "纯前端解析 DXF 并渲染几何、图层与文字；图层显隐/缩放平移可用。不显示线型、填充图案、标注样式与三维实体。",
+    editable: "只读（修改请让 Agent 使用 cad_edit）",
+  },
+  dwg: {
+    level: "partial",
+    label: "CAD · DWG 转换预览",
+    detail: "DWG 需外部转换器（ODA File Converter / LibreDWG）先转 DXF；未安装时提示安装指引，不影响 DXF 预览。",
+    editable: "只读（DWG 修改经 DXF 往返，另存副本）",
+  },
   md: { level: "full", label: "Markdown", detail: "Markdown 渲染与目录。", editable: "只读" },
   markdown: { level: "full", label: "Markdown", detail: "Markdown 渲染与目录。", editable: "只读" },
   txt: { level: "full", label: "文本", detail: "纯文本预览。", editable: "只读" },
@@ -61,7 +73,16 @@ export const PREVIEW_CAPABILITIES = Object.freeze({
 
 const UNKNOWN_CAPABILITY = Object.freeze({ level: "unknown", label: "未知格式", detail: "该格式没有登记预览能力。", editable: "只读" });
 
-export function previewCapability(ext) {
+/** 源码文件统一能力：只读、不执行、支持行号/高亮/搜索。 */
+export const CODE_CAPABILITY = Object.freeze({
+  level: "full",
+  label: "源码 · 只读",
+  detail: "只读源码视图：行号、语法高亮、搜索与复制；不执行代码、不写回文件。",
+  editable: "只读",
+});
+
+export function previewCapability(ext, { code = false } = {}) {
+  if (code) return CODE_CAPABILITY;
   const key = String(ext || "").toLowerCase().replace(/^\./, "");
   return PREVIEW_CAPABILITIES[key] || UNKNOWN_CAPABILITY;
 }

@@ -7,6 +7,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildMapReport, normalizeSections, probeImageSize } from "../server/地图报告.mjs";
+import * as map from "../server/map.mjs";
+
+const REPORT_PROJECT = `probe-report-${Date.now().toString(36)}`;
 
 // 1x1 PNG / 1x1 JPEG（最小合法字节，用于探测与嵌入断言）
 const PNG_1PX_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
@@ -45,27 +48,36 @@ fs.writeFileSync(jpgFile, Buffer.from(JPG_1PX_BASE64, "base64"));
 
 // 3. 报告组装：docx 落盘 + 内容断言（含嵌入图片）
 {
-  const result = await buildMapReport({
-    workspace: tempDir,
-    title: "测试标题：通勤分析",
-    project: "zhejiang-map",
-    sections: [{ heading: "分析结论", text: "核心区覆盖率达 78%。", table: { headers: ["指标", "值"], rows: [["要素数", "12"], ["覆盖率", "78%"]] } }],
-    images: ["dot.png", "dot.jpg", "不存在.png"],
-  });
-  assert.ok(fs.existsSync(result.file));
-  assert.equal(result.images, 2, "不存在的图片应被跳过");
-  assert.equal(result.engine, "native");
+  map.createProject({ project: REPORT_PROJECT, name: "报告探针", kind: "blank" });
+  try {
+    const result = await buildMapReport({
+      workspace: tempDir,
+      title: "测试标题：通勤分析",
+      project: REPORT_PROJECT,
+      sections: [{ heading: "分析结论", text: "核心区覆盖率达 78%。", table: { headers: ["指标", "值"], rows: [["要素数", "12"], ["覆盖率", "78%"]] } }],
+      images: ["dot.png", "dot.jpg", "不存在.png"],
+    });
+    assert.ok(fs.existsSync(result.file));
+    assert.equal(result.images, 2, "不存在的图片应被跳过");
+    assert.equal(result.engine, "native");
+    const normalizedFile = String(result.file).replace(/\\/g, "/");
+    assert.ok(normalizedFile.includes("agent/reports"), `项目报告应落在 agent/reports（实际 ${result.file}）`);
 
-  const { default: JSZip } = await import("jszip");
-  const zip = await JSZip.loadAsync(fs.readFileSync(result.file));
-  const documentXml = await zip.file("word/document.xml").async("string");
-  assert.ok(documentXml.includes("测试标题：通勤分析"), "标题应写入正文");
-  assert.ok(documentXml.includes("核心区覆盖率达 78%。"), "段落应写入正文");
-  assert.ok(documentXml.includes("覆盖率"), "表格应写入正文");
-  assert.ok(documentXml.includes("图集"), "图集清单应写入正文");
-  const mediaFiles = Object.keys(zip.files).filter((name) => name.startsWith("word/media/") && !name.endsWith("/"));
-  assert.equal(mediaFiles.length, 2, "两张图片应作为 media 嵌入");
-  console.log(`  ✓ 报告组装（blocks=${result.blocks}，media=${mediaFiles.length}）`);
+    const { default: JSZip } = await import("jszip");
+    const zip = await JSZip.loadAsync(fs.readFileSync(result.file));
+    const documentXml = await zip.file("word/document.xml").async("string");
+    assert.ok(documentXml.includes("测试标题：通勤分析"), "标题应写入正文");
+    assert.ok(documentXml.includes("核心区覆盖率达 78%。"), "段落应写入正文");
+    assert.ok(documentXml.includes("覆盖率"), "表格应写入正文");
+    assert.ok(documentXml.includes("图集"), "图集清单应写入正文");
+    const mediaFiles = Object.keys(zip.files).filter((name) => name.startsWith("word/media/") && !name.endsWith("/"));
+    assert.equal(mediaFiles.length, 2, "两张图片应作为 media 嵌入");
+    const manifest = fs.readFileSync(path.join(map.projectDir(REPORT_PROJECT), "agent", "manifest.jsonl"), "utf8");
+    assert.match(manifest, /"action":"report"/, "报告应写入 agent 清单");
+    console.log(`  ✓ 报告组装（blocks=${result.blocks}，media=${mediaFiles.length}，落 agent/reports）`);
+  } finally {
+    fs.rmSync(map.projectDir(REPORT_PROJECT), { recursive: true, force: true });
+  }
 }
 
 // 4. 路径越界拒绝

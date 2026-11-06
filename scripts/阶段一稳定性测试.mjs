@@ -16,6 +16,7 @@ import {
   listStagedFilesForValidation,
   publishStagedRun,
   releaseRunLocks,
+  releaseWriteLock,
   resolveReadablePath,
   stageWrite,
 } from "../server/写入协调.mjs";
@@ -47,11 +48,12 @@ try {
   assert.ok(events.some((item) => item.type === "write_locked"));
   assert.ok(events.some((item) => item.type === "artifact_staged"));
 
-  assert.throws(
-    () => acquireWriteLock({ workspace, targetPath: existingFile, runId: otherRunId, kind: "write" }),
-    (error) => error.code === "WRITE_CONFLICT" && error.details.ownerRunId === runId,
-    "其他 Run 修改同一文件必须得到结构化冲突",
-  );
+  // 2026-11-04：暂存锁只保护写 staging 瞬间，不再持有到 Run 结束。
+  // 其他 Run 可以立即取锁/暂存；真正的冲突由发布期 baseRevision CAS 处理。
+  const otherLock = acquireWriteLock({ workspace, targetPath: existingFile, runId: otherRunId, kind: "write" });
+  releaseWriteLock(otherLock);
+  const otherStage = stageWrite({ runId: otherRunId, workspace, targetPath: existingFile, content: "另一个版本\n", kind: "write" });
+  assert.equal(otherStage.ok, true, "其他 Run 应能立即暂存同一文件");
 
   const materialized = [];
   const published = publishStagedRun(runId, workspace, { threadId: "thread_phase1", onEvent: (type) => materialized.push(type) });

@@ -641,25 +641,32 @@
 
 ## 9. 追踪矩阵
 
+> 状态列于 2026-11-02 收敛批次按实测回填（此前整列停留在"未开始"，与文首"已完成"矛盾）。
+> **重要前提**：本批 Harness 能力统一受 `OAW_HARNESS_ALIGN` 及 18 个子开关控制，**默认全部关闭**，
+> 因此"已落地"指"代码与测试就位、可通过开关启用"，不等于默认体验已生效。
+
 | WP | ZCode 能力 | PRD | 测试 ID（详见测试计划） | 状态 |
 |---|---|---|---|---|
-| H1-1 | H-01 | R2、R13 | ZT-H1-01/02 | 未开始 |
-| H1-2 | H-02 | R2、R13 | ZT-H1-03/04/05/06 | 未开始 |
-| H1-3 | H-11 | R3、R13 | ZT-H1-07/08/09 | 未开始 |
-| H1-4 | H-12 | R3、R15 | ZT-H1-10/11/12 | 未开始 |
-| H2-1 | H-04 | R14 | ZT-H2-01/02/03 | 未开始 |
-| H2-2 | H-05 | R14 | ZT-H2-04/05/06/07 | 未开始 |
-| H2-3 | H-06 | R2、R4 | ZT-H2-08/09 | 未开始 |
-| H2-4 | H-08 | R6 | ZT-H2-10 | 未开始 |
-| H3-1 | H-13 | R2、R16 | ZT-H3-01..06 | 未开始 |
-| H3-2 | H-09 | R2、R6 | ZT-H3-07/08 | 未开始 |
-| H3-3 | §3.4 | R2、R3 | ZT-H3-09 | 未开始 |
-| H3-4 | §3.3 | R12、R15 | ZT-H3-10 | 未开始 |
-| H4-1 | H-02/H-14 | R2 | ZT-H4-01 | 未开始 |
-| H4-2 | H-10 | R6 | ZT-H4-02 | 未开始 |
-| H4-3 | H-17 | R6 | ZT-H4-03 | 未开始 |
-| H4-4 | H-14 | R6 | ZT-H4-04 | 未开始 |
-| H4-5 | H-12 | R3、R16 | ZT-H4-05 | 未开始 |
+| H1-1 | H-01 | R2、R13 | ZT-H1-01/02 | 已落地（2026-11-02 修复：7 个后加工具元数据缺失已补，并加双向断言；`npm run test:harness` 由失败转全绿） |
+| H1-2 | H-02 | R2、R13 | ZT-H1-03/04/05/06 | 已落地（权限决策带 ruleId/ruleSource，可回放；deny 不被 auto 绕过。注：ruleId 实际形如 `default.2.officecli.set_*.ask`，与文档 §4.2 写的 `default.officecli.set` 不一致，属待统一的命名口径） |
+| H1-3 | H-11 | R3、R13 | ZT-H1-07/08/09 | 部分落地：>30KB 外置 + 预览已接（bash 走 tail 预览）；**缺口**：① `cleanupToolResults` 无生产调用点，未接 Run 清理，磁盘只增不减；② details 字段名实际为 `externalizedResults[].path/bytes` + `externalizedBytes`，与文档要求的 `artifactPath/bytes/truncated` 不符；③ 无 SHA-256（文档验收要求可校验） |
+| H1-4 | H-12 | R3、R15 | ZT-H1-10/11/12 | 已落地（16 字段用量归集 JSONL + main/subagent/compaction 三路归因 + `GET /api/harness/usage`；压缩归因 token 未知，文档已如实声明） |
+| H2-1 | H-04 | R14 | ZT-H2-01/02/03 | 部分落地：manifest 扫描、时效警告、60KB 截断标记已接；**缺口**：真实回合走 `buildRecallContextSync` 的关键词选择，模型选择 seam `selectMemoriesWithModel` 无生产调用点；manifest 从未进入 prompt |
+| H2-2 | H-05 | R14 | ZT-H2-04/05/06/07 | 部分落地：触发条件、只读子会话、候选入待审核、失败静默均已接；**缺口**：抽取的 5 轮预算未真正传入（`maxTurns` 在实际调用里未传），预算实际未强制 |
+| H2-3 | H-06 | R2、R4 | ZT-H2-08/09 | 部分落地：7 段顺序与 target/cacheHint/budgetChars 已定义并接入；**缺口**：生产接线只传 4 个参数，段落 2（工作区准则）与段落 3（工具规则按模式裁剪）恒为空——"按模式裁剪工具规则、不再全量注入"未兑现，AGENTS.md 仍走老路径 |
+| H2-4 | H-08 | R6 | ZT-H2-10 | 已落地（`<skill_content>` 注入 + ≤20KB 预算 + 哈希 + `skill_injected` 事件） |
+| H3-1 | H-13 | R2、R16 | ZT-H3-01..06 | 已落地（4 事件可声明/可 deny/可审计，安全约束比文档更严：工作区内脚本、禁 shell、禁 -e、超时杀进程、输出 64KB 上限、信任三态）。缺口：`hook_started`/`hook_finished` 已登记但未发射 |
+| H3-2 | H-09 | R2、R6 | ZT-H3-07/08 | 部分落地：profile 冻结已接；**缺口**：后台派发无取消接口、无"任务中心可见"接线证据，测试也未覆盖后台派发 |
+| H3-3 | §3.4 | R2、R3 | ZT-H3-09 | 部分落地：统一错误 envelope 已定义并接在包装层；**缺口**：仅覆盖未捕获异常路径，文档点名的 officecli/map/write/bash/approval 五类高频工具仍走各自 `isError`，未迁移 |
+| H3-4 | §3.3 | R12、R15 | ZT-H3-10 | 部分落地：6 级配置优先级与资源发现 source 字段已实现；**缺口**：`RUNTIME_FLAGS.configSource` 未接任何业务分支，source 字段是无条件附加的——"关开关=基线"不成立 |
+| H4-1 | H-02/H-14 | R2 | ZT-H4-01 | 已落地（Chat/Review 只读沙箱边界成立；2026-11-02 修复 `map_layer_info` 元数据缺失后，"Chat 不暴露破坏性/需审批工具"断言恢复通过） |
+| H4-2 | H-10 | R6 | ZT-H4-02 | 部分落地：journal 写入与 `/workflow-journal`、`/workflow-replay` 端点已接；**缺口**：journal 挂在 Run 步骤更新路径而非领域工作流引擎；`/workflow-replay` 只返回重放计划，不执行重跑 |
+| H4-3 | H-17 | R6 | ZT-H4-03 | 部分落地：清单构建与 sha256 校验已实现；**缺口**：`validateRoot` 的结果只写进诊断字段 `lastCheck.manifest`，扩展启用/加载路径不读它——"哈希不匹配拒绝加载"未实现 |
+| H4-4 | H-14 | R6 | ZT-H4-04 | 部分落地：计划文件读写与端点已接；**缺口**：`persistPlanFromTodo` 无生产调用点，"计划与 todo 同步"未实现 |
+| H4-5 | H-12 | R3、R16 | ZT-H4-05 | 已落地（JSONL 聚合 + 只读报表 API） |
+
+**尚未发射的已登记事件（2026-11-02 核实）**：`usage_recorded`、`memory_recall_started`、`hook_started`、`hook_finished`、`config_source_resolved`、`plugin_manifest_invalid`、`plan_persisted`——已在注册表登记但全仓无发射点，需补发射点或从注册表移除。
+
 
 **能力对照验收：** H-01..H-17 的最终状态在测试计划 §6.8 的对照验收矩阵中逐项签字；未达到“对齐”的项必须写明“部分/不适用”及理由。
 

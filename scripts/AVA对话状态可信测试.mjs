@@ -56,10 +56,12 @@ test("send 的压缩守卫位于实际构造消息之前", () => {
 });
 
 test("空闲态发送按钮在压缩中禁用", () => {
+  // 082e7bea 起按钮额外受 agentReady 约束（会话恢复完成前不可发送），
+  // 这里按当前语义断言：frozen / agentReady / compacting / hasDraft 四个条件都在。
   assert.match(
     chatPanel,
-    /disabled=\{frozen \|\| compacting \|\| !hasDraft\}/,
-    "空闲发送按钮应同时受 frozen、compacting、hasDraft 约束",
+    /disabled=\{frozen \|\| !agentReady \|\| compacting \|\| !hasDraft\}/,
+    "空闲发送按钮应同时受 frozen、agentReady、compacting、hasDraft 约束",
   );
   assert.match(chatPanel, /正在压缩上下文，请稍候/, "按钮 title 应说明压缩中不可发送");
 });
@@ -67,8 +69,8 @@ test("空闲态发送按钮在压缩中禁用", () => {
 test("运行中排队/立即/注入按钮在压缩中禁用", () => {
   assert.match(
     chatPanel,
-    /pending-send-btn"[\s\S]{0,160}disabled=\{compacting\}/,
-    "运行中待发送按钮应受 compacting 约束",
+    /pending-send-btn"[\s\S]{0,160}disabled=\{compacting \|\| !agentReady\}/,
+    "运行中待发送按钮应受 compacting 与 agentReady 约束",
   );
 });
 
@@ -94,10 +96,16 @@ test("服务端中断回执仍返回 stillQueued", () => {
   );
 });
 
-test("工作区 AGENTS.md 只提示一次项目指令生效", () => {
-  assert.match(chatPanel, /const projectInstructionNotifiedRef = useRef\(new Set\(\)\)/);
+test("工作区 AGENTS.md 提示不写消息流，只在空态给弱提示", () => {
+  // 2026-11-03：项目指令提示不再 pushSystem（会把空态挤掉、初始化界面永远看不到），
+  // 改为派生状态 + 欢迎卡片底部一行弱提示。
+  assert.doesNotMatch(chatPanel, /pushSystem\("已加载工作区指令 AGENTS\.md/, "不应再把项目指令提示写进消息流");
+  assert.doesNotMatch(chatPanel, /projectInstructionNotifiedRef/, "一次性提示 ref 应已移除");
+  assert.match(chatPanel, /const hasProjectInstructions = useMemo\(/, "项目指令应改为派生状态");
   assert.match(chatPanel, /\(referenceFiles \|\| \[\]\)\.some\(\(name\) => \/\(\^\|\[\\\\\/\]\)AGENTS\\\.md\$\//);
-  assert.match(chatPanel, /pushSystem\("已加载工作区指令 AGENTS\.md，本会话的对话与任务会遵循其中约定。", `project-instructions:\$\{threadId\}`\)/);
+  assert.match(chatPanel, /projectInstructions=\{hasProjectInstructions\}/, "应把派生状态传给欢迎卡片");
+  const welcome = fs.readFileSync(path.join(ROOT, "client/src/components/欢迎卡片.jsx"), "utf8");
+  assert.match(welcome, /chat-empty-project-note/, "欢迎卡片应渲染弱提示");
 });
 
 /* ---------------- 3) 发送/停止三态 ---------------- */

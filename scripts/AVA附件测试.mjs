@@ -51,7 +51,7 @@ test("行为：媒体类型判定与大小格式化", () => {
 test("附件通道：白名单引用媒体工具，超限与不支持类型有提示", () => {
   assert.match(chatPanel, /import \{ ATTACHMENT_SIZE_LIMIT, ATTACHMENT_ALLOWED_EXT, mediaKindFor, formatBytes \} from "\.\/媒体工具\.js";/);
   assert.match(chatPanel, /f\.size > ATTACHMENT_SIZE_LIMIT/, "超限文件跳过");
-  assert.match(chatPanel, /已跳过 \$\{skipped\.length\} 个文件：/, "跳过提示文案");
+  assert.match(chatPanel, /已跳过 \$\{skipped\.length\} 个：/, "跳过提示文案");
   assert.match(chatPanel, /mediaKind: mediaKindFor\(f\.name\)/, "附件记录媒体分类");
 });
 
@@ -68,8 +68,8 @@ test("附件卡片：类型图标与大小展示", () => {
   assert.match(chatPanel, /att\.mediaKind === "video" \? "play" : att\.mediaKind === "audio" \? "audio" : "file"/);
   assert.match(chatPanel, /\{att\.size \? <span className="att-size">\{formatBytes\(att\.size\)\}<\/span> : null\}/);
   assert.match(chatPanel, /视频附件，不自动播放/, "视频不自动播放提示");
-  assert.match(icon, /^\s{2}play: \(/m, "play 图标已注册");
-  assert.match(icon, /^\s{2}audio: \(/m, "audio 图标已注册");
+  assert.match(icon, /^\s{2}play: Icon/m, "play 图标已注册");
+  assert.match(icon, /^\s{2}audio: Icon/m, "audio 图标已注册");
 });
 
 test("工作区菜单：创建新任务 / 资源管理器打开 / 归档（不删磁盘）", () => {

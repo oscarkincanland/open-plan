@@ -6,7 +6,25 @@
  * 图标与文案容易互相漂移，这里集中一份纯函数映射，Node 测试可直接调用。
  */
 
-const EXT_KINDS = Object.freeze({
+// 语义类别 → 扁平图标的颜色令牌（styles.css 中按明暗主题定义）。
+// 图标本体由 文件类型图标.jsx 渲染；这里只给纯数据，Node 测试可直接断言。
+const KIND_BY_ICON = Object.freeze({
+  doc: ["doc", "doc"],
+  xls: ["sheet", "sheet"],
+  ppt: ["slides", "slides"],
+  pdf: ["pdf", "pdf"],
+  html: ["html", "html"],
+  md: ["md", "md"],
+  code: ["code", "code"],
+  image: ["image", "image"],
+  map: ["map", "map"],
+  layers: ["map", "map"],
+  package: ["archive", "archive"],
+  txt: ["text", "other"],
+  file: ["other", "other"],
+});
+
+export const EXT_KINDS = Object.freeze({
   docx: { icon: "doc", label: "文档" },
   doc: { icon: "doc", label: "文档" },
   md: { icon: "md", label: "Markdown" },
@@ -24,6 +42,8 @@ const EXT_KINDS = Object.freeze({
   geojson: { icon: "map", label: "地图数据" },
   shp: { icon: "map", label: "地图数据" },
   kml: { icon: "map", label: "地图数据" },
+  dxf: { icon: "layers", label: "CAD 图纸" },
+  dwg: { icon: "layers", label: "CAD 图纸" },
   png: { icon: "image", label: "图片" },
   jpg: { icon: "image", label: "图片" },
   jpeg: { icon: "image", label: "图片" },
@@ -41,7 +61,33 @@ const EXT_KINDS = Object.freeze({
   tsx: { icon: "code", label: "代码" },
   jsx: { icon: "code", label: "代码" },
   py: { icon: "code", label: "代码" },
+  go: { icon: "code", label: "代码" },
+  rs: { icon: "code", label: "代码" },
+  java: { icon: "code", label: "代码" },
+  kt: { icon: "code", label: "代码" },
+  c: { icon: "code", label: "代码" },
+  h: { icon: "code", label: "代码" },
+  cc: { icon: "code", label: "代码" },
+  cpp: { icon: "code", label: "代码" },
+  cxx: { icon: "code", label: "代码" },
+  hpp: { icon: "code", label: "代码" },
+  cs: { icon: "code", label: "代码" },
+  rb: { icon: "code", label: "代码" },
+  php: { icon: "code", label: "代码" },
+  swift: { icon: "code", label: "代码" },
+  vue: { icon: "code", label: "代码" },
+  svelte: { icon: "code", label: "代码" },
+  sh: { icon: "code", label: "脚本" },
+  bash: { icon: "code", label: "脚本" },
+  zsh: { icon: "code", label: "脚本" },
+  bat: { icon: "code", label: "脚本" },
+  ps1: { icon: "code", label: "脚本" },
   sql: { icon: "code", label: "代码" },
+  yml: { icon: "code", label: "配置" },
+  yaml: { icon: "code", label: "配置" },
+  toml: { icon: "code", label: "配置" },
+  ini: { icon: "code", label: "配置" },
+  xml: { icon: "code", label: "标记" },
 });
 
 /** 统一相对路径：反斜杠转正斜杠、去掉前导 "./" 与 "/"。 */
@@ -65,11 +111,16 @@ export function artifactExt(path) {
   return index > 0 ? name.slice(index + 1).toLowerCase() : "";
 }
 
-/** 路径 → { icon, label, ext }；未知扩展名回退通用文件图标。 */
+/** 路径 → { icon, label, ext, kind, tone }；未知扩展名回退通用文件图标。
+ *  kind 是语义类别（doc/sheet/slides/pdf/html/md/code/image/map/archive/text/other），
+ *  tone 是颜色令牌名（styles.css 的 --file-<tone>），供扁平图标着色。 */
 export function artifactTypeInfo(path) {
   const ext = artifactExt(path);
   const kind = EXT_KINDS[ext];
-  return kind ? { icon: kind.icon, label: kind.label, ext } : { icon: "file", label: "文件", ext };
+  const [semantic, tone] = KIND_BY_ICON[kind?.icon || "file"] || ["other", "other"];
+  return kind
+    ? { icon: kind.icon, label: kind.label, ext, kind: semantic, tone }
+    : { icon: "file", label: "文件", ext, kind: "other", tone: "other" };
 }
 
 /** 卡片副标题：`表格 · XLSX`（无扩展名时只给类型文案）。 */

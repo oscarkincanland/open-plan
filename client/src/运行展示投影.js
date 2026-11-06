@@ -93,7 +93,7 @@ export function normalizeFileChange(input = {}, { runId = null } = {}) {
   const accepted = ["passed", "warning", "manual_review"].includes(String(acceptance?.status || input.acceptanceStatus || ""));
   const published = Boolean(input.publication) || String(input.publicationStatus || "") === "published";
   const role = internal ? "internal"
-    : (accepted || published) ? "deliverable"
+    : (input.deliverable === true || accepted || published) ? "deliverable"
       : "unclassified";
   return {
     runId: input.runId || runId || null,
@@ -467,8 +467,10 @@ export function upsertRunSummaryMessage(messages = [], data = {}, {
  * 既不能在恢复后显示为“You”，也不能截断同一 Run 的过程归约。
  * 旧版本把“模型连接中断后自动续跑”的提示直接以普通 user 消息写入，
  * 因此保留旧格式识别，已存在的历史会话无需迁移。
+ * office-pipeline/编辑流水线的 steer 提醒同样以 user 文本写入
+ * （实测会让同一 Run 的摘要卡向前归属被提前截断，旧“运行结果”卡因此复现）。
  */
-const INTERNAL_HARNESS_PREFIX = /^\s*(?:\[系统提醒\]|系统提醒[：:]|上一个回合的模型连接中断了[。.])/;
+const INTERNAL_HARNESS_PREFIX = /^\s*(?:\[系统提醒\]|系统提醒[：:]|上一个回合的模型连接中断了[。.]|本轮尚未使用\s*(?:editorial_pipeline|编辑流水线)|请立即改用编辑流水线)/;
 
 export function isInternalHarnessMessage(message) {
   return message?.role === "user" && INTERNAL_HARNESS_PREFIX.test(String(message.text || ""));
@@ -477,32 +479,147 @@ export function isInternalHarnessMessage(message) {
 /**
  * 把同一轮里的 assistant 过程消息及系统进度提醒关联到 runId，
  * 让界面能将它们和 SSE/结论合并到同一个过程面板；真实用户消息仍是分组边界。
+ *
+ * 两遍扫描：
+ *   1) 向前扫描（总结卡之前）：从总结卡往回找最近的真实 user 消息 / 上一张总结卡，
+ *      区间内的 assistant 归到本轮。这是正常布局（总结卡落在本轮消息之后）。
+ *   2) 向后扫描（总结卡之后）：从总结卡往后找下一条真实 user 消息 / 下一张总结卡，
+ *      区间内尚未归属的 assistant 也归到本轮。
+ *      这是自愈分支：历史缓存被写坏、或时间戳漂移时，总结卡可能落在本轮消息之前，
+ *      只靠第 1 遍会让这一轮「没有 assistant 分组」；第 2 遍把它找回来。
  */
 export function associateRunMessages(messages = []) {
   const list = Array.isArray(messages) ? messages : [];
   if (!list.length) return list;
   let next = list;
   let changed = false;
+  const at = (index) => (changed ? next : list)[index];
+  const timeOf = (value) => Date.parse(value || "") || 0;
+
   for (let summaryIndex = 0; summaryIndex < list.length; summaryIndex += 1) {
     const summary = list[summaryIndex];
     const runId = String(summary?.role === "system" && summary.summary ? summary.runId || "" : "");
     if (!runId) continue;
+
+    // 归属下界：优先用 Run startedAt（buildRunSummaryMessages 已带回）。
+    // 同一 Run 内部的 steer/排队指令会以多条 user 消息写入，不能把它们当
+    // “真实用户边界”截断；只有时间早于 Run 开始的消息才属于上一轮。
+    // startedAt 缺失（旧数据/时间戳缺失）时回退到“最近真实 user 边界”的旧规则。
+    const runStartedMs = timeOf(summary?.startedAt || summary?.run?.startedAt) || 0;
+
+    // 第 1 遍：向前（较早）区间——总结卡与上一条边界消息之间。
     let start = summaryIndex - 1;
     for (; start >= 0; start -= 1) {
       const item = list[start];
       if (item?.role === "system" && item.summary) break;
+      if (runStartedMs) {
+        // 同一 Run 的消息都在 startedAt 之后；时间戳缺失时保守地沿用旧边界，
+        // 避免把明显更早的历史内容硬塞进本轮。
+        const itemMs = timeOf(item?.createdAt) || 0;
+        if (itemMs && itemMs < runStartedMs) break;
+        continue;
+      }
       if (item?.role === "user" && !isInternalHarnessMessage(item)) break;
     }
     for (let index = start + 1; index < summaryIndex; index += 1) {
-      const item = (changed ? next : list)[index];
+      const item = at(index);
       const internalProcess = isInternalHarnessMessage(item);
       if ((!internalProcess && item?.role !== "assistant") || (item.runId && item.runId !== runId)) continue;
       if (item.runId === runId && Boolean(item.internalProcess) === internalProcess) continue;
       if (!changed) { next = [...list]; changed = true; }
       next[index] = { ...item, runId, ...(internalProcess ? { internalProcess: true } : {}) };
     }
+
+    // 第 2 遍：向后（较晚）区间——只补尚未归属的 assistant，不覆盖已有归属。
+    // 自愈窗口有界：孤儿 assistant 必须落在本 Run 的 startedAt 之后；
+    // 摘要卡带 finishedAt 时再以 finishedAt 为上界，避免把下一轮的消息吸进来。
+    const runFinishedMs = timeOf(summary?.finishedAt) || 0;
+    for (let index = summaryIndex + 1; index < list.length; index += 1) {
+      const item = at(index);
+      if (item?.role === "system" && item.summary) break;
+      if (item?.role === "user" && !isInternalHarnessMessage(item)) break;
+      if (item?.role !== "assistant") continue;
+      if (item.runId) continue;
+      // 异常孤儿早于 Run 开始时不硬塞进本轮（时间可用才保护）。
+      const itemMs = timeOf(item?.createdAt) || 0;
+      if (runStartedMs && itemMs && itemMs < runStartedMs) continue;
+      if (runFinishedMs && itemMs && itemMs > runFinishedMs) continue;
+      if (!changed) { next = [...list]; changed = true; }
+      next[index] = { ...item, runId };
+    }
   }
   return changed ? next : list;
+}
+
+/**
+ * 遗留气泡去重：恢复链会产生两个 runId——恢复前 run 以一条 summary 卡收尾，
+ * 恢复后 run 的 SSE 把 assistant 消息重新归属（实测卡片 run_8ef… 与 assistant
+ * run_fd9… 共用同一个 01:15~01:17 时间窗）。旧规则只按 runId 相等抑制气泡，
+ * 于是孤儿卡带着旧 RunSummary 形态复现。这里按时间窗判定：summary 的
+ * [startedAt, finishedAt] 窗口内存在已归属其他 run 的 assistant 时，
+ * 该卡不应再以独立气泡出现（折叠条已覆盖同一时间窗）。无时间戳时保守不抑制。
+ */
+export function hiddenLegacySummaryRuns(messages = []) {
+  const list = Array.isArray(messages) ? messages : [];
+  const timeOf = (value) => Date.parse(value || "") || 0;
+  const cards = list
+    .filter((item) => item?.role === "system" && item.summary && item.runId)
+    .map((item) => ({
+      runId: String(item.runId),
+      startedMs: timeOf(item.startedAt || item.run?.startedAt) || 0,
+      finishedMs: timeOf(item.finishedAt) || 0,
+    }));
+  const hidden = new Set();
+  for (const card of cards) {
+    if (!card.startedMs && !card.finishedMs) continue;
+    for (const item of list) {
+      if (item?.role !== "assistant" || !item.runId || String(item.runId) === card.runId) continue;
+      const itemMs = timeOf(item.createdAt) || 0;
+      if (!itemMs) continue;
+      if (card.startedMs && itemMs < card.startedMs) continue;
+      if (card.finishedMs && itemMs > card.finishedMs) continue;
+      hidden.add(card.runId);
+      break;
+    }
+  }
+  return hidden;
+}
+
+/**
+ * 历史恢复：把 Run 总结卡插回消息流（锚点插入）。
+ *
+ * 不能按 createdAt 全局排序——运行中的 Run 只有 startedAt，早于本轮所有消息，
+ * 会让总结卡跑到本轮消息之前；associateRunMessages 只向前扫描，于是整轮 assistant
+ * 消息拿不到 runId，timelinePath 失效、退回旧渲染（切换会话后「格式丢失」）。
+ *
+ * 定位规则（每张总结卡独立定位，消息自身保持 JSONL 原序，不参与排序）：
+ *   - 有 finishedAt → 插到最后一条 createdAt <= finishedAt 的消息之后（本轮收尾锚点）；
+ *   - 无 finishedAt（运行中 / 时间缺失）→ 插到本轮消息之后，而不是按自己的 startedAt
+ *     往前插（往前插会让总结卡落到本轮消息之前，整轮 assistant 失去归属）。
+ *     本轮边界取「下一张卡的 startedAt」；没有下一张卡时就是本列表末尾。
+ */
+export function mergeRunSummaries(messages = [], summaries = []) {
+  const list = Array.isArray(messages) ? messages.slice() : [];
+  const timeOf = (value) => Date.parse(value || "") || 0;
+  const cards = (Array.isArray(summaries) ? summaries : [])
+    .filter((card) => card?.role === "system" && card.summary)
+    .sort((a, b) => timeOf(a?.startedAt || a?.createdAt) - timeOf(b?.startedAt || b?.createdAt));
+  cards.forEach((card, cardIndex) => {
+    // 收尾锚点：优先 finishedAt；运行中的卡用下一轮的 startedAt 作为「本轮到此为止」的上界。
+    const end = timeOf(card?.finishedAt) || timeOf(cards[cardIndex + 1]?.startedAt);
+    let insertAt = list.length;
+    if (end) {
+      // 锚点 = 最后一条不晚于该时刻的消息之后；找不到锚点就追加到末尾。
+      insertAt = 0;
+      for (let index = list.length - 1; index >= 0; index -= 1) {
+        const time = timeOf(list[index]?.createdAt);
+        if (time && time <= end) { insertAt = index + 1; break; }
+      }
+      if (!insertAt) insertAt = list.length;
+    }
+    list.splice(insertAt, 0, card);
+  });
+  return list;
 }
 
 function assistantEntryText(entry = {}) {

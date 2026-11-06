@@ -101,7 +101,7 @@ for (const 名称 of 全部关键帧) {
   if (动画声明.some((d) => /infinite/.test(d) && 命中.test(d.replace(/^animation\s*:/, " ")))) 无限动画.add(名称);
 }
 const 期望持续动画 = [
-  "activity-marquee-sweep", "agent-avatar-breathe", "blink", "brain-pulse", "dot-breathe-soft",
+  "activity-marquee-sweep", "blink", "brain-pulse", "dot-breathe-soft",
   "marquee-neon", "marquee-scroll", "marquee-shine",
   "mp-spin", "pulse", "pulse-status", "pulse-status-soft", "session-pulse", "spin", "streaming-label-breathe", "thinking-caret-blink",
 ];
@@ -114,7 +114,6 @@ assert.deepEqual(
 // 每个持续动画的宿主选择器都必须在闸门清单里
 const 持续动画宿主 = {
   spin: [".loading-spinner", ".icon-loading"],
-  "agent-avatar-breathe": [".avatar.agent-avatar.is-streaming"],
   blink: [".typing", ".run-summary-dot.running"],
   "dot-breathe-soft": [".efp-pulse", ".execution-flow-item.running .execution-flow-dot", ".streaming-dot"],
   pulse: [".tool-icon.run", ".tl-state.run"],
@@ -147,8 +146,16 @@ assert.match(闸门块, /\.marquee\.is-active::after \{\s*animation: none !impor
 // 滚动与压感反馈立即落定
 assert.match(闸门块, /\.chat-body \{ scroll-behavior: auto; \}/, "闸门应取消平滑滚动");
 assert.match(闸门块, /:active \{\s*transform: none !important;/, "闸门应取消按钮按压缩放");
-// 不误杀地图/浏览器模块的交互过渡
-assert.doesNotMatch(闸门块, /leaflet|maplibregl|\.map-[a-z]/i, "闸门不得包含地图库/地图模块选择器");
+// 不误杀地图/浏览器模块的交互过渡。
+// 判定要按"规则"而不是整块文本：闸门块里允许出现与动效无关的地图布局规则
+// （例如画布小地图的 flex 尺寸），禁止的是对地图模块施加 animation/transition 覆盖。
+const 闸门规则块 = 闸门块.split("}").filter((rule) => /animation|transition/i.test(rule));
+const 误伤地图规则 = 闸门规则块.filter((rule) => /leaflet|maplibregl|\.map-[a-z]/i.test(rule));
+assert.deepEqual(
+  误伤地图规则.map((rule) => rule.trim().split("{")[0].trim()),
+  [],
+  "闸门不得对地图库/地图模块施加动效覆盖",
+);
 
 // 闸门之后不允许再出现未纳管的持续动画
 const 闸门内动画 = [...闸门块.matchAll(/animation\s*:\s*([^;{}]+)/g)].map((m) => m[1].trim());

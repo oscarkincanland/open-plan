@@ -60,7 +60,8 @@ add([
   meta("grep", { ...READ, resultBudget: budget(30 * KB, "head", "truncate") }),
   meta("find", { ...READ, resultBudget: budget(30 * KB, "head", "truncate") }),
   meta("ls", { ...READ, resultBudget: budget(30 * KB, "head", "truncate") }),
-  meta("glob", { ...READ, resultBudget: budget(30 * KB, "head", "truncate") }),
+  // 注：曾登记过 glob，但项目与 Pi SDK 都没有该工具实现，也不在任何模式白名单里，
+  // 属于"有元数据却调不到"的遗留条目，已移除（2026-11-01 收敛）。
 
   // ---- 交互 ----
   meta("ask_user", {
@@ -82,6 +83,16 @@ add([
     resultBudget: budget(20 * KB, "head", "truncate"),
     notes: "H2-4 开启时由调用方包 <skill_content> 并执行预算",
   }),
+  // 2026-11-03：只写工作区 .oaw/skill-drafts，不写技能库；安装由用户确认。
+  meta("skill_draft", {
+    readOnly: false,
+    destructive: false,
+    sideEffectScope: "workspace",
+    riskLevel: "medium",
+    needsApproval: false,
+    resultBudget: budget(4 * KB, "head", "truncate"),
+    notes: "技能草稿；运行时按复杂任务与项目设置动态放行，安装需用户确认",
+  }),
 
   // ---- 联网 ----
   meta("web_search", {
@@ -100,6 +111,22 @@ add([
   meta("map_analyze", { ...READ, resultBudget: budget(30 * KB, "head", "artifact") }),
   meta("map_clear_analysis", { ...READ, sideEffectScope: "session" }),
   meta("map_datasets", { ...READ }),
+  // 图层工程信息：只读（读图层注册表与工程元数据）。
+  meta("map_layer_info", { ...READ, resultBudget: budget(30 * KB, "head", "artifact") }),
+
+  // ---- CAD（cadAgent 开关，默认关；关闭时不在任何模式白名单中）----
+  meta("cad_read", { ...READ, resultBudget: budget(30 * KB, "head", "truncate") }),
+  meta("cad_edit", {
+    readOnly: false,
+    destructive: false,
+    sideEffectScope: "workspace",
+    riskLevel: "medium",
+    needsApproval: true,
+    patternSource: "path",
+    denyPriority: 100,
+    resultBudget: budget(4 * KB, "head", "truncate"),
+    notes: "DXF/DWG 白名单修改；落盘前走 write 审批并记录写入清单",
+  }),
 
   // ---- 文档 ----
   meta("officecli", {
@@ -202,16 +229,31 @@ add([
     denyPriority: 90,
     resultBudget: budget(8 * KB, "head", "truncate"),
   }),
+  // 重置图层树：level=baseline 会把基线后新增的正式层移入回收站，属破坏性写操作。
+  meta("map_reset", {
+    readOnly: false,
+    destructive: true,
+    sideEffectScope: "workspace",
+    riskLevel: "high",
+    needsApproval: true,
+    patternSource: "input",
+    denyPriority: 90,
+    resultBudget: budget(8 * KB, "head", "truncate"),
+  }),
+  // 新建地图项目：写操作，需用户审批。
+  meta("map_project_create", {
+    readOnly: false,
+    destructive: false,
+    sideEffectScope: "workspace",
+    riskLevel: "medium",
+    needsApproval: true,
+    patternSource: "input",
+    denyPriority: 70,
+    resultBudget: budget(8 * KB, "head", "truncate"),
+  }),
 
   // ---- 任务与记忆 ----
   meta("todo", {
-    readOnly: false,
-    destructive: false,
-    sideEffectScope: "session",
-    riskLevel: "low",
-    resultBudget: budget(8 * KB, "head", "truncate"),
-  }),
-  meta("complete_task", {
     readOnly: false,
     destructive: false,
     sideEffectScope: "session",
@@ -226,6 +268,22 @@ add([
     resultBudget: budget(8 * KB, "head", "truncate"),
     notes: "只创建待审核建议，不直接写 MEMORY.md",
   }),
+  meta("job_status", {
+    readOnly: true,
+    destructive: false,
+    sideEffectScope: "none",
+    riskLevel: "low",
+    resultBudget: budget(16 * KB, "head", "truncate"),
+    notes: "读取后台任务状态/日志尾部；wait=true 时等待完成",
+  }),
+  meta("job_cancel", {
+    readOnly: false,
+    destructive: false,
+    sideEffectScope: "process",
+    riskLevel: "medium",
+    resultBudget: budget(4 * KB, "head", "truncate"),
+    notes: "取消一个后台任务并终止其进程/CLI",
+  }),
 
   // ---- 编排 ----
   meta("run_subagent", {
@@ -235,6 +293,50 @@ add([
     riskLevel: "low",
     needsApproval: false,
     resultBudget: budget(30 * KB, "head", "artifact"),
+  }),
+  // ---- Agent Teams（Team Lite，2026-11-04）----
+  meta("team_list", {
+    readOnly: true,
+    destructive: false,
+    sideEffectScope: "none",
+    riskLevel: "low",
+    resultBudget: budget(16 * KB, "head", "truncate"),
+    notes: "只读团队 roster/任务板摘要",
+  }),
+  meta("team_wait", {
+    readOnly: true,
+    destructive: false,
+    sideEffectScope: "session",
+    riskLevel: "low",
+    resultBudget: budget(16 * KB, "head", "truncate"),
+    notes: "边沿触发等待团队变化；不修改团队",
+  }),
+  meta("team_spawn", {
+    readOnly: false,
+    destructive: false,
+    sideEffectScope: "session",
+    riskLevel: "low",
+    needsApproval: false,
+    resultBudget: budget(16 * KB, "head", "truncate"),
+    notes: "创建具名队友；队友写文件仍走各自审批",
+  }),
+  meta("team_send", {
+    readOnly: false,
+    destructive: false,
+    sideEffectScope: "session",
+    riskLevel: "low",
+    needsApproval: false,
+    resultBudget: budget(8 * KB, "head", "truncate"),
+    notes: "向队友投递消息；运行中排队、空闲时唤醒",
+  }),
+  meta("team_task", {
+    readOnly: false,
+    destructive: false,
+    sideEffectScope: "session",
+    riskLevel: "low",
+    needsApproval: false,
+    resultBudget: budget(16 * KB, "head", "truncate"),
+    notes: "共享任务板 CAS；仅内存状态，不写工作区文件",
   }),
   meta("editorial_pipeline", {
     readOnly: false,
@@ -258,6 +360,15 @@ add([
   meta("browser_tabs", { readOnly: false, destructive: false, sideEffectScope: "network", riskLevel: "low" }),
   meta("browser_back", { readOnly: false, destructive: false, sideEffectScope: "network", riskLevel: "low" }),
   meta("browser_close", { readOnly: false, destructive: false, sideEffectScope: "network", riskLevel: "low" }),
+  // ---- 内置浏览器原子工具族（Proma 对标 opt-in）----
+  // browser_wait_for：只观察页面状态，不执行脚本，不改页面。
+  meta("browser_wait_for", { readOnly: true, sideEffectScope: "none", riskLevel: "low", resultBudget: budget(16 * KB, "head", "truncate") }),
+  // browser_act：点击并等待，与 browser_click 同语义。
+  meta("browser_act", { readOnly: false, destructive: false, sideEffectScope: "network", riskLevel: "medium" }),
+  // browser_extract：抽取页面正文/区域文本，与 browser_snapshot 同语义。
+  meta("browser_extract", { readOnly: true, sideEffectScope: "none", riskLevel: "low", resultBudget: budget(16 * KB, "head", "truncate") }),
+  // browser_select_option：操作原生 select，与 browser_click 同语义。
+  meta("browser_select_option", { readOnly: false, destructive: false, sideEffectScope: "network", riskLevel: "medium" }),
 ]);
 
 const UNKNOWN = Object.freeze({

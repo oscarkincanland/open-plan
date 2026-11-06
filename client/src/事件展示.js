@@ -35,7 +35,7 @@ export const STAGE_ONLY_EVENTS = new Set([
   "run_started", "prompt", "runtime_health", "stats", "token", "heartbeat", "message_start", "message_end",
   "runtime_connecting", "run_admitting", "run_admitted", "model_request_started", "agent_started",
   "turn_started", "turn_ended", "agent_turn_end", "mode_policy", "thinking_level", "capability_plan",
-  "agent_end", "assistant_final", "text_boundary", "thinking_boundary", "tool_call_progress",
+  "agent_end", "assistant_final", "final_text_missing", "text_boundary", "thinking_boundary", "tool_call_progress",
 ]);
 
 /**
@@ -95,6 +95,10 @@ export const EVENT_UI = Object.freeze({
   completion_nudge: { phase: "executing" },
   run_budget_notice: { phase: "executing" },
   run_budget_blocked: { phase: "executing" },
+  tool_backgrounded: { phase: "executing" },
+  background_job_finished: { phase: "executing" },
+  background_job_failed: { phase: "executing" },
+  background_job_cancelled: { phase: "executing" },
   // 验证
   artifacts_validated: { phase: "verifying" },
   // 交付
@@ -112,6 +116,7 @@ export const EVENT_UI = Object.freeze({
   step_updated: {},
   // 记忆建议（A03：只作为过程事件，不再插入主消息流）
   memory_initialized: {},
+  workspace_initialized: {},
   memory_proposal: {},
   memory_proposal_created: {},
   memory_proposal_updated: {},
@@ -197,6 +202,10 @@ export function flowEventLabel(event) {
     case "tool_repeat_warning": return `重复调用提醒：${data.name || "工具"} 第 ${data.count || 3} 次`;
     case "run_budget_notice": return `预算提醒：${eventMessageText(data.reason, "接近软预算")}`;
     case "run_budget_blocked": return `预算阻断：${eventMessageText(data.reason, "已达硬预算")}`;
+    case "tool_backgrounded": return `已转后台：${data.kind || "工具"} ${String(data.jobId || "").slice(0, 20)}`;
+    case "background_job_finished": return `后台任务完成${data.exitCode !== undefined ? `（exit ${data.exitCode}）` : ""}`;
+    case "background_job_failed": return `后台任务失败：${eventMessageText(data.error, "执行出错")}`;
+    case "background_job_cancelled": return `后台任务已取消：${eventMessageText(data.reason, "用户取消")}`;
     case "completion_nudge": return "补充完成状态";
     case "tool_start": return `调用 ${toolLabel}`;
     case "tool_end": return `${toolLabel}${data.isError ? "失败" : "完成"}`;
@@ -248,6 +257,7 @@ export function flowEventLabel(event) {
     case "artifact_rolled_back": return "产物已回滚";
     case "map_action": return `地图操作${data.action ? `：${String(data.action).slice(0, 30)}` : ""}`;
     case "memory_initialized": return "记忆已初始化";
+    case "workspace_initialized": return `工作区已初始化${Array.isArray(data.created) && data.created.length ? `：${data.created.join("、")}` : ""}`;
     case "memory_proposal":
     case "memory_proposal_created": return "新增记忆建议";
     case "memory_proposal_updated":
@@ -336,14 +346,16 @@ const TOOL_IDENTITY_RULES = [
   [/^(browser_|browserOpen|browserClick|browserType|browserScroll|browserScreenshot|browserTabs)/i, "globe"],
   [/^(web_search|web_fetch|webSearch|webFetch)$/i, "search"],
   [/^(grep|find|ls|glob)$/i, "search"],
-  [/^(kb_search|kb_read|memory_update|skills_search|skills_read)$/i, "book"],
+  [/^(kb_search|kb_read|memory_update|skills_search|skills_read|skill_draft)$/i, "book"],
   [/^(read|context_read)$/i, "file"],
-  [/^(map_read|map_datasets|map_edit|map_import|map_analyze|map_template|map_save_analysis|map_clear_analysis)$/i, "map"],
+  [/^(map_read|map_datasets|map_edit|map_import|map_analyze|map_template|map_save_analysis|map_clear_analysis|map_layer_info|map_reset|map_project_create)$/i, "map"],
   [/^(write|edit|review_source_apply)$/i, "edit"],
   [/^officecli$/i, "doc"],
   [/^(bash|terminal|shell)$/i, "terminal"],
+  [/^(job_status|job_cancel)$/i, "history"],
   [/^(todo|taskcreate|taskupdate)$/i, "list"],
   [/^(run_subagent|subagent)$/i, "flow"],
+  [/^team_/i, "flow"],
   [/^editorial_pipeline$/i, "flow"],
   [/^(tool_approval|approval|review_copy)/i, "shield"],
   [/^(ask_user)$/i, "comment"],

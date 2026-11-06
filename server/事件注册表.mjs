@@ -46,8 +46,12 @@ const REGISTRY = [
   { type: "tool_start", lifecycle: true, persist: true, note: "工具调用开始" },
   { type: "tool_end", lifecycle: true, persist: true, note: "工具调用结束", schema: { required: ["name"], types: { name: "string", isError: "boolean" } } },
   { type: "tool_call_progress", lifecycle: true, persist: false, note: "工具分段进度（高频）" },
+  // ---- 内置浏览器步骤/读取（可观测性，2026-11-06 批次）----
+  { type: "browser_step_start", lifecycle: true, persist: true, note: "浏览器步骤开始（browser_* 工具）", schema: { required: ["toolCallId", "kind"], types: { toolCallId: "string", kind: "string", url: "string", title: "string" } } },
+  { type: "browser_step_end", lifecycle: true, persist: true, note: "浏览器步骤结束（done/error）", schema: { required: ["toolCallId", "kind", "status"], types: { toolCallId: "string", kind: "string", status: "string", durationMs: "number", url: "string", title: "string", error: "string" } } },
+  { type: "browser_read", lifecycle: true, persist: true, note: "浏览器读取内容（snapshot/extract：字数/元素数/预览）", schema: { required: ["toolCallId", "kind"], types: { toolCallId: "string", kind: "string", url: "string", title: "string", chars: "number", elementCount: "number", preview: "string" } } },
   { type: "tool_repeat_warning", lifecycle: true, persist: true, note: "同参数重复调用提醒" },
-  { type: "completion_nudge", lifecycle: true, persist: true, note: "收尾强制完成声明提醒" },
+  { type: "completion_nudge", lifecycle: true, persist: true, legacy: true, note: "历史事件：收尾强制完成声明提醒（显式完成声明已停用，不再发射）" },
   { type: "write_started", lifecycle: true, persist: true, note: "写入开始（含锁）" },
   { type: "write_locked", lifecycle: true, persist: false, note: "写入已加锁（与 write_started 恒成对，不落盘省冗余）" },
   { type: "write_rejected", lifecycle: true, persist: true, note: "写入被拒（含失败码）" },
@@ -55,6 +59,10 @@ const REGISTRY = [
   { type: "artifact_staged", lifecycle: true, persist: true, note: "产物暂存" },
   { type: "artifacts_validated", lifecycle: true, persist: true, note: "产物验收结果（发布前预检）" },
   { type: "artifact_materialized", lifecycle: true, persist: true, note: "产物落盘发布" },
+  { type: "artifact_conflict", lifecycle: true, persist: true, note: "发布时目标已被外部修改，改写冲突副本（不覆盖）" },
+  { type: "artifact_materialize_skipped", lifecycle: true, persist: true, note: "外部工具物化跳过（目标版本已变化）" },
+  { type: "write_scope_unknown", lifecycle: true, persist: true, note: "bash 写目标无法静态推导，未加工作区锁（advisory）" },
+  { type: "write_stale", lifecycle: true, persist: true, note: "写入前版本校验失败（读后被改/未读先写）" },
   { type: "artifact_published", lifecycle: true, persist: true, note: "产物固定/发布" },
   { type: "artifact_rolled_back", lifecycle: true, persist: true, note: "产物回滚" },
   { type: "file_changed", lifecycle: true, persist: true, note: "工作区文件变更" },
@@ -77,6 +85,18 @@ const REGISTRY = [
   // 向父会话事件流冒泡可观测的 blocked/unblocked 生命周期。
   { type: "subagent_blocked", lifecycle: true, persist: true, note: "子代理因等待用户审批而阻塞（默认关）", schema: { required: ["childId"], types: { childId: "string", kind: "string", tool: "string" } } },
   { type: "subagent_unblocked", lifecycle: true, persist: true, note: "子代理阻塞解除（审批已决，默认关）", schema: { required: ["childId"], types: { childId: "string", kind: "string", tool: "string" } } },
+
+  // ---- Agent Teams（Team Lite，2026-11-04）----
+  // Team 只属于一个 Run；事件带 teamId/runId，前端据此重建只读 roster 与任务板。
+  { type: "team_started", lifecycle: true, persist: true, note: "团队创建（Lead/人数上限/模式）", schema: { required: ["teamId", "leadId", "mode"], types: { teamId: "string", leadId: "string", mode: "string", maxMembers: "number", maxTasks: "number" } } },
+  { type: "team_member_spawned", lifecycle: true, persist: true, note: "团队队友创建", schema: { required: ["teamId", "member"], types: { teamId: "string", member: "object", role: "string", readOnly: "boolean" } } },
+  { type: "team_member_status", lifecycle: true, persist: true, note: "团队队友状态/当前活动", schema: { required: ["teamId", "memberId", "status"], types: { teamId: "string", memberId: "string", status: "string", activity: "string" } } },
+  { type: "team_member_result", lifecycle: true, persist: true, note: "团队队友本轮结果（含会话轨迹）", schema: { required: ["teamId", "memberId", "status"], types: { teamId: "string", memberId: "string", status: "string", output: "string", transcript: "array", isError: "boolean" } } },
+  { type: "team_message_queued", lifecycle: true, persist: true, note: "团队消息入队/投递", schema: { required: ["teamId", "messageId", "to"], types: { teamId: "string", messageId: "string", to: "string", from: "string", bytes: "number" } } },
+  { type: "team_message_delivered", lifecycle: true, persist: true, note: "团队消息已投递给队友", schema: { required: ["teamId", "messageId", "to"], types: { teamId: "string", messageId: "string", to: "string", from: "string" } } },
+  { type: "team_wait_finished", lifecycle: true, persist: false, note: "team_wait 返回（边沿触发/超时）", schema: { required: ["teamId"], types: { teamId: "string", timedOut: "boolean", changed: "boolean", noProgress: "boolean" } } },
+  { type: "team_task_updated", lifecycle: true, persist: true, note: "共享任务板变更（revision CAS）", schema: { required: ["teamId", "task", "action"], types: { teamId: "string", task: "object", action: "string", actorId: "string" } } },
+  { type: "team_closed", lifecycle: true, persist: true, note: "团队关闭（Run 结束/取消）", schema: { required: ["teamId", "reason"], types: { teamId: "string", reason: "string" } } },
 
   // ---- Editorial Pipeline（方案 §5.2）----
   // 流水线每步产出中间产物并独立发事件，前端展示为可折叠阶段条。
@@ -107,6 +127,13 @@ const REGISTRY = [
   { type: "run_budget_blocked", lifecycle: true, persist: true, note: "运行预算硬阻断（硬预算/重复无进展/连续失败）" },
   { type: "tool_gate_denied", lifecycle: true, persist: true, note: "工具被把关扩展单点拒绝（U2，扩展 tool_call 拦截，Run 继续执行）" },
 
+  // ---- 后台任务（2026-11-04）----
+  // 工具超过阈值仍未完成时转入后台；模型继续其他步骤，完成/失败/取消各有事件。
+  { type: "tool_backgrounded", lifecycle: true, persist: true, note: "工具已转后台（jobId/kind/命令摘要）", schema: { required: ["jobId", "kind"], types: { jobId: "string", kind: "string", command: "string" } } },
+  { type: "background_job_finished", lifecycle: true, persist: true, note: "后台任务完成（jobId/exitCode/摘要）", schema: { required: ["jobId"], types: { jobId: "string", exitCode: "number", summary: "string" } } },
+  { type: "background_job_failed", lifecycle: true, persist: true, note: "后台任务失败（jobId/错误）", schema: { required: ["jobId", "error"], types: { jobId: "string", error: "string" } } },
+  { type: "background_job_cancelled", lifecycle: true, persist: true, note: "后台任务取消（jobId/原因）", schema: { required: ["jobId"], types: { jobId: "string", reason: "string" } } },
+
   // ---- 上下文预算（U1/U6）----
   { type: "context_usage", lifecycle: true, persist: false, note: "回合边界精确上下文用量（U1，getContextUsage 实测，高频不落盘）" },
   { type: "compaction_failed", lifecycle: true, persist: true, note: "上下文压缩失败（U6，含原因与是否中止，不再静默）" },
@@ -119,14 +146,16 @@ const REGISTRY = [
   { type: "runtime_error", lifecycle: true, persist: true, note: "运行环境错误" },
   { type: "runtime_health", lifecycle: true, persist: true, note: "运行健康快照" },
   { type: "officecli_failed", lifecycle: true, persist: true, note: "Office CLI 失败" },
+  { type: "office_engine_selected", lifecycle: true, persist: true, note: "Office 操作实际执行引擎（native / cli），用于简单文本走原生的可观测性", schema: { required: ["engine", "command"], types: { engine: "string", command: "string", file: "string" } } },
   { type: "office_format_applied", lifecycle: true, persist: true, note: "Office 版式规范命中（场景/模板/配方）", schema: { required: ["scene"], types: { scene: "string", template: "string", recipe: "string", route: "string" } } },
   { type: "office_qa_finished", lifecycle: true, persist: true, note: "Office 规则闸门完成（含模板覆盖率）", schema: { required: ["passed"], types: { passed: "boolean", issues: "array", checks: "array", file: "string" } } },
   { type: "review_write_blocked", lifecycle: true, persist: true, note: "Review 原文写回被保护拦截" },
 
   // ---- 完成语义与总结 ----
-  { type: "task_completed", lifecycle: true, persist: true, note: "显式完成声明" },
+  { type: "task_completed", lifecycle: true, persist: true, legacy: true, note: "历史事件：显式完成声明（显式完成声明已停用，仅历史会话回放使用）" },
   { type: "agent_summary", lifecycle: true, persist: true, note: "本轮总结" },
   { type: "assistant_final", lifecycle: true, persist: true, note: "最终回答文本" },
+  { type: "final_text_missing", lifecycle: true, persist: true, note: "模型只输出思考/没有正文终稿（recovering=true 表示正在补一次正文）", schema: { required: ["reason"], types: { reason: "string", recovering: "boolean", runId: "string" } } },
   { type: "agent_end", lifecycle: true, persist: true, note: "Agent 收尾" },
   { type: "todo_updated", lifecycle: true, persist: true, note: "待办更新" },
   { type: "step_updated", lifecycle: true, persist: true, note: "步骤状态更新" },
@@ -163,7 +192,7 @@ const REGISTRY = [
   { type: "memory_proposal_failed", lifecycle: true, persist: true, note: "记忆建议失败" },
   { type: "memory_written", lifecycle: true, persist: true, note: "记忆写入" },
   { type: "memory_file_edited", lifecycle: true, persist: true, note: "记忆文件编辑" },
-  { type: "memory_initialized", lifecycle: true, persist: true, note: "记忆初始化" },
+  { type: "workspace_initialized", lifecycle: true, persist: true, note: "工作区初始化（AGENTS.md + memory/MEMORY.md 种子）", schema: { required: ["workspace", "version", "created", "skipped"], types: { workspace: "string", version: "string", created: "array", upgraded: "array", skipped: "array" } } },
 
   // ---- 长期目标（v0.13.x Goal）----
   // Goal 是项目 Harness 的跨轮目标层，不是 Pi 原生能力；状态变化与用户操作都落盘可回放。
@@ -189,7 +218,10 @@ const REGISTRY = [
   { type: "subagent_background_started", lifecycle: true, persist: true, note: "子代理后台派发开始" },
   { type: "subagent_background_finished", lifecycle: true, persist: true, note: "子代理后台派发结束" },
   { type: "context_sections_assembled", lifecycle: true, persist: false, note: "上下文章节组装诊断" },
+  { type: "context_files_resolved", lifecycle: true, persist: true, note: "本轮上下文文件解析（L0/L1/记忆，去重后）", schema: { required: ["workspace", "constitutionVersion", "files"], types: { workspace: "string", constitutionVersion: "string", files: "array" } } },
   { type: "skill_injected", lifecycle: true, persist: true, note: "Skill 注入（含预算/哈希）" },
+  { type: "skill_draft_created", lifecycle: true, persist: true, note: "技能草稿生成（只写工作区，不安装）", schema: { required: ["name", "path", "bytes"], types: { name: "string", path: "string", bytes: "number" } } },
+  { type: "skill_installed", lifecycle: true, persist: true, note: "技能草稿经用户确认安装到技能库", schema: { required: ["name", "path"], types: { name: "string", path: "string" } } },
   { type: "config_source_resolved", lifecycle: true, persist: false, note: "配置来源解析诊断" },
   { type: "workflow_journal_updated", lifecycle: true, persist: true, note: "工作流阶段 journal 更新" },
   { type: "plugin_manifest_invalid", lifecycle: true, persist: true, note: "插件清单缺失/哈希不匹配" },

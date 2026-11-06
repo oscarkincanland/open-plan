@@ -5,53 +5,142 @@ import { buildDocUrls, makeFileIdentity, identityMatches, PREVIEW_STATE, PREVIEW
 import MarkdownBody from "./MarkdownBody.jsx";
 import MarkdownToc from "./MarkdownToc.jsx";
 import ExcelGrid from "./ExcelGrid.jsx";
+import CadViewer from "./CadViewer.jsx";
 import DocxViewer from "./DocxViewer.jsx";
 import PptxViewer from "./PptxViewer.jsx";
 import ImageViewer from "./ImageViewer.jsx";
 import CommentMarker from "./CommentMarker.jsx";
 import Icon from "./Icon.jsx";
+import CodeViewerBoundary from "./CodeViewerBoundary.jsx";
 import { previewCapability } from "../预览能力.js";
 
+// 源码查看器按需加载：CodeMirror 与语言包只在打开代码文件时才进入页面。
+const CodeViewer = React.lazy(() => import("./CodeViewer.jsx"));
 const ICONS = { docx: "doc", xlsx: "xls", xls: "xls", pptx: "ppt", md: "md", html: "html", htm: "html", txt: "txt", pdf: "pdf", png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", bmp: "image", svg: "image", avif: "image" };
 const ANNO_SAVE_DEBOUNCE = 800;
 
-// 在 iframe 文档的 body 中查找首个匹配 text 的文本节点并按 wrapType 包裹
-function wrapFirstTextMatch(rootDoc, text, wrapType, note) {
-  if (!rootDoc || !rootDoc.body || !text) return false;
-  const className = wrapType === "highlight" ? "oa-anno-hl" : "oa-anno-cm";
-  const tag = wrapType === "highlight" ? "mark" : "u";
-  const walker = rootDoc.createTreeWalker(rootDoc.body, NodeFilter.SHOW_TEXT, {
+// ===== 标注定位模型（2026-11-06，替换「纯文本首匹配」）=====
+// 旧实现只存 `text` 且恢复时取文档里**第一个**匹配：同一句话出现两次就必然标错，
+// 且选区跨文本节点时 surroundContents 直接抛错、标注静默丢失。
+// 现在额外存「上下文（前后各 30 字）+ 出现序号」，恢复时按锚点择优。
+const ANNO_CONTEXT_CHARS = 30;
+
+/** 收集容器内全部文本节点与累计偏移，用于把 (节点, 偏移) 换算成绝对字符位置。 */
+function collectTextNodes(root) {
+  const entries = [];
+  let total = 0;
+  try {
+    const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    let node;
+    while ((node = walker.nextNode())) {
+      const len = node.nodeValue ? node.nodeValue.length : 0;
+      entries.push({ node, start: total, end: total + len });
+      total += len;
+    }
+  } catch { /* 非 DOM 容器 */ }
+  return { entries, total, text: entries.map((e) => e.node.nodeValue || "").join("") };
+}
+
+/** 记录选区锚点：文本 + 前文 + 后文 + 在全文中的出现序号。 */
+function buildAnnotationAnchor(root, range) {
+  try {
+    const text = range.toString();
+    if (!text || !text.trim()) return null;
+    const { entries, text: full } = collectTextNodes(root);
+    // 选区起点换算成绝对偏移（起点不在文本节点时退化为 -1 → 只用 occurrence=0）
+    let abs = -1;
+    for (const entry of entries) {
+      if (entry.node === range.startContainer) { abs = entry.start + range.startOffset; break; }
+    }
+    if (abs < 0) return { text: text.trim(), before: "", after: "", occurrence: 0 };
+    const before = full.slice(Math.max(0, abs - ANNO_CONTEXT_CHARS), abs);
+    const after = full.slice(abs + text.length, abs + text.length + ANNO_CONTEXT_CHARS);
+    const occurrence = full.slice(0, abs).split(text).length - 1;
+    return { text: text.trim(), before, after, occurrence };
+  } catch {
+    return null;
+  }
+}
+
+/** 在文档里找出某段文本的全部「单节点内」匹配（跨节点的匹配无法安全包裹，跳过）。 */
+function findAllTextMatches(root, text) {
+  const out = [];
+  if (!root || !text) return out;
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       if (!node.nodeValue || !node.nodeValue.includes(text)) return NodeFilter.FILTER_REJECT;
-      // 已包裹则跳过（防止重复包裹）
+      // 已包裹的跳过，避免重复包裹
       let p = node.parentNode;
-      while (p && p !== rootDoc.body) {
-        if (p.nodeType === 1 && p.classList) {
-          if (p.classList.contains("oa-anno-hl") || p.classList.contains("oa-anno-cm")) {
-            return NodeFilter.FILTER_REJECT;
-          }
+      while (p && p !== root) {
+        if (p.nodeType === 1 && p.classList
+          && (p.classList.contains("oa-anno-hl") || p.classList.contains("oa-anno-cm"))) {
+          return NodeFilter.FILTER_REJECT;
         }
         p = p.parentNode;
       }
       return NodeFilter.FILTER_ACCEPT;
     },
   });
-  let node = walker.nextNode();
-  if (!node) return false;
-  const idx = node.nodeValue.indexOf(text);
-  if (idx < 0) return false;
-  const range = rootDoc.createRange();
+  let node;
+  while ((node = walker.nextNode())) {
+    const value = node.nodeValue || "";
+    let from = 0;
+    for (;;) {
+      const idx = value.indexOf(text, from);
+      if (idx < 0) break;
+      out.push({ node, idx });
+      from = idx + text.length;
+    }
+  }
+  return out;
+}
+
+/** 把匹配包裹成高亮/批注元素。 */
+function wrapTextMatch(match, wrapType, note) {
+  const doc = match.node.ownerDocument;
+  const className = wrapType === "highlight" ? "oa-anno-hl" : "oa-anno-cm";
+  const tag = wrapType === "highlight" ? "mark" : "u";
+  const length = String(match.text || "").length;
+  if (!length) return false;
   try {
-    range.setStart(node, idx);
-    range.setEnd(node, idx + text.length);
-    const wrap = rootDoc.createElement(tag);
+    const range = doc.createRange();
+    range.setStart(match.node, match.idx);
+    range.setEnd(match.node, match.idx + length);
+    const wrap = doc.createElement(tag);
     wrap.className = className;
     if (wrapType === "comment" && note) wrap.title = note;
     range.surroundContents(wrap);
     return true;
-  } catch (e) {
+  } catch {
     return false;
   }
+}
+
+/**
+ * 按锚点恢复一条标注：优先选「上下文匹配」的候选，其次按出现序号，最后退回首个匹配。
+ * 返回是否成功包裹。
+ */
+function wrapAnnotatedText(root, anno) {
+  const text = anno?.text;
+  if (!root || !text) return false;
+  const matches = findAllTextMatches(root, text);
+  if (!matches.length) return false;
+  for (const match of matches) match.text = text;
+
+  if (typeof anno.occurrence === "number" && anno.occurrence >= 0 && anno.occurrence < matches.length) {
+    // 序号命中且上下文也对得上 → 直接采用（最强证据）
+    const candidate = matches[anno.occurrence];
+    const value = candidate.node.nodeValue || "";
+    const before = value.slice(Math.max(0, candidate.idx - ANNO_CONTEXT_CHARS), candidate.idx);
+    const after = value.slice(candidate.idx + text.length, candidate.idx + text.length + ANNO_CONTEXT_CHARS);
+    const contextOk = (!anno.before || before.endsWith(anno.before))
+      && (!anno.after || after.startsWith(anno.after));
+    if (contextOk) return wrapTextMatch(candidate, anno.type, anno.note);
+    // 上下文不符（文档被 Agent 改过）→ 序号仍可用
+    if (wrapTextMatch(candidate, anno.type, anno.note)) return true;
+  }
+  // 无锚点的旧数据 / 序号越界 → 首个匹配（保持向后兼容）
+  return wrapTextMatch(matches[0], anno.type, anno.note);
 }
 
 // 在 iframe load 时按 annotations 列表逐个恢复 DOM 包裹
@@ -59,11 +148,7 @@ function restoreAnnotationsInDoc(rootDoc, annotations) {
   if (!rootDoc || !rootDoc.body || !annotations || !annotations.length) return;
   for (const a of annotations) {
     if (!a || !a.text) continue;
-    if (a.type === "highlight") {
-      wrapFirstTextMatch(rootDoc, a.text, "highlight", null);
-    } else if (a.type === "comment") {
-      wrapFirstTextMatch(rootDoc, a.text, "comment", a.note || "");
-    }
+    wrapAnnotatedText(rootDoc.body, a);
   }
 }
 
@@ -84,7 +169,7 @@ function selectionToContainerCoords(iframe, range) {
 }
 
 // 单文件内容渲染
-function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext }) {
+function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext, onDirtyChange }) {
   const [watchUrl, setWatchUrl] = useState(null);
   const [watchLoading, setWatchLoading] = useState(false);
   const [watchErr, setWatchErr] = useState("");
@@ -95,6 +180,23 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
   // 统一预览状态：loading | ready | partial | unsupported | failed（子查看器一致消费）
   const [previewState, setPreviewState] = useState(PREVIEW_STATE.LOADING);
   const [previewErr, setPreviewErr] = useState("");
+  // 文档信息浮层（2026-11-03 预览收敛）：预览能力与排版说明收进 ⓘ
+  const [infoOpen, setInfoOpen] = useState(false);
+  const infoWrapRef = useRef(null);
+
+  useEffect(() => {
+    if (!infoOpen) return undefined;
+    const onPointerDown = (event) => {
+      if (!infoWrapRef.current?.contains(event.target)) setInfoOpen(false);
+    };
+    const onKeyDown = (event) => { if (event.key === "Escape") setInfoOpen(false); };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [infoOpen]);
 
   // 标注模式相关状态
   const [annoMode, setAnnoMode] = useState(false);
@@ -107,7 +209,10 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
   const iframeReadyRef = useRef(false);
   const saveTimerRef = useRef(null);
   const lastSavedJsonRef = useRef("[]");
-  const capability = previewCapability(doc?.ext);
+  // 预览/源码切换：只对文本类（Markdown/文本/HTML/代码）有意义，切文件时复位。
+  const [sourceMode, setSourceMode] = useState(false);
+  const [codeRetry, setCodeRetry] = useState(0);
+  const capability = previewCapability(doc?.ext, { code: doc?.kind === "code" });
 
   // 文件身份：所有预览请求都显式带同一份 { cwd, relativePath, revision }。
   const identity = useMemo(
@@ -115,6 +220,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
     [doc?.identity, doc?.name],
   );
   const docKey = `${identity.workspaceId}::${identity.relativePath}`;
+  useEffect(() => { setSourceMode(false); setCodeRetry(0); }, [docKey, doc?.kind]);
   const urls = useMemo(() => buildDocUrls(identity), [identity.workspaceId, identity.relativePath, identity.revision]);
   // 渲染 generation：切文件时递增，旧请求（即使已完成）的结果直接丢弃。
   const generationRef = useRef(0);
@@ -192,9 +298,9 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
     generationRef.current += 1;
     for (const controller of abortMapRef.current.values()) { try { controller.abort(); } catch {} }
     abortMapRef.current.clear();
-    // text / xlsx / htmlfile 的内容已随 open 响应返回并经身份核对，可直接 ready；
+    // text / xlsx / htmlfile / cad 的内容已随 open 响应返回并经身份核对，可直接 ready；
     // 其余格式（docx/pptx/pdf/html）还要经过渲染或 iframe 加载，先置 loading。
-    const localReady = doc?.kind === "text" || doc?.kind === "xlsx" || doc?.kind === "htmlfile";
+    const localReady = doc?.kind === "text" || doc?.kind === "code" || doc?.kind === "xlsx" || doc?.kind === "htmlfile" || doc?.kind === "cad";
     setPreviewState(localReady ? PREVIEW_STATE.READY : PREVIEW_STATE.LOADING);
     setPreviewErr("");
     setWatchUrl(null);
@@ -356,7 +462,8 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
         return;
       }
       setAnnoInput(null);
-      setAnnoToolbar({ ...coords, text: text.trim() });
+      // 选区还在时就把锚点（上下文 + 出现序号）算好，保存后恢复才定位得准
+      setAnnoToolbar({ ...coords, text: text.trim(), anchor: buildAnnotationAnchor(innerDoc.body, range) });
     };
 
     const onScroll = () => {
@@ -419,6 +526,8 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
         id: `${Date.now()}-h${Math.random().toString(36).slice(2, 6)}`,
         type: "highlight",
         text: annoToolbar.text,
+        // 锚点：上下文 + 出现序号，避免同文多处时恢复错位
+        ...(annoToolbar.anchor || {}),
         created: Date.now(),
       };
       setAnnotations((prev) => [...prev, newAnno]);
@@ -431,7 +540,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
   // 进入批注输入态
   const handleCommentClick = useCallback(() => {
     if (!annoToolbar) return;
-    setAnnoInput({ mode: "comment", text: annoToolbar.text, value: "" });
+    setAnnoInput({ mode: "comment", text: annoToolbar.text, anchor: annoToolbar.anchor || null, value: "" });
   }, [annoToolbar]);
 
   // 进入交给 agent 输入态
@@ -489,6 +598,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
         type: "comment",
         text: annoInput.text,
         note: val,
+        ...(annoInput.anchor || {}), // 锚点：上下文 + 出现序号
         created: Date.now(),
       };
       setAnnotations((prev) => [...prev, newAnno]);
@@ -528,33 +638,33 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
   return (
     <>
       <div className="docview-head">
-        <span className="doc-title">{doc.name}</span>
-        <span className={`badge preview-state preview-state-${previewState}`} title={previewErr || ""}>
-          {previewState === PREVIEW_STATE.LOADING && <Icon name="loading" size={12} />}
-          {previewState === PREVIEW_STATE.FAILED && <Icon name="warning" size={12} />}
-          {PREVIEW_STATE_LABEL[previewState] || previewState}
-        </span>
-        <span className={`badge preview-capability preview-capability-${capability.level}`} title={capability.detail}>
-          {capability.label}
-        </span>
+        <span className="doc-title" title={doc.name}>{doc.name}</span>
+        {/* 状态只留一个圆点（标题行不再堆文字徽标）；失败等异常仍走下方警示行 */}
+        <span
+          className={`preview-state-dot preview-state-${previewState}`}
+          title={previewErr || (PREVIEW_STATE_LABEL[previewState] || previewState)}
+          aria-label={PREVIEW_STATE_LABEL[previewState] || previewState}
+          role="status"
+        />
         {doc.kind === "html" && !isOfficePreview && (
           <>
-            <span className="badge">{watchUrl ? "实时预览" : "静态预览"}</span>
             {!watchUrl && (
               <button className="btn-sm" onClick={startLive} disabled={watchLoading}>
                 {watchLoading ? "启动中..." : "开启实时预览"}
               </button>
             )}
             {watchUrl && (
-              <button className="btn-sm" onClick={stopLive}>静态预览</button>
+              <button className="btn-sm" onClick={stopLive}>转为静态预览</button>
             )}
           </>
         )}
-        {isOfficePreview && <span className="badge">专用预览工具栏</span>}
-        {doc.kind === "xlsx" && <span className="badge">可编辑</span>}
-        {doc.kind === "htmlfile" && <span className="badge">HTML 页面</span>}
-        {doc.kind === "pdf" && <span className="badge">PDF</span>}
-        {doc.kind === "text" && <span className="badge">{doc.ext === "md" || doc.ext === "markdown" ? "Markdown" : "文本"}</span>}
+        {(doc.kind === "text" || doc.kind === "htmlfile") && (
+          <div className="doc-viewmode" role="group" aria-label="预览方式">
+            <button type="button" className={`btn-sm ${sourceMode ? "" : "active"}`} onClick={() => setSourceMode(false)}>预览</button>
+            <button type="button" className={`btn-sm ${sourceMode ? "active" : ""}`} onClick={() => setSourceMode(true)}>源码</button>
+          </div>
+        )}
+        {doc.truncated && <span className="badge ws-hint" title="文件超过预览上限，仅显示前一部分；可用系统应用打开完整文件">已截断</span>}
         {isHtmlKind && !isOfficePreview && (
           <button
             className={`btn-sm oa-anno-toggle ${annoMode ? "active" : ""}`}
@@ -586,6 +696,38 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
         {watchErr && <span className="badge err-badge"><Icon name="warning" size={12} /> {watchErr}</span>}
         {previewErr && <span className="badge err-badge"><Icon name="warning" size={12} /> {previewErr}</span>}
         {watchUrl && <span className="badge ws-hint">可点选元素，配合右侧 agent 修改</span>}
+        {/* 文档信息：预览能力、编辑能力与排版说明收进 ⓘ，标题行不再堆文字徽标 */}
+        <div className="doc-info-wrap" ref={infoWrapRef}>
+          <button
+            type="button"
+            className={`doc-info-btn ${infoOpen ? "active" : ""}`}
+            onClick={() => setInfoOpen((value) => !value)}
+            aria-haspopup="dialog"
+            aria-expanded={infoOpen}
+            aria-label="文档信息"
+            title="文档信息：预览能力与排版说明"
+          >
+            <Icon name="info" size={13} />
+          </button>
+          {infoOpen && (
+            <div className="doc-info-pop" role="dialog" aria-label="文档信息">
+              <div className="doc-info-head">
+                <strong>{capability.label}</strong>
+                <span className={`preview-capability preview-capability-${capability.level}`}>{capability.level}</span>
+              </div>
+              <p>{capability.detail}</p>
+              <p className="doc-info-row">编辑能力：{capability.editable || "无"}</p>
+              <p className="doc-info-row">文件：{doc.name}</p>
+              {/* DESIGN §8：预览方式与类型说明收进 ⓘ，标题行不再常驻文字徽标 */}
+              <p className="doc-info-row">格式：{String(doc.ext || "").toUpperCase() || "-"}</p>
+              {doc.kind === "html" && !isOfficePreview && (
+                <p className="doc-info-row">预览方式：{watchUrl ? "实时预览（随文件变化刷新）" : "静态预览"}</p>
+              )}
+              {doc.kind === "code" && <p className="doc-info-row">语言：{doc.language || doc.ext || "text"}</p>}
+              {doc.truncated && <p className="doc-info-row">内容：超过预览上限，仅显示前一部分</p>}
+            </div>
+          )}
+        </div>
       </div>
       {commentsOpen && comments.length > 0 && !showComments && (
         <div className="comments-panel">
@@ -603,8 +745,27 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
         </div>
       )}
       <div className="docview-body">
+        {doc.kind === "code" && (
+          <CodeViewerBoundary key={`${docKey}:code:${codeRetry}`} onRetry={() => setCodeRetry((value) => value + 1)}>
+            <React.Suspense fallback={<div className="code-viewer-loading" role="status">正在加载源码…</div>}>
+              <CodeViewer content={doc.content} language={doc.language} fileName={doc.name} truncated={doc.truncated} />
+            </React.Suspense>
+          </CodeViewerBoundary>
+        )}
+        {sourceMode && (doc.kind === "text" || doc.kind === "htmlfile") && (
+          <CodeViewerBoundary key={`${docKey}:source:${codeRetry}`} onRetry={() => setCodeRetry((value) => value + 1)}>
+            <React.Suspense fallback={<div className="code-viewer-loading" role="status">正在加载源码…</div>}>
+              <CodeViewer
+                content={doc.content}
+                language={doc.kind === "htmlfile" ? "html" : (doc.ext === "md" || doc.ext === "markdown" ? "markdown" : "text")}
+                fileName={doc.name}
+                truncated={doc.truncated}
+              />
+            </React.Suspense>
+          </CodeViewerBoundary>
+        )}
         {doc.kind === "html" && doc.ext === "docx" && (
-          <DocxViewer name={doc.name} revision={doc.previewRevision} identity={identity} onPreviewState={setPreviewState} onPreviewError={setPreviewErr} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} />
+          <DocxViewer name={doc.name} revision={doc.previewRevision} identity={identity} onPreviewState={setPreviewState} onPreviewError={setPreviewErr} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} onDirtyChange={onDirtyChange} />
         )}
         {doc.kind === "html" && doc.ext === "pptx" && (
           <PptxViewer name={doc.name} revision={doc.previewRevision} identity={identity} onPreviewState={setPreviewState} onPreviewError={setPreviewErr} />
@@ -628,7 +789,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
                 onMouseDown={(e) => e.preventDefault()}
               >
                 <button className="oa-anno-btn" onClick={handleHighlight} title="高亮">
-                  <Icon name="penTool" size={12} />
+                  <Icon name="edit" size={12} />
                   <span>高亮</span>
                 </button>
                 <button className="oa-anno-btn" onClick={handleCommentClick} title="批注">
@@ -708,8 +869,9 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
             />
           </div>
         )}
-        {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} officeHtmlUrl={urls.html} />}
-        {doc.kind === "htmlfile" && (
+        {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} officeHtmlUrl={urls.html} onDirtyChange={onDirtyChange} />}
+        {doc.kind === "cad" && <CadViewer doc={doc} />}
+        {doc.kind === "htmlfile" && !sourceMode && (
           <div className="docframe-container">
             <iframe
               ref={htmlFrameRef}
@@ -729,7 +891,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
                 onMouseDown={(e) => e.preventDefault()}
               >
                 <button className="oa-anno-btn" onClick={handleHighlight} title="高亮">
-                  <Icon name="penTool" size={12} />
+                  <Icon name="edit" size={12} />
                   <span>高亮</span>
                 </button>
                 <button className="oa-anno-btn" onClick={handleCommentClick} title="批注">
@@ -795,7 +957,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
             )}
           </div>
         )}
-        {doc.kind === "text" && (
+        {doc.kind === "text" && !sourceMode && (
           <div className="mdview-container">
             <MarkdownToc content={doc.content} targetRef={mdContentRef} />
             <div className="mdview" ref={mdContentRef}>
@@ -818,9 +980,10 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
   );
 }
 
-export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTab, onOpenFile, loading, onSendToAgent, onInsertContext }) {
+export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTab, onOpenFile, loading, onSendToAgent, onInsertContext, hideTabBar = false, onDirtyChange }) {
   // activeTab 是标签 id（工作区 + 相对路径），兼容旧数据仍可能传文件名。
   const doc = tabs.find((t) => (t.id || t.name) === activeTab) || null;
+  useEffect(() => { onDirtyChange?.(false); }, [doc?.id, onDirtyChange]);
   const tabId = (t) => t.id || t.name;
   // 标签副标题：不同工作区的同名文件用工作区末段提示，便于区分。
   const workspaceHint = (t) => {
@@ -842,8 +1005,8 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
 
   return (
     <div className="docview">
-      {/* 文件 tab 栏（类似浏览器标签页） */}
-      {tabs.length > 0 && (
+      {/* 文件 tab 栏（类似浏览器标签页）；画布模式把标签提升到画布顶部时隐藏 */}
+      {!hideTabBar && tabs.length > 0 && (
         <div className="doc-tabs">
           {tabs.map((t) => (
             <div
@@ -892,7 +1055,7 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
           </div>
         </div>
       ) : (
-        <DocContent doc={doc} loading={loading} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} />
+        <DocContent doc={doc} loading={loading} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} onDirtyChange={onDirtyChange} />
       )}
     </div>
   );

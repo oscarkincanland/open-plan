@@ -74,18 +74,51 @@ export function parseLooseJson(text) {
 /**
  * 解析失败诊断：把模型原始返回落盘（截断 / 纯 Markdown / 非法 JSON 一眼可见），
  * 并在错误里带上长度与开头片段——此前只有一句"未返回可解析的 JSON"，无从定位。
+ *
+ * 落盘路径必须是**工作区相对路径**：只给 basename 时，模型会按提示去工作区根目录
+ * 找文件而读不到（实测多产生一次 ENOENT 失败），排查成本反而更高。
+ *
  * @returns {string} 可直接拼进错误文案的诊断串
  */
-function diagnoseUnparsable(raw, { intermediateDir, fileBase, stage }) {
+export function diagnoseUnparsable(raw, { intermediateDir, fileBase, stage, workspace }) {
   const text = String(raw ?? "");
   let saved = "";
   try {
     const file = path.join(intermediateDir, `${fileBase}.${stage}.raw.txt`);
     fs.writeFileSync(file, text, "utf8");
-    saved = `，原始返回已落盘 ${path.basename(file)}`;
+    const relative = workspace
+      ? path.relative(path.resolve(workspace), file).replace(/\\/g, "/")
+      : path.basename(file);
+    saved = `，原始返回已落盘 ${relative}`;
   } catch {}
   const head = text.replace(/\s+/g, " ").slice(0, 160);
   return `原始返回 ${text.length} 字符${saved}；开头：${head || "（空）"}`;
+}
+
+/** Markdown blocks → PPT slides：标题分页、段落即要点、表格挂当前页。 */
+function markdownBlocksToSlides(blocks, fallbackTitle = "汇报材料") {
+  const slides = [];
+  let current = null;
+  const ensure = () => {
+    if (!current) {
+      current = { title: String(fallbackTitle || "概述").slice(0, 80), bullets: [] };
+      slides.push(current);
+    }
+    return current;
+  };
+  for (const block of Array.isArray(blocks) ? blocks : []) {
+    if (block?.type === "heading") {
+      current = { title: String(block.text || "未命名").slice(0, 80), bullets: [] };
+      slides.push(current);
+    } else if (block?.type === "paragraph") {
+      const text = String(block.text || "").trim();
+      if (text) ensure().bullets.push(text);
+    } else if (block?.type === "table" && Array.isArray(block.rows) && block.rows.length) {
+      const slide = ensure();
+      if (!slide.table) slide.table = { headers: block.rows[0].map(String), rows: block.rows.slice(1) };
+    }
+  }
+  return slides;
 }
 
 /**
@@ -296,12 +329,23 @@ export async function runEditorialPipeline({
     let effectiveCover;
     if (sourceBlocks) {
       const title = sourceHeadings[0] || safePipelineName(goal);
-      outline = {
-        outline: { title, sections: sourceHeadings.map((text) => ({ title: text })) },
-        checks: [`Markdown 直通：${sourceBlocks.length} 个内容块`],
-      };
-      content = { content: { sections: [] }, checks: [] };
-      effectiveCover = cover ? { ...cover, title: String(cover.title || title).slice(0, 80) } : null;
+      if (normalizedFormat === "pptx") {
+        // Markdown 直通 PPT：每个标题一页，标题后的段落作为要点；表格挂到当前页。
+        const slides = markdownBlocksToSlides(sourceBlocks, title);
+        outline = {
+          outline: { title, slides: slides.map((slide) => ({ title: slide.title })) },
+          checks: [`Markdown 直通：${slides.length} 页`],
+        };
+        content = { content: { slides }, checks: [] };
+        effectiveCover = null;
+      } else {
+        outline = {
+          outline: { title, sections: sourceHeadings.map((text) => ({ title: text })) },
+          checks: [`Markdown 直通：${sourceBlocks.length} 个内容块`],
+        };
+        content = { content: { sections: [] }, checks: [] };
+        effectiveCover = cover ? { ...cover, title: String(cover.title || title).slice(0, 80) } : null;
+      }
       emit("pipeline_stage_finished", { pipelineId, stage: "planner", label: STAGE_LABELS.planner, status: "skipped", checks: ["sourceMarkdown 直通，跳过 Planner"] });
       emit("pipeline_stage_finished", { pipelineId, stage: "writer", label: STAGE_LABELS.writer, status: "skipped", checks: ["sourceMarkdown 直通，跳过 Writer"] });
     } else {
@@ -322,7 +366,7 @@ export async function runEditorialPipeline({
       ].filter(Boolean).join("\n");
       const raw = runModelTask ? await runModelTask(prompt, { stage: "planner" }) : "";
       const parsed = parseLooseJson(raw);
-      if (!parsed) throw new Error(`Planner 未返回可解析的大纲 JSON（${diagnoseUnparsable(raw, { intermediateDir, fileBase, stage: "planner" })}）`);
+      if (!parsed) throw new Error(`Planner 未返回可解析的大纲 JSON（${diagnoseUnparsable(raw, { intermediateDir, fileBase, stage: "planner", workspace })}）`);
       const outlinePath = path.join(intermediateDir, `${fileBase}.outline.json`);
       fs.writeFileSync(outlinePath, JSON.stringify(parsed, null, 2), "utf8");
       return {
@@ -358,7 +402,7 @@ export async function runEditorialPipeline({
           ].filter(Boolean).join("\n");
       const raw = runModelTask ? await runModelTask(prompt, { stage: "writer" }) : "";
       const parsed = parseLooseJson(raw);
-      if (!parsed) throw new Error(`Writer 未返回可解析的内容 JSON（${diagnoseUnparsable(raw, { intermediateDir, fileBase, stage: "writer" })}）`);
+      if (!parsed) throw new Error(`Writer 未返回可解析的内容 JSON（${diagnoseUnparsable(raw, { intermediateDir, fileBase, stage: "writer", workspace })}）`);
       const contentPath = path.join(intermediateDir, `${fileBase}.content.json`);
       fs.writeFileSync(contentPath, JSON.stringify(parsed, null, 2), "utf8");
       return {
@@ -370,7 +414,6 @@ export async function runEditorialPipeline({
     }
 
     // ---- Stage 3 Formatter（原生直写）+ Evaluator 回环（≤1 轮 revise）----
-    if (sourceBlocks && normalizedFormat === "pptx") throw new Error("sourceMarkdown 仅支持 docx");
     let formatterResult = null;
     let evaluation = null;
     for (let round = 0; round <= (sourceBlocks ? 0 : 1); round += 1) {
@@ -479,7 +522,7 @@ export async function runEditorialPipeline({
         // 修订不可解析时不再静默：落盘原始返回并留一条阶段事件，避免"看起来改过了"却仍是旧稿。
         emit("pipeline_stage_finished", {
           pipelineId, stage: "writer", label: STAGE_LABELS.writer, status: "revise_failed",
-          error: `修订未返回可解析的内容 JSON（${diagnoseUnparsable(revisedRaw, { intermediateDir, fileBase, stage: `writer-revise-${round + 1}` })}）`.slice(0, 400),
+          error: `修订未返回可解析的内容 JSON（${diagnoseUnparsable(revisedRaw, { intermediateDir, fileBase, stage: `writer-revise-${round + 1}`, workspace })}）`.slice(0, 400),
         });
       }
     }

@@ -20,6 +20,11 @@ const DEFAULT_PROJECT_SETTINGS = Object.freeze({
   defaultModel: "",
   agentProfile: "通用 Agent",
   skills: [],
+  // 2026-11-03：auto=简单用默认清单、复杂才检索；always=总是检索；off=只认显式 @技能。
+  skillsPolicy: "auto",
+  // 2026-11-04：默认允许生成技能草稿（只写 .oaw/skill-drafts，安装仍需用户确认）；
+  // complex=仅复杂任务允许；off=关闭。
+  allowSkillDrafts: "on",
   memoryPolicy: "approval_required",
   artifactPolicy: "validation_required",
 });
@@ -100,6 +105,8 @@ function normalizeSettings(settings = {}) {
   next.defaultModel = String(next.defaultModel || "").trim();
   next.agentProfile = PROJECT_PROFILES.includes(next.agentProfile) ? next.agentProfile : DEFAULT_PROJECT_SETTINGS.agentProfile;
   next.skills = [...new Set((Array.isArray(next.skills) ? next.skills : []).map((item) => String(item || "").trim()).filter(Boolean))].slice(0, 50);
+  next.skillsPolicy = ["auto", "always", "off"].includes(next.skillsPolicy) ? next.skillsPolicy : "auto";
+  next.allowSkillDrafts = ["on", "complex", "off"].includes(next.allowSkillDrafts) ? next.allowSkillDrafts : "on";
   next.memoryPolicy = next.memoryPolicy === "manual" ? "manual" : "approval_required";
   next.artifactPolicy = next.artifactPolicy === "manual" ? "manual" : "validation_required";
   next.profilePolicy = profilePolicyFor(next.agentProfile);

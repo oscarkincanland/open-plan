@@ -9,6 +9,12 @@ import TaskCenter from "./任务中心.jsx";
 // 阶段 2：M2宏观分析 / M3公交分析 / 柬埔寨OD面板 三个旧面板已下线，
 // 统一由可视面板（可视面板.jsx + /api/map/visual 描述符）承担。
 import 可视面板 from "./可视面板.jsx";
+import 重置对话框 from "./重置对话框.jsx";
+import 图层属性对话框 from "./图层属性对话框.jsx";
+import 临时层转正对话框 from "./临时层转正对话框.jsx";
+import AI画布向导 from "./AI画布向导.jsx";
+import 地图文件树 from "./地图文件树.jsx";
+import { parseCsvPoints } from "../地图/CSV解析.js";
 import shp from "shpjs";
 import { registerLayerReplay, unregisterLayerReplay } from "../图层注册表.js";
 import { askConfirm, askText, notifyError } from "./Feedback.jsx";
@@ -17,6 +23,7 @@ import {
   mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute, mapDemoAnalysis,
   mapDuplicateProject, mapRenameProject, mapArchiveProject, mapDeleteProject,
   mapExportBatch, mapExportStatus,
+  mapLayerRegistry, mapUpdateLayerMeta, mapLayerReplace, mapSetBaseline, mapReset,
 } from "../api.js";
 import { flag } from "../运行开关.js";
 
@@ -164,14 +171,18 @@ export default function MapPanel({
   onExit, onOpenFile,
   clientId, threadId, workspace = "", models, defaultModel, onAgentEnd, onNewSession, historyMessages, sessions, currentSessionId, onSelectSession,
   onSessionChange, onRefreshSessions, onFocusRun, hideChat = false, chatVisible = true, onToggleChat, bridgeRef, onViewportChange, onProjectChange,
+  mapContext = null, onMapChanged,
   // 对话模式：地图里的查询（Chat）与分析总结可直接用，新增/修改图层需要 Work。
   // 用户不必返回主对话切换——这正是此前"在地图里说画热力图却做不出来"的成因之一。
   conversationMode = "chat", onModeChange,
   // 阶段 2：可视面板的"交给 Agent"需要把文字送到对话栏输入框（复用全局单实例）。
   insertChatText,
+  // 会话记录的地图项目（App.mapContexts → mapProject）：打开地图模块时恢复上次项目，
+  // 避免新建画布后视口上报丢失项目、回落到默认 zhejiang-map。
+  initialProject = "",
 }) {
   const [projects, setProjects] = useState([]);
-  const [project, setProject] = useState("zhejiang-map");
+  const [project, setProject] = useState(initialProject || "zhejiang-map");
   const [cfg, setCfg] = useState(null);
   const [style, setStyle] = useState(null);
   const [files, setFiles] = useState([]);
@@ -189,6 +200,7 @@ export default function MapPanel({
   const [annotationsVisible, setAnnotationsVisible] = useState(true);
   // 阶段 2：顶栏收敛后的菜单与面板开关
   const [visualOpen, setVisualOpen] = useState(false);   // 可视面板（替代 6 个旧分析面板）
+  const [fileTreeOpen, setFileTreeOpen] = useState(false); // 项目/工作区文件树浮层
   const [dataMenuOpen, setDataMenuOpen] = useState(false);
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
   const [regionMenuOpen, setRegionMenuOpen] = useState(false);
@@ -236,6 +248,12 @@ export default function MapPanel({
   const [exp, setExp] = useState({ size: "a4l", title: "", legend: true, customW: 1600, customH: 1131 });
   const [importOpen, setImportOpen] = useState(false); // 数据导入弹窗
   const [projectMenuOpen, setProjectMenuOpen] = useState(false); // 项目生命周期菜单
+  // GIS 工程化：工程信息 / 重置 / 图层属性 / AI 画布
+  const [registry, setRegistry] = useState(null);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [layerPropsId, setLayerPropsId] = useState(null);
+  const [persistItem, setPersistItem] = useState(null);
+  const [aiCanvasOpen, setAiCanvasOpen] = useState(false);
   const [impTab, setImpTab] = useState("files");
   const [impDir, setImpDir] = useState("data");
   const [impMsg, setImpMsg] = useState("");
@@ -384,6 +402,8 @@ export default function MapPanel({
       setFiles(p.files || []);
       setLayerViews(Array.isArray(p.layerViews) ? p.layerViews : []);
       setBasemapMeta(Array.isArray(p.basemapMeta) && p.basemapMeta.length ? p.basemapMeta : BASEMAP_FALLBACK);
+      // 工程注册表（要素数/锁定/基线归属）用于属性对话框与重置影响清单。
+      try { setRegistry(await mapLayerRegistry(name)); } catch { setRegistry(null); }
     } catch (e) {
       flash("加载项目失败: " + e.message);
     }
@@ -470,9 +490,30 @@ export default function MapPanel({
   useEffect(() => {
     mapProjects().then((r) => setProjects(r.projects || [])).catch(() => {});
     loadProject(project);
-    onProjectChange?.(project);
+    // 注意：这里不能回写 onProjectChange。项目有两个来源——用户切换（本地状态 →
+    // 会话上下文）和会话恢复（initialProject → 本地状态）；若两者都双向同步，
+    // 工作区切换/恢复会话时会因异步回填在 123 与 zhejiang-map 之间来回覆盖，
+    // 表现为项目选择器跳动、style.json 交替请求、地图一直“加载中”。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project]);
+
+  // 会话项目跟随：App 恢复/切换会话后把 mapProject 传进来，地图面板同步到该项目。
+  // 这是“上层 → 本地”的单向回填，只更新本地状态，不再反向通知，避免双写循环。
+  useEffect(() => {
+    const target = String(initialProject || "").trim();
+    if (!target || target === project) return;
+    if (!projects.some((item) => String(item.project || item.name || "") === target)) return;
+    setProject(target);
+  }, [initialProject, projects, project]);
+
+  // 用户切换项目（菜单/新建/重命名/删除回退）的唯一入口：先更新本地，
+  // 再通知上层写入当前会话的 mapProject；与上面的单向回填分开。
+  const changeProject = useCallback((name) => {
+    const next = String(name || "").trim();
+    if (!next || next === project) return;
+    setProject(next);
+    onProjectChange?.(next);
+  }, [project, onProjectChange]);
 
   // 工作区切换时"我的图层"跟随（阶段 1 · 修 X6）：
   // 共享数据集不变，工作区自有图层随 owner 过滤重新拉取。
@@ -503,36 +544,83 @@ export default function MapPanel({
   // 保存 style.json 并热更新地图
   const saveStyle = useCallback(async (nextStyle) => {
     setStyle(nextStyle);
-    try { await mapSaveStyle(project, nextStyle); } catch (e) { flash("保存样式失败: " + e.message); }
+    try {
+      await mapSaveStyle(project, nextStyle);
+      // 手工保存样式后通知 App 刷新会话地图预览（回到主界面时立即可见）。
+      onMapChanged?.(project);
+    } catch (e) { flash("保存样式失败: " + e.message); }
     mapRef.current?.reloadStyle();
-  }, [project, flash]);
+  }, [project, flash, onMapChanged]);
 
   // 临时层清单：从地图实例读"画面上真实存在的临时可视化"。
   // 这些图层不在 style.json 里，属于本次会话；此处只做展示，不参与写入。
   const TEMP_LAYER_LABELS = useMemo(() => ([
-    { key: "od", match: (id) => id === "od-heat" || id === "od-lines", label: "OD 流量热力" },
-    { key: "iso", match: (id) => id.startsWith("iso-"), label: "等时圈" },
-    { key: "route", match: (id) => id === "route-line" || id === "route-pts", label: "路径规划" },
-    { key: "draw", match: (id) => id.startsWith("draw-"), label: "测量 / 绘制" },
-    { key: "analysis", match: (id) => id.includes("agent-analysis") || id.startsWith("analysis-"), label: "分析结果" },
+    { key: "od", match: (id) => id === "od-heat" || id === "od-lines", label: "OD 流量热力", persistable: false },
+    { key: "iso", match: (id) => id.startsWith("iso-"), label: "等时圈", persistable: false },
+    { key: "route", match: (id) => id === "route-line" || id === "route-pts", label: "路径规划", persistable: false },
+    { key: "draw", match: (id) => id.startsWith("draw-"), label: "测量 / 绘制", persistable: false },
+    { key: "analysis", match: (id) => id.includes("agent-analysis") || id.startsWith("analysis-"), label: "分析结果", persistable: true },
   ]), []);
 
   const syncTempLayers = useCallback(() => {
     const m = mapRef.current?.getMap?.();
     if (!m?.getStyle) { setTempLayers([]); return; }
-    let ids = [];
-    try { ids = (m.getStyle().layers || []).map((l) => String(l.id)); } catch { ids = []; }
+    let layers = [];
+    try { layers = m.getStyle().layers || []; } catch { layers = []; }
     const found = [];
     for (const item of TEMP_LAYER_LABELS) {
-      if (ids.some((id) => item.match(id))) found.push({ key: item.key, label: item.label });
+      const matched = layers.filter((l) => item.match(String(l.id)));
+      if (!matched.length) continue;
+      found.push({
+        key: item.key,
+        label: item.label,
+        ids: matched.map((l) => String(l.id)),
+        visible: matched.some((l) => l.layout?.visibility !== "none"),
+        persistable: Boolean(item.persistable) && Boolean(activeAnalysis),
+      });
     }
     setTempLayers(found);
-  }, [TEMP_LAYER_LABELS]);
+  }, [TEMP_LAYER_LABELS, activeAnalysis]);
 
   // 临时层变化没有统一事件源：跟随样式与选中状态做轻量重扫（开销极小，仅读 id 列表）。
   useEffect(() => {
     syncTempLayers();
   }, [syncTempLayers, style, activeAnalysis, odMsg, iso.info]);
+
+  // 临时层显隐：直接改 MapLibre 运行时样式，不能走 saveStyle（否则会被写进 style.json）。
+  const toggleTempLayer = useCallback((item) => {
+    const m = mapRef.current?.getMap?.();
+    if (!m || !item?.ids?.length) return;
+    const nextVisible = !item.visible;
+    for (const id of item.ids) {
+      try {
+        if (m.getLayer(id)) m.setLayoutProperty(id, "visibility", nextVisible ? "visible" : "none");
+      } catch { /* 图层可能已被移除 */ }
+    }
+    syncTempLayers();
+  }, [syncTempLayers]);
+
+  // 单条清除：只移除该临时层的 MapLibre layer/source，不动正式图层。
+  const removeTempLayer = useCallback((item) => {
+    const m = mapRef.current?.getMap?.();
+    if (!m || !item?.ids?.length) return;
+    const sources = new Set();
+    for (const id of item.ids) {
+      try {
+        const layer = m.getLayer(id);
+        if (layer?.source) sources.add(layer.source);
+        if (layer) m.removeLayer(id);
+      } catch { /* 已移除 */ }
+    }
+    for (const source of sources) {
+      try {
+        const stillUsed = (m.getStyle()?.layers || []).some((l) => l.source === source);
+        if (!stillUsed) m.removeSource(source);
+      } catch { /* 源可能被其它图层复用 */ }
+    }
+    syncTempLayers();
+    flash(`已清除临时层：${item.label}`);
+  }, [syncTempLayers, flash]);
 
   // ---- 图层操作 ----
   const toggleLayer = useCallback((layerId, target) => {
@@ -685,11 +773,12 @@ export default function MapPanel({
       await mapImportLayer(project, newId, g);
       await loadProject(project);
       mapRef.current?.reloadStyle();
+      onMapChanged?.(project);
       flash(`已复制图层 ${layerId} → ${newId}`);
     } catch (e) {
       flash("复制失败: " + e.message);
     }
-  }, [project, loadProject, flash]);
+  }, [project, loadProject, flash, onMapChanged]);
 
   // 拖拽排序：把 layerId 移到 targetId 的位置
   const moveLayerTo = useCallback((layerId, targetId) => {
@@ -984,7 +1073,14 @@ export default function MapPanel({
         setImpMsg("正在解析 " + f.name + "…");
         addParsed(f.name.replace(/\.shp$/i, ""), await parseShapefile(shp, f, selected));
       }
-      if (!items.length) { setImpMsg("请选择 GeoJSON、SHP（可同时选择 DBF/PRJ/CPG）或 ZIP 文件"); return; }
+      let csvInvalid = 0;
+      for (const f of selected.filter((x) => /\.csv$/i.test(x.name))) {
+        setImpMsg("正在解析 " + f.name + "…");
+        const parsed = parseCsvPoints(await f.text(), f.name);
+        csvInvalid += parsed.invalid;
+        addParsed(f.name.replace(/\.csv$/i, ""), parsed.geojson);
+      }
+      if (!items.length) { setImpMsg("请选择 GeoJSON、CSV、SHP（可同时选择 DBF/PRJ/CPG）或 ZIP 文件"); return; }
       const r = await mapImportBatch(project, items);
       const failed = Object.entries(r.layers || {}).filter(([, result]) => !result?.ok || !result?.tiles?.count);
       if (failed.length) {
@@ -995,7 +1091,7 @@ export default function MapPanel({
       await mapRef.current?.reloadStyle?.();
       await zoomToLayer(items[0]?.layerId);
       const names = Object.keys(r.layers || {}).join(", ");
-      setImpMsg(`已导入 ${items.length} 个图层（${names}），瓦片已重建`);
+      setImpMsg(`已导入 ${items.length} 个图层（${names}），瓦片已重建${csvInvalid ? `；CSV 跳过 ${csvInvalid} 行无效坐标` : ""}`);
     } catch (e) {
       setImpMsg("导入失败: " + e.message);
     }
@@ -1027,7 +1123,10 @@ export default function MapPanel({
       };
       setStyle(nextStyle);
       mapSaveStyle(project, nextStyle)
-        .then(() => mapRef.current?.syncStyleHash?.())
+        .then(() => {
+          mapRef.current?.syncStyleHash?.();
+          onMapChanged?.(project);
+        })
         .catch((e) => flash("保存底图选择失败: " + e.message));
     }
     setCfg((prev) => {
@@ -1504,12 +1603,12 @@ export default function MapPanel({
       const created = await mapCreateProject(id.trim(), name.trim(), "zhejiang-map");
       const listed = await mapProjects();
       setProjects(listed.projects || []);
-      setProject(created.project || id.trim());
+      changeProject(created.project || id.trim());
       flash(`已创建地图项目「${name.trim()}」，基础路网沿用浙江统一底图，业务图层独立保存`);
     } catch (e) {
       flash(`创建地图项目失败：${e.message}`);
     }
-  }, [flash]);
+  }, [changeProject, flash]);
 
   // 当前项目是否已归档（决定菜单显示“归档/取消归档”）
   const currentProjectArchived = useMemo(() => {
@@ -1529,7 +1628,7 @@ export default function MapPanel({
         const created = await mapDuplicateProject(project, name.trim());
         const listed = await mapProjects();
         setProjects(listed.projects || []);
-        setProject(created.project || name.trim());
+        changeProject(created.project || name.trim());
         flash(`已复制为「${created.project || name.trim()}」，可在其上继续分析而不影响原项目`);
       } else if (action === "rename") {
         const name = await askText("新的项目标识（仅英文、数字、下划线或短横线）", project);
@@ -1538,7 +1637,7 @@ export default function MapPanel({
         const renamed = await mapRenameProject(project, name.trim());
         const listed = await mapProjects();
         setProjects(listed.projects || []);
-        setProject(renamed.project || name.trim());
+        changeProject(renamed.project || name.trim());
         flash(`项目已重命名为「${renamed.project || name.trim()}」`);
       } else if (action === "archive") {
         if (!(await askConfirm(`归档地图项目「${project}」？归档后仍可通过再次操作恢复，不影响已有图层与瓦片。`))) return;
@@ -1557,13 +1656,13 @@ export default function MapPanel({
         const listed = await mapProjects();
         const next = listed.projects || [];
         setProjects(next);
-        if (next[0]?.project) setProject(next[0].project);
+        if (next[0]?.project) changeProject(next[0].project);
         flash(`项目「${project}」已移入回收目录`);
       }
     } catch (e) {
       flash(`项目操作失败：${e.message}`);
     }
-  }, [project, flash]);
+  }, [project, changeProject, flash]);
 
   const refreshMap = useCallback(async () => {
     setMsg("刷新地图与图层中…");
@@ -1664,13 +1763,16 @@ export default function MapPanel({
     flash(`${title}${source}已显示`);
   }, [project, regionOptions, selectRegion, flash, syncTempLayers]);
 
-  const saveAnalysis = useCallback(async (action = activeAnalysis) => {
+  const saveAnalysis = useCallback(async (action = activeAnalysis, { name = "", group = "" } = {}) => {
     if (!action?.geojson) return flash("当前没有可保存的分析结果");
-    const base = String(action.id || `analysis-${action.analysis || action.type || "result"}-${action.region || "map"}`)
+    const base = String(name || action.id || `analysis-${action.analysis || action.type || "result"}-${action.region || "map"}`)
       .replace(/[^a-zA-Z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
     try {
       await mapImportLayer(project, base || "analysis-result", action.geojson);
       if (action.lines) await mapImportLayer(project, `${base || "analysis-result"}-lines`, action.lines);
+      if (name || group) {
+        await mapUpdateLayerMeta(project, base || "analysis-result", { name: name || base, ...(group ? { group } : {}) });
+      }
       await loadProject(project);
       mapRef.current?.reloadStyle();
       flash(`分析结果已保存为图层「${base || "analysis-result"}」`);
@@ -1678,6 +1780,103 @@ export default function MapPanel({
       flash(`分析结果保存失败：${e.message}`);
     }
   }, [activeAnalysis, project, loadProject, flash]);
+
+  // 临时层转正：仅分析结果可落盘；绘制/测量/等时圈先提示用户。
+  const saveTempLayer = useCallback((item) => {
+    if (item?.key === "analysis" && activeAnalysis) {
+      setPersistItem(item);
+      return;
+    }
+    flash("该临时层暂不支持直接转正；分析结果可在可视面板保存为正式图层");
+    return null;
+  }, [activeAnalysis, flash]);
+
+  // 一键清除全部临时层（分析 / 测量 / 绘制 / 等时圈）。
+  const clearAllTempLayers = useCallback(() => {
+    const m = mapRef.current?.getMap?.();
+    const analysisBases = new Set();
+    try {
+      for (const layer of m?.getStyle?.().layers || []) {
+        const id = String(layer.id || "");
+        const rich = id.match(/^analysis-(.+?)-(src|heat|points|fill|lines|lines-src|labels|circles)$/);
+        if (rich) { analysisBases.add(rich[1]); continue; }
+        const agent = id.match(/^(agent-.+?)-(heat|circles|labels|fill|line|od-lines)$/);
+        if (agent) analysisBases.add(agent[1]);
+      }
+    } catch { /* 读不到样式时退回逐条清 */ }
+    const ids = new Set(["agent-analysis", "analysis"]);
+    if (activeAnalysis?.id) ids.add(String(activeAnalysis.id));
+    for (const base of analysisBases) ids.add(base);
+    for (const id of ids) {
+      mapRef.current?.clearAnalysisRich?.(id);
+      mapRef.current?.clearAnalysis?.(id);
+    }
+    mapRef.current?.clearAllAnalysis?.();
+    clearDrawLayers();
+    setMeasureResult(null);
+    setActiveAnalysis(null);
+    syncTempLayers();
+    flash("已清除临时图层");
+  }, [activeAnalysis, clearDrawLayers, syncTempLayers, flash]);
+
+  // ---- GIS 工程化操作（阶段 2/3）：重置 / 基线 / 图层属性 / AI 画布 ----
+  const refreshAfterProjectWrite = useCallback(async () => {
+    await loadProject(project);
+    await mapRef.current?.reloadStyle?.();
+  }, [project, loadProject]);
+
+  const handleReset = useCallback(async (level) => {
+    try {
+      const result = await mapReset(project, level);
+      if (level === "temp" || level === "baseline") clearAllTempLayers();
+      await refreshAfterProjectWrite();
+      setResetOpen(false);
+      const removed = Array.isArray(result?.removed) ? result.removed.length : 0;
+      flash(level === "temp"
+        ? "已清空临时层，正式图层未受影响"
+        : `已重置图层树：恢复 ${result?.restored ?? 0} 层${removed ? `，移除 ${removed} 层（已入回收站）` : ""}`);
+    } catch (e) {
+      flash(`重置失败：${e.message}`);
+      throw e;
+    }
+  }, [project, clearAllTempLayers, refreshAfterProjectWrite, flash]);
+
+  const handleSetBaseline = useCallback(async () => {
+    try {
+      await mapSetBaseline(project);
+      await loadProject(project);
+      flash("已把当前图层树设为项目基线");
+    } catch (e) {
+      flash(`设置基线失败：${e.message}`);
+    }
+  }, [project, loadProject, flash]);
+
+  const handleLayerMetaSave = useCallback(async (layerId, patch) => {
+    await mapUpdateLayerMeta(project, layerId, patch);
+    await refreshAfterProjectWrite();
+    flash(`图层「${patch?.name || layerId}」属性已保存`);
+  }, [project, refreshAfterProjectWrite, flash]);
+
+  const handleLayerReplace = useCallback(async (layerId, geojson, format) => {
+    const result = await mapLayerReplace(project, layerId, geojson, format);
+    await refreshAfterProjectWrite();
+    return result;
+  }, [project, refreshAfterProjectWrite]);
+
+  const handleCreateAiCanvas = useCallback(async ({ project: id, name, description, prompt }) => {
+    try {
+      const created = await mapCreateProject(id, name, "zhejiang-map", { kind: "blank", description });
+      const listed = await mapProjects();
+      setProjects(listed.projects || []);
+      changeProject(created.project || id);
+      setAiCanvasOpen(false);
+      // 起步提示交给对话栏（复用全局单实例，消息与 SSE 连续）。
+      insertChatText?.(prompt);
+      flash(`已创建空白画布「${name}」，已向对话栏写入起步提示`);
+    } catch (e) {
+      throw new Error(e.message);
+    }
+  }, [changeProject, insertChatText, flash]);
 
   const handleAgentEnd = useCallback(() => {
     setTimeout(() => {
@@ -1765,13 +1964,16 @@ export default function MapPanel({
                   {projects.map((p) => {
                     const id = p.project || p.name;
                     return (
-                      <button key={id} type="button" role="menuitem" className={id === project ? "active" : ""} onClick={() => { setProject(id); setProjectMenuOpen(false); }}>
+                      <button key={id} type="button" role="menuitem" className={id === project ? "active" : ""} onClick={() => { changeProject(id); setProjectMenuOpen(false); }}>
                         {p.name}{id === project ? " ✓" : ""}
                       </button>
                     );
                   })}
                   <div className="mp-analysis-menu-sep" />
                   <button type="button" role="menuitem" onClick={() => { handleCreateProject(); setProjectMenuOpen(false); }}>新建项目</button>
+                  <button type="button" role="menuitem" onClick={() => { setAiCanvasOpen(true); setProjectMenuOpen(false); }} title="创建只含底图的空白工程，Agent 从零开始做图">新建 AI 画布</button>
+                  <button type="button" role="menuitem" onClick={() => { handleSetBaseline(); setProjectMenuOpen(false); }} title="把当前图层树固化为项目基线">设为基线</button>
+                  <button type="button" role="menuitem" onClick={() => { setResetOpen(true); setProjectMenuOpen(false); }} title="重置图层树 / 清空临时层 / 恢复基线">重置图层…</button>
                   <button type="button" role="menuitem" onClick={() => handleProjectAction("duplicate")}>复制为副本</button>
                   <button type="button" role="menuitem" onClick={() => handleProjectAction("rename")}>重命名</button>
                   {currentProjectArchived ? (
@@ -1868,6 +2070,16 @@ export default function MapPanel({
           aria-pressed={!leftHidden}
         >
           <Icon name="layers" size={14} /> 图层
+        </button>
+
+        {/* 4b) 文件树（项目 / 工作区，支持 @ 到对话） */}
+        <button
+          className={`btn-sm ${fileTreeOpen ? "active" : ""}`}
+          onClick={() => setFileTreeOpen((v) => !v)}
+          title="项目文件树：浏览图层与 agent 生成内容，可 @ 到对话"
+          aria-pressed={fileTreeOpen}
+        >
+          <Icon name="folder" size={14} /> 文件
         </button>
 
         {/* 5) 可视化（开可视面板） */}
@@ -2008,6 +2220,11 @@ export default function MapPanel({
             files={files}
             layerViews={layerViews}
             tempLayers={tempLayers}
+            onToggleTempLayer={toggleTempLayer}
+            onClearTempLayer={removeTempLayer}
+            onSaveTempLayer={saveTempLayer}
+            onClearAllTemp={clearAllTempLayers}
+            onOpenLayerProps={(id) => setLayerPropsId(id)}
             selected={selectedLayer}
             onSelect={setSelectedLayer}
             onToggleLayer={toggleLayer}
@@ -2038,11 +2255,13 @@ export default function MapPanel({
             onViewportChange={(context) => {
               // 视口上报时带上当前下钻区域名：对话栏的"地图状态行"与 Agent 上下文
               // 都要显示"义乌市附近"这类可读位置，而不只是经纬度。
-              onViewportChange?.({ ...context, regionName: drill?.name || "" });
+              // project 一并上报：App 合并上下文时即使只收到视口也不会丢项目。
+              onViewportChange?.({ ...context, project, regionName: drill?.name || "" });
             }}
             onLayerTilesChanged={async (layerIds = []) => {
               await loadProject(project);
               await mapRef.current?.reloadStyle?.();
+              onMapChanged?.(project);
               if (layerIds[0]) await zoomToLayer(layerIds[0]);
             }}
             onDrillDown={(d) => {
@@ -2092,43 +2311,12 @@ export default function MapPanel({
               title="绘制点/线/面并保存为图层"
               aria-pressed={Boolean(draw && !draw.kind.startsWith("measure"))}
             >
-              <Icon name="penTool" size={14} /> 绘制
+              <Icon name="edit" size={14} /> 绘制
             </button>
             {(activeAnalysis || tempLayers.length > 0 || measureResult) && (
               <button
                 className="mp-float-btn"
-                onClick={() => {
-                  // 清除语义 = "清掉地图上所有临时图层"，所以按图层 id 前缀兜底扫描，
-                  // 而不是只清"最后一次结果"——连续出图后 activeAnalysis 只记得最后一条，
-                  // 逐条清会漏掉更早的（用户看到"清不干净"）。
-                  const m = mapRef.current?.getMap?.();
-                  const analysisBases = new Set();
-                  try {
-                    for (const layer of m?.getStyle?.().layers || []) {
-                      const id = String(layer.id || "");
-                      // 两套 id 族都要认：rich 路径 analysis-<base>-<suffix>，
-                      // Agent 路径 <base>-heat/-circles/-labels/-od-lines。
-                      // agent 路径只认 agent-* 前缀，避免误伤名字恰好以 -fill/-line 结尾的业务图层。
-                      const rich = id.match(/^analysis-(.+?)-(src|heat|points|fill|lines|lines-src|labels|circles)$/);
-                      if (rich) { analysisBases.add(rich[1]); continue; }
-                      const agent = id.match(/^(agent-.+?)-(heat|circles|labels|fill|line|od-lines)$/);
-                      if (agent) analysisBases.add(agent[1]);
-                    }
-                  } catch { /* 读不到样式时退回逐条清 */ }
-                  const ids = new Set(["agent-analysis", "analysis"]);
-                  if (activeAnalysis?.id) ids.add(String(activeAnalysis.id));
-                  for (const base of analysisBases) ids.add(base);
-                  for (const id of ids) {
-                    mapRef.current?.clearAnalysisRich?.(id);
-                    mapRef.current?.clearAnalysis?.(id);
-                  }
-                  mapRef.current?.clearAllAnalysis?.();
-                  clearDrawLayers();
-                  setMeasureResult(null);
-                  setActiveAnalysis(null);
-                  syncTempLayers();
-                  flash("已清除临时图层");
-                }}
+                onClick={clearAllTempLayers}
                 title="清除地图上的临时图层（分析结果 / 测量 / 绘制）"
               >
                 <Icon name="trash" size={14} /> 清除
@@ -2171,7 +2359,9 @@ export default function MapPanel({
               workspace={workspace}
               onFileChanged={handleFileChanged}
               onMapAction={handleMapAction}
-              currentDoc={`地图项目:${project}`}
+              currentDoc={null}
+              mapContext={mapContext}
+              mapProject={project}
               models={models}
               defaultModel={defaultModel}
               onAgentEnd={handleAgentEnd}
@@ -2192,14 +2382,14 @@ export default function MapPanel({
         <div className="mp-toolmenu" onClick={(e) => e.stopPropagation()}>
           {toolMenu.type === "measure" ? (
             <>
-              <button onClick={() => startTool("measure", "measure-line")}><Icon name="penTool" size={12} /> 测量距离</button>
-              <button onClick={() => startTool("measure", "measure-polygon")}><Icon name="penTool" size={12} /> 测量面积</button>
+              <button onClick={() => startTool("measure", "measure-line")}><Icon name="edit" size={12} /> 测量距离</button>
+              <button onClick={() => startTool("measure", "measure-polygon")}><Icon name="edit" size={12} /> 测量面积</button>
             </>
           ) : (
             <>
               <button onClick={() => startTool("draw", "draw-point")}><Icon name="plus" size={12} /> 绘制点</button>
-              <button onClick={() => startTool("draw", "draw-line")}><Icon name="penTool" size={12} /> 绘制线</button>
-              <button onClick={() => startTool("draw", "draw-polygon")}><Icon name="penTool" size={12} /> 绘制面</button>
+              <button onClick={() => startTool("draw", "draw-line")}><Icon name="edit" size={12} /> 绘制线</button>
+              <button onClick={() => startTool("draw", "draw-polygon")}><Icon name="edit" size={12} /> 绘制面</button>
             </>
           )}
         </div>
@@ -2261,7 +2451,12 @@ export default function MapPanel({
       {/* 数据导入弹窗 */}
       {importOpen && (
         <div className="mp-iso-backdrop" onClick={() => setImportOpen(false)}>
-          <div className="mp-iso-panel" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="mp-iso-panel"
+            onClick={(e) => e.stopPropagation()}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => { e.preventDefault(); handleBatchImport(e.dataTransfer.files); }}
+          >
             <div className="mp-iso-head">
               <span><Icon name="upload" size={14} /> 导入路网数据</span>
               <提示气泡 label="关闭导入路网数据">
@@ -2276,11 +2471,11 @@ export default function MapPanel({
               {impTab === "files" ? (
                 <>
                   <div className="mp-iso-hint" style={{ border: "none", padding: 0, marginBottom: 10 }}>
-                    选择多个 GeoJSON、SHP（可同时选择同名 DBF/PRJ/CPG）或 ZIP 文件，批量导入并重建瓦片。
+                    选择或拖入 GeoJSON、CSV（自动识别经纬度列）、SHP（可同时选择同名 DBF/PRJ/CPG）或 ZIP 文件，批量导入并重建瓦片。
                   </div>
                   <div className="mp-iso-actions">
                     <button className="btn primary" onClick={() => impFileRef.current?.click()}>选择文件…</button>
-                    <input ref={impFileRef} type="file" multiple accept=".geojson,.json,.zip,.shp,.dbf,.prj,.cpg" style={{ display: "none" }} onChange={(e) => { handleBatchImport(e.target.files); e.target.value = ""; }} />
+                    <input ref={impFileRef} type="file" multiple accept=".geojson,.json,.zip,.shp,.dbf,.prj,.cpg,.csv" style={{ display: "none" }} onChange={(e) => { handleBatchImport(e.target.files); e.target.value = ""; }} />
                   </div>
                 </>
               ) : (
@@ -2551,6 +2746,63 @@ export default function MapPanel({
             </div>
           </div>
         </div>
+      )}
+      {/* GIS 工程化：重置 / 图层属性 / AI 画布向导 */}
+      {resetOpen && (
+        <重置对话框
+          project={project}
+          registry={registry}
+          tempCount={tempLayers.length}
+          baselineAt={registry?.baselineAt || ""}
+          onClose={() => setResetOpen(false)}
+          onReset={handleReset}
+        />
+      )}
+      {layerPropsId && (
+        <图层属性对话框
+          project={project}
+          layer={(cfg?.layers || []).find((l) => String(l.id) === String(layerPropsId)) || { id: layerPropsId }}
+          registry={registry}
+          groups={cfg?.groups || []}
+          conversationMode={conversationMode}
+          onClose={() => setLayerPropsId(null)}
+          onSave={handleLayerMetaSave}
+          onReplaced={handleLayerReplace}
+        />
+      )}
+      {persistItem && activeAnalysis && (
+        <临时层转正对话框
+          item={persistItem}
+          groups={cfg?.groups || []}
+          onClose={() => setPersistItem(null)}
+          onConfirm={async ({ name, group }) => {
+            await saveAnalysis(activeAnalysis, { name, group });
+            setPersistItem(null);
+          }}
+        />
+      )}
+      {aiCanvasOpen && (
+        <AI画布向导
+          onCreate={handleCreateAiCanvas}
+          onClose={() => setAiCanvasOpen(false)}
+        />
+      )}
+      {fileTreeOpen && (
+        <地图文件树
+          project={project}
+          workspace={workspace}
+          insertChatText={insertChatText}
+          onOpenFile={(path) => {
+            // 地图数据文件没有通用预览：不打开错误页，提示可在地图中查看或 @ 给 Agent。
+            const ext = String(path).split(".").pop()?.toLowerCase() || "";
+            if (["geojson", "shp", "dbf", "prj", "cpg", "pbf", "zip"].includes(ext)) {
+              flash("地图数据文件：可在地图中查看，或用 @ 交给 Agent");
+              return;
+            }
+            onOpenFile?.(path);
+          }}
+          onClose={() => setFileTreeOpen(false)}
+        />
       )}
     </div>
   );

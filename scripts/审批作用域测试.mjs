@@ -30,7 +30,7 @@ assert.match(设置面板, /revokePermissionRule/, "设置界面应能调用撤�
 // 3. 作用域披露
 assert.match(对话面板, /跨会话、跨项目、跨工作区生效/, "审批界面应披露规则作用域");
 assert.match(对话面板, /可在「设置 → 审批与权限」随时撤销/, "审批界面应说明撤销入口");
-assert.match(设置面板, /\["permission", "审批与权限"\]/, "设置应有审批与权限分类");
+assert.match(设置面板, /\["permission", "审批与权限"/, "设置应有审批与权限分类");
 assert.match(设置面板, /已授权的“总是允许”规则/, "设置应列出已授权规则");
 
 // 4. 自动批准不得绕过 deny

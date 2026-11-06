@@ -8,7 +8,7 @@ import { useEffect, useRef } from "react";
  * @param {string} cssVar - CSS variable to update (e.g. "--sidebar-w")
  * @param {string} rootSelector - parent element to set CSS var on
  */
-export default function Resizer({ side = "left", min = 140, max = 600, cssVar, rootSelector = ".app", className = "" }) {
+export default function Resizer({ side = "left", min = 140, max = 600, cssVar, rootSelector = ".app", className = "", onResizeEnd }) {
   const startX = useRef(0);
   const startW = useRef(0);
 
@@ -33,6 +33,8 @@ export default function Resizer({ side = "left", min = 140, max = 600, cssVar, r
       document.body.classList.remove("resizing");
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mouseup", onMouseUp);
+      const finalWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue(cssVar).trim(), 10);
+      if (Number.isFinite(finalWidth)) onResizeEnd?.(finalWidth);
     };
 
     document.addEventListener("mousemove", onMouseMove);

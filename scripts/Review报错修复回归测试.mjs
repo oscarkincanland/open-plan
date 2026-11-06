@@ -132,8 +132,10 @@ function 场景(name, fn) {
 场景("输入区布局：任务卡在输入框之外，对话区有高度下限", () => {
   const panel = read("client/src/components/ChatPanel.jsx");
   const css = read("client/src/styles.css");
-  assert.match(panel, /<div className="chat-compose">/, "任务卡与输入框要有共同外壳");
-  const composeAt = panel.indexOf('<div className="chat-compose">');
+  // 外壳类名带拖拽态（chat-compose drag-active），按模式匹配而不是写死整串。
+  const composeMatch = /<div\s+className=\{`chat-compose\$\{[^`]*`\}/.exec(panel);
+  assert.ok(composeMatch, "任务卡与输入框要有共同外壳");
+  const composeAt = composeMatch.index;
   const cardAt = panel.indexOf("<TaskProgressCard", composeAt);
   const inputAt = panel.indexOf('<div className="chat-input">', composeAt);
   assert.ok(cardAt > 0 && inputAt > cardAt, "任务卡要排在输入框之前（在输入框外面）");

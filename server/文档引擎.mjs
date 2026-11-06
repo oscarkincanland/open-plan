@@ -64,6 +64,24 @@ export function officeCapabilityMatrix() {
   return JSON.parse(JSON.stringify(CAPABILITY_MATRIX));
 }
 
+/** 只解析简单 --prop key=value（原生文本编辑用；复杂属性仍交 CLI）。 */
+function simplePropMap(list = []) {
+  const props = {};
+  for (let i = 0; i < list.length; i += 1) {
+    if (String(list[i]) !== "--prop") continue;
+    const pair = String(list[i + 1] ?? "");
+    const eq = pair.indexOf("=");
+    if (eq <= 0) continue;
+    const key = pair.slice(0, eq).trim();
+    let value = pair.slice(eq + 1);
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    props[key] = value;
+  }
+  return props;
+}
+
 /**
  * 路由判定（P2-C）：这条命令是否必须交给 officecli。
  * @returns {{needsCli: boolean, reason: string}}
@@ -81,15 +99,28 @@ export function needsCli(command, args = []) {
       return { needsCli: true, reason: `view ${mode || "(缺省)"} 需要 CLI 渲染/高保真输出` };
     }
     case "set": {
-      // 仅支持目标路径为 "/"（或省略）的 --find/--replace 全文替换；属性/样式/定点编辑走 CLI
       const target = String(list[2] || "/").trim();
       const hasFind = list.some((t) => t === "--find");
       const hasReplace = list.some((t) => t === "--replace");
-      const hasProps = list.some((t) => t === "--prop");
-      if ((target === "/" || target === "") && hasFind && hasReplace && !hasProps) {
+      const props = simplePropMap(list);
+      if ((target === "/" || target === "") && hasFind && hasReplace && props.text === undefined) {
         return { needsCli: false, reason: "set 全文查找替换走原生（docx）" };
       }
+      // 简单文本操作：段落正文/标题样式走原生；批注、修订、复杂格式仍走 CLI。
+      if (/^\/body\/p\[\d+\]$/.test(target) && (props.text !== undefined || props.style !== undefined)) {
+        return { needsCli: false, reason: "set 段落文本/样式走原生（docx）" };
+      }
       return { needsCli: true, reason: "set 属性/样式/定点编辑需要 CLI 精确定位" };
+    }
+    case "add": {
+      const target = String(list[2] || "").trim();
+      const typeIndex = list.indexOf("--type");
+      const type = typeIndex >= 0 ? String(list[typeIndex + 1] || "").toLowerCase() : "";
+      const props = simplePropMap(list);
+      if (type === "paragraph" && /^\/body(?:\/p\[\d+\])?$/.test(target) && props.text !== undefined) {
+        return { needsCli: false, reason: "add 普通段落走原生（docx）" };
+      }
+      return { needsCli: true, reason: "add 图片/表格/批注等需要 CLI" };
     }
     default:
       return { needsCli: true, reason: `${cmd || "(未知)"} 由 officecli 兜底` };
@@ -265,6 +296,119 @@ async function docxReplaceText(file, findText, replaceText) {
   return nativeResult(["set", path.basename(file), "/", "--find", findText, "--replace", replaceText], {
     text: `已完成原生替换：${replaced} 个段落（find=${findText} → replace=${replaceText}）`,
     json: { engine: "native", file: path.basename(file), replaced, find: findText, replace: replaceText },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// docx：简单段落文本/样式编辑（原生；批注/修订/复杂格式仍走 CLI）
+// ---------------------------------------------------------------------------
+
+function docxParagraphBlocks(xml) {
+  const blocks = [];
+  const pattern = /<w:p\b[^>]*\/>|<w:p\b[^>]*>[\s\S]*?<\/w:p>/g;
+  for (const match of String(xml || "").matchAll(pattern)) {
+    blocks.push({ start: match.index, end: match.index + match[0].length, xml: match[0] });
+  }
+  return blocks;
+}
+
+function docxParagraphParts(blockXml) {
+  return {
+    pPr: blockXml.match(/<w:pPr\b[\s\S]*?<\/w:pPr>|<w:pPr\b[^>]*\/>/)?.[0] || "",
+    rPr: blockXml.match(/<w:rPr\b[\s\S]*?<\/w:rPr>|<w:rPr\b[^>]*\/>/)?.[0] || "",
+  };
+}
+
+function applyParagraphStyle(pPr, style) {
+  const value = xmlEscape(style);
+  if (!pPr) return `<w:pPr><w:pStyle w:val="${value}"/></w:pPr>`;
+  if (/<w:pStyle\b[^>]*\/>/.test(pPr)) return pPr.replace(/<w:pStyle\b[^>]*\/>/, `<w:pStyle w:val="${value}"/>`);
+  if (/<w:pPr\b[^>]*>/.test(pPr)) return pPr.replace(/(<w:pPr\b[^>]*>)/, `$1<w:pStyle w:val="${value}"/>`);
+  return `<w:pPr><w:pStyle w:val="${value}"/></w:pPr>`;
+}
+
+function buildDocxParagraph(text, { style = "", template = null } = {}) {
+  const parts = template ? docxParagraphParts(template) : { pPr: "", rPr: "" };
+  const pPr = style ? applyParagraphStyle(parts.pPr, style) : parts.pPr;
+  const preserve = /\s/.test(String(text)) ? ' xml:space="preserve"' : "";
+  return `<w:p>${pPr}<w:r>${parts.rPr}<w:t${preserve}>${xmlEscape(text)}</w:t></w:r></w:p>`;
+}
+
+async function writeDocxXml(file, zip, xml) {
+  zip.file("word/document.xml", xml);
+  const output = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+  await fs.promises.writeFile(file, output);
+}
+
+async function docxEditParagraph(file, pathLink, props) {
+  const index = Number(String(pathLink).match(/\[(\d+)\]/)?.[1] || 0);
+  if (!index) return null;
+  const buffer = await fs.promises.readFile(file);
+  const zip = await JSZip.loadAsync(buffer);
+  const entry = zip.file("word/document.xml");
+  if (!entry) return null;
+  let xml = await entry.async("string");
+  if (/<w:(?:ins|del)\s/.test(xml)) return null; // 修订跟踪交 CLI
+  const blocks = docxParagraphBlocks(xml);
+  const block = blocks[index - 1];
+  if (!block) {
+    return nativeResult(["set", path.basename(file), pathLink, "--prop", `text=${props.text ?? ""}`], {
+      code: 1,
+      text: `段落不存在：${pathLink}（文档共 ${blocks.length} 个段落）`,
+      json: { engine: "native", file: path.basename(file), error: "paragraph_not_found", paragraphs: blocks.length },
+    });
+  }
+  let nextParagraph = block.xml;
+  if (props.text !== undefined) {
+    const style = props.style !== undefined ? String(props.style) : "";
+    nextParagraph = buildDocxParagraph(String(props.text), { style, template: block.xml });
+  } else if (props.style !== undefined) {
+    const pPr = applyParagraphStyle(docxParagraphParts(block.xml).pPr, String(props.style));
+    if (/<w:pPr\b[\s\S]*?<\/w:pPr>/.test(block.xml)) {
+      nextParagraph = block.xml.replace(/<w:pPr\b[\s\S]*?<\/w:pPr>/, pPr);
+    } else {
+      nextParagraph = block.xml.replace(/(<w:p\b[^>]*>)/, `$1${pPr}`);
+    }
+  }
+  xml = `${xml.slice(0, block.start)}${nextParagraph}${xml.slice(block.end)}`;
+  await writeDocxXml(file, zip, xml);
+  return nativeResult(["set", path.basename(file), pathLink, "--prop", `text=${props.text ?? ""}`], {
+    text: `已原生更新段落 ${pathLink}`,
+    json: { engine: "native", file: path.basename(file), paragraph: index, text: props.text ?? null, style: props.style ?? null },
+  });
+}
+
+async function docxAddParagraph(file, targetLink, props) {
+  const buffer = await fs.promises.readFile(file);
+  const zip = await JSZip.loadAsync(buffer);
+  const entry = zip.file("word/document.xml");
+  if (!entry) return null;
+  let xml = await entry.async("string");
+  if (/<w:(?:ins|del)\s/.test(xml)) return null;
+  const blocks = docxParagraphBlocks(xml);
+  const indexMatch = String(targetLink).match(/\[(\d+)\]/);
+  const index = indexMatch ? Number(indexMatch[1]) : 0;
+  if (indexMatch && (!index || index > blocks.length)) {
+    return nativeResult(["add", path.basename(file), targetLink, "--type", "paragraph"], {
+      code: 1,
+      text: `段落不存在：${targetLink}（文档共 ${blocks.length} 个段落）`,
+      json: { engine: "native", file: path.basename(file), error: "paragraph_not_found", paragraphs: blocks.length },
+    });
+  }
+  const template = index ? blocks[index - 1]?.xml : blocks[blocks.length - 1]?.xml || "";
+  const paragraph = buildDocxParagraph(String(props.text ?? ""), { style: props.style !== undefined ? String(props.style) : "", template });
+  if (index) {
+    const block = blocks[index - 1];
+    xml = `${xml.slice(0, block.end)}${paragraph}${xml.slice(block.end)}`;
+  } else {
+    const sect = xml.search(/<w:sectPr\b/);
+    if (sect >= 0) xml = `${xml.slice(0, sect)}${paragraph}${xml.slice(sect)}`;
+    else xml = xml.replace("</w:body>", `${paragraph}</w:body>`);
+  }
+  await writeDocxXml(file, zip, xml);
+  return nativeResult(["add", path.basename(file), targetLink, "--type", "paragraph"], {
+    text: `已原生插入段落：${targetLink}`,
+    json: { engine: "native", file: path.basename(file), after: index || null, text: props.text ?? null, style: props.style ?? null },
   });
 }
 
@@ -886,10 +1030,29 @@ export async function runNativeOfficeCommand(args, { cwd = process.cwd() } = {})
       const replaceIndex = list.indexOf("--replace");
       const findText = findIndex >= 0 ? String(list[findIndex + 1] ?? "") : "";
       const replaceText = replaceIndex >= 0 ? String(list[replaceIndex + 1] ?? "") : "";
+      const pathLink = String(list[2] || "").trim();
+      const props = simplePropMap(list);
+      if (/^\/body\/p\[\d+\]$/.test(pathLink) && (props.text !== undefined || props.style !== undefined)) {
+        if (!DOCX_EXT.test(target) || !fs.existsSync(target)) return null;
+        return await docxEditParagraph(target, pathLink, props);
+      }
       if (!findText) return null;
       if (!DOCX_EXT.test(target)) return null; // xlsx/pptx 替换仍走 CLI
       if (!fs.existsSync(target)) return null;
       return await docxReplaceText(target, findText, replaceText);
+    }
+    if (command === "add" && target) {
+      const gate = needsCli(command, list);
+      if (gate.needsCli) return null;
+      const typeIndex = list.indexOf("--type");
+      const type = typeIndex >= 0 ? String(list[typeIndex + 1] || "").toLowerCase() : "";
+      const pathLink = String(list[2] || "").trim();
+      const props = simplePropMap(list);
+      if (type === "paragraph" && /^\/body(?:\/p\[\d+\])?$/.test(pathLink) && props.text !== undefined) {
+        if (!DOCX_EXT.test(target) || !fs.existsSync(target)) return null;
+        return await docxAddParagraph(target, pathLink, props);
+      }
+      return null;
     }
     return null;
   } catch (error) {

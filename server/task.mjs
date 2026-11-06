@@ -1,10 +1,12 @@
 import crypto from "node:crypto";
 import { RUNTIME_FLAGS, officeGateActiveFor } from "./运行开关.mjs";
+import { estimateTaskComplexity, resolveSkillsRouting, resolveSkillDraftRouting } from "./任务复杂度.mjs";
 import { matchTemplate } from "./office规范/模板匹配.mjs";
 import { selectScene, sceneLabels, defaultScene } from "./office规范/场景选择.mjs";
 
 const OFFICE_EXTENSIONS = /\.(?:docx|xlsx|pptx|xls|doc)$/i;
 const DOCUMENT_EXTENSIONS = /\.(?:docx|xlsx|pptx|xls|doc|pdf|csv|json|md|markdown|txt|html|htm)$/i;
+const CAD_EXTENSIONS = /\.(?:dxf|dwg)$/i;
 
 /**
  * 工作台保留四种后端模式值。office 是历史兼容值，前端主入口展示
@@ -19,7 +21,9 @@ export const TASK_MODES = Object.freeze(["chat", "office", "agent", "review"]);
 const READ_ONLY_TOOLS = Object.freeze([
   "read", "grep", "find", "ls", "ask_user", "kb_search", "kb_read", "context_read", "skills_search", "skills_read",
   "web_search", "web_fetch",
-  "map_read", "map_analyze", "map_clear_analysis", "map_datasets",
+  "map_read", "map_analyze", "map_clear_analysis", "map_datasets", "map_layer_info",
+  // CAD 读取（cadAgent 开关，默认关）：Chat/Office 只读查看图纸，不声明修改工具。
+  ...(RUNTIME_FLAGS.cadAgent ? ["cad_read"] : []),
 ]);
 // Office 模式专注文档处理，不暴露地图工具（地图能力只在 Chat 与 Work 出现）。
 const OFFICE_TOOLS = Object.freeze([
@@ -29,17 +33,29 @@ const OFFICE_TOOLS = Object.freeze([
 // 暴露联网搜索能力；否则审查依据不可追溯，也会产生无关事件。
 const REVIEW_TOOLS = Object.freeze([
   "read", "grep", "find", "ls", "ask_user", "kb_search", "kb_read", "context_read", "skills_search", "skills_read",
-  "officecli", "write", "edit", "review_copy", "review_source_apply", "todo", "complete_task",
+  "officecli", "write", "edit", "review_copy", "review_source_apply", "todo",
+  // 2026-11-04：Review 可创建只读专家团队（worker 由团队编排器降级为 scout，不会越权写文件）。
+  "team_spawn", "team_send", "team_wait", "team_list", "team_task",
 ]);
 const AGENT_TOOLS = Object.freeze([
   ...OFFICE_TOOLS,
   "bash", "write", "edit",
-  // Work 模式持有全部地图工具（含只读四件套与三个写工具）。
-  "map_read", "map_analyze", "map_clear_analysis", "map_datasets",
-  "map_edit", "map_import", "map_save_analysis",
-  "memory_update", "todo", "complete_task",
+  // Work 模式持有全部地图工具（含只读四件套与写工具）。
+  "map_read", "map_analyze", "map_clear_analysis", "map_datasets", "map_layer_info",
+  "map_edit", "map_import", "map_save_analysis", "map_reset", "map_project_create",
+  "memory_update", "todo",
+  // 2026-11-04：后台任务（转后台的工具结果用 job_status 等待/读取，job_cancel 取消）
+  "job_status", "job_cancel",
+  // 2026-11-03：技能草稿（仅 Work；运行时还会检查复杂任务 + 项目设置开关）
+  "skill_draft",
   // P2-A：编辑流水线（生成 Word/PPT 初稿的原生流水线，仅 Work 模式）
   "editorial_pipeline",
+  // 2026-11-04：Agent Teams（Work 可写；Review 白名单另列，Chat 只读查看不提供工具）
+  "team_spawn", "team_send", "team_wait", "team_list", "team_task",
+  // 场景化分析模板（确定性编排，产出图层统计 + Word 报告；由 OAW_MAP_TEMPLATES 控制启用）
+  "map_template",
+  // CAD 白名单修改（cadAgent 开关，默认关）：仅 Work；落盘走统一审批与写入通道。
+  ...(RUNTIME_FLAGS.cadAgent ? ["cad_edit"] : []),
   "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close",
   "browser_wait_for", "browser_act", "browser_extract", "browser_select_option",
 ]);
@@ -136,8 +152,58 @@ export function toolPolicyForMode(mode) {
   };
 }
 
+/**
+ * 全部模式的工具并集（会话可激活工具全集）。
+ *
+ * 用途：Pi 会话创建时需要一次性注册所有模式的工具（按轮次再由
+ * toolPolicyForMode 裁剪可见性）。此前这段清单在 server/agent.mjs 里
+ * 硬编码了一份，与本文件的白名单形成两份事实来源，已发生漂移
+ * （map_template 定义了却不在任何白名单，Work 模式调不到）。
+ * 现在统一从这里派生，agent.mjs 只保留 run_subagent 与 MCP/扩展的动态追加。
+ */
+export function allModeToolNames() {
+  const names = new Set();
+  for (const mode of TASK_MODES) {
+    for (const name of toolPolicyForMode(mode).tools) names.add(name);
+  }
+  return [...names];
+}
+
 function containsAny(text, words) {
   return words.some((word) => text.includes(String(word).toLowerCase()));
+}
+
+/**
+ * 去掉前端自动拼接的上下文前缀，只保留用户原始意图。
+ *
+ * 背景：ChatPanel 会把 `[当前打开文件: ...]`、地图视图、附件、检索上下文等
+ * 拼进发给 Pi 的 text；这些前缀不能参与能力规划，否则“可行性研究.docx”
+ * 会让任何一句“继续”都命中模板路由。旧客户端没有 intentText 时用本函数兜底。
+ */
+export function stripAutoContextPrefix(text = "") {
+  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  const out = [];
+  let inInjectedBlock = false;
+  for (const rawLine of lines) {
+    const line = String(rawLine || "");
+    const trimmed = line.trim();
+    if (/^##\s*(当前检索上下文|已注入上下文)\s*$/.test(trimmed)) {
+      inInjectedBlock = true;
+      continue;
+    }
+    if (inInjectedBlock) {
+      if (/^##\s+/.test(trimmed)) inInjectedBlock = false;
+      else continue;
+    }
+    if (/^\[(?:当前打开文件|当前地图项目|当前地图视图|已上传附件):/.test(trimmed)) continue;
+    const mention = trimmed.match(/^@智能体\[[^\]]+\]\s*([\s\S]*)$/);
+    if (mention) {
+      if (mention[1].trim()) out.push(mention[1]);
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join("\n").trim();
 }
 
 function collectContext({ text = "", task = {}, references = [], attachments = [] } = {}) {
@@ -163,7 +229,7 @@ function collectContext({ text = "", task = {}, references = [], attachments = [
  * 四路由判定（O-02）：template / edit / generate / read。
  * @returns {{route:"template"|"edit"|"generate"|"read", reason:string, template:object|null, scene:object, needsFile:boolean}}
  */
-export function routeTaskIntent({ text = "", task = {}, references = [], attachments = [] } = {}) {
+export function routeTaskIntent({ text = "", task = {}, references = [], attachments = [], previousRoute = null } = {}) {
   const ctx = collectContext({ text, task, references, attachments });
   const scene = selectScene(text);
   const template = ctx.mode === "chat" ? null : matchTemplate({ text, references: ctx.refList });
@@ -174,17 +240,45 @@ export function routeTaskIntent({ text = "", task = {}, references = [], attachm
   if (ctx.mode === "review") {
     return { route: "read", reason: "Review 只读审查：不生成或改写用户文档", template: null, scene, needsFile: false };
   }
-  if (template && (ctx.templateIntent || ctx.output || ctx.officeRefExists)) {
+
+  // 短句延续：当前文件是 Office、上一轮是写作路由时，“继续/继续修改”沿用上一轮，
+  // 不再重新按文件名匹配模板。服务重启后 previousRoute 可由最近 Run 恢复。
+  const followUp = /^(继续|接着|往下|继续修改|继续完成|接着改|继续做完|继续处理)/.test(String(text || "").trim());
+  if (followUp && ctx.officeRefExists && ["edit", "template", "generate"].includes(String(previousRoute || ""))) {
+    return {
+      route: previousRoute,
+      reason: `延续上一轮写作路由（${previousRoute}）`,
+      template: previousRoute === "template" ? template : null,
+      scene,
+      needsFile: false,
+    };
+  }
+
+  // 编辑优先：既有 Office 文件 + 编辑意图，即使文本命中模板关键词也走 edit。
+  // 这是“可研报告.docx + 继续修改”被误判成模板生成的主修复。
+  if (ctx.officeRefExists && ctx.editIntent) {
+    return { route: "edit", reason: "既有 Office 文件 + 编辑意图：走 CLI 精确定位", template: null, scene, needsFile: false };
+  }
+
+  const explicitTemplate = Boolean(template && template.source === "explicit");
+  if (explicitTemplate && (ctx.templateIntent || ctx.output || ctx.officeRefExists)) {
     return {
       route: "template",
-      reason: `命中模板 ${template.file}（${template.source === "explicit" ? "显式引用" : "文体关键词"}）`,
+      reason: `显式引用模板 ${template.file}（${template.file}）`,
       template,
       scene,
       needsFile: false,
     };
   }
-  if (ctx.officeRefExists && ctx.editIntent) {
-    return { route: "edit", reason: "既有 Office 文件 + 编辑意图：走 CLI 精确定位", template: null, scene, needsFile: false };
+  // 模板关键词只在“没有既有 Office 文件”时用于新建；有既有文件时优先 edit。
+  if (template && !ctx.officeRefExists && (ctx.templateIntent || ctx.output)) {
+    return {
+      route: "template",
+      reason: `命中模板 ${template.file}（文体关键词，新建文档）`,
+      template,
+      scene,
+      needsFile: false,
+    };
   }
   if (ctx.editIntent && !ctx.officeRefExists) {
     return { route: "read", reason: "编辑意图但未指定文件：先向用户确认目标文件", template: null, scene, needsFile: true };
@@ -237,9 +331,9 @@ export function assessClarification({ text = "", route = "read", template = null
 }
 
 /** 根据输入和引用生成可解释的本轮能力计划，供 Run、前端和 Pi prompt 共用。 */
-export function planTaskCapabilities({ text = "", task = {}, references = [], attachments = [] } = {}) {
+export function planTaskCapabilities({ text = "", task = {}, references = [], attachments = [], previousRoute = null } = {}) {
   const ctx = collectContext({ text, task, references, attachments });
-  const intent = routeTaskIntent({ text, task, references, attachments });
+  const intent = routeTaskIntent({ text, task, references, attachments, previousRoute });
   const clarification = assessClarification({ text, route: intent.route, template: intent.template, scene: intent.scene });
   const { mode, source, refList, document, output } = ctx;
   // Chat 模式下识别到写作意图时，前端提示切换到 Work（不改变只读边界）。
@@ -248,7 +342,13 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
     : null;
   const knowledge = refList.some((item) => ["knowledge", "knowledge_dir"].includes(item.kind)) || containsAny(source, ["知识库", "知识库搜索", "知识检索", "参考资料"]);
   const map = containsAny(source, ["地图", "图层", "geojson", "等时圈", "热力图", "od图", "空间分析"]) || /(?:^|[\\/])maps(?:[\\/]|$)/i.test(ctx.files);
-  const workflow = Boolean(task.workflowId) || /@工作流\[|@技能\[|工作流|skill|workflow/i.test(String(text || ""));
+  // CAD 意图：文件扩展名或话术命中（cad 读取/修改能力，cadPreview/cadAgent 开关族）
+  const cad = CAD_EXTENSIONS.test(ctx.files) || containsAny(source, ["dxf", "dwg", "cad", "图纸", "红线图", "总平面"]);
+  const workflow = Boolean(task.workflowId) || /@工作流\[|@技能\[|#技能\[|工作流|skill|workflow/i.test(String(text || ""));
+  // 2026-11-03：复杂度只影响“默认技能清单 / 技能发现 / 草稿钩子”，不改变工具权限。
+  const complexity = estimateTaskComplexity({ text, task, references, attachments });
+  const skillsRouting = resolveSkillsRouting({ complexity, task, text });
+  const skillDraftsRouting = resolveSkillDraftRouting({ complexity, task });
   const officeGenerate = (intent.route === "generate" || intent.route === "template") && mode !== "chat" && mode !== "review";
   const capabilities = [
     mode === "chat"
@@ -307,6 +407,19 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
   // 子代理能力只在 Chat 与 Work 声明；与 toolPolicyForMode 的 run_subagent 白名单保持一致，
   // 避免"声明了却调不到"（Office / Review 不暴露 run_subagent）。
   if (mode === "chat" || mode === "agent") capabilities.push({ id: "subagent", label: "子代理", status: "available", required: false, provider: "pi", reason: "可派发隔离的只读子 Agent 并行处理资料阅读/审阅" });
+  // Agent Teams：Work / Review 可创建（Review 只读），Chat 只能查看历史团队，不能创建。
+  if (mode === "agent" || mode === "review") {
+    capabilities.push({
+      id: "team",
+      label: "专家团队",
+      status: "available",
+      required: false,
+      provider: "pi",
+      reason: mode === "review"
+        ? "可创建只读审阅团队（Lead + 最多 2 名队友），共享任务板；不越权写文件"
+        : "可创建 Lead + 最多 2 名队友的专家小组，共享任务板与消息；写操作仍逐次审批",
+    });
+  }
   // 地图能力只在 Chat（只读）与 Work（可写）声明；Office 专注文档、Review 依赖本地材料，
   // 两者的工具白名单里都没有地图工具，声明了就成了"说得到做不到"（X1 的同类问题）。
   const mapAvailable = map && (mode === "chat" || mode === "agent");
@@ -323,7 +436,17 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
         : "地图只读查询与临时可视化（不落盘；保存图层需切到 Work 模式）",
     });
   }
+  // CAD 能力（cadAgent 开关，默认关）：关闭时不声明，编排/遥测与基线一致。
+  // cad 恒 preferred（解析内置于工作台，无外部二进制）；cad_dwg 的实际可用性取决于
+  // 外部转换工具（ODA/LibreDWG），计划期不做同步探测，以 cad_read/cad_edit 返回为准。
+  if (RUNTIME_FLAGS.cadAgent && cad && (mode === "chat" || mode === "agent")) {
+    capabilities.push({ id: "cad", label: "CAD 读取", status: "ready", required: false, provider: "native", reason: "DXF/DWG 结构化读取（cad_read/context_read），解析内置于工作台" });
+    capabilities.push({ id: "cad_edit", label: "CAD 白名单修改", status: mode === "agent" ? "ready" : "not_available", required: false, provider: "native", reason: mode === "agent" ? "DXF 实体级白名单修改（cad_edit，写入走审批）；DWG 经 DXF 往返" : "Chat 只读，不声明修改能力" });
+    capabilities.push({ id: "cad_dwg", label: "CAD DWG 转换", status: "planned", required: false, provider: "external", reason: "DWG 依赖外部转换工具（ODA/LibreDWG），未装时自动降级 DXF 另存" });
+  }
   if (workflow) capabilities.push({ id: "skills", label: "Skills / 工作流", status: "planned", required: Boolean(task.workflowId), provider: "native", reason: task.workflowId ? `工作流 ${task.workflowId} 声明了技能依赖` : "本轮出现工作流或技能意图" });
+  else if (skillsRouting === "preflight" || skillsRouting === "catalog") capabilities.push({ id: "skills", label: "Skills 目录", status: "available", required: false, provider: "native", reason: "每轮注入技能目录，模型按任务匹配读取" });
+  if (skillDraftsRouting === "enabled") capabilities.push({ id: "skill_drafts", label: "技能草稿", status: "available", required: false, provider: "native", reason: "项目允许生成草稿；安装需用户确认" });
   return {
     version: 3,
     mode,
@@ -333,6 +456,7 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
     scene: intent.scene ? { id: intent.scene.scene, label: intent.scene.label, confidence: intent.scene.confidence } : null,
     clarification,
     hint,
+    complexity,
     capabilities,
     routing: {
       // preferred=编辑既有文档（admission 阻塞预检）；lazy=生成类任务（原生直写优先，
@@ -350,7 +474,8 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
       // read_only / read_write：让前端与提示词都能区分"能不能落盘"。
       // 仅当上面真的声明了地图能力时才启用（与 capabilities 严格一致）。
       map: mapAvailable ? (mode === "chat" ? "read_only" : "read_write") : "not_needed",
-      skills: workflow ? "preflight" : "available_on_demand",
+      skills: skillsRouting,
+      skillDrafts: skillDraftsRouting,
     },
     output: { expected: mode !== "chat" && output, saveToWorkspace: mode !== "chat" && task.output?.saveToWorkspace !== false },
   };
@@ -435,25 +560,27 @@ function mapCapabilityHint(task = {}) {
  * 57 次调用中 15 次在读 help、约 15 次在探针文件上试错，20 次失败。这段提示把
  * "预设流程"直接讲清楚，让模型走既定主链而不是自由发挥。
  */
-const OFFICE_WRITING_PLAYBOOK = [
-  "写作流程（按序执行）:",
-  "1) 先 read 模板与配套规范，确认章节骨架、必备图表清单和格式规则；",
-  "2) 成文优先用 editorial_pipeline 工具（Planner→Writer→Formatter 原生直写→Evaluator 确定性验收）；",
-  "   已有成稿 Markdown 时用它的 sourceMarkdown 直通，跳过 Planner/Writer；",
-  "3) 需要逐章增量写入时，用 write 写一章、紧接 add <file> / --type markdown --prop src=<章节.md>（write→add 成对出现，不要攒批）；",
-  "4) 样式：create 新建文档已预置 Normal/Heading1-4/Title/TOC/页眉页脚，直接用，不要用 raw-set 改 styles.xml；",
-  "5) 自检：validate <file> 与 view <file> issues；",
-  "6) 收尾：complete_task 报告产物路径与未完成项。",
-  "禁止：不要用 bash 写生成脚本；不要手写 styles.xml；不要把 JSON 塞进命令行参数。",
-  "常用命令速查（覆盖绝大多数文档操作，不要再跑 help / --help 去探索）：",
-  "  create <f>.docx            新建文档（已预置样式）；create <f>.docx --force 覆盖已有文件",
-  "  add <f> / --type markdown --prop src=<章节.md>   导入写好的章节",
-  "  set <f> /body/p[N] --prop style=Heading2         给段落套标题样式",
-  "  add <f> /body/p[N] --type table                  插入表格",
-  "  add <f> /body/p[N] --type image --prop image=<路径> 插入图片",
-  "  view <f> text|outline|stats|issues               回读校验",
-  "命令失败时：读错误信息、改同一命令再试一次——不要用 help 代替调整（这最浪费回合）。",
-].join("\n");
+function officeWritingPlaybook() {
+  return [
+    "写作流程（按序执行）:",
+    "1) 先 read 模板与配套规范，确认章节骨架、必备图表清单和格式规则；",
+    "2) 成文优先用 editorial_pipeline 工具（Planner→Writer→Formatter 原生直写→Evaluator 确定性验收）；",
+    "   已有成稿 Markdown 时用它的 sourceMarkdown 直通，跳过 Planner/Writer；",
+    "3) 需要逐章增量写入时，用 write 写一章、紧接 add <file> / --type markdown --prop src=<章节.md>（write→add 成对出现，不要攒批）；",
+    "4) 样式：create 新建文档已预置 Normal/Heading1-4/Title/TOC/页眉页脚，直接用，不要用 raw-set 改 styles.xml；",
+    "5) 自检：validate <file> 与 view <file> issues；",
+    "6) 收尾：直接给用户最终答复，写清产物路径与未完成项。",
+    "禁止：不要用 bash 写生成脚本；不要手写 styles.xml；不要把 JSON 塞进命令行参数。",
+    "常用命令速查（覆盖绝大多数文档操作，不要再跑 help / --help 去探索）：",
+    "  create <f>.docx            新建文档（已预置样式）；create <f>.docx --force 覆盖已有文件",
+    "  add <f> / --type markdown --prop src=<章节.md>   导入写好的章节",
+    "  set <f> /body/p[N] --prop style=Heading2         给段落套标题样式",
+    "  add <f> /body/p[N] --type table                  插入表格",
+    "  add <f> /body/p[N] --type image --prop image=<路径> 插入图片",
+    "  view <f> text|outline|stats|issues               回读校验",
+    "命令失败时：读错误信息、改同一命令再试一次——不要用 help 代替调整（这最浪费回合）。",
+  ].join("\n");
+}
 
 /**
  * 写作路由提示（O-05）：只从能力计划读取，避免提示词另写一份路由事实。
@@ -466,13 +593,13 @@ function officeWritingHint(task = {}) {
   const scene = plan?.scene?.label || plan?.scene?.id || "";
   const template = plan?.template?.relPath || "";
   if (route === "template") {
-    return `写作路由：模板优先（${template}${scene ? `；场景：${scene}` : ""}）。先读取模板，按其章节骨架、必备图表与格式规则写作。\n` + OFFICE_WRITING_PLAYBOOK;
+    return `写作路由：模板优先（${template}${scene ? `；场景：${scene}` : ""}）。先读取模板，按其章节骨架、必备图表与格式规则写作。\n` + officeWritingPlaybook();
   }
   if (route === "edit") {
     return "写作路由：编辑既有文档。先 view 确认内容，再 get 取真实路径，最后 set/add；保留未触及的格式。";
   }
   if (route === "generate") {
-    return `写作路由：生成新文档（场景：${scene || "report"}）。按场景参数生成，完成后走规则闸门。\n` + OFFICE_WRITING_PLAYBOOK;
+    return `写作路由：生成新文档（场景：${scene || "report"}）。按场景参数生成，完成后走规则闸门。\n` + officeWritingPlaybook();
   }
   return "";
 }

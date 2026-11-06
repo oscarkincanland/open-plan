@@ -211,7 +211,7 @@ export const listSessions = (fileOrOptions) => {
     if (fileOrOptions) params.set("file", fileOrOptions);
   } else {
     const options = fileOrOptions || {};
-    for (const key of ["file", "projectId", "mode", "runStatus", "limit", "cursor", "groupBy"]) {
+    for (const key of ["file", "projectId", "mode", "runStatus", "archived", "limit", "cursor", "groupBy"]) {
       if (options[key] !== undefined && options[key] !== null && options[key] !== "") params.set(key, options[key]);
     }
     for (const key of ["pinned", "frozen"]) if (options[key] !== undefined && options[key] !== null) params.set(key, String(options[key]));
@@ -265,6 +265,12 @@ export const resolveContext = (references, text) => api("/api/context/resolve", 
 export const readContext = (reference, query, range) => api("/api/context/read", { method: "POST", body: JSON.stringify({ reference, query, range }) });
 
 export const listSkills = () => api("/api/skills");
+// 2026-11-03 技能草稿：只写工作区；安装到技能库必须由用户显式确认。
+export const listSkillDrafts = (workspace = "") => api(`/api/skills/drafts${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ""}`);
+export const installSkillDraft = (name, workspace = "", overwrite = false) =>
+  api(`/api/skills/drafts/${encodeURIComponent(name)}/install`, { method: "POST", body: JSON.stringify({ workspace, overwrite }) });
+export const discardSkillDraft = (name, workspace = "") =>
+  api(`/api/skills/drafts/${encodeURIComponent(name)}${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ""}`, { method: "DELETE" });
 // P1-8 对象栏自取数用（均为既有只读端点，无新增后端接口）
 export const listArtifacts = (options = {}) => {
   const params = new URLSearchParams();
@@ -295,16 +301,26 @@ export const getSession = (id, options = {}) => {
     if (options[key] !== undefined && options[key] !== null && options[key] !== "") query.set(key, String(options[key]));
   }
   const suffix = query.toString() ? `?${query.toString()}` : "";
-  return api(`/api/sessions/${encodeURIComponent(id)}${suffix}`);
+  // 会话详情是用户直接等待的控制面请求：超时后回收到可放弃流并重试，
+  // 避免连接池被 SSE 占满时“点会话永远转圈”。
+  return apiControl(`/api/sessions/${encodeURIComponent(id)}${suffix}`);
 };
 export const deleteSession = (id) =>
   apiControl(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
 export const deleteSessions = (ids) =>
   apiControl("/api/sessions/batch-delete", { method: "POST", body: JSON.stringify({ ids }) }, { timeoutMs: 20000 });
+// 2026-11-03 会话归档：只改 header，不移动/删除文件。
+export const archiveSession = (id, archived = true) =>
+  api(`/api/sessions/${encodeURIComponent(id)}/archive`, { method: "POST", body: JSON.stringify({ archived }) });
+export const archiveSessions = (ids, archived = true) =>
+  apiControl("/api/sessions/batch-archive", { method: "POST", body: JSON.stringify({ ids, archived }) }, { timeoutMs: 20000 });
 export const renameSession = (id, label) =>
   api(`/api/sessions/${encodeURIComponent(id)}/rename`, { method: "POST", body: JSON.stringify({ label }) });
 export const pinSession = (id, pinned = true) =>
   api(`/api/sessions/${encodeURIComponent(id)}/pin`, { method: "POST", body: JSON.stringify({ pinned }) });
+// 地图会话绑定：项目名 + 视口（初始页小地图 / 重启后切回恢复）
+export const updateSessionMapContext = (id, mapProject, mapView) =>
+  api(`/api/sessions/${encodeURIComponent(id)}/map-context`, { method: "POST", body: JSON.stringify({ mapProject, mapView }) });
 export const freezeSession = (id, frozen = true, reason = "") =>
   api(`/api/sessions/${encodeURIComponent(id)}/freeze`, { method: "POST", body: JSON.stringify({ frozen, reason }) });
 export const forkSession = (id, label, options = {}) =>
@@ -396,19 +412,11 @@ export function getClientId() {
  * 结果多标签页各开一组 SSE 把浏览器 6 个连接槽占满。
  * 这里用 sessionStorage 生成每标签页独立、刷新后仍稳定的 tabId，仅用于长连接键，
  * 不参与会话/游标身份，避免影响既有数据。
+ *
+ * 实现已迁到 标签页标识.js（跨标签页流配额.js 需要同一套标签页 id），
+ * 这里保留导出以免既有调用方改动。
  */
-export function getTabId() {
-  try {
-    let id = sessionStorage.getItem("oaw_tab_id");
-    if (!id) {
-      id = "tab-" + Math.random().toString(36).slice(2, 10);
-      sessionStorage.setItem("oaw_tab_id", id);
-    }
-    return id;
-  } catch {
-    return "tab-default";
-  }
-}
+export { getTabId } from "./标签页标识.js";
 
 // ---------- 知识库（本地索引 + IMA） ----------
 export const kbStatus = () => api("/api/kb/status");
@@ -430,8 +438,8 @@ export const kbImaDoc = (mediaId) => api(`/api/kb/ima/doc?media_id=${encodeURICo
 
 // ---------- 地图（GIS 项目） ----------
 export const mapProjects = () => api("/api/map/projects");
-export const mapCreateProject = (project, name, baseProject = "zhejiang-map") =>
-  api("/api/map/projects", { method: "POST", body: JSON.stringify({ project, name, baseProject }) });
+export const mapCreateProject = (project, name, baseProject = "zhejiang-map", extra = {}) =>
+  api("/api/map/projects", { method: "POST", body: JSON.stringify({ project, name, baseProject, ...extra }) });
 export const mapDuplicateProject = (project, name) =>
   api("/api/map/projects/duplicate", { method: "POST", body: JSON.stringify({ project, name }) });
 export const mapRenameProject = (project, name) =>
@@ -450,6 +458,31 @@ export const mapProject = (name, workspace = "") => {
 };
 export const mapSaveStyle = (name, style) =>
   api("/api/map/style", { method: "POST", body: JSON.stringify({ name, style }) });
+// GIS 工程化（阶段 1）：图层注册表 / 元数据 / 基线 / 三级重置 / 操作日志 / 单层替换与导出
+export const mapLayerRegistry = (name) => api(`/api/map/project/${encodeURIComponent(name)}/layers`);
+export const mapProjectTree = (name, q = "") => {
+  const query = new URLSearchParams();
+  if (q) query.set("q", q);
+  const qs = query.toString();
+  return api(`/api/map/project/${encodeURIComponent(name)}/tree${qs ? `?${qs}` : ""}`);
+};
+export const mapUpdateLayerMeta = (name, layerId, patch) =>
+  api(`/api/map/project/${encodeURIComponent(name)}/layer/${encodeURIComponent(layerId)}`, { method: "PATCH", body: JSON.stringify(patch || {}) });
+export const mapLayerExport = (name, layerId) =>
+  api(`/api/map/project/${encodeURIComponent(name)}/layer/${encodeURIComponent(layerId)}/export`);
+export const mapLayerReplace = (name, layerId, geojson, format = "geojson") =>
+  api(`/api/map/project/${encodeURIComponent(name)}/layer/${encodeURIComponent(layerId)}/replace`, { method: "POST", body: JSON.stringify({ geojson, format }) });
+export const mapBaseline = (name) => api(`/api/map/project/${encodeURIComponent(name)}/baseline`);
+export const mapSetBaseline = (name) => api(`/api/map/project/${encodeURIComponent(name)}/baseline`, { method: "POST", body: "{}" });
+export const mapReset = (name, level = "tree") =>
+  api(`/api/map/project/${encodeURIComponent(name)}/reset`, { method: "POST", body: JSON.stringify({ level }) });
+export const mapOperations = (name, { layerId = "", limit = 200 } = {}) => {
+  const query = new URLSearchParams();
+  if (layerId) query.set("layerId", layerId);
+  if (limit) query.set("limit", String(limit));
+  const qs = query.toString();
+  return api(`/api/map/project/${encodeURIComponent(name)}/operations${qs ? `?${qs}` : ""}`);
+};
 export const mapSaveConfig = (name, config) =>
   api("/api/map/config", { method: "POST", body: JSON.stringify({ name, config }) });
 export const mapImportLayer = (name, layerId, geojson) =>
@@ -476,6 +509,9 @@ export const mapDemoAnalysis = (params = {}) => {
   return api(`/api/map/demo-analysis?${query.toString()}`);
 };
 export const mapCambodiaOD = (minFlow = 0) => api(`/api/demo/cambodia-od?minFlow=${encodeURIComponent(minFlow)}`);
+// M2 两张统计表（区域交换量桑基 / 路网结构）：不落图，只返回可展示的统计。
+export const mapExchangeSankey = (project = "") => api(`/api/map/exchange-sankey${project ? `?project=${encodeURIComponent(project)}` : ""}`);
+export const mapRoadStructure = (project = "") => api(`/api/map/road-structure${project ? `?project=${encodeURIComponent(project)}` : ""}`);
 export const mapM3Routes = () => api("/api/m3/bus-routes");
 export const mapM3Stations = () => api("/api/m3/station-heatmap");
 export const mapM3OD = () => api("/api/m3/od-lines");

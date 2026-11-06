@@ -17,27 +17,31 @@ import path from "node:path";
 const root = path.join(import.meta.dirname, "..");
 const iconFile = path.join(root, "client", "src", "components", "Icon.jsx");
 
-// 1) 收集图标表 key（Icon.jsx 内两空格缩进的 `key: (` 定义）
+// 1) 收集图标表 key（Icon.jsx 的 ICONS 映射：`key: IconXxx,`）
 const iconSrc = fs.readFileSync(iconFile, "utf8");
+const iconBlock = iconSrc.slice(iconSrc.indexOf("const ICONS = {"), iconSrc.indexOf("// 兼容旧调用名"));
 const defined = new Set();
 const duplicates = new Set();
-for (const match of iconSrc.matchAll(/^[ ]{2}([A-Za-z][\w-]*): \(/gm)) {
+const aliases = new Set();
+for (const match of iconSrc.matchAll(/ICON_ALIASES = Object\.freeze\(\{([^}]*)\}\)/g)) {
+  for (const alias of String(match[1] || "").matchAll(/([A-Za-z][\w-]*):/g)) aliases.add(alias[1]);
+}
+for (const match of iconBlock.matchAll(/^[ ]{2}([A-Za-z][\w-]*): (Icon[A-Za-z0-9_]+),/gm)) {
   const key = match[1];
   if (defined.has(key)) duplicates.add(key);
   defined.add(key);
 }
+for (const alias of aliases) defined.add(alias);
 if (!defined.size) {
   console.error("✗ Icon.jsx 中没有解析到任何图标定义（正则与文件结构不符，请检查）");
   process.exit(1);
 }
 
-// 1.1) 图形唯一性：不同名称不得指向完全相同的 path 数据（防止 doc/file、close/x 这类同形异名回归）
+// 1.1) 图形唯一性：不同名称不得指向同一个 Tabler 组件（防止同形异名回归）
 const 图形值 = new Map();
 const 重复图形 = [];
-for (const line of iconSrc.split(/\r?\n/)) {
-  const m = /^  ([A-Za-z][\w-]*): \((.*)\),$/.exec(line);
-  if (!m) continue;
-  const [, key, value] = m;
+for (const match of iconBlock.matchAll(/^[ ]{2}([A-Za-z][\w-]*): (Icon[A-Za-z0-9_]+),/gm)) {
+  const [, key, value] = match;
   if (图形值.has(value)) 重复图形.push(`${key} ≡ ${图形值.get(value)}`);
   else 图形值.set(value, key);
 }

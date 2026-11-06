@@ -39,8 +39,10 @@ export const PI_PACKAGE_VERSION = "1.1.0";
  */
 export const PI_COMPACTION_POLICY = Object.freeze({ reserveTokens: 16384, keepRecentTokens: 20000 });
 const RUNTIME_RECORD_LIMIT = 120;
-const DEFAULT_AGENT_CONCURRENCY = 2;
-const DEFAULT_OFFICE_CONCURRENCY = 1;
+// 2026-11-04：默认并发从 2/1 提到 6/2，支持同一工作区 3–5 个会话并行；
+// 仍保留全局 FIFO 上限，避免无限制打爆 provider/OfficeCLI（可用环境变量降回）。
+const DEFAULT_AGENT_CONCURRENCY = 6;
+const DEFAULT_OFFICE_CONCURRENCY = 2;
 
 function now() {
   return new Date().toISOString();

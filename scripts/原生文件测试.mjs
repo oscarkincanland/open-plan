@@ -195,7 +195,8 @@ await test("文件树：右键菜单 + 工具栏原生选择器入口", () => {
   assert.match(src, /const handlePickNativeFiles = async/, "应有原生选择器处理函数");
   assert.match(src, /section-pick-native/, "工具栏应有原生选择器按钮");
   assert.match(src, /pickNativeFiles\(\{ multiple: true/, "应支持多选");
-  assert.match(src, /if \(!result\?\.ok\) \{\s*if \(!result\?\.canceled\) alert/, "用户取消应静默");
+  // 提示走全局 notifyError（alert 会挡住侧栏交互）：取消仍静默返回，仅非取消错误提示。
+  assert.match(src, /if \(!result\?\.ok\) \{\s*if \(!result\?\.canceled\) notifyError/, "用户取消应静默");
   assert.doesNotMatch(src, /handleOpenInExplorer/, "旧实现应已替换");
   assert.doesNotMatch(src, /fetch\("\/api\/open-in-explorer"/, "不应再直连旧端点");
 });

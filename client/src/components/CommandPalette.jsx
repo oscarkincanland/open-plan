@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
+import 文件类型图标 from "./文件类型图标.jsx";
 
 /**
  * 统一命令面板（Ctrl/Cmd+K）
@@ -126,6 +127,7 @@ export default function CommandPalette({ open, onClose, onOpenFile, onKb, onTpl,
         title: f.name,
         subtitle: f.ext ? `.${f.ext}` : "",
         icon: ICONS.file,
+        file: f,
         action: () => onOpenFile?.(f.name),
       }));
     if (fileItems.length) out.push({ id: "files", title: "文件", items: fileItems });
@@ -285,7 +287,9 @@ export default function CommandPalette({ open, onClose, onOpenFile, onKb, onTpl,
                     onMouseEnter={() => setSelectedIdx(idx)}
                     onClick={() => { it.action(); onClose?.(); }}
                   >
-                    <span className="cmd-item-icon" aria-hidden="true"><Icon name={it.icon} size={14} /></span>
+                    <span className="cmd-item-icon" aria-hidden="true">
+                      {it.type === "file" ? <文件类型图标 file={it.file} size={14} /> : <Icon name={it.icon} size={14} />}
+                    </span>
                     <div className="cmd-item-main">
                       <div className="cmd-item-title">{it.title}</div>
                       {it.subtitle && <div className="cmd-item-sub">{it.subtitle}</div>}

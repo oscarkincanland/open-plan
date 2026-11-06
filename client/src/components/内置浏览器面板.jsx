@@ -41,7 +41,7 @@ function resolveTarget(draft) {
   return `https://cn.bing.com/search?q=${encodeURIComponent(value)}`;
 }
 
-export default function BrowserPanel({ clientId, threadId, fullscreen = false, onToggleFullscreen }) {
+export default function BrowserPanel({ clientId, threadId, visible = true, fullscreen = false, onToggleFullscreen }) {
   const [state, setState] = useState({ active: false, url: "", title: "", loading: false, viewport: { width: 1280, height: 800 }, hasFrame: false, ownership: null });
   const [tabs, setTabs] = useState([]);
   const [frame, setFrame] = useState(null);
@@ -60,6 +60,35 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
   // 用布尔值而不是 frame 字符串做依赖，避免每 100ms 一帧导致监听器反复重建、拖拽状态被重置。
   const hasFrame = Boolean(frame);
 
+  // T3：帧改走 Blob URL。data URL 每帧 200–330KB 字符串解析并整块替换；
+  // Blob URL 让浏览器走同源 blob 加载路径，旧对象在保留 3 帧（防闪白）后回收。
+  const [frameUrl, setFrameUrl] = useState(null);
+  const frameUrlBacklogRef = useRef([]);
+  useEffect(() => {
+    if (!frame) {
+      for (const url of frameUrlBacklogRef.current) URL.revokeObjectURL(url);
+      frameUrlBacklogRef.current = [];
+      setFrameUrl(null);
+      return undefined;
+    }
+    try {
+      const bytes = Uint8Array.from(atob(frame), (char) => char.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: "image/jpeg" }));
+      frameUrlBacklogRef.current.push(url);
+      setFrameUrl(url);
+      while (frameUrlBacklogRef.current.length > 3) {
+        URL.revokeObjectURL(frameUrlBacklogRef.current.shift());
+      }
+    } catch {}
+    return undefined;
+  }, [frame]);
+  const frameSrc = frameUrl || (frame ? `data:image/jpeg;base64,${frame}` : null);
+  // 卸载时兜底回收：帧流仍活跃时卸载组件，[frame] effect 的提前 return 不会触发清理
+  useEffect(() => () => {
+    for (const url of frameUrlBacklogRef.current) URL.revokeObjectURL(url);
+    frameUrlBacklogRef.current = [];
+  }, []);
+
   // Agent 虚拟鼠标：Agent 的点击/输入/滚动等操作以事件流下发，这里叠加显示，与用户鼠标区分。
   const [agentAction, setAgentAction] = useState(null);
   const [agentPoint, setAgentPoint] = useState({ nx: 0.5, ny: 0.5 });
@@ -72,8 +101,10 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
   const inputQueueRef = useRef(Promise.resolve());
 
   // 先读取状态，再订阅帧流；这样用户切回“浏览器”页签时不会先看到旧的未启动状态。
+  // T1（visible）：画布标签不是激活页时断开帧流（隐藏 ≠ 停挂载），复用同一 effect 的清理
+  // 逻辑释放长连接槽位——服务端订阅数归 0 后会自动停 screencast，切回时重新走订阅路径。
   useEffect(() => {
-    if (!clientId) return undefined;
+    if (!clientId || !visible) return undefined;
     let stopped = false;
     let source = null;
     let retryTimer = null;
@@ -165,20 +196,22 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
       slot?.release();
       setBrowserStreamState("idle");
     };
-  }, [clientId, threadId]);
+  }, [clientId, threadId, visible]);
 
-  // B3（OAW_BROWSER_ADAPTIVE_STREAM，默认关）：面板所在页面不可见时暂停推流，回可见即恢复。
+  // B3（OAW_BROWSER_ADAPTIVE_STREAM，默认关）：面板所在页面不可见或画布标签非激活时暂停推流，回可见即恢复。
   useEffect(() => {
     if (!clientId || !flag("browserAdaptiveStream")) return undefined;
     const notify = () => {
-      browserStreamPause({ client: clientId, thread: threadId || "", paused: document.hidden }).catch(() => {});
+      browserStreamPause({ client: clientId, thread: threadId || "", paused: document.hidden || !visible }).catch(() => {});
     };
     document.addEventListener("visibilitychange", notify);
+    // visible 变化时立即同步一次：仅 document.hidden 无法感知画布标签切换
+    if (!visible) notify();
     return () => {
       document.removeEventListener("visibilitychange", notify);
       browserStreamPause({ client: clientId, thread: threadId || "", paused: false }).catch(() => {});
     };
-  }, [clientId, threadId]);
+  }, [clientId, threadId, visible]);
 
   // 所有 CDP 输入都经过同一条队列，保证 down → move → up、滚轮和键盘不会乱序。
   const queueBrowserInput = useCallback((payload) => {
@@ -522,9 +555,13 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
 
   const statusText = useMemo(() => {
     if (!state.active) return "未启动";
+    // T5：长等待细分阶段，“在等什么”直接可见
+    if (state.phase === "navigating") return "正在导航…";
+    if (state.phase === "settling") return "稳定内容中…";
+    if (state.phase === "waiting-condition") return "等待条件…";
     if (state.loading) return "加载中…";
     return "运行中";
-  }, [state.active, state.loading]);
+  }, [state.active, state.loading, state.phase]);
 
   if (!state.active && !frame) {
     return (
@@ -646,7 +683,7 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
         {frame ? (
           <img
             ref={imgRef}
-            src={`data:image/jpeg;base64,${frame}`}
+            src={frameSrc || undefined}
             alt="浏览器画面"
             draggable={false}
             style={frameSize.width && frameSize.height ? { aspectRatio: `${frameSize.width} / ${frameSize.height}` } : undefined}

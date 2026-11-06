@@ -16,23 +16,32 @@ import Icon from "./components/Icon.jsx";
 import { isMotionReduced, useAppearance } from "./界面外观.js";
 import Logo from "./components/Logo.jsx";
 import TaskCenter from "./components/任务中心.jsx";
-import WorkProductPanel from "./components/工作产物面板.jsx";
+import WorkProductPanel, { ArtifactPanel, RunChangesPanel } from "./components/工作产物面板.jsx";
+import 画布标签栏 from "./components/画布标签栏.jsx";
+import 文件树抽屉 from "./components/文件树抽屉.jsx";
 import { isStaleChunkError, recoverFromStaleChunk } from "./分包恢复.js";
 import BrowserPanel from "./components/内置浏览器面板.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 import MemoryTab from "./components/MemoryTab.jsx";
 import 对象栏 from "./components/对象栏.jsx";
 import 工作流启动器 from "./components/工作流启动器.jsx";
-import 文件树页签 from "./components/文件树页签.jsx";
-import 新会话页签 from "./components/新会话页签.jsx";
+import 子代理详情面板 from "./components/子代理详情面板.jsx";
+import TeamHeaderChip from "./components/TeamHeaderChip.jsx";
+import TeamPanel from "./components/TeamPanel.jsx";
+import MiniMapPreview from "./components/MiniMapPreview.jsx";
+import { createDocTab, createViewTab, createSubagentTab, openCanvasTab, closeCanvasTab, reorderCanvasTabs, loadCanvasState, saveCanvasState, saveCanvasWidth, docTabId } from "./画布状态.js";
+import { sideDrawerAllowed } from "./画布抽屉.js";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
 import { acquireStream } from "./长连接预算.js";
-import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, getTabId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun } from "./api.js";
+import { createGlobalEventsLease } from "./跨标签页流租约.js";
+import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteSession, deleteSessions, archiveSession, archiveSessions, renameSession, getSession, getClientId, getTabId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun, updateSessionMapContext } from "./api.js";
 import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
-import FeedbackHost, { notifyError } from "./components/Feedback.jsx";
+import { mergeMapContext, normalizeMapView } from "./地图/地图上下文.js";
+import FeedbackHost, { notifyError, askConfirm } from "./components/Feedback.jsx";
 import 提示气泡 from "./components/提示气泡.jsx";
 import { initRuntimeFlags, flag, flagsReady } from "./运行开关.js";
+import { watchBuildChange } from "./构建版本.js";
 
 function historyReferences(text = "") {
   const refs = [];
@@ -67,8 +76,53 @@ function cleanPersistedMessage(text = "") {
   return source.replace(/^##\s*当前任务[\s\S]*?\n边界：[^\n]+\n\n?/i, "").trim();
 }
 
+/**
+ * 懒加载模块的局部错误边界。
+ *
+ * 全局 AppErrorBoundary 会把任何模块渲染错误变成整页“应用出错”。懒加载模块
+ * （地图、知识库、模板库等）在**前端重建后**最容易因为旧 chunk 失效而抛错，
+ * 这时只应影响当前模块，并给用户“重试/刷新”的出口，而不是整站白屏。
+ *
+ * 分包类错误（isStaleChunkError）沿用一次性自动刷新；普通组件错误则保留在本模块内，
+ * 关闭再打开模块即可重新挂载（错误边界随条件渲染卸载而复位）。
+ */
+class ModuleBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error(`[module:${this.props.label || "模块"}]`, error, info);
+    if (isStaleChunkError(error)) recoverFromStaleChunk(error?.message);
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    const message = this.state.error?.message || "未知错误";
+    return (
+      <div className="module-error" role="alert">
+        <div className="module-error-title">「{this.props.label || "模块"}」加载失败</div>
+        <div className="module-error-text">{message}</div>
+        <div className="module-error-actions">
+          <button type="button" className="btn-sm" onClick={() => this.setState({ error: null })}>重新加载模块</button>
+          <button type="button" className="btn-sm" onClick={() => window.location.reload()}>刷新页面</button>
+        </div>
+      </div>
+    );
+  }
+}
+
 function DeferredModule({ children, label = "模块" }) {
-  return <Suspense fallback={<div className="module-loading">正在加载{label}…</div>}>{children}</Suspense>;
+  return (
+    <Suspense fallback={<div className="module-loading">正在加载{label}…</div>}>
+      <ModuleBoundary label={label}>{children}</ModuleBoundary>
+    </Suspense>
+  );
 }
 
 function RefreshBloom() {
@@ -246,7 +300,7 @@ function buildRunSummaryMessages(runs = []) {
     .map((run, index, list) => ({
       id: `run-summary-${run.id}`,
       role: "system",
-      text: run.summary || (run.status === "running" ? "本轮任务仍在执行中" : `本轮任务${run.status === "failed" ? "失败" : run.status === "cancelled" ? "已取消" : "完成"}，处理 ${run.artifacts?.length || 0} 个文件`),
+      text: run.summary || run.finalText || (run.status === "running" ? "本轮任务仍在执行中" : `本轮任务${run.status === "failed" ? "失败" : run.status === "cancelled" ? "已取消" : "完成"}，处理 ${run.artifactCount ?? run.artifacts?.length ?? 0} 个文件`),
       products: (run.artifacts || []).map((a) => a.path).filter(Boolean),
       artifacts: run.artifacts || [],
       runId: run.id,
@@ -260,7 +314,16 @@ function buildRunSummaryMessages(runs = []) {
       runMode: run.task?.mode || "agent",
       // 完成语义：显式 complete_task 或服务端推断结果
       completion: run.completion || null,
+      finalText: run.finalText || "",
+      summarySource: run.summarySource || "",
+      durationMs: Number(run.durationMs) || 0,
+      stepCount: Number(run.stepCount) || 0,
+      toolCount: Number(run.toolCount) || 0,
+      artifactCount: Number(run.artifactCount) || (run.artifacts?.length || 0),
       eventCount: Array.isArray(run.events) ? run.events.length : 0,
+      // 历史首屏不拉完整事件：listRuns 的 includeEvents 默认只给活跃 Run 与最新一条，
+      // 这里也只消费已随列表返回的 events（多数为空），展开过程时再按 runId 拉取，
+      // 避免一次传输 2–3MB 事件流。
       events: Array.isArray(run.events) ? run.events.map((event, eventIndex) => ({
         ...event,
         key: `history:${run.id}:${event.seq || eventIndex}`,
@@ -285,9 +348,31 @@ function fileBasename(value) {
   return parts.length ? parts[parts.length - 1] : "";
 }
 
+// 路径末段：工作区面板只显示目录名，完整路径放 title。
+function pathBaseName(value) {
+  const text = String(value || "").replace(/[\\/]+$/, "");
+  return text.split(/[\\/]/).pop() || text;
+}
+
 const GLOBAL_EVENT_NOTICES = new Set(["run_finished", "run_recovered", "run_cancel_requested", "agent_error", "ask_user"]);
 // 启动加载分区文案：失败提示与重试按钮按分区说明，避免只报一句笼统错误。
 const LOAD_SCOPE_LABELS = { files: "文件列表", sessions: "会话列表", projects: "项目列表", workspaces: "工作区列表" };
+
+// 文件列表的瞬时错误：服务端已能区分 503/timeout/权限；这类错误先重试一次，
+// 不直接弹“读取失败”。404 单独处理为“目录已不存在”，回到工作区根目录。
+function isTransientFilesError(error) {
+  const code = String(error?.code || "");
+  const message = String(error?.message || "");
+  return code === "FILES_TRANSIENT"
+    || /HTTP 5\d\d/.test(message)
+    || /未响应|连接被后台长连接占满|Failed to fetch|network/i.test(message);
+}
+
+function isNotFoundFilesError(error) {
+  return String(error?.code || "") === "FILES_NOT_FOUND" || /HTTP 404/.test(String(error?.message || ""));
+}
+
+const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
 export default function App() {
   const [files, setFiles] = useState([]);
@@ -302,18 +387,66 @@ export default function App() {
   const [activeModule, setActiveModule] = useState(null); // 0.10 统一模块入口
   const [settingsModuleTab, setSettingsModuleTab] = useState("settings");
   const [settingsSection, setSettingsSection] = useState("model");
-  const [previewOpen, setPreviewOpen] = useState(false); // 默认不打开右侧预览：没有内容时不显示空面板（打开文件/产物时才展开）
-  const [previewLayout, setPreviewLayout] = useState(0); // 0=默认，1=50%，2=100%
   const [mapChatVisible, setMapChatVisible] = useState(true); // 地图模式保留 Agent 对话，可独立隐藏
-  const [previewTab, setPreviewTab] = useState("document");
-  // B03：右栏三页签（预览 / 改动 / 产物）；改动与产物默认看“本轮”，可切回“会话”
+  // B03：右栏页签（预览 / 改动 / 产物）；改动与产物默认看“本轮”，可切回“会话”
   const [changesRunId, setChangesRunId] = useState("");
   const [artifactScope, setArtifactScope] = useState("session");
+  const [artifactSegment, setArtifactSegment] = useState("artifacts");
   // 自动打开被“用户正在看别的文件/正在输入”挡住时，记录新产物入口，避免静默丢失。
   const [artifactNotice, setArtifactNotice] = useState(null); // { path, name, runId, at }
-  const [browserPanelOpen, setBrowserPanelOpen] = useState(false); // 内置浏览器独立侧栏
   const [browserFullscreen, setBrowserFullscreen] = useState(false);
-  const [subagentDetail, setSubagentDetail] = useState(null); // 点开子代理卡片后，右栏展示的该子代理完整过程
+  // Agent Teams：ChatPanel 的 team_* 事件投影；顶栏 chip 与画布“团队”标签共用。
+  const [agentTeam, setAgentTeam] = useState(null);
+  const teamSourceRef = useRef("event");
+  const teamDismissedRef = useRef("");
+  const teamTabIdRef = useRef("");
+  const handleTeamChange = useCallback((next, meta = {}) => {
+    teamSourceRef.current = meta?.source === "hydrate" ? "hydrate" : "event";
+    setAgentTeam(next || null);
+  }, []);
+  // 工作区画布：一个容器 + 浏览器式标签，取代 previewOpen/browserPanelOpen/filesTabOpen/newchatTabOpen 四个独立开关。
+  const [canvasTabs, setCanvasTabs] = useState([]);
+  const [canvasActiveId, setCanvasActiveId] = useState("");
+  const [canvasCollapsed, setCanvasCollapsed] = useState(false);
+  const [canvasMaximized, setCanvasMaximized] = useState(false);
+  const [canvasSideOpen, setCanvasSideOpen] = useState(false);
+  const [canvasBooted, setCanvasBooted] = useState(false);
+  const pendingDocRestoreRef = useRef([]);
+  const pendingActiveCanvasIdRef = useRef("");
+  const openDocRef = useRef(null);
+  const canvasTabsRef = useRef([]);
+  const canvasOpen = canvasTabs.length > 0 && !canvasCollapsed;
+  const activeCanvasTab = canvasTabs.find((tab) => tab.id === canvasActiveId) || canvasTabs[canvasTabs.length - 1] || null;
+  const workspaceTab = activeCanvasTab?.kind || "";
+  const browserOpen = canvasTabs.some((tab) => tab.kind === "browser");
+  const objectsOpen = canvasTabs.some((tab) => tab.kind === "objects");
+  const workflowsOpen = canvasTabs.some((tab) => tab.kind === "workflows");
+  const mapPreviewTab = canvasTabs.find((tab) => tab.kind === "mapPreview") || null;
+  // 地图文件（agent 写入/用户保存）变更时递增；只影响预览刷新，不重挂 MapViewer。
+  const [mapPreviewRevision, setMapPreviewRevision] = useState(0);
+  // 文件树抽屉只服务文档/产物/改动；切到浏览器/对象/工作流/地图预览时自动收起，切回允许的标签再恢复。
+  const canvasSideVisible = canvasSideOpen && sideDrawerAllowed(activeCanvasTab?.kind);
+  const canvasSideOpenRef = useRef(canvasSideOpen);
+  canvasSideOpenRef.current = canvasSideOpen;
+  const previousCanvasKindRef = useRef(activeCanvasTab?.kind || "");
+  const sideOpenBeforeHideRef = useRef(false);
+  useEffect(() => {
+    const kind = activeCanvasTab?.kind || "";
+    const previous = previousCanvasKindRef.current;
+    if (kind === previous) return;
+    previousCanvasKindRef.current = kind;
+    if (!sideDrawerAllowed(kind)) {
+      if (canvasSideOpenRef.current) {
+        sideOpenBeforeHideRef.current = true;
+        setCanvasSideOpen(false);
+      }
+      return;
+    }
+    if (sideOpenBeforeHideRef.current) {
+      sideOpenBeforeHideRef.current = false;
+      setCanvasSideOpen(true);
+    }
+  }, [activeCanvasTab?.kind]);
   // 用户手动关掉浏览器侧栏后，本轮不再自动弹开（否则每个 browser_* 工具都会把它重新拉起来）。
   const browserAutoOpenBlockedRef = useRef(false);
   // 运行开关快照到达后的重渲染触发器（值本身不参与渲染，只用来让 flag() 派生的状态重算）。
@@ -338,24 +471,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!browserPanelOpen) setBrowserFullscreen(false);
-  }, [browserPanelOpen]);
+    canvasTabsRef.current = canvasTabs;
+  }, [canvasTabs]);
 
-  // 窄屏防挤压（P1）：右侧只保留一列面板。窗口变窄或打开浏览器栏时自动收起预览，
-  // 避免「侧栏 + 对话 + 预览 + 浏览器」四条最小宽度之和超过视口把对话挤成细条。
-  // ≤768px 时侧栏与右侧面板都是覆盖层（抽屉），因此还要收起侧栏抽屉：
-  // 否则打开时它会整屏盖住对话，用户看不到输入框与发送键。
+  useEffect(() => {
+    if (!browserOpen) setBrowserFullscreen(false);
+  }, [browserOpen]);
+
+  // ≤768px 时侧栏与画布都是覆盖层；收起侧栏抽屉，避免盖住对话输入区。
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
     const enforceNarrowLayout = () => {
-      if (window.innerWidth > 1024) return;
-      setPreviewOpen((open) => (open && browserPanelOpen ? false : open));
       if (window.innerWidth <= 768) setSidebarOpen(false);
     };
     enforceNarrowLayout();
     window.addEventListener("resize", enforceNarrowLayout);
     return () => window.removeEventListener("resize", enforceNarrowLayout);
-  }, [browserPanelOpen]);
+  }, []);
   const [conversationMode, setConversationMode] = useState("chat");
   const [conversationPhase, setConversationPhase] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false); // 命令面板（Ctrl/Cmd+K）
@@ -370,88 +502,163 @@ export default function App() {
   const [mapContexts, setMapContexts] = useState({});
   const currentMapContext = mapContexts[threadId] || null;
   const currentMapProject = currentMapContext?.mapProject || "zhejiang-map";
+  // 主界面只要会话已绑定地图，也必须把项目/视口交给 Agent；否则地图工具会回退
+  // zhejiang-map，预览里的项目永远收不到改动。地图模块保留默认项目兜底。
+  const boundMapProject = activeModule === "map"
+    ? currentMapProject
+    : String(currentMapContext?.mapProject || "");
+  // 地图会话持久化：记录上次成功写入的 payload，避免每 30s 刷新重复写 header。
+  const mapPersistRef = useRef({ last: "" });
 
-  // Agent 调用 browser_* 时自动打开浏览器侧栏。信号来自对话流里的工具事件
-  // （ChatPanel 的 tool_start），不再为此常驻一条 /api/browser/stream：
-  // 每条长连接都占一个同源连接槽位，槽位被占满会让切工作区/切会话永远排队。
-  const previewOpenRef = useRef(previewOpen);
-  previewOpenRef.current = previewOpen;
-  const previewOpenBeforeBrowserRef = useRef(false); // O-P7：窄屏让位前的预览栏状态
-  const previewTabManualAtRef = useRef(0); // O-P2：用户最近一次手动切换右栏页签的时间
-  const [browserActivityPing, setBrowserActivityPing] = useState(0); // O-P3：手关浏览器后的活动徽标
+  const canvasTabManualAtRef = useRef(0); // 用户最近一次手动切换画布标签的时间
+  const focusCanvasAfterCloseRef = useRef(false);
+  const [browserActivityPing, setBrowserActivityPing] = useState(0); // 手关浏览器后的活动徽标
+  const [canvasWidth, setCanvasWidth] = useState(420);
+  const [canvasSideWidth, setCanvasSideWidth] = useState(260);
+
+  const openCanvasView = useCallback((kind, payload = {}) => {
+    const tab = createViewTab(kind, payload);
+    setCanvasTabs((prev) => openCanvasTab(prev, tab).tabs);
+    setCanvasActiveId(tab.id);
+    setCanvasCollapsed(false);
+  }, []);
+
+  const openTeamTab = useCallback(() => {
+    if (!agentTeam) return;
+    teamDismissedRef.current = "";
+    const tab = createViewTab("team", { teamId: agentTeam.id });
+    tab.badge = agentTeam.status === "closed" ? undefined : (agentTeam.counts?.activeMembers ?? 1);
+    tab.badgeTitle = `团队 ${agentTeam.counts?.activeMembers || 0}/${agentTeam.counts?.members || 0}`;
+    tab.alert = ["attention", "failed"].includes(String(agentTeam.status || ""));
+    setCanvasTabs((prev) => openCanvasTab(prev, tab).tabs);
+    setCanvasActiveId(tab.id);
+    setCanvasCollapsed(false);
+    window.setTimeout(() => {
+      const title = document.getElementById("team-panel-title");
+      if (title) title.focus();
+    }, 40);
+  }, [agentTeam]);
+
+  // 团队标签跟随当前 Run：自动补建但不抢焦点；用户显式关闭后只通过 chip 重开。
+  useEffect(() => {
+    if (!agentTeam?.id) {
+      setCanvasTabs((prev) => prev.filter((tab) => tab.kind !== "team"));
+      setCanvasActiveId((prev) => (prev === "view:team" ? "" : prev));
+      teamTabIdRef.current = "";
+      return;
+    }
+    if (teamTabIdRef.current !== agentTeam.id) {
+      teamTabIdRef.current = agentTeam.id;
+      teamDismissedRef.current = "";
+    }
+    const hadTabs = canvasTabsRef.current.length > 0;
+    // 刷新/切回会话时从历史事件恢复团队：画布原本没有其他标签就主动展示团队面板，
+    // 否则用户会以为“刷新后团队消失了”。实时 team_started 仍然不抢焦点。
+    const shouldAutoOpen = teamSourceRef.current === "hydrate" && !hadTabs;
+    const badge = agentTeam.status === "closed" ? undefined : (agentTeam.counts?.activeMembers ?? 1);
+    const alert = ["attention", "failed"].includes(String(agentTeam.status || ""));
+    setCanvasTabs((prev) => {
+      const existing = prev.find((tab) => tab.kind === "team");
+      if (existing) {
+        return prev.map((tab) => tab.kind === "team"
+          ? { ...tab, badge, badgeTitle: `团队 ${badge}/${agentTeam.counts?.members || 0}`, alert }
+          : tab);
+      }
+      if (teamDismissedRef.current === agentTeam.id) return prev;
+      const tab = createViewTab("team", { teamId: agentTeam.id });
+      tab.badge = badge;
+      tab.badgeTitle = `团队 ${badge}/${agentTeam.counts?.members || 0}`;
+      tab.alert = alert;
+      return openCanvasTab(prev, tab).tabs;
+    });
+    if (shouldAutoOpen) {
+      setCanvasActiveId("view:team");
+      setCanvasCollapsed(false);
+    } else if (!hadTabs) {
+      // 实时 team_started：只出现 chip，不等同于“打开画布”，保留收起状态。
+      setCanvasCollapsed(true);
+    }
+    // canvasBooted：刷新时画布恢复会先整体替换 tabs，团队标签要在恢复完成后补回来。
+    // 注意不要依赖 currentWorkspace：它在本组件更后面才声明，放进依赖数组会触发 TDZ。
+  }, [agentTeam, canvasBooted]);
+
+  const activateCanvasTabById = useCallback((id) => {
+    if (!id) return;
+    canvasTabManualAtRef.current = Date.now();
+    setCanvasActiveId(id);
+    setCanvasCollapsed(false);
+  }, []);
+
+  const closeCanvasTabById = useCallback(async (id) => {
+    const tab = canvasTabs.find((item) => item.id === id);
+    if (tab?.kind === "doc" && tab.dirty) {
+      const ok = await askConfirm(`「${tab.title || "文档"}」有未保存修改，仍要关闭吗？`);
+      if (!ok) return;
+    }
+    const result = closeCanvasTab(canvasTabs, canvasActiveId, id);
+    setCanvasTabs(result.tabs);
+    setCanvasActiveId(result.activeId);
+    if (tab?.kind === "team") {
+      // 关闭只销毁视图，不结束团队；同一 Run 内不自动复活，chip 可重新打开。
+      teamDismissedRef.current = agentTeam?.id || tab.payload?.teamId || "";
+    }
+    if (tab?.kind === "doc") {
+      if (activeTab === tab.docId) {
+        if (docAbortRef.current) { try { docAbortRef.current.abort(); } catch {} docAbortRef.current = null; }
+        docRequestSeqRef.current += 1;
+      }
+      setTabs((prev) => prev.filter((item) => (item.id || item.name) !== tab.docId));
+    }
+    if (tab?.kind === "browser") {
+      browserAutoOpenBlockedRef.current = true;
+      setBrowserFullscreen(false);
+    }
+    focusCanvasAfterCloseRef.current = true;
+  }, [activeTab, canvasActiveId, canvasTabs, agentTeam?.id]);
+
+  useEffect(() => {
+    if (!focusCanvasAfterCloseRef.current) return;
+    focusCanvasAfterCloseRef.current = false;
+    const nextTab = canvasActiveId ? document.querySelector(".canvas-tab.active .canvas-tab-main") : null;
+    (nextTab || previewToggleRef.current)?.focus?.();
+  }, [canvasActiveId, canvasTabs]);
+
+  const handleDocDirtyChange = useCallback((dirty) => {
+    const docId = activeTab;
+    if (!docId) return;
+    setCanvasTabs((prev) => prev.map((tab) => (
+      tab.kind === "doc" && tab.docId === docId ? { ...tab, dirty: Boolean(dirty) } : tab
+    )));
+  }, [activeTab]);
+
+  const clearDocumentTabs = useCallback(() => {
+    setTabs([]);
+    setActiveTab(null);
+    setCanvasTabs((prev) => prev.filter((tab) => tab.kind !== "doc"));
+    setCanvasActiveId((prev) => (String(prev || "").startsWith("doc:") ? "" : prev));
+  }, []);
+
+  useEffect(() => {
+    const tab = canvasTabs.find((item) => item.id === canvasActiveId);
+    if (tab?.kind === "doc" && tab.docId && activeTab !== tab.docId) setActiveTab(tab.docId);
+  }, [activeTab, canvasActiveId, canvasTabs]);
+
   const handleBrowserActivity = useCallback(() => {
     if (browserAutoOpenBlockedRef.current) {
       // O-P3（OAW_BROWSER_BADGE，默认关）：手关后不再静默丢弃本轮浏览器活动，顶栏开关亮徽标
       if (flag("browserBadge")) setBrowserActivityPing((value) => value + 1);
       return;
     }
-    // O-P7（OAW_NARROW_RESTORE，默认关）：窄屏弹开浏览器让位预览栏前记住状态，关闭后恢复
-    if (flag("narrowRestore") && typeof window !== "undefined" && window.innerWidth <= 1024 && previewOpenRef.current) {
-      previewOpenBeforeBrowserRef.current = true;
-    }
     setBrowserActivityPing(0);
-    setWorkspaceTabPref("browser");
-    setBrowserPanelOpen(true);
-  }, []);
+    openCanvasView("browser");
+  }, [openCanvasView]);
+
   const closeBrowserPanel = useCallback(() => {
     browserAutoOpenBlockedRef.current = true;
-    setBrowserPanelOpen(false);
-    if (previewOpenBeforeBrowserRef.current) {
-      previewOpenBeforeBrowserRef.current = false;
-      if (flag("narrowRestore") && typeof window !== "undefined" && window.innerWidth <= 1024) setPreviewOpen(true);
-    }
-  }, []);
+    closeCanvasTabById("view:browser");
+  }, [closeCanvasTabById]);
 
-  // P10 工作区画布：工作产物与内置浏览器合并为一个 tab 化容器（proma 式画布）。
-  // 两个 open flag 语义保持不变（自动打开 / 窄屏恢复 / 徽标逻辑零改动），
-  // 只新增「当前激活页签」偏好：打开谁就激活谁；关闭激活页签时自动回退到另一个仍打开的面板。
-  // v0.13.9：激活页签偏好持久化（刷新后回到上次的页签）。
-  const [workspaceTabPref, setWorkspaceTabPrefState] = useState(() => {
-    try { return localStorage.getItem("oaw_workspace_tab") || "preview"; } catch { return "preview"; }
-  });
-  const setWorkspaceTabPref = useCallback((value) => {
-    setWorkspaceTabPrefState(value);
-    try { localStorage.setItem("oaw_workspace_tab", value); } catch {}
-  }, []);
-  const workspaceOpen = previewOpen || browserPanelOpen;
-  // P1-8 对象栏：作为画布第三个页签接入（开关关闭时 objectsOpen 恒为 false，
-  // 下面 workspaceTab 的取值与基线逐字一致——`x || false === x`）。
-  const [objectsOpenState, setObjectsOpenState] = useState(false);
-  const objectsOpen = flag("qoderObjectBar") ? objectsOpenState : false;
-  // M4.4 领域工作流：作为画布第四个页签接入（同样的门控手法——开关关闭时
-  // workflowsOpen 恒为 false，下面 workspaceTab 的取值与接入前逐字一致）。
-  const [workflowsOpenState, setWorkflowsOpenState] = useState(false);
-  const workflowsOpen = flag("domainWorkflows") ? workflowsOpenState : false;
-  // v0.13.9：画布第五/六个页签——文件树与新会话（无 flag 门控，点页签打开，可关闭）。
-  const [filesTabOpen, setFilesTabOpen] = useState(false);
-  const [newchatTabOpen, setNewchatTabOpen] = useState(false);
-  // v0.13.10 双面板常驻：工作产物（WorkPanel）与浏览器（Canvas）并排显示。
-  // 默认关（opt-in）；生效条件 = 用户开启 + 两面板均打开 + 非 1280 以下窄屏
-  // （窄屏自动降级单面板）+ 产物非半屏/全屏布局 + 浏览器非全屏。
-  const [dualPanePref, setDualPanePrefState] = useState(() => {
-    try { return localStorage.getItem("oaw_dual_pane") === "on"; } catch { return false; }
-  });
-  const setDualPanePref = useCallback((value) => {
-    setDualPanePrefState(Boolean(value));
-    try { localStorage.setItem("oaw_dual_pane", value ? "on" : "off"); } catch {}
-  }, []);
-  const [narrowViewport, setNarrowViewport] = useState(() =>
-    typeof window !== "undefined" && typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 1280px)").matches : false);
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
-    const query = window.matchMedia("(max-width: 1280px)");
-    const onChange = (event) => setNarrowViewport(event.matches);
-    query.addEventListener?.("change", onChange);
-    return () => query.removeEventListener?.("change", onChange);
-  }, []);
-  const dualPaneActive = dualPanePref && previewOpen && browserPanelOpen && !browserFullscreen && previewLayout === 0 && !narrowViewport;
-  const workspaceTab = workspaceTabPref === "workflows" && workflowsOpen ? "workflows"
-    : workspaceTabPref === "objects" && objectsOpen ? "objects"
-      : workspaceTabPref === "browser" && browserPanelOpen ? "browser"
-        : workspaceTabPref === "preview" && previewOpen ? "preview"
-          : workspaceTabPref === "files" && filesTabOpen ? "files"
-            : workspaceTabPref === "newchat" && newchatTabOpen ? "newchat"
-              : objectsOpen ? "objects" : workflowsOpen ? "workflows" : browserPanelOpen ? "browser" : previewOpen ? "preview" : filesTabOpen ? "files" : newchatTabOpen ? "newchat" : "preview";
+
 
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
@@ -463,7 +670,47 @@ export default function App() {
   // 失败时保留上一次可用数据并给出可重试的提示，而不是静默伪装成空结果。
   const [loadStatus, setLoadStatus] = useState({ files: "loading", sessions: "loading", projects: "loading", workspaces: "loading" });
   const [loadErrors, setLoadErrors] = useState({});
+  // 构建版本守卫：服务端换了新构建就提示刷新（dist 保留历史包，旧页面不会自己失效）。
+  const [staleBuild, setStaleBuild] = useState(null);
+  useEffect(() => watchBuildChange((info) => setStaleBuild(info)), []);
   const currentProject = projects.find((project) => sameWorkspacePath(project.rootPath, currentWorkspace)) || null;
+
+  const canvasRestoreRef = useRef("");
+  useEffect(() => {
+    if (!currentWorkspace || canvasRestoreRef.current === currentWorkspace) return;
+    canvasRestoreRef.current = currentWorkspace;
+    const saved = loadCanvasState(currentWorkspace);
+    const savedDocs = (saved.tabs || []).filter((tab) => tab.kind === "doc" && tab.payload?.name).map((tab) => String(tab.payload.name));
+    pendingDocRestoreRef.current = savedDocs;
+    pendingActiveCanvasIdRef.current = saved.activeId || "";
+    const allowed = (saved.tabs || [])
+      .filter((tab) => tab.kind !== "doc" && tab.kind !== "subagent")
+      .filter((tab) => tab.kind !== "objects" || flag("qoderObjectBar"))
+      .filter((tab) => tab.kind !== "workflows" || flag("domainWorkflows"));
+    setCanvasTabs(allowed);
+    setCanvasActiveId(saved.activeId && allowed.some((tab) => tab.id === saved.activeId) ? saved.activeId : (allowed[allowed.length - 1]?.id || ""));
+    setCanvasMaximized(Boolean(saved.maximized));
+    setCanvasSideOpen(saved.side?.kind === "files");
+    setCanvasWidth(saved.width || 420);
+    setCanvasSideWidth(saved.sideWidth || 260);
+    try {
+      document.documentElement.style.setProperty("--canvas-w", `${saved.width || 420}px`);
+      document.documentElement.style.setProperty("--canvas-side-w", `${saved.sideWidth || 260}px`);
+    } catch {}
+    setCanvasBooted(true);
+  }, [currentWorkspace]);
+
+  useEffect(() => {
+    if (!canvasBooted || !currentWorkspace) return;
+    saveCanvasState(currentWorkspace, {
+      tabs: canvasTabs,
+      activeId: canvasActiveId,
+      maximized: canvasMaximized,
+      side: { kind: canvasSideOpen ? "files" : null, width: canvasSideWidth },
+      width: canvasWidth,
+      sideWidth: canvasSideWidth,
+    });
+  }, [canvasActiveId, canvasBooted, canvasMaximized, canvasSideOpen, canvasSideWidth, canvasTabs, canvasWidth, currentWorkspace]);
   const [currentDir, setCurrentDir] = useState(""); // 相对路径子目录
   const currentDirRef = useRef(""); // 与 currentDir 同步的最新值，供无参 refreshFiles 使用
   const currentWorkspaceRef = useRef(""); // 与 currentWorkspace 同步：文件请求必须带上它，避免用旧闭包值
@@ -481,6 +728,9 @@ export default function App() {
   // v0.13.2：当前会话已加载助手消息里的外部链接（ChatPanel 提取，Links 页签展示）。
   const [chatLinks, setChatLinks] = useState([]);
   const [sessionResumeError, setSessionResumeError] = useState(null); // { sessionId, message } Agent 恢复失败时历史只读
+  // 历史可以先展示，但只有 Agent 恢复成功后才允许发送/连接对话流；
+  // 否则 SSE 可能在恢复完成前创建一个新的空 runtime。
+  const [agentReady, setAgentReady] = useState(true);
   // 新建会话的进行中/失败状态（交互 2）：失败必须可见，且不得清空旧会话。
   const [creatingSession, setCreatingSession] = useState(false);
   const [newSessionError, setNewSessionError] = useState(null); // { message, workspace }
@@ -489,10 +739,15 @@ export default function App() {
   const [sessionResumeRetrying, setSessionResumeRetrying] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState(null); // 当前会话 id（用于界面恢复）
   const currentSession = sessions.find((session) => session.id === currentSessionId) || null;
+  // 团队清空由 ChatPanel 的 thread 切换统一负责（它就是投影来源）；App 不再按
+  // currentSessionId 二次清空，避免与 ChatPanel 恢复/拉取团队的事件竞争。
   const [docLoading, setDocLoading] = useState(false); // 文档加载中
   const restoredRef = useRef(false); // 界面状态恢复标记（避免重复/过早保存）
   const sessionsRef = useRef([]);
   const sessionsRefreshRef = useRef(null);
+  // 刷新在飞又收到 Run 事件时的补刷标记与复用 promise（多任务运行动画跟随）。
+  const sessionsRefreshPendingRef = useRef(false);
+  const sessionsRefreshRequeuedPromiseRef = useRef(null);
   const projectsRefreshRef = useRef(null);
   const eventRefreshTimerRef = useRef(null);
   const eventBatchTimerRef = useRef(null);
@@ -510,6 +765,11 @@ export default function App() {
   const navGenerationRef = useRef(0);
   const newSessionInFlightRef = useRef(false);
   const filesRequestSeqRef = useRef(0);
+  // 文件列表刷新合并：同一时刻只保留一个在途请求，后续请求记为 pending，
+  // 完成后只补一次；避免 file_changed 风暴把控制面连接池打满。
+  const filesRefreshRef = useRef(null);
+  const filesPendingDirRef = useRef(null);
+  const filesFailureStreakRef = useRef(0);
   const docRequestSeqRef = useRef(0);
   const docAbortRef = useRef(null); // 打开文件请求的中止器：切文件/关标签/切工作区时取消旧请求
   const currentThreadRef = useRef(threadId);
@@ -643,13 +903,14 @@ export default function App() {
     localStorage.setItem("oaw_thread_id", next);
     setHistoryMessages(null);
     setHistoryThreadId(null);
+    setSessionResumeError(null);
+    setAgentReady(true);
     setHistoryWindow(null);
     setSessionResumeError(null);
     // 切会话时丢弃在途的文件打开请求与已打开标签，避免旧结果写入新会话预览。
     docRequestSeqRef.current += 1;
     if (docAbortRef.current) { try { docAbortRef.current.abort(); } catch {} docAbortRef.current = null; }
-    setTabs([]);
-    setActiveTab(null);
+    clearDocumentTabs();
     // 交互 5：目录归根必须与列表同一次导航——清掉旧子目录项并读根列表，
     // 否则根目录下仍显示旧子目录内容，点开会按新的根路径解释。
     currentDirRef.current = "";
@@ -658,6 +919,12 @@ export default function App() {
     void refreshFiles("");
     setCurrentSessionId(created?.sessionId || null);
     setMapContexts((prev) => ({ ...prev, [next]: null }));
+    // 新会话没有地图绑定：关闭上一条会话留下的地图预览，避免预览项目与当前会话不一致。
+    setCanvasTabs((prev) => {
+      if (!prev.some((tab) => tab.kind === "mapPreview")) return prev;
+      return prev.filter((tab) => tab.kind !== "mapPreview");
+    });
+    setCanvasActiveId((prev) => (prev === "view:mapPreview" ? "" : prev));
     lastSessionIdRef.current = created?.sessionId || null;
     newSessionInFlightRef.current = false;
     setCreatingSession(false);
@@ -680,33 +947,85 @@ export default function App() {
 
   const refreshFiles = useCallback(async (dir) => {
     const requestedDir = typeof dir === "string" ? dir : currentDirRef.current;
-    // 工作区身份必须显式传给服务端并在响应里核对：只传 dir 时，服务端会用
-    // 自己的全局工作区解析相对路径，页面显示 A、列表来自 B（交接文档交互 1）。
     const requestedWorkspace = currentWorkspaceRef.current;
+
+    // 已有在途请求：只记下最新目录，等当前请求结束后补一次。
+    if (filesRefreshRef.current) {
+      filesPendingDirRef.current = requestedDir;
+      return filesRefreshRef.current;
+    }
+
     const requestSeq = ++filesRequestSeqRef.current;
     setScopeStatus("files", "loading");
-    try {
-      const result = await listFiles(requestedDir, requestedWorkspace);
-      // 目录已切换、工作区已切换或本次请求不是最新时，过期响应不得覆盖列表
-      const stale = requestSeq !== filesRequestSeqRef.current
-        || requestedDir !== currentDirRef.current
-        || !sameWorkspacePath(requestedWorkspace, currentWorkspaceRef.current);
-      if (stale) return;
-      // 服务端回显的来源与页面不一致：判定为身份错位，阻止把它当当前目录展示。
-      if (result.workspace && requestedWorkspace && !sameWorkspacePath(result.workspace, requestedWorkspace)) {
+
+    const attempt = async () => {
+      try {
+        return { ok: true, result: await listFiles(requestedDir, requestedWorkspace) };
+      } catch (error) {
+        return { ok: false, error };
+      }
+    };
+    const isStale = () => requestSeq !== filesRequestSeqRef.current
+      || requestedDir !== currentDirRef.current
+      || !sameWorkspacePath(requestedWorkspace, currentWorkspaceRef.current);
+
+    const run = async () => {
+      let outcome = await attempt();
+      // 瞬时错误先重试一次；只对“重试后仍失败”的持续错误提示。
+      if (!outcome.ok && isTransientFilesError(outcome.error) && !isStale()) {
+        await wait(400);
+        if (isStale()) return;
+        outcome = await attempt();
+      }
+      if (isStale()) return;
+
+      if (!outcome.ok) {
+        const error = outcome.error;
+        // 当前目录被删除/改名：回到工作区根目录，避免一直停留在不存在的目录。
+        if (isNotFoundFilesError(error) && requestedDir) {
+          filesFailureStreakRef.current = 0;
+          currentDirRef.current = "";
+          setCurrentDir("");
+          setScopeStatus("files", "loading");
+          setScopeError("files", null);
+          filesPendingDirRef.current = "";
+          return;
+        }
+        filesFailureStreakRef.current += 1;
         setScopeStatus("files", "error");
-        setScopeError("files", new Error(`文件列表来源与当前工作区不一致（${result.workspace}）`));
+        // 第一次瞬时失败保留旧列表、不弹横幅；连续失败才提示。
+        if (filesFailureStreakRef.current >= 2) setScopeError("files", error);
         return;
       }
+
+      const result = outcome.result;
+      // 服务端回显的来源与页面不一致：判定为身份错位，阻止把它当当前目录展示。
+      if (result.workspace && requestedWorkspace && !sameWorkspacePath(result.workspace, requestedWorkspace)) {
+        filesFailureStreakRef.current += 1;
+        setScopeStatus("files", "error");
+        if (filesFailureStreakRef.current >= 2) {
+          setScopeError("files", new Error(`文件列表来源与当前工作区不一致（${result.workspace}）`));
+        }
+        return;
+      }
+      filesFailureStreakRef.current = 0;
       setFiles(result.files || []);
       setScopeStatus("files", "ready");
       setScopeError("files", null);
-    } catch (error) {
-      if (requestSeq === filesRequestSeqRef.current) {
-        setScopeStatus("files", "error");
-        setScopeError("files", error);
+    };
+
+    let promise;
+    promise = run().finally(() => {
+      if (filesRefreshRef.current === promise) filesRefreshRef.current = null;
+      const pendingDir = filesPendingDirRef.current;
+      filesPendingDirRef.current = null;
+      // 同一目录不重复补拉；切换目录/工作区时才补一次。
+      if (pendingDir !== null && pendingDir !== requestedDir) {
+        void refreshFiles(pendingDir);
       }
-    }
+    });
+    filesRefreshRef.current = promise;
+    return promise;
   }, [setScopeError, setScopeStatus]);
 
   // 同步工作区 ref：文件请求由回调发起，若只依赖闭包里的 currentWorkspace，
@@ -716,10 +1035,15 @@ export default function App() {
   useEffect(() => { filesRef.current = files; }, [files]);
 
   const refreshSessions = useCallback(async () => {
-    if (sessionsRefreshRef.current) return sessionsRefreshRef.current;
-    setScopeStatus("sessions", "loading");
+    // 多任务并行时多个 Run 事件可能挨着到达：请求在飞又收到新事件时，
+    // 结束后必须再刷一次，否则单飞复用了包含旧 runStatus 的快照
+    // （2026-11-03-001 P0-3：会话栏动画“跟不上节奏”的一半根因）。
+    if (sessionsRefreshRef.current) {
+      sessionsRefreshPendingRef.current = true;
+      return sessionsRefreshRequeuedPromiseRef.current || sessionsRefreshRef.current;
+    }
     const request = listSessions()
-      .then((data) => {
+      .then(async (data) => {
         const next = data.sessions || [];
         setSessions(next);
         setScopeStatus("sessions", "ready");
@@ -733,9 +1057,20 @@ export default function App() {
         return null;
       });
     sessionsRefreshRef.current = request;
-    try { return await request; }
+    try {
+      const result = await request;
+      // 在飞期间又收到 Run 事件：立即补一次刷新，保证新任务的状态能落到列表里。
+      if (sessionsRefreshPendingRef.current) {
+        sessionsRefreshPendingRef.current = false;
+        const requeued = refreshSessions();
+        sessionsRefreshRequeuedPromiseRef.current = requeued;
+        try { return await requeued; } finally { sessionsRefreshRequeuedPromiseRef.current = null; }
+      }
+      return result;
+    }
     finally {
       if (sessionsRefreshRef.current === request) sessionsRefreshRef.current = null;
+      sessionsRefreshPendingRef.current = false;
     }
   }, [setScopeError, setScopeStatus]);
 
@@ -746,8 +1081,10 @@ export default function App() {
     let reconnectTimer = null;
     let retryDelay = 800;
     let cancelled = false;
-    // 全局事件流是核心长连接（必需）：槽位不足时优先保证它和对话流。
-    const slot = acquireStream("agent-events", { essential: true, priority: 2, label: "全局事件流" });
+    let leaderActive = false;
+    let slot = null;
+    // 全局事件流由跨标签页 leader 持有；follower 通过 BroadcastChannel 接收。
+    // 不支持 BroadcastChannel 的环境会退化为每个标签页各自连接（原行为）。
     const cursorKey = "oaw_event_cursor";
     const flushEventBatch = () => {
       eventBatchTimerRef.current = null;
@@ -762,15 +1099,54 @@ export default function App() {
       if (!eventBatchTimerRef.current) eventBatchTimerRef.current = window.setTimeout(flushEventBatch, 100);
     };
     const scheduleReconnect = () => {
-      if (cancelled || reconnectTimer) return;
+      if (cancelled || !leaderActive || reconnectTimer) return;
       try { source?.close(); } catch {}
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null;
-        connect();
+        if (leaderActive) connect();
       }, retryDelay);
       retryDelay = Math.min(5000, retryDelay * 2);
     };
+    // 事件处理与连接解耦：leader 收到 SSE 后本地处理并广播；follower 直接处理广播。
+    const handlePayload = (payload) => {
+      try {
+        const event = payload?.event || payload;
+        const seq = Number(event?.seq || 0);
+        if (!seq || seq <= eventCursorRef.current) return;
+        eventCursorRef.current = seq;
+        localStorage.setItem(cursorKey, String(seq));
+        const isCurrentThread = !event.threadId || event.threadId === currentThreadRef.current;
+        scheduleEventBatch(isCurrentThread && ["run_finished", "file_changed", "artifact_published", ...(flag("stagedVisible") ? ["artifact_staged"] : [])].includes(event.type));
+        const thread = event.threadId || "";
+        const noticeKey = `${thread}:${event.runId || "event"}:${event.type}`;
+        if (thread && thread !== currentThreadRef.current && GLOBAL_EVENT_NOTICES.has(event.type) && !eventNoticeKeysRef.current.has(noticeKey)) {
+          eventNoticeKeysRef.current.add(noticeKey);
+          setUnreadByThread((prev) => ({ ...prev, [thread]: (prev[thread] || 0) + 1 }));
+        }
+        // 会话栏/项目卡的运行动画必须跟着 Run 状态走（2026-11-03-001 P0-3）：
+        // 此前只在 run_finished 等结束事件刷新，2–3 个任务并行时“刚开始”的
+        // 会话一直显示旧状态（绿色完成点），用户反馈“动画跟不上节奏”。
+        if (["run_started", "run_admitted", "agent_started", "agent_queued", "run_finished", "run_recovered", "run_cancel_requested", "agent_error"].includes(event.type)) {
+          // 新一轮开始前恢复"浏览器侧栏可自动展开"：用户上一轮手动关掉的状态不跨轮传递。
+          if (event.type === "run_finished") browserAutoOpenBlockedRef.current = false;
+          // 后台 Run 结束后历史缓存必须失效：否则切回该会话会先显示上一轮旧消息。
+          if (event.type === "run_finished") {
+            const finishedSessionId = String(event.sessionId || event.data?.sessionId || "");
+            if (finishedSessionId) sessionHistoryCacheRef.current.delete(finishedSessionId);
+            else sessionHistoryCacheRef.current.clear();
+          }
+          if (!eventRefreshTimerRef.current) {
+            eventRefreshTimerRef.current = window.setTimeout(() => {
+              eventRefreshTimerRef.current = null;
+              if (document.visibilityState === "visible") refreshSessions();
+            }, 180);
+          }
+        }
+      } catch {}
+    };
     const connect = async () => {
+      if (cancelled || !leaderActive) return;
+      if (!slot) slot = acquireStream("agent-events", { essential: true, priority: 2, label: "全局事件流" });
       let cursor = eventCursorRef.current;
       if (!localStorage.getItem(cursorKey)) {
         try {
@@ -780,36 +1156,15 @@ export default function App() {
           localStorage.setItem(cursorKey, String(cursor));
         } catch {}
       }
-      if (cancelled) return;
+      if (cancelled || !leaderActive) return;
       source = new EventSource(`/api/agent/events?client=${encodeURIComponent(clientId)}&tab=${encodeURIComponent(getTabId())}&after=${encodeURIComponent(cursor)}`);
       slot?.attach(() => source?.close());
       source.onopen = () => { retryDelay = 800; };
       source.onmessage = (message) => {
         try {
           const payload = JSON.parse(message.data || "{}");
-          const event = payload.event || payload;
-          const seq = Number(event.seq || 0);
-          if (!seq || seq <= eventCursorRef.current) return;
-          eventCursorRef.current = seq;
-          localStorage.setItem(cursorKey, String(seq));
-          const isCurrentThread = !event.threadId || event.threadId === currentThreadRef.current;
-          scheduleEventBatch(isCurrentThread && ["run_finished", "file_changed", "artifact_published", ...(flag("stagedVisible") ? ["artifact_staged"] : [])].includes(event.type));
-          const thread = event.threadId || "";
-          const noticeKey = `${thread}:${event.runId || "event"}:${event.type}`;
-          if (thread && thread !== currentThreadRef.current && GLOBAL_EVENT_NOTICES.has(event.type) && !eventNoticeKeysRef.current.has(noticeKey)) {
-            eventNoticeKeysRef.current.add(noticeKey);
-            setUnreadByThread((prev) => ({ ...prev, [thread]: (prev[thread] || 0) + 1 }));
-          }
-          if (["run_finished", "run_recovered", "run_cancel_requested", "agent_error"].includes(event.type)) {
-            // 新一轮开始前恢复"浏览器侧栏可自动展开"：用户上一轮手动关掉的状态不跨轮传递。
-            if (event.type === "run_finished") browserAutoOpenBlockedRef.current = false;
-            if (!eventRefreshTimerRef.current) {
-              eventRefreshTimerRef.current = window.setTimeout(() => {
-                eventRefreshTimerRef.current = null;
-                if (document.visibilityState === "visible") refreshSessions();
-              }, 180);
-            }
-          }
+          handlePayload(payload);
+          lease.publish(payload);
         } catch {}
       };
       // 服务端在回放结束后会下发具名 open 事件（cursor/latest/earliest/truncated）。
@@ -834,9 +1189,29 @@ export default function App() {
       });
       source.onerror = scheduleReconnect;
     };
-    connect();
+    let lease = null;
+    const startLeaderStream = () => {
+      if (leaderActive || cancelled) return;
+      leaderActive = true;
+      void connect();
+    };
+    const stopLeaderStream = () => {
+      leaderActive = false;
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      try { source?.close(); } catch {}
+      source = null;
+      slot?.release();
+      slot = null;
+    };
+    lease = createGlobalEventsLease({
+      onStart: startLeaderStream,
+      onStop: stopLeaderStream,
+      onEvent: handlePayload,
+    });
     return () => {
       cancelled = true;
+      lease?.stop();
+      leaderActive = false;
       source?.close();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (eventBatchTimerRef.current) {
@@ -905,6 +1280,70 @@ export default function App() {
     if (!failed.length || failed.includes("workspaces")) refreshWorkspaces();
   }, [loadErrors, refreshFiles, refreshSessions, refreshProjects, refreshWorkspaces]);
 
+  // 地图会话恢复：会话列表带回 header.mapProject/mapView；当前线程尚未绑定项目时回填。
+  useEffect(() => {
+    if (!Array.isArray(sessions) || !sessions.length) return;
+    const matched = sessions.find((item) => (item.threadId || item.id) === threadId || item.id === currentSessionId);
+    if (!matched || (!matched.mapProject && !matched.mapView)) return;
+    setMapContexts((prev) => {
+      const existing = prev[threadId];
+      if (existing?.mapProject) return prev;
+      return {
+        ...prev,
+        [threadId]: mergeMapContext(existing || {}, {
+          mapProject: matched.mapProject || "",
+          ...(matched.mapView || {}),
+        }),
+      };
+    });
+  }, [sessions, threadId, currentSessionId]);
+
+  // 地图会话持久化：项目/视口变化 1.5s 后写入 session header；内容相同跳过。
+  useEffect(() => {
+    if (!currentSessionId || !currentMapContext) return undefined;
+    const mapProject = String(currentMapContext.mapProject || "");
+    const mapView = normalizeMapView(currentMapContext);
+    if (!mapProject && !Object.keys(mapView).length) return undefined;
+    const serialized = JSON.stringify({ mapProject, mapView });
+    if (mapPersistRef.current.last === serialized) return undefined;
+    const timer = window.setTimeout(() => {
+      updateSessionMapContext(currentSessionId, mapProject, mapView)
+        .then(() => { mapPersistRef.current.last = serialized; })
+        .catch(() => {});
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [currentSessionId, currentMapContext]);
+
+  // 预览标签跟随当前会话的地图项目：只更新 payload，不激活标签、不抢占已有画布。
+  // 会话解绑时关闭预览；空画布且已绑定项目时自动打开（与选择会话的既有策略一致）。
+  useEffect(() => {
+    // 新会话在落盘 header 之前 currentSessionId 可能为空，但视口上报已经能确定
+    // 当前线程的地图项目；预览仍应打开，因此会话键回退到 threadId。
+    const sessionKey = currentSessionId || threadId;
+    if (!sessionKey) return;
+    const project = String(currentMapContext?.mapProject || "");
+    const openTabs = canvasTabsRef.current || [];
+    const preview = openTabs.find((tab) => tab.kind === "mapPreview") || null;
+    if (!project) {
+      if (!preview) return;
+      setCanvasTabs((prev) => prev.filter((tab) => tab.kind !== "mapPreview"));
+      setCanvasActiveId((prev) => (prev === "view:mapPreview" ? "" : prev));
+      return;
+    }
+    if (preview) {
+      const previewSession = String(preview.payload?.sessionId || "");
+      if (previewSession && previewSession !== String(currentSessionId || "") && previewSession !== String(threadId || "")) return;
+      if (String(preview.payload?.project || "") === project) return;
+      setCanvasTabs((prev) => prev.map((tab) => (tab.kind === "mapPreview"
+        ? { ...tab, payload: { ...tab.payload, project, sessionId: sessionKey } }
+        : tab)));
+      return;
+    }
+    if (activeModule === "map") return;
+    if (openTabs.length > 0) return;
+    openCanvasView("mapPreview", { project, view: currentMapContext, sessionId: sessionKey });
+  }, [currentSessionId, threadId, currentMapContext?.mapProject, activeModule, openCanvasView]);
+
   useEffect(() => {
     refreshFiles();
     refreshSessions();
@@ -912,10 +1351,10 @@ export default function App() {
     let modelTimer;
     const sessionTimer = window.setInterval(() => {
       if (document.visibilityState === "visible") refreshSessions();
-    }, 15000);
+    }, 30000);
     const projectTimer = window.setInterval(() => {
       if (document.visibilityState === "visible") refreshProjects();
-    }, 30000);
+    }, 60000);
     const syncModels = async () => {
       try {
         await syncModelCatalog();
@@ -965,8 +1404,7 @@ export default function App() {
     // 切工作区时中止在途打开请求并清空标签，旧工作区的预览结果不得写入。
     docRequestSeqRef.current += 1;
     if (docAbortRef.current) { try { docAbortRef.current.abort(); } catch {} docAbortRef.current = null; }
-    setTabs([]);
-    setActiveTab(null);
+    clearDocumentTabs();
     setHistoryMessages(null);
     setHistoryWindow(null);
     setCurrentSessionId(null);
@@ -1001,6 +1439,7 @@ export default function App() {
   const visibleSessions = currentWorkspace
     ? sessions.filter((session) => !session.cwd || sameWorkspacePath(session.cwd, currentWorkspace))
     : sessions;
+  const recentMapSessions = visibleSessions.filter((session) => Boolean(session.mapProject)).slice(0, 3);
   // 启动加载失败提示：按分区列出，提供统一重试；失败期间保留上一次可用数据。
   const loadFailures = Object.entries(loadErrors).filter(([, message]) => Boolean(message));
   const loadFailureText = loadFailures.length
@@ -1054,11 +1493,12 @@ export default function App() {
         previewRevision: identity.revision,
         identityVerified,
       };
-      // 文件从“本轮产物”或 Agent 自动产出打开时，直接切到文档预览，
+      // 文件从“本轮产物”或 Agent 自动产出打开时，直接激活对应文档标签，
       // 避免用户还停留在产物列表而误以为文件没有打开。
-      setPreviewOpen(true);
-      setWorkspaceTabPref("preview");
-      setPreviewTab("document");
+      const docTab = createDocTab(id, name);
+      setCanvasTabs((prev) => openCanvasTab(prev, docTab).tabs);
+      setCanvasActiveId(docTab.id);
+      setCanvasCollapsed(false);
       // 单次 setTabs：按「工作区 + 相对路径」去重，不同工作区的同名文件是不同标签。
       setTabs((prev) => {
         const exists = prev.find((t) => (t.id || t.name) === id);
@@ -1084,45 +1524,48 @@ export default function App() {
       return null;
     }
   }, [clientId, threadId, currentWorkspace]);
+  openDocRef.current = open;
+
+  useEffect(() => {
+    if (!pendingDocRestoreRef.current.length || !currentWorkspace || !openDocRef.current) return;
+    const names = [...pendingDocRestoreRef.current];
+    const activeId = pendingActiveCanvasIdRef.current;
+    pendingDocRestoreRef.current = [];
+    pendingActiveCanvasIdRef.current = "";
+    (async () => {
+      for (const name of names) {
+        await openDocRef.current(name, threadId, currentWorkspace);
+      }
+      if (activeId) setCanvasActiveId(activeId);
+    })();
+  }, [currentWorkspace, threadId]);
 
   const handleChatOpenFile = useCallback((name) => {
     if (activeModule === "map") mapBridgeRef.current?.onOpenFile?.(name);
     else open(name);
   }, [activeModule, open]);
 
-  // 子代理卡片 → 右栏「子代理」页：展示该子代理的思考 / 回复 / 工具调用完整过程。
+  // 子代理卡片 → 画布临时「子代理」标签：展示该子代理的思考 / 回复 / 工具调用完整过程。
   // 传入的是点击时刻的 block 快照；运行中想看最新过程可再次点击卡片。
   const openSubagentDetail = useCallback((block) => {
-    setSubagentDetail(block || null);
-    setPreviewOpen(true);
-    setWorkspaceTabPref("preview");
-    setPreviewTab("subagent");
+    const tab = createSubagentTab(block || {});
+    setCanvasTabs((prev) => openCanvasTab(prev, tab).tabs);
+    setCanvasActiveId(tab.id);
+    setCanvasCollapsed(false);
   }, []);
 
-  // 子代理运行中：ChatPanel 推送最新 block，若正是右栏正在看的那个则原地刷新（实时更新思考/回复/工具）
+  // 子代理运行中：ChatPanel 推送最新 block，若画布有对应标签则原地刷新。
   const handleSubagentUpdate = useCallback((_thread, block) => {
     if (!block?.id) return;
-    setSubagentDetail((prev) => (prev && prev.id === block.id ? block : prev));
+    setCanvasTabs((prev) => prev.map((tab) => (
+      tab.kind === "subagent" && tab.payload?.block?.id === block.id
+        ? { ...tab, payload: { block } }
+        : tab
+    )));
   }, []);
 
-  // 关闭 tab（按标签 id；关闭当前标签时中止在途打开请求，避免旧结果写入已关闭的预览）
-  const closeTab = useCallback((id) => {
-    setTabs((prev) => {
-      const idx = prev.findIndex((t) => (t.id || t.name) === id);
-      if (idx === -1) return prev;
-      const next = prev.filter((t) => (t.id || t.name) !== id);
-      if (activeTab === id) {
-        // 激活相邻 tab
-        const neighbor = next[Math.min(idx, next.length - 1)];
-        setActiveTab(neighbor ? (neighbor.id || neighbor.name) : null);
-      }
-      return next;
-    });
-    if (activeTab === id) {
-      if (docAbortRef.current) { try { docAbortRef.current.abort(); } catch {} docAbortRef.current = null; }
-      docRequestSeqRef.current += 1;
-    }
-  }, [activeTab]);
+  // 关闭文档标签：画布标签与文档数据同步移除；关闭当前标签时中止在途打开请求。
+  const closeTab = useCallback((id) => closeCanvasTabById(docTabId(id)), [closeCanvasTabById]);
 
   // 点击历史会话：加载该会话的消息记录，并尝试打开关联文件
   const handleSelectSession = useCallback(async (session) => {
@@ -1148,8 +1591,7 @@ export default function App() {
         setFiles(switched.files || []);
         docRequestSeqRef.current += 1;
         if (docAbortRef.current) { try { docAbortRef.current.abort(); } catch {} docAbortRef.current = null; }
-        setTabs([]);
-        setActiveTab(null);
+        clearDocumentTabs();
       } catch (e) {
         // 工作区不可用就不要再加载这份历史：否则会出现"会话 A 的历史 + 会话 B 的文件树"
         // 的错配（用户无法判断自己看到的是哪个项目的产物）。用已有的恢复失败横幅展示。
@@ -1179,12 +1621,22 @@ export default function App() {
       // 缓存未命中：置加载态，让 ChatPanel 渲染骨架屏而不是空白。
       setHistoryLoading(true);
     }
-    // 恢复 Agent 与读取历史互不依赖；并行执行可明显缩短点击历史后的空白等待。
-    // 但在 resume 完成前不切换 thread，避免 SSE 先创建一个新的空会话并与恢复竞态。
-    const historyPromise = Promise.all([
-      getSession(session.id, { view: "chat", limit: 50 }),
-      listRuns("", 50, { sessionId: session.id }).catch(() => ({ runs: [] })),
-    ]);
+    // 历史与 Agent 恢复互不依赖：历史先展示，恢复在后台继续；只有恢复成功
+    // 才把 agentReady 置真，避免 SSE 在恢复完成前创建新的空 runtime。
+    const historyPromise = (async () => {
+      try {
+        const d = await getSession(session.id, { view: "chat", limit: 50 });
+        const runData = await listRuns("", 50, { sessionId: session.id, fields: "summary" }).catch(() => ({ runs: [] }));
+        return { ok: true, d, runData };
+      } catch (error) {
+        return { ok: false, error };
+      }
+    })();
+    // 恢复结果要在"历史已显示、但还没 await 到 resume"的窗口里也能读到，所以用这个
+    // 落地标记观察它：结算后写入，null 表示"还不知道"。
+    // 不能在 await 之前直接读下面的 resumeResult —— 那是后面才声明的 const，会踩 TDZ
+    // （2026-11-02 的"加载会话失败: Cannot access 'Yn' before initialization"就是它）。
+    let resumeSettled = null;
     const resumePromise = resumeAgentThread(clientId, conversationId, session.id, resumedWorkspace)
       .then(() => ({ ok: true }))
       .catch((e) => {
@@ -1192,6 +1644,10 @@ export default function App() {
         // 必须带上 code/detail：前端据此区分「忙，等任务结束后自动重试」与「彻底失败」，
         // 丢掉后 SESSION_BUSY 分支永远不触发，只能显示一句没用的只读提示。
         return { ok: false, error: e.message || "恢复失败", code: e.code || "", detail: e.detail || null };
+      })
+      .then((result) => {
+        resumeSettled = result;
+        return result;
       });
     setUnreadByThread((prev) => {
       if (!prev[conversationId]) return prev;
@@ -1201,17 +1657,54 @@ export default function App() {
     });
     markAgentEventsRead(clientId, eventCursorRef.current).catch(() => {});
     try {
-      const [[d, runData], resumeResult] = await Promise.all([historyPromise, resumePromise]);
+      const historyResult = await historyPromise;
       if (loadSeq !== sessionLoadSeqRef.current) return;
+      if (!historyResult.ok) {
+        notifyError("加载会话历史失败: " + (historyResult.error?.message || "未知错误"));
+        return;
+      }
+      const { d, runData } = historyResult;
+      // 历史已到：立即切换并显示，不再等 resume；输入/SSE 等 agentReady。
+      setAgentReady(false);
       // 恢复失败时仍展示历史，但明确标注为只读并提供重试，避免用户误以为可以继续对话。
-      setSessionResumeError(resumeResult?.ok ? null : {
+      // 这里不等 resume（历史优先显示）：只知道"已经结算"的结果；还没结算就留空，
+      // 由下方 await resumePromise 之后统一写入真实结果。
+      setSessionResumeError(resumeSettled && !resumeSettled.ok ? {
         sessionId: session.id,
-        message: resumeResult?.error || "Agent 会话恢复失败",
-        code: resumeResult?.code || "",
-        detail: resumeResult?.detail || null,
-      });
+        message: resumeSettled.error || "Agent 会话恢复失败",
+        code: resumeSettled.code || "",
+        detail: resumeSettled.detail || null,
+      } : null);
       setCurrentSessionId(session.id);
       setThreadId(conversationId);
+      // 恢复该会话记录的地图项目与视口（header 由 /api/sessions 列表或详情带回）。
+      setMapContexts((prev) => ({
+        ...prev,
+        [conversationId]: mergeMapContext(prev[conversationId] || {}, {
+          mapProject: session.mapProject || "",
+          ...(session.mapView || {}),
+        }),
+      }));
+      // 初始页点击地图会话：画布为空时自动打开只读“地图预览”标签；
+      // 已有预览标签时同步到当前会话；其他标签保持不动，不抢用户正在看的文档。
+      const sessionMapProject = String(session.mapProject || "").trim();
+      if (sessionMapProject) {
+        const openTabs = canvasTabsRef.current;
+        if (!openTabs.length || openTabs.some((tab) => tab.kind === "mapPreview")) {
+          openCanvasView("mapPreview", {
+            project: sessionMapProject,
+            view: session.mapView || null,
+            sessionId: session.id,
+          });
+        }
+      } else {
+        // 切到无地图绑定的会话：关闭上一条会话的地图预览，避免预览项目与当前会话不一致。
+        setCanvasTabs((prev) => {
+          if (!prev.some((tab) => tab.kind === "mapPreview")) return prev;
+          return prev.filter((tab) => tab.kind !== "mapPreview");
+        });
+        setCanvasActiveId((prev) => (prev === "view:mapPreview" ? "" : prev));
+      }
       setChatLinks([]);
       localStorage.setItem("oaw_thread_id", conversationId);
       // 按原始 JSONL 顺序重建消息。toolResult 是工具输出，不能渲染成 You 的用户气泡；
@@ -1248,6 +1741,12 @@ export default function App() {
       setHistoryMessages(loadedHistory);
       setHistoryWindow(sessionHistoryMetaRef.current.get(session.id) || null);
       setHistoryThreadId(conversationId);
+      // 历史已经在屏幕上：现在等恢复结果，只影响“能否继续发送”，不再阻塞阅读。
+      const resumeResult = await resumePromise;
+      if (loadSeq !== sessionLoadSeqRef.current) return;
+      setSessionResumeError(resumeResult?.ok ? null : { sessionId: session.id, message: resumeResult?.error || "Agent 会话恢复失败" });
+      setAgentReady(Boolean(resumeResult?.ok));
+      // 恢复完成后结束历史骨架屏（历史已可读，等待的只是能否继续发送）。
       setHistoryLoading(false);
       // 从消息里解析会话关联的文件，尝试打开
       const fileMatch = msgs.find((m) => m.role === "user" && m.text && m.text.includes("当前打开文件"));
@@ -1261,12 +1760,18 @@ export default function App() {
         }
       }
     } catch (e) {
+      // 只把 message 交给 toast，堆栈就丢了——排查 TDZ / 引用错误时完全没法定位。
+      // 这里额外把完整错误打到控制台（含堆栈），并留一个可读的全局快照供诊断。
+      try {
+        console.error("[会话加载]", e);
+        window.__oawLastSessionError = { message: e?.message, stack: e?.stack, at: Date.now() };
+      } catch {}
       if (loadSeq === sessionLoadSeqRef.current) notifyError("加载会话失败: " + e.message);
     } finally {
       // 无论成功/失败都结束骨架屏（成功路径已提前置 false，这里兜住提前 return 与异常）。
       if (loadSeq === sessionLoadSeqRef.current) setHistoryLoading(false);
     }
-  }, [clientId, currentWorkspace, open, refreshProjects]);
+  }, [clientId, currentWorkspace, open, refreshProjects, openCanvasView]);
 
   // v0.12.5：按游标续拉更早的历史（50 条/页），返回可直接前插的规范化消息。
   const loadOlderSessionHistory = useCallback(async () => {
@@ -1346,6 +1851,7 @@ export default function App() {
     try {
       await resumeAgentThread(clientId, conversationId, targetId, currentWorkspace);
       setSessionResumeError(null);
+      setAgentReady(true);
     } catch (error) {
       setSessionResumeError({
         sessionId: targetId,
@@ -1353,6 +1859,7 @@ export default function App() {
         code: error.code || "",
         detail: error.detail || null,
       });
+      setAgentReady(false);
     }
     if (!silent) setSessionResumeRetrying(false);
   }, [clientId, currentSessionId, currentWorkspace, sessionResumeError, threadId]);
@@ -1402,6 +1909,23 @@ export default function App() {
   const handlePinSession = useCallback(async (id, pinned) => {
     await pinSession(id, pinned);
     await refreshSessions();
+  }, [refreshSessions]);
+
+  // 2026-11-03 归档：只改 header。归档当前打开的会话时故意不清 currentSessionId，
+  // 避免用户正在看的对话被“归档”动作直接关掉；切走后再从默认列表消失。
+  const handleArchiveSession = useCallback(async (id, archived = true) => {
+    await archiveSession(id, archived);
+    await refreshSessions();
+  }, [refreshSessions]);
+
+  const handleBatchArchiveSessions = useCallback(async (ids, archived = true) => {
+    const result = await archiveSessions(ids, archived);
+    await refreshSessions();
+    if (result.skipped?.length) {
+      const reasons = [...new Set(result.skipped.map((item) => item.reason).filter(Boolean))];
+      if (reasons.length) window.setTimeout(() => notifyError(`部分会话未${archived ? "归档" : "恢复"}：${reasons.join("、")}`), 0);
+    }
+    return result;
   }, [refreshSessions]);
 
   const handleDeleteSession = useCallback(async (id) => {
@@ -1481,7 +2005,28 @@ export default function App() {
     if (!fileChangeTimerRef.current) {
       fileChangeTimerRef.current = window.setTimeout(flushFileChanges, 500);
     }
-  }, [flushFileChanges]);
+    // 地图正式文件：agent 写 style/config/layers 后要同时驱动会话绑定与预览刷新。
+    // 只在当前会话尚未绑定项目时自动绑定；已有绑定时不因 agent 操作其它项目而误切。
+    const changedMapProjects = new Set();
+    for (const path of paths) {
+      const match = path.match(/^maps\/([A-Za-z0-9_-]+)\//);
+      if (match) changedMapProjects.add(match[1]);
+    }
+    if (!changedMapProjects.size) return;
+    const boundProject = String(currentMapContext?.mapProject || "");
+    const previewProject = String(mapPreviewTab?.payload?.project || "");
+    if (!boundProject) {
+      const projects = [...changedMapProjects];
+      const nextProject = projects.includes(previewProject) ? previewProject : projects[0];
+      setMapContexts((prev) => {
+        if (String(prev[threadId]?.mapProject || "")) return prev;
+        return { ...prev, [threadId]: mergeMapContext(prev[threadId], { mapProject: nextProject }) };
+      });
+    }
+    if (!previewProject || changedMapProjects.has(previewProject) || !boundProject) {
+      setMapPreviewRevision((value) => value + 1);
+    }
+  }, [flushFileChanges, currentMapContext, mapPreviewTab, threadId]);
 
   // 暴露 refreshSessions 给 ChatPanel（agent_end 时刷新）
   const handleAgentEnd = useCallback(() => {
@@ -1497,20 +2042,17 @@ export default function App() {
   const appearance = useAppearance();
   const previewAutoOpen = appearance.previewAutoOpen;
 
-  // B03：结果卡的交付入口 → 右栏对应页签（带 runId，保证“本轮”语义）
+  // B03：结果卡的交付入口 → 画布对应标签（带 runId，保证“本轮”语义）
   const openChangesForRun = useCallback((runId = "") => {
     setChangesRunId(String(runId || ""));
-    setPreviewOpen(true);
-    setWorkspaceTabPref("preview");
-    setPreviewTab("changes");
-  }, []);
+    openCanvasView("changes");
+  }, [openCanvasView]);
   const openArtifactsForRun = useCallback((runId = "") => {
     setChangesRunId(String(runId || ""));
     setArtifactScope(runId ? "run" : "session");
-    setPreviewOpen(true);
-    setWorkspaceTabPref("preview");
-    setPreviewTab("artifacts");
-  }, []);
+    setArtifactSegment("artifacts");
+    openCanvasView("artifacts");
+  }, [openCanvasView]);
   // 面板里的“本轮/会话”切换是范围语义，不是选中某个历史 Run：
   // 点“本轮”回到最新一轮（清掉钉住的 runId），点“会话”保留当前 Run 选择但不展示。
   const handleArtifactScopeChange = useCallback((scope) => {
@@ -1546,7 +2088,7 @@ export default function App() {
     if (!["completed", "success"].includes(status)) return;
     // O-P2（OAW_AUTO_TAB，默认关）：本轮产生文件产物时直达「产物」页签；
     // 用户 10s 内手动切换过页签视为锁定，不抢用户主动权。
-    if (flag("autoTab") && artifacts.length && Date.now() - previewTabManualAtRef.current > 10000) {
+    if (flag("autoTab") && artifacts.length && Date.now() - canvasTabManualAtRef.current > 10000) {
       openArtifactsForRun(runId);
       return;
     }
@@ -1565,34 +2107,28 @@ export default function App() {
     const active = tabs.find((t) => (t.id || t.name) === activeTab);
     const activePath = String(active?.name || "").replace(/\\/g, "/");
     const artifactPath = String(firstArtifact.path || "").replace(/\\/g, "/");
-    const viewingOther = Boolean(previewOpen && active && activePath !== artifactPath);
+    const viewingOther = Boolean(activeCanvasTab?.kind === "doc" && active && activePath !== artifactPath);
     if (typing || viewingOther) {
       setArtifactNotice({ path: firstArtifact.path, name: fileBasename(firstArtifact.path), runId, at: Date.now() });
       return;
     }
     setArtifactNotice(null);
-    setPreviewOpen(true);
-    setWorkspaceTabPref("preview");
-    setPreviewTab("document");
     void open(firstArtifact.path, result.threadId || threadId, result.cwd || currentWorkspace);
-  }, [activeTab, currentWorkspace, flushFileChanges, open, previewAutoOpen, previewOpen, tabs, threadId]);
+  }, [activeCanvasTab?.kind, activeTab, currentWorkspace, flushFileChanges, open, previewAutoOpen, tabs, threadId]);
 
-  // 关闭右预览后把焦点还给顶栏的预览开关，键盘用户不丢位置（对应计划 4.2 面板/命令入口）
-  const closePreview = useCallback(() => {
-    setPreviewLayout(0);
-    setPreviewOpen(false);
+  // 收起画布但保留标签；把焦点还给顶栏的入口，键盘用户不丢位置。
+  const collapseCanvas = useCallback(() => {
+    setCanvasCollapsed(true);
     requestAnimationFrame(() => previewToggleRef.current?.focus());
   }, []);
-  // P1-8 对象栏关闭：与关闭预览同样把焦点还给顶栏入口，键盘用户不丢位置。
   const closeObjects = useCallback(() => {
-    setObjectsOpenState(false);
+    closeCanvasTabById("view:objects");
     requestAnimationFrame(() => previewToggleRef.current?.focus());
-  }, []);
-  // M4.4 领域工作流面板关闭：同上，焦点还给顶栏入口。
+  }, [closeCanvasTabById]);
   const closeWorkflows = useCallback(() => {
-    setWorkflowsOpenState(false);
+    closeCanvasTabById("view:workflows");
     requestAnimationFrame(() => previewToggleRef.current?.focus());
-  }, []);
+  }, [closeCanvasTabById]);
   // 顶栏整合菜单：点击外部 / Escape 关闭
   useEffect(() => {
     if (!topbarMenuOpen) return undefined;
@@ -1730,9 +2266,12 @@ export default function App() {
         mapBridgeRef.current?.onFileChanged?.(changed);
       }}
       onMapAction={(action) => mapBridgeRef.current?.onMapAction?.(action)}
-       currentDoc={activeModule === "map" ? `地图项目:${currentMapProject}` : current?.name}
-       mapContext={activeModule === "map" ? currentMapContext : null}
-       mapProject={activeModule === "map" ? currentMapProject : null}
+       // 地图项目不是“打开的文件”；不要再把「地图项目:x」塞进 currentDoc，
+       // 否则提示词会同时出现伪文件与地图上下文，模型可能先尝试读取不存在的文件。
+       // 地图模式下也不把画布里恰好打开的业务文档带进地图任务。
+       currentDoc={activeModule === "map" ? null : current?.name}
+       mapContext={boundMapProject ? currentMapContext : null}
+       mapProject={boundMapProject || null}
       models={models}
       defaultModel={defaultModel}
       selectedModel={selectedModel}
@@ -1746,6 +2285,8 @@ export default function App() {
       onOpenRunArtifacts={openArtifactsForRun}
       onOpenSubagent={openSubagentDetail}
       onSubagentUpdate={handleSubagentUpdate}
+      onOpenSettings={() => setActiveModule("settings")}
+      onTeamChange={handleTeamChange}
       onModeChange={setConversationMode}
       onPhaseChange={setConversationPhase}
       onBrowserActivity={handleBrowserActivity}
@@ -1754,6 +2295,7 @@ export default function App() {
       historyWindow={historyWindow}
       historyHydrating={historyLoading}
       sessionId={currentSessionId || ""}
+      agentReady={agentReady}
       onLoadOlderHistory={loadOlderSessionHistory}
       onReloadHistory={reloadCurrentSessionHistory}
       onLinksChange={setChatLinks}
@@ -1767,6 +2309,8 @@ export default function App() {
       onRefreshSessions={refreshSessions}
       onDeleteSession={handleDeleteSession}
       onBatchDeleteSession={handleBatchDeleteSessions}
+      onArchiveSession={handleArchiveSession}
+      onBatchArchiveSession={handleBatchArchiveSessions}
       unreadByThread={unreadByThread}
       onForkSession={handleForkSession}
       onPinSession={handlePinSession}
@@ -1776,9 +2320,19 @@ export default function App() {
 
   return (
     <AppErrorBoundary>
-      <div className={`app ${previewLayout === 1 ? "preview-half" : previewLayout === 2 ? "preview-maximized" : ""} ${browserFullscreen ? "browser-fullscreen" : ""} ${sidebarOpen ? "sidebar-expanded" : "sidebar-collapsed"}`}>
+      <div className={`app ${canvasMaximized ? "canvas-maximized" : ""} ${browserFullscreen ? "browser-fullscreen" : ""} ${sidebarOpen ? "sidebar-expanded" : "sidebar-collapsed"} ${activeModule === "map" ? "map-module-active" : ""}`}>
         <RefreshBloom />
         <FeedbackHost />
+        {/* 构建版本守卫：dist 保留历史 assets，已打开的页面不会自己失效，
+            部署新构建后必须主动提示，否则用户会一直跑旧代码并把"已修好"当成"没修"。 */}
+        {staleBuild && (
+          <div className="load-recovery" role="alert" title={`运行中：${staleBuild.running}\n服务端：${staleBuild.latest}`}>
+            <Icon name="refresh" size={14} />
+            <span>检测到新版本（本页仍在用旧构建），刷新后生效。</span>
+            <button className="btn-xs" onClick={() => window.location.reload()}>立即刷新</button>
+            <button className="btn-xs" onClick={() => setStaleBuild(null)}>稍后</button>
+          </div>
+        )}
         {loadFailureText && (
           <div
             className="load-recovery"
@@ -1847,7 +2401,7 @@ export default function App() {
             onSessionChange={handleSessionChange}
             onRefreshSessions={refreshSessions}
             onFocusRun={(run) => chatInputRef.current?.focusRun?.(run?.id)}
-            onProjectChange={(name) => setMapContexts((prev) => ({ ...prev, [threadId]: { ...(prev[threadId] || {}), mapProject: name } }))}
+            onProjectChange={(name) => setMapContexts((prev) => ({ ...prev, [threadId]: mergeMapContext(prev[threadId], { mapProject: name }) }))}
             conversationMode={conversationMode}
             onModeChange={(next) => {
               // 与主对话的模式切换同源：先让 ChatPanel 真正切模式，成功后再更新状态，
@@ -1859,16 +2413,14 @@ export default function App() {
             chatVisible={mapChatVisible}
             onToggleChat={() => setMapChatVisible((value) => !value)}
             bridgeRef={mapBridgeRef}
-            onViewportChange={(context) => setMapContexts((prev) => ({ ...prev, [threadId]: context }))}
+            mapContext={currentMapContext}
+            onMapChanged={() => setMapPreviewRevision((value) => value + 1)}
+            initialProject={currentMapProject}
+            onViewportChange={(context) => setMapContexts((prev) => ({ ...prev, [threadId]: mergeMapContext(prev[threadId], context) }))}
             // 阶段 2：可视面板的"交给 Agent"把意图填进全局对话栏输入框（复用同一实例，消息流连续）
             insertChatText={insertChatText}
           />
           </DeferredModule>
-        )}
-        {activeModule === "map" && mapChatVisible && (
-          <div className="app-chat-slot map">
-            {sharedChatPanel}
-          </div>
         )}
         {activeModule === "map" && mapChatVisible && (
           <Resizer
@@ -1879,7 +2431,10 @@ export default function App() {
             cssVar="--map-chat-w"
           />
         )}
-        {!["knowledge", "templates", "map"].includes(activeModule) && (
+        {/* 地图模式保留主布局挂载：对话面板必须常驻，否则进入/退出地图会卸载 ChatPanel，
+            本地消息、SSE 游标与运行态全部丢失，服务端回放只会重建孤立总结卡。
+            地图覆盖层由 .mp 负责遮罩，对话槽位在地图模式下用 CSS 固定到右侧。 */}
+        {!["knowledge", "templates"].includes(activeModule) && (
         <>
         {sidebarOpen && (
           <>
@@ -1914,6 +2469,8 @@ export default function App() {
               onRefreshSessions={refreshSessions}
               onDeleteSession={handleDeleteSession}
               onBatchDeleteSession={handleBatchDeleteSessions}
+              onArchiveSession={handleArchiveSession}
+              onBatchArchiveSession={handleBatchArchiveSessions}
               onRenameSession={handleRenameSession}
               onForkSession={handleForkSession}
               onPinSession={handlePinSession}
@@ -1992,6 +2549,11 @@ export default function App() {
               </button>
             </div>
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
+            <TeamHeaderChip
+              team={agentTeam}
+              active={activeCanvasTab?.kind === "team" && canvasOpen}
+              onOpen={openTeamTab}
+            />
             {/* v0.13.8：顶栏搜索入口——聚焦既有命令面板（Ctrl/Cmd+K 同源），不新建搜索后端 */}
             <提示气泡 label="搜索（命令面板）">
               <button
@@ -2005,68 +2567,131 @@ export default function App() {
               </button>
             </提示气泡>
             <div className="topbar-tools" ref={topbarToolsRef}>
-              <提示气泡 label="工作区工具">
+              <提示气泡 label="工作区">
                 <button
                   ref={previewToggleRef}
                   className={`btn-sm topbar-tools-toggle ${topbarMenuOpen ? "active" : ""}`}
                   onClick={() => setTopbarMenuOpen((v) => !v)}
-                  aria-label="工作区工具"
+                  aria-label="工作区"
                   aria-expanded={topbarMenuOpen}
-                  aria-haspopup="menu"
+                  aria-haspopup="dialog"
+                  title="工作区：文件、产物、改动、浏览器与任务中心"
                 >
-                  <Icon name="more" size={14} />
+                  <Icon name="columns" size={14} />
                   {(Object.values(unreadByThread).reduce((sum, count) => sum + Number(count || 0), 0) > 0 || artifactNotice) && <i className="topbar-tools-dot" aria-hidden="true" />}
                 </button>
               </提示气泡>
+              {/* 工作区面板（2026-11-03）：把原来的下拉菜单换成卡片面板。
+                  每个卡片仍调用原来的打开逻辑，不新增页面、不改页面内部。 */}
               {topbarMenuOpen && (
-                <div className="topbar-tools-menu" role="menu" aria-label="工作区工具菜单">
-                  {artifactNotice && (
+                <div className="topbar-tools-panel" role="dialog" aria-label="工作区">
+                  <div className="topbar-tools-panel-head">
+                    <span className="topbar-tools-panel-title"><Icon name="folder" size={13} /> 工作区</span>
+                    <span className="topbar-tools-panel-sub" title={currentWorkspace || ""}>
+                      {currentWorkspace ? pathBaseName(currentWorkspace) : "未选择工作区"}
+                    </span>
+                  </div>
+                  <div className="topbar-tools-cards">
                     <button
-                      role="menuitem"
-                      onClick={() => {
-                        const target = artifactNotice;
-                        setTopbarMenuOpen(false);
-                        setArtifactNotice(null);
-                        void open(target.path, threadId, currentWorkspace);
-                      }}
-                      title={`打开本轮新产物：${artifactNotice.path}`}
+                      type="button"
+                      className={`topbar-tools-card ${canvasSideVisible ? "on" : ""}`}
+                      onClick={() => { setTopbarMenuOpen(false); if (!canvasOpen) openCanvasView("artifacts"); setCanvasSideOpen(true); }}
+                      title="浏览会话工作区的文件"
                     >
-                      <Icon name="file" size={14} /><span>本轮新产物：{artifactNotice.name}</span>
+                      <Icon name="folder" size={15} />
+                      <span><strong>工作区文件</strong><small>浏览会话工作区的文件</small></span>
                     </button>
-                  )}
-                  <button role="menuitem" onClick={() => { setTopbarMenuOpen(false); handleNewSession(undefined, { agentId: currentSession?.agentId || "" }); }} disabled={creatingSession} title={currentSession?.agentId ? "新建对话（沿用当前会话的智能体）" : "新建对话"}>
-                    <Icon name="chatPlus" size={14} /><span>新建对话</span>
-                  </button>
-                  <button role="menuitemcheckbox" aria-checked={previewOpen && workspaceTab === "preview"} className={previewOpen && workspaceTab === "preview" ? "on" : ""} onClick={() => { if (previewOpen) setPreviewLayout(0); else setWorkspaceTabPref("preview"); setPreviewOpen((v) => !v); }} title={previewOpen && workspaceTab === "preview" ? "隐藏工作产物画布" : "显示工作产物画布"}>
-                    <Icon name="package" size={14} /><span>工作产物</span>
-                  </button>
-                  {/* v0.13.10 双面板：工作产物与浏览器并排；默认关，需要两者均开启，≤1280 自动降级单面板 */}
-                  <button
-                    role="menuitemcheckbox"
-                    aria-checked={dualPanePref}
-                    className={dualPanePref ? "on" : ""}
-                    disabled={!(previewOpen && browserPanelOpen)}
-                    onClick={() => setDualPanePref(!dualPanePref)}
-                    title={previewOpen && browserPanelOpen ? "双面板：工作产物与浏览器并排显示（≤1280 窄屏自动降级单面板）" : "双面板需要工作产物与浏览器均已开启"}
-                  >
-                    <Icon name="columns" size={14} /><span>双面板</span>
-                  </button>
-                  <button role="menuitemcheckbox" aria-checked={browserPanelOpen} className={browserPanelOpen ? "on" : ""} onClick={() => { if (browserPanelOpen) closeBrowserPanel(); else { browserAutoOpenBlockedRef.current = false; if (flag("narrowRestore") && typeof window !== "undefined" && window.innerWidth <= 1024 && previewOpenRef.current) previewOpenBeforeBrowserRef.current = true; setBrowserActivityPing(0); setWorkspaceTabPref("browser"); setBrowserPanelOpen(true); } }} title={browserPanelOpen ? "隐藏内置浏览器" : "显示内置浏览器"}>
-                    <Icon name="globe" size={14} /><span>内置浏览器</span>{browserActivityPing > 0 && !browserPanelOpen && <i className="browser-activity-dot" aria-hidden="true" />}
-                  </button>
-                  {flag("qoderObjectBar") && (
-                    <button role="menuitemcheckbox" aria-checked={objectsOpen} className={objectsOpen ? "on" : ""} onClick={() => { setWorkspaceTabPref("objects"); setObjectsOpenState((value) => !value); }} title={objectsOpen ? "隐藏对象栏" : "显示对象栏：本轮产出 / 来源 / 技能 / 记忆汇总"}>
-                      <Icon name="layers" size={14} /><span>对象栏</span>
+                    <button
+                      type="button"
+                      className="topbar-tools-card"
+                      onClick={() => { setTopbarMenuOpen(false); setArtifactSegment("artifacts"); openCanvasView("artifacts"); }}
+                      title="打开工作产物：任务摘要 / 产物 / 链接"
+                    >
+                      <Icon name="package" size={15} />
+                      <span><strong>工作产物</strong><small>任务摘要、产物与链接</small></span>
                     </button>
-                  )}
-                  {flag("domainWorkflows") && (
-                    <button role="menuitemcheckbox" aria-checked={workflowsOpen} className={workflowsOpen ? "on" : ""} onClick={() => { setWorkspaceTabPref("workflows"); setWorkflowsOpenState((value) => !value); }} title={workflowsOpen ? "隐藏领域工作流" : "显示领域工作流：交通规划工作流的阶段 / 工具白名单 / 预算 / 产物契约与预检试算"}>
-                      <Icon name="flow" size={14} /><span>领域工作流</span>
+                    <button
+                      type="button"
+                      className="topbar-tools-card"
+                      onClick={() => { setTopbarMenuOpen(false); openCanvasView("changes"); }}
+                      title="打开改动：本轮文件变化"
+                    >
+                      <Icon name="history" size={15} />
+                      <span><strong>本轮改动</strong><small>本轮文件变化</small></span>
                     </button>
+                    <button
+                      type="button"
+                      className={`topbar-tools-card ${browserOpen ? "on" : ""}`}
+                      onClick={() => {
+                        setTopbarMenuOpen(false);
+                        if (browserOpen) { closeBrowserPanel(); return; }
+                        browserAutoOpenBlockedRef.current = false;
+                        setBrowserActivityPing(0);
+                        openCanvasView("browser");
+                      }}
+                      title={browserOpen ? "关闭内置浏览器标签" : "打开内置浏览器标签"}
+                    >
+                      <Icon name="globe" size={15} />
+                      <span><strong>内置浏览器</strong><small>{browserOpen ? "点击关闭浏览器标签" : "浏览网页"}</small></span>
+                      {browserActivityPing > 0 && !browserOpen && <i className="browser-activity-dot" aria-hidden="true" />}
+                    </button>
+                    <button
+                      type="button"
+                      className="topbar-tools-card"
+                      onClick={() => { setTopbarMenuOpen(false); taskCenterRef.current?.open(); }}
+                      title="任务中心：并行任务、运行状态与历史会话"
+                    >
+                      <Icon name="list" size={15} />
+                      <span><strong>任务中心</strong><small>并行任务与运行状态</small></span>
+                    </button>
+                  </div>
+                  {(artifactNotice || flag("qoderObjectBar") || flag("domainWorkflows")) && (
+                    <div className="topbar-tools-more">
+                      <span className="topbar-tools-more-label">更多工具</span>
+                      {artifactNotice && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const target = artifactNotice;
+                            setTopbarMenuOpen(false);
+                            setArtifactNotice(null);
+                            void open(target.path, threadId, currentWorkspace);
+                          }}
+                          title={`打开本轮新产物：${artifactNotice.path}`}
+                        >
+                          <Icon name="file" size={13} /><span>本轮新产物：{artifactNotice.name}</span>
+                        </button>
+                      )}
+                      {flag("qoderObjectBar") && (
+                        <button
+                          type="button"
+                          onClick={() => { setTopbarMenuOpen(false); if (objectsOpen) closeObjects(); else openCanvasView("objects"); }}
+                          title={objectsOpen ? "关闭对象栏标签" : "打开对象栏：本轮产出 / 来源 / 技能 / 记忆汇总"}
+                        >
+                          <Icon name="layers" size={13} /><span>对象栏</span>
+                        </button>
+                      )}
+                      {flag("domainWorkflows") && (
+                        <button
+                          type="button"
+                          onClick={() => { setTopbarMenuOpen(false); if (workflowsOpen) closeWorkflows(); else openCanvasView("workflows"); }}
+                          title={workflowsOpen ? "关闭领域工作流标签" : "打开领域工作流：阶段 / 工具白名单 / 预算 / 产物契约与预检试算"}
+                        >
+                          <Icon name="flow" size={13} /><span>领域工作流</span>
+                        </button>
+                      )}
+                    </div>
                   )}
-                  <button role="menuitem" onClick={() => { setTopbarMenuOpen(false); taskCenterRef.current?.open(); }} title="任务中心：并行任务、运行状态与历史会话">
-                    <Icon name="list" size={14} /><span>任务中心</span>
-                  </button>
+                  <div className="topbar-tools-foot">
+                    <button
+                      type="button"
+                      onClick={() => { setTopbarMenuOpen(false); handleNewSession(undefined, { agentId: currentSession?.agentId || "" }); }}
+                      disabled={creatingSession}
+                      title={currentSession?.agentId ? "新建对话（沿用当前会话的智能体）" : "新建对话"}
+                    >
+                      <Icon name="chatPlus" size={14} /><span>新建对话</span>
+                    </button>
+                  </div>
                 </div>
               )}
               <TaskCenter
@@ -2137,219 +2762,171 @@ export default function App() {
             {/* 对话面板常驻挂载：设置/成果/任务中心是覆盖在上面的浮层（.module-view），
                 不能用 !activeModule 把会话流卸载——卸载会丢掉全部本地状态，
                 回到对话时整段会话要重新水合（表现为"变样"、底部工具条图标闪烁重载）。 */}
-            <div className="center-chat-slot">{sharedChatPanel}</div>
+            <div className={`center-chat-slot${activeModule === "map" ? " map-mode" : ""}${activeModule === "map" && !mapChatVisible ? " map-chat-hidden" : ""}`}>{sharedChatPanel}</div>
           </div>
         </div>
-        {previewOpen && (workspaceTab === "preview" || dualPaneActive) && <Resizer side="right" min={280} max={680} cssVar="--preview-w" />}
-        {/* v0.13.9：文件树/新会话页签共用产物画布的宽度约束（280–680） */}
-        {(workspaceTab === "files" || workspaceTab === "newchat") && <Resizer side="right" min={280} max={680} cssVar="--preview-w" />}
-        {objectsOpen && workspaceTab === "objects" && <Resizer side="right" min={260} max={620} cssVar="--objects-w" />}
-        {workflowsOpen && workspaceTab === "workflows" && <Resizer side="right" min={280} max={720} cssVar="--workflows-w" />}
-        {(previewOpen || browserPanelOpen || objectsOpen || workflowsOpen || filesTabOpen || newchatTabOpen) && (
-          <aside className={`app-canvas-slot ${workspaceTab === "browser" ? "canvas-tab-browser" : workspaceTab === "objects" ? "canvas-tab-objects" : workspaceTab === "workflows" ? "canvas-tab-workflows" : workspaceTab === "files" ? "canvas-tab-files" : workspaceTab === "newchat" ? "canvas-tab-newchat" : "canvas-tab-preview"}${dualPaneActive ? " dual-pane" : ""}`}>
-            <div className="preview-panel-head app-canvas-head">
-              <div className="app-canvas-tabs" role="tablist" aria-label="工作区画布">
-                <button
-                  role="tab"
-                  aria-selected={workspaceTab === "preview"}
-                  className={workspaceTab === "preview" ? "active" : ""}
-                  onClick={() => { previewTabManualAtRef.current = Date.now(); setPreviewOpen(true); setWorkspaceTabPref("preview"); }}
-                  title="工作产物：文件预览 / 改动 / 产物"
-                >
-                  <Icon name="package" size={13} /> 工作产物
-                </button>
-                <button
-                  role="tab"
-                  aria-selected={workspaceTab === "browser"}
-                  className={workspaceTab === "browser" ? "active" : ""}
-                  onClick={() => { setBrowserActivityPing(0); setBrowserPanelOpen(true); setWorkspaceTabPref("browser"); }}
-                  title="内置浏览器"
-                >
-                  <Icon name="globe" size={13} /> 浏览器
-                  {browserActivityPing > 0 && workspaceTab !== "browser" && <i className="browser-activity-dot" aria-hidden="true" />}
-                </button>
-                {flag("qoderObjectBar") && (
-                  <button
-                    role="tab"
-                    aria-selected={workspaceTab === "objects"}
-                    className={workspaceTab === "objects" ? "active" : ""}
-                    onClick={() => { setWorkspaceTabPref("objects"); setObjectsOpenState(true); }}
-                    title="对象栏：本轮产出 / 来源 / 技能 / 记忆汇总"
-                  >
-                    <Icon name="layers" size={13} /> 对象
-                  </button>
+        {canvasOpen && (
+          <Resizer
+            side="right"
+            min={320}
+            max={760}
+            cssVar="--canvas-w"
+            onResizeEnd={(width) => { setCanvasWidth(width); saveCanvasWidth(width, canvasSideWidth); }}
+          />
+        )}
+        {canvasOpen && (
+          <aside className={`app-canvas-slot ${canvasMaximized ? "canvas-maximized" : ""}`} aria-label="工作区画布">
+            <画布标签栏
+              tabs={canvasTabs}
+              activeId={canvasActiveId}
+              onActivate={activateCanvasTabById}
+              onClose={closeCanvasTabById}
+              onReorder={(fromId, toId) => setCanvasTabs((prev) => reorderCanvasTabs(prev, fromId, toId))}
+              onCollapse={collapseCanvas}
+              onToggleMaximize={() => setCanvasMaximized((value) => !value)}
+              maximized={canvasMaximized}
+              onPlusAction={(action) => {
+                if (action === "files") { setCanvasSideOpen((value) => !value); if (!canvasOpen) openCanvasView("artifacts"); return; }
+                if (action === "artifacts") { setArtifactSegment("artifacts"); openCanvasView("artifacts"); return; }
+                if (action === "changes") { openCanvasView("changes"); return; }
+                if (action === "browser") { browserAutoOpenBlockedRef.current = false; setBrowserActivityPing(0); openCanvasView("browser"); return; }
+                if (action === "objects") { openCanvasView("objects"); return; }
+                if (action === "workflows") { openCanvasView("workflows"); }
+              }}
+              onSearch={() => setPaletteOpen(true)}
+              onToggleFiles={() => setCanvasSideOpen((value) => !value)}
+              filesOpen={canvasSideVisible}
+              onNewChat={async () => { await handleNewSession(currentWorkspaceRef.current || currentWorkspace); chatInputRef.current?.focusInput?.(); }}
+              mapSessions={recentMapSessions}
+              onOpenMapSession={async (session) => { await handleSelectSession(session); setActiveModule("map"); }}
+              showObjects={flag("qoderObjectBar")}
+              showWorkflows={flag("domainWorkflows")}
+              browserActivityPing={browserActivityPing}
+              browserFullscreen={browserFullscreen}
+              onToggleBrowserFullscreen={() => setBrowserFullscreen((value) => !value)}
+            />
+            <div className={`canvas-workarea ${canvasSideVisible ? "with-side" : ""}`}>
+              <div className="canvas-main">
+                {tabs.length > 0 && (
+                  <div className={`app-canvas-body canvas-body-doc ${activeCanvasTab?.kind === "doc" ? "" : "canvas-hidden"}`}>
+                    <Suspense fallback={<div className="module-loading">正在加载文档预览…</div>}>
+                      <DocViewer
+                        tabs={tabs}
+                        activeTab={activeTab}
+                        hideTabBar
+                        onOpenFile={open}
+                        loading={docLoading}
+                        onSendToAgent={insertChatText}
+                        onInsertContext={(t) => chatInputRef.current?.insertContext(t)}
+                        onDirtyChange={handleDocDirtyChange}
+                      />
+                    </Suspense>
+                  </div>
                 )}
-                {flag("domainWorkflows") && (
-                  <button
-                    role="tab"
-                    aria-selected={workspaceTab === "workflows"}
-                    className={workspaceTab === "workflows" ? "active" : ""}
-                    onClick={() => { setWorkspaceTabPref("workflows"); setWorkflowsOpenState(true); }}
-                    title="领域工作流：阶段 / 工具白名单 / 预算 / 产物契约与预检试算"
-                  >
-                    <Icon name="flow" size={13} /> 工作流
-                  </button>
-                )}
-                {/* v0.13.9：文件树与新会话页签（点开即激活，可关闭；切换不卸载） */}
-                <button
-                  role="tab"
-                  aria-selected={workspaceTab === "files"}
-                  className={workspaceTab === "files" ? "active" : ""}
-                  onClick={() => { setFilesTabOpen(true); setWorkspaceTabPref("files"); }}
-                  title="文件树：工作区文件快速导航（全部 / 代码 / 网页）"
-                >
-                  <Icon name="folder" size={13} /> 文件树
-                </button>
-                <button
-                  role="tab"
-                  aria-selected={workspaceTab === "newchat"}
-                  className={workspaceTab === "newchat" ? "active" : ""}
-                  onClick={() => { setNewchatTabOpen(true); setWorkspaceTabPref("newchat"); }}
-                  title="新会话：在当前工作区开始新对话"
-                >
-                  <Icon name="chatPlus" size={13} /> 新会话
-                </button>
-              </div>
-              <span className="preview-panel-actions">
-                {workspaceTab === "preview" ? (
-                  <>
-                    <button
-                      className="btn-icon preview-layout-button"
-                      onClick={() => setPreviewLayout((value) => (value + 1) % 3)}
-                      title={`工作产物布局：${previewLayout === 0 ? "默认" : previewLayout === 1 ? "50%" : "100%"}，点击切换`}
-                      aria-label={`工作产物布局：${previewLayout === 0 ? "默认" : previewLayout === 1 ? "50%" : "100%"}，点击切换`}
-                    >
-                      <Icon name={previewLayout === 2 ? "minimize" : "maximize"} size={14} />
-                      <span className="preview-layout-label">{previewLayout === 0 ? "默认" : `${previewLayout * 50}%`}</span>
-                    </button>
-                    <提示气泡 label="隐藏工作产物">
-                      <button className="btn-icon" onClick={closePreview} aria-label="隐藏工作产物"><Icon name="close" size={14} /></button>
-                    </提示气泡>
-                  </>
-                ) : workspaceTab === "objects" ? (
-                  <提示气泡 label="隐藏对象栏">
-                    <button className="btn-icon" onClick={closeObjects} aria-label="隐藏对象栏"><Icon name="close" size={14} /></button>
-                  </提示气泡>
-                ) : workspaceTab === "workflows" ? (
-                  <提示气泡 label="隐藏领域工作流">
-                    <button className="btn-icon" onClick={closeWorkflows} aria-label="隐藏领域工作流"><Icon name="close" size={14} /></button>
-                  </提示气泡>
-                ) : workspaceTab === "files" ? (
-                  <提示气泡 label="关闭文件树">
-                    <button className="btn-icon" onClick={() => setFilesTabOpen(false)} aria-label="关闭文件树"><Icon name="close" size={14} /></button>
-                  </提示气泡>
-                ) : workspaceTab === "newchat" ? (
-                  <提示气泡 label="关闭新会话页签">
-                    <button className="btn-icon" onClick={() => setNewchatTabOpen(false)} aria-label="关闭新会话页签"><Icon name="close" size={14} /></button>
-                  </提示气泡>
-                ) : (
-                  <>
-                    <提示气泡 label={browserFullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}>
-                      <button
-                        className="btn-icon"
-                        onClick={() => setBrowserFullscreen((value) => !value)}
-                        aria-label={browserFullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
-                      >
-                        <Icon name={browserFullscreen ? "minimize" : "maximize"} size={14} />
-                      </button>
-                    </提示气泡>
-                    <提示气泡 label="隐藏内置浏览器">
-                      <button className="btn-icon" onClick={closeBrowserPanel} aria-label="隐藏内置浏览器"><Icon name="close" size={14} /></button>
-                    </提示气泡>
-                  </>
-                )}
-              </span>
-            </div>
-            {/* 两个页签体都保持挂载、用 CSS 显隐：切换不卸载，DocViewer/浏览器状态零丢失 */}
-            {previewOpen && (
-              <div className={`app-canvas-body canvas-body-preview ${(workspaceTab === "preview" || dualPaneActive) ? "" : "canvas-hidden"}`}>
-                <div className="preview-panel-tabs">
-                  {[['document', '预览'], ['changes', '改动'], ['artifacts', '产物'], ['links', '链接'], ...(subagentDetail ? [['subagent', '子代理']] : [])].map(([id, label]) => (
-                    <button key={id} className={previewTab === id ? "active" : ""} onClick={() => { previewTabManualAtRef.current = Date.now(); setPreviewTab(id); }}>
-                      {label}
-                      {id === "links" && chatLinks.length > 0 && <span className="result-tab-count">{chatLinks.length}</span>}
-                    </button>
-                  ))}
-                </div>
-                <WorkProductPanel
-                  tab={previewTab === "document" ? "document" : previewTab}
-                  clientId={clientId}
-                  threadId={threadId}
-                  workspace={currentWorkspace}
-                  projectId={currentProject?.id || ""}
-                  currentSessionId={currentSessionId}
-                  selectedRunId={changesRunId}
-                  artifactScope={artifactScope}
-                  artifactScopePinned={Boolean(changesRunId)}
-                  onArtifactScopeChange={handleArtifactScopeChange}
-                  refreshToken={artifactVersion}
-                  onOpenFile={open}
-                  subagentBlock={subagentDetail}
-                  links={chatLinks}
-                >
-                  <Suspense fallback={<div className="module-loading">正在加载文档预览…</div>}>
-                    <DocViewer
-                      tabs={tabs}
-                      activeTab={activeTab}
-                      onSwitchTab={(n) => setActiveTab(n)}
-                      onCloseTab={closeTab}
+                {canvasTabs.some((tab) => tab.kind === "artifacts") && (
+                  <div className={`app-canvas-body canvas-body-artifacts ${activeCanvasTab?.kind === "artifacts" ? "" : "canvas-hidden"}`}>
+                    <ArtifactPanel
+                      workspace={currentWorkspace}
+                      projectId={currentProject?.id || ""}
+                      currentSessionId={currentSessionId}
+                      selectedRunId={changesRunId}
+                      artifactScope={artifactScope}
+                      artifactScopePinned={Boolean(changesRunId)}
+                      onArtifactScopeChange={handleArtifactScopeChange}
+                      refreshToken={artifactVersion}
                       onOpenFile={open}
-                      loading={docLoading}
-                      onSendToAgent={insertChatText}
-                      onInsertContext={(t) => chatInputRef.current?.insertContext(t)}
+                      links={chatLinks}
+                      segment={artifactSegment}
+                      onSegmentChange={setArtifactSegment}
                     />
-                  </Suspense>
-                </WorkProductPanel>
+                  </div>
+                )}
+                {canvasTabs.some((tab) => tab.kind === "changes") && (
+                  <div className={`app-canvas-body canvas-body-changes ${activeCanvasTab?.kind === "changes" ? "" : "canvas-hidden"}`}>
+                    <RunChangesPanel
+                      workspace={currentWorkspace}
+                      projectId={currentProject?.id || ""}
+                      currentSessionId={currentSessionId}
+                      selectedRunId={changesRunId}
+                      refreshToken={artifactVersion}
+                      onOpenFile={open}
+                    />
+                  </div>
+                )}
+                {mapPreviewTab && (
+                  <div className={`app-canvas-body canvas-body-map ${activeCanvasTab?.kind === "mapPreview" ? "" : "canvas-hidden"}`}>
+                    <div className="canvas-map-preview">
+                      <MiniMapPreview
+                        project={mapPreviewTab.payload?.project || currentMapProject}
+                        view={mapPreviewTab.payload?.view || null}
+                        height="100%"
+                        refreshToken={mapPreviewRevision}
+                        onOpen={() => setActiveModule("map")}
+                      />
+                    </div>
+                  </div>
+                )}
+                {browserOpen && (
+                  <div className={`app-canvas-body canvas-body-browser ${activeCanvasTab?.kind === "browser" ? "" : "canvas-hidden"}`}>
+                    {/* T1：面板只在浏览器画布标签为激活页时连帧流；隐藏的其他画布标签不挂流 */}
+                    <BrowserPanel clientId={clientId} threadId={threadId} visible={activeCanvasTab?.kind === "browser"} fullscreen={browserFullscreen} onToggleFullscreen={() => setBrowserFullscreen((value) => !value)} />
+                  </div>
+                )}
+                {objectsOpen && (
+                  <div className={`app-canvas-body canvas-body-objects ${activeCanvasTab?.kind === "objects" ? "" : "canvas-hidden"}`}>
+                    <对象栏
+                      workspace={currentWorkspace}
+                      projectId={currentProject?.id || ""}
+                      model={selectedModel || defaultModel}
+                      references={tabs.map((tab) => ({ label: tab.name, kind: "文件" }))}
+                      clientId={clientId}
+                      threadId={threadId}
+                      onClose={closeObjects}
+                    />
+                  </div>
+                )}
+                {workflowsOpen && (
+                  <div className={`app-canvas-body canvas-body-workflows ${activeCanvasTab?.kind === "workflows" ? "" : "canvas-hidden"}`}>
+                    <工作流启动器 onClose={closeWorkflows} />
+                  </div>
+                )}
+                {canvasTabs.some((tab) => tab.kind === "team") && (
+                  <div className={`app-canvas-body canvas-body-team ${activeCanvasTab?.kind === "team" ? "" : "canvas-hidden"}`}>
+                    <TeamPanel team={agentTeam} onOpenTranscript={openSubagentDetail} />
+                  </div>
+                )}
+                {canvasTabs.filter((tab) => tab.kind === "subagent").map((tab) => (
+                  <div key={tab.id} className={`app-canvas-body canvas-body-subagent ${activeCanvasTab?.id === tab.id ? "" : "canvas-hidden"}`}>
+                    <子代理详情面板 block={tab.payload?.block || null} />
+                  </div>
+                ))}
               </div>
-            )}
-            {browserPanelOpen && (
-              <div className={`app-canvas-body canvas-body-browser ${(workspaceTab === "browser" || dualPaneActive) ? "" : "canvas-hidden"}`}>
-                <BrowserPanel clientId={clientId} threadId={threadId} fullscreen={browserFullscreen} onToggleFullscreen={() => setBrowserFullscreen((value) => !value)} />
-              </div>
-            )}
-            {objectsOpen && (
-              <div className={`app-canvas-body canvas-body-objects ${workspaceTab === "objects" ? "" : "canvas-hidden"}`}>
-                <对象栏
-                  workspace={currentWorkspace}
-                  projectId={currentProject?.id || ""}
-                  model={selectedModel || defaultModel}
-                  references={tabs.map((tab) => ({ label: tab.name, kind: "文件" }))}
-                  clientId={clientId}
-                  threadId={threadId}
-                  onClose={closeObjects}
-                />
-              </div>
-            )}
-            {workflowsOpen && (
-              <div className={`app-canvas-body canvas-body-workflows ${workspaceTab === "workflows" ? "" : "canvas-hidden"}`}>
-                <工作流启动器 onClose={closeWorkflows} />
-              </div>
-            )}
-            {/* v0.13.9：文件树/新会话页签体——与其他页签同构，保持挂载、CSS 显隐（切换不卸载） */}
-            {filesTabOpen && (
-              <div className={`app-canvas-body canvas-body-files ${workspaceTab === "files" ? "" : "canvas-hidden"}`}>
-                <文件树页签
-                  files={files}
-                  loading={loadStatus?.files === "loading"}
-                  currentName={current?.name || ""}
-                  onOpenFile={open}
-                  onRefresh={() => { void refreshFiles(currentDir); }}
-                />
-              </div>
-            )}
-            {newchatTabOpen && (
-              <div className={`app-canvas-body canvas-body-newchat ${workspaceTab === "newchat" ? "" : "canvas-hidden"}`}>
-                <新会话页签
-                  sessions={sessions}
-                  busyCreating={creatingSession}
-                  onNewSession={async () => { await handleNewSession(currentWorkspaceRef.current || currentWorkspace); chatInputRef.current?.focusInput?.(); }}
-                  onSelectSession={handleSelectSession}
-                />
-              </div>
-            )}
+
+              {canvasSideVisible && (
+                <>
+                  <Resizer
+                    side="right"
+                    min={200}
+                    max={340}
+                    cssVar="--canvas-side-w"
+                    className="canvas-side-resizer"
+                    onResizeEnd={(width) => { setCanvasSideWidth(width); saveCanvasWidth(canvasWidth, width); }}
+                  />
+                  <aside className="canvas-side" aria-label="工作区文件树">
+                    <文件树抽屉
+                      workspace={currentWorkspace}
+                      currentName={current?.name || ""}
+                      onOpenFile={open}
+                      onClose={() => setCanvasSideOpen(false)}
+                      refreshToken={artifactVersion}
+                    />
+                  </aside>
+                </>
+              )}
+            </div>
+
           </aside>
         )}
-        {browserPanelOpen && (workspaceTab === "browser" || dualPaneActive) && <Resizer side="right" min={340} max={960} cssVar="--browser-w" />}
         <DeferredModule label="技能管理">
         <SkillsManager
           open={activeModule === "skills"}
@@ -2408,7 +2985,7 @@ export default function App() {
              <div className="module-body module-settings-body">
                {settingsModuleTab === "memory"
                  ? <MemoryTab workspace={currentWorkspace} projectId={currentProject?.id || ""} />
-                 : <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} defaultModel={defaultModel} activeModel={selectedModel} clientId={clientId} threadId={threadId} initialSection={settingsSection} onModelChange={setSelectedModel} onModelsRefresh={refreshModelCatalog} onProjectUpdated={refreshProjects} onProjectSelect={(id) => { closeExternalModules(); handleProjectChange(id); }} />}
+                 : <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} defaultModel={defaultModel} activeModel={selectedModel} clientId={clientId} threadId={threadId} initialSection={settingsSection} onSessionsChanged={refreshSessions} onModelChange={setSelectedModel} onModelsRefresh={refreshModelCatalog} onProjectUpdated={refreshProjects} onProjectSelect={(id) => { closeExternalModules(); handleProjectChange(id); }} />}
              </div>
            </div>
          )}

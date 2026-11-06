@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@antv/g6": "^5.1.1",
+    "@tabler/icons-react": "^3.50.0",
     "buffer": "^6.0.3",
     "chart.js": "^4.4.9",
     "docx": "^9.7.1",

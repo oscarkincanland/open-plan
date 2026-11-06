@@ -16,6 +16,7 @@ import {
   PIPELINE_STAGES,
   safePipelineName,
   parseLooseJson,
+  diagnoseUnparsable,
   evaluateGeneratedFile,
   runEditorialPipeline,
 } from "../server/编辑流水线.mjs";
@@ -43,6 +44,17 @@ test("safePipelineName 清洗非法字符", () => {
 });
 test("PIPELINE_STAGES 顺序固定", () => {
   assert.deepEqual([...PIPELINE_STAGES], ["planner", "writer", "formatter", "evaluator"]);
+});
+test("解析失败诊断给出工作区相对路径（模型按提示能找到落盘文件）", () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-ws-"));
+  const intermediateDir = path.join(workspace, ".work", "pipeline");
+  fs.mkdirSync(intermediateDir, { recursive: true });
+  const text = diagnoseUnparsable("这不是 JSON", { intermediateDir, fileBase: "报告", stage: "planner", workspace });
+  assert.ok(text.includes("原始返回已落盘"), "应说明已落盘");
+  assert.ok(text.includes(".work/pipeline/报告.planner.raw.txt"), `应给出工作区相对路径，实际：${text}`);
+  assert.ok(!text.includes(workspace), "不应泄漏绝对工作区路径");
+  const noWorkspace = diagnoseUnparsable("x", { intermediateDir, fileBase: "报告", stage: "planner" });
+  assert.ok(noWorkspace.includes("报告.planner.raw.txt"), "无 workspace 时退回文件名");
 });
 
 console.log("\n▶ docx 流水线（一次通过）");
@@ -90,6 +102,34 @@ await test("pptx 一次通过且页数一致", async () => {
   assert.equal(result.status, "completed");
   assert.ok(result.checks.some((c) => c.includes("幻灯片 3 页")));
   assert.ok(result.checks.some((c) => c.includes("章节覆盖 3/3")));
+});
+await test("pptx 支持 sourceMarkdown 直通（按标题分页）", async () => {
+  const markdown = [
+    "# 金东区农村公路网布局规划汇报",
+    "- 汇报单位：浙江数智交院",
+    "## 现状与问题",
+    "- 乡道村道 702.709 km",
+    "- 12 个乡镇全部负增长",
+    "## 布局方案",
+    "- 三横三纵骨架",
+    "- 分期实施",
+  ].join("\n");
+  const result = await runEditorialPipeline({
+    format: "pptx",
+    goal: "金东区农村公路网布局规划汇报",
+    workspace: tmp,
+    emit,
+    sourceMarkdown: markdown,
+    runModelTask: async () => "判定：pass",
+  });
+  assert.equal(result.status, "completed");
+  assert.ok(result.checks.some((c) => c.includes("幻灯片 3 页")), `应生成 3 页，实际：${result.checks.join(" | ")}`);
+  assert.ok(result.checks.some((c) => c.includes("章节覆盖 3/3")));
+});
+await test("editorial_pipeline 工具不再限制 requirements 1000 字", () => {
+  const source = fs.readFileSync(path.join(ROOT, "server", "agent.mjs"), "utf8");
+  assert.match(source, /requirements: Type\.Optional\(Type\.String\(\{ maxLength: 20000/);
+  assert.match(source, /goal: Type\.String\(\{ minLength: 4, maxLength: 6000/);
 });
 
 console.log("\n▶ revise 回环（≤1 轮）");

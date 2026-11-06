@@ -4,6 +4,7 @@ import { Document, Packer, Paragraph, TextRun, AlignmentType, HeadingLevel } fro
 import Icon from "./Icon.jsx";
 import CommentMarker from "./CommentMarker.jsx";
 import { repaginateDocx } from "./文档分页.js";
+import { scrollToElementInContainer } from "./文档定位.js";
 import { extractDocxOutline } from "./文档目录.js";
 import { motionScrollBehavior } from "../界面外观.js";
 import { askConfirm } from "./Feedback.jsx";
@@ -45,8 +46,26 @@ const HEADING_OPTIONS = [
   { label: "标题 4", value: "h4" },
 ];
 const ZOOM_LEVELS = [50, 75, 100, 125, 150, 200];
+// D3 大小预算：超过此体积不再走浏览器排版（与 PptxViewer 的 100MB 预算同思路，
+// Word 有图片解压 + 逐块排版 + 二次分页，阈值需要更保守）。
+const DOCX_NATIVE_MAX_BYTES = 25 * 1024 * 1024;
 
-export default function DocxViewer({ name, revision = 0, identity, onPreviewState, onPreviewError, onInsertContext, onSendToAgent }) {
+/**
+ * 统计 docx 内浏览器无法解码的矢量图（EMF/WMF）数量。
+ * docx-preview 对这两类完全没有支持分支，命中即为确定性破图——
+ * 必须先识别出来，才能避免「破图 → 整篇 base64 重渲染」的无谓开销。
+ */
+async function countVectorOnlyMedia(buffer) {
+  try {
+    const JSZip = (await import("jszip")).default;
+    const zip = await JSZip.loadAsync(buffer);
+    return Object.keys(zip.files).filter((name) => /^word\/media\/.+\.(?:emf|wmf)$/i.test(name)).length;
+  } catch {
+    return 0;
+  }
+}
+
+export default function DocxViewer({ name, revision = 0, identity, onPreviewState, onPreviewError, onInsertContext, onSendToAgent, onDirtyChange }) {
   const hostRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -61,6 +80,10 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
   const [outlineOpen, setOutlineOpen] = useState(true);
+  // 工具栏「更多」菜单（2026-11-03 预览收敛）：高保真切换、刷新渲染与说明收在这里，
+  // 主工具栏只留高频操作，保证单行不换行。
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef(null);
   const [outline, setOutline] = useState([]);
   const [outlineW, setOutlineW] = useState(220); // 目录宽度（可拖拽）
   const outlineDragRef = useRef(null);
@@ -94,6 +117,8 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
     window.addEventListener("mouseup", onUp);
   };
   const [dirty, setDirty] = useState(false);
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
   const [comments, setComments] = useState([]);
   const [activeComment, setActiveComment] = useState(null);
   const [zoom, setZoom] = useState(100); // 缩放比例
@@ -102,6 +127,21 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
   const [selectionMenu, setSelectionMenu] = useState(null);
   const [selectionNote, setSelectionNote] = useState("");
   const [imageNotice, setImageNotice] = useState("");
+
+  // 「更多」菜单：点击外部或按 Esc 关闭
+  useEffect(() => {
+    if (!moreOpen) return undefined;
+    const onPointerDown = (event) => {
+      if (!moreRef.current?.contains(event.target)) setMoreOpen(false);
+    };
+    const onKeyDown = (event) => { if (event.key === "Escape") setMoreOpen(false); };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [moreOpen]);
 
   // 选中文档中的文字后显示 Codex 风格操作条：加入上下文、写批注或交给 Agent。
   useEffect(() => {
@@ -206,11 +246,28 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
       if (serverIdentity && !identityMatches(fileIdentity, serverIdentity)) {
         throw new Error("预览内容与打开的文件不一致（文件身份不匹配），已停止渲染");
       }
+      // D3 大小预算：超过阈值不再硬渲染（与 PPT 的 LARGE_PPT_BYTES 策略对齐）。
+      // 依据：17MB/28 张图的 Word 实测渲染链路可达十余秒且必然触发破图重渲染。
+      const declaredSize = Number(res.headers.get("content-length") || 0);
+      if (declaredSize > DOCX_NATIVE_MAX_BYTES) {
+        try { await res.body?.cancel(); } catch {}
+        if (!live()) return;
+        setImageNotice(`文件约 ${(declaredSize / 1024 / 1024).toFixed(0)}MB，超过浏览器排版预算，已自动切到 OfficeCLI 高保真预览`);
+        setRenderMode("office");
+        setLoading(false);
+        onPreviewState?.(PREVIEW_STATE.PARTIAL);
+        return;
+      }
       const buf = await res.arrayBuffer();
       if (!live()) return;
 
-      // docx-preview 的图片是异步取回的，渲染完成后要给它一点时间；个别文档在
-      // blob 链路下拿不到图片（src 落空 / 解码失败），这里改用 base64 数据链重渲染一次。
+      // D4：EMF/WMF 是浏览器无法解码的矢量图（docx-preview 零支持），
+      // 命中这类文档时破图是**确定性**的，不能靠 base64 重渲染抢救。
+      const vectorOnlyCount = await countVectorOnlyMedia(buf);
+      if (!live()) return;
+
+      // 批注/修订一律渲染出来，工具栏开关只切 CSS 显隐（D6）——
+      // 旧实现把它们放进 renderAsync 选项，点一次开关就整篇重新渲染。
       const paint = async (buffer, { base64URL = false } = {}) => {
         host.innerHTML = "";
         await renderAsync(new Uint8Array(buffer), host, null, {
@@ -219,8 +276,8 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
           breakPages: true,
           // 保留 Word 写入的 lastRenderedPageBreak，避免长文被压成一个连续大页面。
           ignoreLastRenderedPageBreak: false,
-          renderComments: showComments, // 批注显示跟随工具栏开关
-          renderChanges: showChanges,   // 修订痕迹显示跟随工具栏开关
+          renderComments: true,
+          renderChanges: true,
           useBase64URL: base64URL,
         });
       };
@@ -239,15 +296,6 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
 
       await paint(buf);
       if (!live()) return;
-      let broken = await brokenImages(6000);
-      if (!live()) return;
-      if (broken.length) {
-        await paint(buf, { base64URL: true });
-        if (!live()) return;
-        broken = await brokenImages(8000);
-        if (!live()) return;
-      }
-      if (broken.length) setImageNotice(`有 ${broken.length} 张图片未能加载`);
 
       // 按 A4 页高做二次分页：生成的文档通常没有 Word 的 lastRenderedPageBreak，
       // 只靠 breakPages 会出现 9000+px 的超长"纸"，这里补上逐页切分。
@@ -264,8 +312,26 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
       applyFitWidth({ silent: true });
       // 加载批注数据
       loadComments({ signal, isCurrent });
-      // 有图片未加载 → partial（页面可读但内容不完整）；否则 ready。
-      onPreviewState?.(broken.length ? PREVIEW_STATE.PARTIAL : PREVIEW_STATE.READY);
+      // D5：先让首屏可读（ready），图片校验放到后台，不再阻塞首屏最多 14 秒。
+      onPreviewState?.(vectorOnlyCount ? PREVIEW_STATE.PARTIAL : PREVIEW_STATE.READY);
+      if (vectorOnlyCount) {
+        setImageNotice(`有 ${vectorOnlyCount} 张 EMF/WMF 矢量图无法在浏览器中渲染（Word 可正常显示）`);
+      }
+
+      // 后台图片校验：仅当不是 EMF/WMF 已知无解时，才用 base64 数据链重渲染一次。
+      void (async () => {
+        const broken = await brokenImages(3000);
+        if (!live()) return;
+        if (!broken.length) return;
+        if (vectorOnlyCount) { setImageNotice(`有 ${broken.length} 张图片未能加载（含 EMF/WMF 矢量图）`); return; }
+        await paint(buf, { base64URL: true });
+        if (!live()) return;
+        repaginateDocx(host);
+        const stillBroken = await brokenImages(4000);
+        if (!live()) return;
+        if (stillBroken.length) setImageNotice(`有 ${stillBroken.length} 张图片未能加载`);
+        onPreviewState?.(stillBroken.length ? PREVIEW_STATE.PARTIAL : PREVIEW_STATE.READY);
+      })().catch(() => {});
     } catch (e) {
       if (e?.name === "AbortError") return;
       if (!live()) return;
@@ -275,7 +341,7 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
     } finally {
       if (live()) setLoading(false);
     }
-  }, [urls, fileIdentity, showComments, showChanges, applyFitWidth, onPreviewState, onPreviewError]);
+  }, [urls, fileIdentity, applyFitWidth, onPreviewState, onPreviewError]);
 
   const loadComments = async (options = {}) => {
     const { signal, isCurrent } = options;
@@ -302,6 +368,14 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
     renderDoc({ signal: controller.signal, isCurrent: () => seq === renderSeqRef.current });
     return () => { try { controller.abort(); } catch {} };
   }, [renderDoc, renderKey, renderMode]);
+
+  // D6：批注/修订开关只切 CSS 显隐，不重新渲染整篇文档（渲染时两者都已产出）。
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    host.classList.toggle("oaw-hide-comments", !showComments);
+    host.classList.toggle("oaw-hide-changes", !showChanges);
+  }, [showComments, showChanges, renderKey, renderMode, loading]);
 
   // 提取标题大纲：优先使用 docx 内部样式（heading N / 标题 N）解析出的真实层级；
   // 解析不到时才退回"编号开头的短段落"启发式，且不再把加粗正文全部列进来。
@@ -385,13 +459,11 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
     });
   };
 
-  // 只滚动预览容器，避免把整个工作台一起滚动
+  // 只滚动预览容器，避免把整个工作台一起滚动（zoom 换算统一走 文档定位.js）
   const scrollHostTo = (el, offset = 16) => {
     const host = hostRef.current;
     if (!host || !el) return false;
-    const rect = el.getBoundingClientRect();
-    const base = host.getBoundingClientRect();
-    host.scrollTo({ top: Math.max(0, host.scrollTop + (rect.top - base.top) - offset), behavior: motionScrollBehavior() });
+    scrollToElementInContainer(host, el, { offset, behavior: motionScrollBehavior() });
     const page = Number(el.closest("section.oaw-docx")?.dataset.page || 0);
     if (page) setCurrentPage(page);
     return true;
@@ -406,10 +478,7 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
     const el = hostRef.current?.querySelector(`section.oaw-docx[data-page="${target}"]`);
     if (!el) return;
     setCurrentPage(target);
-    const host = hostRef.current;
-    const rect = el.getBoundingClientRect();
-    const base = host.getBoundingClientRect();
-    host.scrollTo({ top: Math.max(0, host.scrollTop + (rect.top - base.top) - 8), behavior: motionScrollBehavior() });
+    scrollToElementInContainer(hostRef.current, el, { offset: 8, behavior: motionScrollBehavior() });
   };
 
   // ===== 编辑模式：contentEditable + execCommand（即时生效，零后端延迟） =====
@@ -608,28 +677,16 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
 
   return (
     <div className="oaw-docx-wrap">
-      {/* 第一行：主工具栏 */}
+      {/* 主工具栏（单行）：预览/编辑、批注、修订、目录、页码、缩放、适应宽度、更多 */}
       <div className="oaw-docx-toolbar">
         <div className="toolbar-seg oaw-docx-mode">
           <button className={`toolbar-seg-btn ${mode === "preview" ? "active" : ""}`} onClick={exitEditMode}>
             <Icon name="eye" size={12} /> 预览
           </button>
           <button className={`toolbar-seg-btn ${mode === "edit" ? "active" : ""}`} onClick={enterEditMode}>
-            <Icon name="penTool" size={12} /> 编辑
+            <Icon name="edit" size={12} /> 编辑
           </button>
         </div>
-        <button
-          className={`toolbar-btn ${renderMode === "office" ? "active" : ""}`}
-          onClick={() => {
-            if (renderMode === "native" && mode === "edit") exitEditMode();
-            setError("");
-            if (renderMode === "native") { setLoading(true); onPreviewState?.(PREVIEW_STATE.LOADING); }
-            setRenderMode(renderMode === "office" ? "native" : "office");
-          }}
-          title={renderMode === "office" ? "切回浏览器渲染（可编辑）" : "OfficeCLI 高保真只读渲染：适合复杂版式，渲染失败时自动提示"}
-        >
-          <Icon name={renderMode === "office" ? "eye" : "globe"} size={14} />
-        </button>
         <button className={`toolbar-btn ${showComments ? "active" : ""}`} onClick={() => setShowComments(!showComments)} title="显示批注">
           <Icon name="comment" size={14} />
         </button>
@@ -641,17 +698,14 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
             <Icon name="list" size={14} />
           </button>
         )}
-        <button className="toolbar-btn" onClick={() => setRenderKey((k) => k + 1)} title="刷新渲染">
-          <Icon name="refresh" size={14} />
-        </button>
         <span className="toolbar-sep" />
         {pageCount > 0 && (
           <div className="oaw-docx-page-nav" aria-label="Word 分页导航">
-            <button className="toolbar-btn" onClick={() => jumpToPage(currentPage - 1)} disabled={currentPage <= 1} title="上一页">‹</button>
+            <button className="toolbar-btn" onClick={() => jumpToPage(currentPage - 1)} disabled={currentPage <= 1} title="上一页" aria-label="上一页"><Icon name="chevronLeft" size={14} /></button>
             <select className="edit-select page-select" value={currentPage} onChange={(e) => jumpToPage(e.target.value)} title="跳转到页码">
               {Array.from({ length: pageCount }, (_, i) => <option key={i + 1} value={i + 1}>第 {i + 1} 页</option>)}
             </select>
-            <button className="toolbar-btn" onClick={() => jumpToPage(currentPage + 1)} disabled={currentPage >= pageCount} title="下一页">›</button>
+            <button className="toolbar-btn" onClick={() => jumpToPage(currentPage + 1)} disabled={currentPage >= pageCount} title="下一页" aria-label="下一页"><Icon name="chevronRight" size={14} /></button>
           </div>
         )}
         <span className="toolbar-sep" />
@@ -668,7 +722,54 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
             </button>
           </>
         )}
-        <span className="oaw-docx-hint" title="预览页由浏览器按 A4 排版计算，不保证与 Word 原始页码一致">{mode === "edit" ? "编辑模式" : "预览模式"}{pageCount ? ` · 共 ${pageCount} 个预览页` : ""}{imageNotice ? ` · ${imageNotice}` : ""}</span>
+        {/* 更多：渲染方式、刷新与预览说明（主工具栏保持单行清爽） */}
+        <div className="docx-more-wrap" ref={moreRef}>
+          <button
+            className={`toolbar-btn ${moreOpen ? "active" : ""}`}
+            onClick={() => setMoreOpen((value) => !value)}
+            aria-haspopup="menu"
+            aria-expanded={moreOpen}
+            aria-label="更多预览选项"
+            title="更多：渲染方式、刷新与预览说明"
+          >
+            <Icon name="more" size={14} />
+          </button>
+          {moreOpen && (
+            <div className="docx-more-menu" role="menu" aria-label="更多预览选项">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMoreOpen(false);
+                  if (renderMode === "native" && mode === "edit") exitEditMode();
+                  setError("");
+                  if (renderMode === "native") { setLoading(true); onPreviewState?.(PREVIEW_STATE.LOADING); }
+                  setRenderMode(renderMode === "office" ? "native" : "office");
+                }}
+                title={renderMode === "office" ? "切回浏览器渲染（可编辑）" : "OfficeCLI 高保真只读渲染：适合复杂版式，渲染失败时自动提示"}
+              >
+                <Icon name={renderMode === "office" ? "eye" : "globe"} size={13} />
+                <span>{renderMode === "office" ? "切回浏览器渲染（可编辑）" : "OfficeCLI 高保真预览"}</span>
+                {renderMode === "office" && <em className="docx-more-state">当前：高保真</em>}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { setMoreOpen(false); setRenderKey((k) => k + 1); }}
+                title="重新渲染当前文档"
+              >
+                <Icon name="refresh" size={13} /><span>刷新渲染</span>
+              </button>
+              <p className="docx-more-note">
+                {mode === "edit" ? "编辑模式" : "预览模式"}
+                {pageCount ? ` · 共 ${pageCount} 个预览页` : ""}
+                {imageNotice ? ` · ${imageNotice}` : ""}
+                <br />
+                预览页由浏览器按 A4 排版计算，不保证与 Word 原始页码一致。
+              </p>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* 第二行：编辑工具栏（仅编辑模式显示） */}

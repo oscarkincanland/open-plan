@@ -261,11 +261,33 @@ await test("边界：预览解析仍拒绝越界绝对路径（未放开任意�
 
 console.log("\n▶ 样式与交付完整性");
 
-await test("共享预览状态徽标有样式", () => {
+await test("共享预览状态圆点有样式（徽标已由圆点取代）", () => {
   const styles = read("client/src/styles.css");
-  assert.match(styles, /\.badge\.preview-state-ready/);
-  assert.match(styles, /\.badge\.preview-state-failed/);
-  assert.match(styles, /\.badge\.preview-state-partial/);
+  assert.match(styles, /\.preview-state-dot\.preview-state-ready/);
+  assert.match(styles, /\.preview-state-dot\.preview-state-failed/);
+  // 「部分可用」必须用语义令牌 --warning 示警；:root 没有 --warn，旧写法永远落 fallback
+  assert.match(styles, /\.preview-state-dot\.preview-state-partial \{ background: var\(--warning\)/);
+  // 死样式：标题行已改圆点，.badge.preview-state-* 不应再存在
+  assert.doesNotMatch(styles, /\.badge\.preview-state-ready/);
+});
+
+await test("预览头部收敛：状态圆点 + ⓘ，不再有「专用预览工具栏」", () => {
+  const docViewer = read("client/src/components/DocViewer.jsx");
+  const docxViewer = read("client/src/components/DocxViewer.jsx");
+  const styles = read("client/src/styles.css");
+  // 标题行只留文件名 + 状态圆点 + ⓘ；同义徽标（已就绪 / Word·浏览器排版 / 专用预览工具栏）收进信息浮层
+  assert.doesNotMatch(docViewer, /专用预览工具栏/, "标题行不应再出现「专用预览工具栏」徽标");
+  assert.match(docViewer, /preview-state-dot/, "预览状态应改为圆点");
+  assert.match(docViewer, /doc-info-btn/, "应提供文档信息入口");
+  assert.match(docViewer, /doc-info-pop/, "应提供文档信息浮层");
+  // 窄画布竖排的真实布局缺陷：标题行不换行、标题省略、徽标不压缩
+  assert.match(styles, /\.docview-head \{[^}]*flex-wrap: nowrap/, "标题行应不换行");
+  assert.match(styles, /\.doc-title \{[^}]*text-overflow: ellipsis/, "标题过长应省略而不是撑开");
+  assert.match(styles, /\.docview-head \.badge \{[^}]*white-space: nowrap/, "徽标不应被压缩换行");
+  assert.match(styles, /\.preview-state-dot\.preview-state-ready/, "状态圆点要有就绪配色");
+  // Word 工具栏单行：刷新与高保真收进「更多」
+  assert.match(docxViewer, /docx-more-menu/, "Word 工具栏应有更多菜单");
+  assert.doesNotMatch(docxViewer, /className="oaw-docx-hint"/, "常驻提示文案应移入更多菜单");
 });
 
 await test("禁改文件未被本工作包改动（基线可读）", () => {

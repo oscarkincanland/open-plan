@@ -63,14 +63,22 @@ export function isOfficeSharingViolation(result) {
 
 const MUTATING_COMMANDS = new Set(["set", "batch", "add", "remove", "move", "swap", "delete", "create", "import", "save"]);
 
+/** 中断错误：与超时/启动失败区分开，上层可据此不重试（计划 2026-11-03-001 P0-4）。 */
+function officeCliAbortError(command) {
+  return createOfficeCliError(`Office CLI 命令已被中断：${command.join(" ")}`, "OFFICECLI_ABORTED", { args: command });
+}
+
 /**
  * Run an officecli command inside the workspace directory.
  * Returns { code, stdout, stderr, json } — `json` is parsed when --json was used
  * or when output starts with {/[.
+ * `signal` 是 Run 级中断信号：CLI 子进程收到 abort 即 SIGTERM；原生路径（纯 JS）
+ * 无法杀进程，但用 Promise.race 让工具调用立刻返回 OFFICECLI_ABORTED。
  */
-export function runOfficecli(args, { cwd = WORKSPACE_DIR, timeoutMs = 120000, executable = OFFICECLI } = {}) {
+export function runOfficecli(args, { cwd = WORKSPACE_DIR, timeoutMs = 120000, executable = OFFICECLI, signal } = {}) {
   const command = Array.isArray(args) ? args.map(String) : [];
-  const viaCli = () => runOfficecliOnce(command, { cwd, timeoutMs, executable }).then(async (result) => {
+  if (signal?.aborted) return Promise.reject(officeCliAbortError(command));
+  const viaCli = () => runOfficecliOnce(command, { cwd, timeoutMs, executable, signal }).then(async (result) => {
     // 文件被 WPS/Word/Excel 打开时写入会失败：自动 close 释放句柄后重试一次，
     // 仍失败则标记 lockBlocked，由上层提示用户关闭文档（而不是让模型反复重试）。
     const file = MUTATING_COMMANDS.has(command[0]?.toLowerCase()) ? command[1] : "";
@@ -85,13 +93,22 @@ export function runOfficecli(args, { cwd = WORKSPACE_DIR, timeoutMs = 120000, ex
   // P1-A/P1-B/P2-C：原生文档引擎优先（create 全格式 / view text|outline|stats /
   // docx 全文查找替换），命中即免启动二进制、不占 officeLimiter；
   // 未命中或原生异常都回退 officecli，保证不因原生路径失败而中断（§5.5 降级策略）。
-  return runNativeOfficeCommand(command, { cwd })
+  // abort 时 race 先落 OFFICECLI_ABORTED；随后的 viaCli 里 runOfficecliOnce
+  // 看到 signal 已 aborted 会立即拒绝，不会真的再启动子进程。
+  return Promise.race([
+    runNativeOfficeCommand(command, { cwd }),
+    signal ? new Promise((_, reject) => signal.addEventListener("abort", () => reject(officeCliAbortError(command)), { once: true })) : null,
+  ].filter(Boolean))
     .catch(() => null)
     .then((native) => native || viaCli());
 }
 
-function runOfficecliOnce(command, { cwd = WORKSPACE_DIR, timeoutMs = 120000, executable = OFFICECLI } = {}) {
+function runOfficecliOnce(command, { cwd = WORKSPACE_DIR, timeoutMs = 120000, executable = OFFICECLI, signal } = {}) {
   return officeLimiter.run(() => new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(officeCliAbortError(command));
+      return;
+    }
     let child;
     try {
       child = spawn(executable, command, { cwd, windowsHide: true, env: officecliEnv() });
@@ -103,27 +120,40 @@ function runOfficecliOnce(command, { cwd = WORKSPACE_DIR, timeoutMs = 120000, ex
     let err = "";
     let settled = false;
     let timedOut = false;
+    let onAbort = null;
+    if (signal) {
+      onAbort = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { child.kill("SIGTERM"); } catch {}
+        reject(officeCliAbortError(command));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+    const settle = (fn) => (value) => {
+      clearTimeout(timer);
+      if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+      if (settled) return;
+      settled = true;
+      fn(value);
+    };
     const timer = setTimeout(() => {
       timedOut = true;
       try { child.kill(); } catch {}
       if (!settled) {
         settled = true;
+        if (signal && onAbort) signal.removeEventListener("abort", onAbort);
         reject(createOfficeCliError(`Office CLI 超时（${timeoutMs}ms）：${command.join(" ")}`, "OFFICECLI_TIMEOUT", { executable, cwd, args: command, timeoutMs }));
       }
     }, timeoutMs);
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
     child.on("error", (e) => {
-      clearTimeout(timer);
-      if (settled) return;
-      settled = true;
       const detail = e?.code === "ENOENT" ? `officecli not found: ${e.message}` : e.message;
-      reject(createOfficeCliError(`Office CLI 启动失败（${executable}）：${detail}`, "OFFICECLI_START_FAILED", { executable, cwd, args: command }));
+      settle(reject)(createOfficeCliError(`Office CLI 启动失败（${executable}）：${detail}`, "OFFICECLI_START_FAILED", { executable, cwd, args: command }));
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
-      if (settled) return;
-      settled = true;
       let json = null;
       const text = out.trim();
       if (text && (text.startsWith("{") || text.startsWith("["))) {
@@ -133,7 +163,7 @@ function runOfficecliOnce(command, { cwd = WORKSPACE_DIR, timeoutMs = 120000, ex
           json = null;
         }
       }
-      resolve({ code, stdout: out, stderr: err, text, json, command, executable, cwd, timedOut });
+      settle(resolve)({ code, stdout: out, stderr: err, text, json, command, executable, cwd, timedOut });
     });
   }), { cwd, args: Array.isArray(command) ? command.slice(0, 8) : [] });
 }

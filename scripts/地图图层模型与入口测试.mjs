@@ -248,13 +248,16 @@ test("组头复选框仍是展开/折叠语义，未被改成显隐（保护既�
   assert.match(layerPanelSrc, /__temp__/, "临时层折叠状态应有独立 key");
 });
 
-test("临时层只展示不可写（不提供删除/保存操作）", () => {
+test("临时层可显隐/移除/转正，但仍不走正式层编辑路径", () => {
   const start = layerPanelSrc.indexOf("lp-group-temp");
   assert.ok(start > 0, "应存在临时层分组");
-  const body = layerPanelSrc.slice(start, start + 1400);
-  assert.doesNotMatch(body, /onDeleteLayer/, "临时层不应出现删除操作");
+  const body = layerPanelSrc.slice(start, start + 4000);
+  assert.doesNotMatch(body, /onDeleteLayer/, "临时层不应复用正式层删除");
   assert.doesNotMatch(body, /onRenameLayer/, "临时层不应出现重命名操作");
   assert.match(body, /未保存/, "应标明未保存");
+  assert.match(body, /onToggleTempLayer/, "临时层应可显隐");
+  assert.match(body, /onClearTempLayer/, "临时层应可单条移除");
+  assert.match(body, /onSaveTempLayer/, "可转正的临时层应提供保存入口");
 });
 
 test("样式已定义归属分组（CSS 预算内）", () => {

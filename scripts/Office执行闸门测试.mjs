@@ -57,16 +57,32 @@ test("node -e 只读检查 → 放行", () => {
   assert.equal(call("bash", { command: "node -e \"const fs=require('fs');console.log(fs.readFileSync('a.docx'))\"" }).blocked, false);
 });
 
-console.log("\n▶ officecli 拦截（7 例）");
+console.log("\n▶ officecli 拦截（9 例）");
 test("view → 放行", () => assert.equal(call("officecli", { args: "view a.docx text" }).blocked, false));
 test("get → 放行", () => assert.equal(call("officecli", { args: "get a.docx /body --depth 2 --json" }).blocked, false));
 test("create 在管线前 → 拦截", () => assert.equal(call("officecli", { args: "create a.docx --type docx" }).blocked, true));
 test("set 在管线前 → 拦截", () => assert.equal(call("officecli", { args: "set a.docx /body/p[1] --prop bold=true" }).blocked, true));
 test("add markdown → 始终拦截", () => assert.equal(call("officecli", { args: "add a.docx / --type markdown --prop src=a.md" }, { pipelineProduced: true }).blocked, true));
 test("管线产出后 set → 放行", () => assert.equal(call("officecli", { args: "set a.docx /body/p[1] --prop bold=true" }, { pipelineProduced: true }).blocked, false));
-test("save/close 放行", () => {
-  assert.equal(call("officecli", { args: "save a.docx" }).blocked, false);
-  assert.equal(call("officecli", { args: "close a.docx" }).blocked, false);
+test("save/close 按写处理，管线前拦截", () => {
+  assert.equal(call("officecli", { args: "save a.docx" }).blocked, true);
+  assert.equal(call("officecli", { args: "close a.docx" }).blocked, true);
+});
+test("read 路由写命令 → 拒绝 OFFICE_READONLY_ONLY", () => {
+  const r = call("officecli", { args: "set a.docx /body/p[1] --prop bold=true" }, { route: "read", officeFormat: false });
+  assert.equal(r.blocked, true);
+  assert.equal(r.code, "OFFICE_READONLY_ONLY");
+});
+test("未知命令按写处理 → 拦截", () => {
+  assert.equal(call("officecli", { args: "merge a.docx b.docx" }).blocked, true);
+});
+
+console.log("\n▶ 复制/打包不算生成（2 例）");
+test("cp docx 不再被当作生成 docx", () => {
+  assert.equal(isDocxGenerationCommand("cp 报告.docx 副本.docx"), false);
+});
+test("mv docx 不再被当作生成 docx", () => {
+  assert.equal(isDocxGenerationCommand("mv 旧.docx 新.docx"), false);
 });
 
 console.log("\n▶ write/edit 与澄清前置（7 例）");
@@ -126,7 +142,11 @@ test("ask_user 解除澄清闸门", () => {
 });
 
 console.log("\n▶ 并发锁与草稿预览接线（4 例）");
-test("bash 只读命令不占写锁", () => assert.ok(AGENT_SOURCE.includes("if (isReadonlyBash(effectiveCommand)) return runBash();")));
+test("bash 只读命令不占写锁", () => {
+  assert.ok(AGENT_SOURCE.includes("const readonlyBash = isReadonlyBash(effectiveCommand);"));
+  assert.match(AGENT_SOURCE, /const operationPromise = readonlyBash\s*\? runBash\(\)\s*: withBashWriteLocks/);
+  assert.match(AGENT_SOURCE, /bashWritePlan\(command, \{ cwd: cwd \|\| ctx\.workspace, workspace: ctx\.workspace \}\)/);
+});
 test("officecli 按目标文件加锁", () => assert.ok(AGENT_SOURCE.includes("targetPath: parsed.path || ctx.workspace")));
 test("pipeline 按交付文件加锁", () => assert.ok(AGENT_SOURCE.includes("targetPath: lockTarget")));
 test("ask_user 支持 previewFile", () => {

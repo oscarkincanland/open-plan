@@ -1,5 +1,6 @@
 import { useState } from "react";
 import Icon from "./Icon.jsx";
+import 文件类型图标 from "./文件类型图标.jsx";
 
 // v0.13.9 画布「文件树」页签：工作区文件的快速导航视图。
 // 三段过滤（全部 / 代码 / 网页）覆盖 AVA 的代码、网页页签语义——
@@ -48,7 +49,7 @@ export default function 文件树页签({ files = [], loading = false, currentNa
                 onClick={() => onOpenFile?.(file.name)}
                 title={file.name}
               >
-                <Icon name={CODE_EXT.test(file.name) ? "code" : WEB_EXT.test(file.name) ? "globe" : "file"} size={13} />
+                <文件类型图标 file={file} size={16} />
                 <span className="canvas-filetree-name">{file.name}</span>
               </button>
             </li>

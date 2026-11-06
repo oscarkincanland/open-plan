@@ -34,6 +34,121 @@ const SNAPSHOT_SKIP_DIRS = new Set([
   "__pycache__", ".venv", "venv", ".git", ".oaw", ".cache", ".pytest_cache", "dist-info",
   ".turbo", ".parcel-cache", ".mypy_cache", ".ruff_cache",
 ]);
+// Run 归属标记：记录创建该 Run 的进程实例。
+// 背景：本机可以同时跑主服务（3002）与验证/测试实例（3199 等），它们共享同一个
+// .oaw/runs。恢复逻辑在没有归属信息时会把"别的实例正在跑的活动 Run"也标记成
+// recovering（实测压力测试中 3 个全新 Run 都带上了 run_recovered 事件）。
+// 记录 owner 后，恢复阶段可以跳过 owner 实例仍存活的 Run，只处理真正中断的 Run。
+const INSTANCE_DIR = process.env.OAW_INSTANCE_DIR || path.join(PROJECT_DIR, ".oaw", "instances");
+const OWNER_HEARTBEAT_INTERVAL_MS = Math.max(1000, Number(process.env.OAW_INSTANCE_HEARTBEAT_MS) || 5000);
+const OWNER_HEARTBEAT_STALE_MS = Math.max(15000, Number(process.env.OAW_INSTANCE_HEARTBEAT_STALE_MS) || 45000);
+const RUN_OWNER = { pid: process.pid, instanceId: crypto.randomUUID(), startedAt: new Date().toISOString() };
+
+function processAlive(pid) {
+  const value = Number(pid);
+  if (!Number.isInteger(value) || value <= 0) return false;
+  if (value === process.pid) return true;
+  try {
+    process.kill(value, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function ownerHeartbeatFile(instanceId) {
+  return path.join(INSTANCE_DIR, `${String(instanceId || "").replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
+}
+
+/**
+ * 写入某个服务实例的存活记录（心跳）。
+ *
+ * 用途：判断 Run 的 owner 是否"仍是一个在跑的服务实例"。单看 PID 不可靠——
+ * Windows 会复用 PID，崩溃后 PID 被别的进程占用会让真正中断的 Run 永远不被恢复；
+ * 单看心跳也不可靠——心跳文件可能是崩溃前留下的旧记录。因此存活判定要求两者同时成立。
+ */
+export function writeInstanceHeartbeat(instanceId, { pid = process.pid, heartbeatAt = new Date().toISOString(), startedAt = RUN_OWNER.startedAt } = {}) {
+  try {
+    ensureDirectory(INSTANCE_DIR);
+    atomicWriteJson(ownerHeartbeatFile(instanceId), {
+      instanceId: String(instanceId || ""),
+      pid: Number(pid) || process.pid,
+      startedAt,
+      heartbeatAt,
+    });
+  } catch {}
+}
+
+/** 清理长时间不再更新的心跳文件，避免实例目录无限增长。 */
+function pruneStaleInstanceHeartbeats() {
+  try {
+    ensureDirectory(INSTANCE_DIR);
+    const cutoff = Date.now() - OWNER_HEARTBEAT_STALE_MS * 10;
+    for (const name of fs.readdirSync(INSTANCE_DIR)) {
+      if (!name.endsWith(".json")) continue;
+      const file = path.join(INSTANCE_DIR, name);
+      try {
+        if (fs.statSync(file).mtimeMs < cutoff) fs.rmSync(file, { force: true });
+      } catch {}
+    }
+  } catch {}
+}
+
+let ownerHeartbeatTimer = null;
+/**
+ * 启动本实例的心跳。由服务进程在监听成功后调用（不是由 beginRun 调用）——
+ * 只有"真正在提供服务的实例"才应该被识别为存活 owner；
+ * 测试脚本等一次性进程即使创建了 Run 也不应阻止后续恢复。
+ */
+export function startOwnerHeartbeat() {
+  if (ownerHeartbeatTimer) return;
+  writeInstanceHeartbeat(RUN_OWNER.instanceId, { pid: RUN_OWNER.pid, startedAt: RUN_OWNER.startedAt });
+  ownerHeartbeatTimer = setInterval(() => {
+    writeInstanceHeartbeat(RUN_OWNER.instanceId, { pid: RUN_OWNER.pid, startedAt: RUN_OWNER.startedAt });
+    pruneStaleInstanceHeartbeats();
+  }, OWNER_HEARTBEAT_INTERVAL_MS);
+  // 心跳不该拖住进程退出。
+  ownerHeartbeatTimer.unref?.();
+}
+
+/** 服务退出时清理本实例的心跳文件，避免留下"看起来还活着"的残留记录。 */
+export function stopOwnerHeartbeat() {
+  if (ownerHeartbeatTimer) {
+    clearInterval(ownerHeartbeatTimer);
+    ownerHeartbeatTimer = null;
+  }
+  try { fs.rmSync(ownerHeartbeatFile(RUN_OWNER.instanceId), { force: true }); } catch {}
+}
+
+function readOwnerHeartbeat(instanceId) {
+  try {
+    const file = ownerHeartbeatFile(instanceId);
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * owner 实例是否仍在运行。
+ *
+ * 判定要求两条证据同时成立：
+ *   1. 心跳文件存在且新鲜（owner 是一个正在提供服务的实例，不是脚本或已退出的进程）；
+ *   2. 心跳里的 PID 仍然存活（排除崩溃后 PID 被系统复用的可能）。
+ * 任一不成立 → 视为已中断，按原逻辑恢复。
+ */
+function ownerInstanceAlive(owner) {
+  const instanceId = String(owner?.instanceId || "");
+  if (!instanceId) return false;
+  const heartbeat = readOwnerHeartbeat(instanceId);
+  if (!heartbeat || !heartbeat.heartbeatAt) return false;
+  const age = Date.now() - Date.parse(heartbeat.heartbeatAt);
+  if (!Number.isFinite(age) || age > OWNER_HEARTBEAT_STALE_MS) return false;
+  const heartbeatPid = Number(heartbeat.pid || owner?.pid || 0);
+  if (!heartbeatPid) return false;
+  return processAlive(heartbeatPid);
+}
+
 const RECENT_SCAN_LIMIT = Math.max(200, Number(process.env.OAW_RUN_RECENT_LIMIT) || 2000);
 const RECENT_SCAN_TIME_BUDGET_MS = Math.max(500, Number(process.env.OAW_RUN_RECENT_SCAN_MS) || 4000);
 const MAX_BLOB_BYTES = 4 * 1024 * 1024;
@@ -84,6 +199,22 @@ function hasOtherActiveRun(run) {
 // 进入"取消中"但还没终结的 Run：runId → { cancelRequestedAt, lastEventAt }。
 // 中断后 SDK 若因工具卡住等原因迟迟不回来，看门狗据此强制收尾。
 const pendingCancellations = new Map();
+
+/**
+ * Run 生命周期 → 会话列表缓存失效钩子（P0-3，2026-11-03-001）。
+ *
+ * 会话列表的 runStatus 来自每个会话最新 Run，但 /api/sessions 的无参请求走
+ * 服务端 5s 缓存；Run 开始/结束/取消不失效缓存时，侧栏与项目卡的运行动画
+ * 在多任务并行下“跟不上”。runs.mjs 不能反向 import index.mjs（成环），
+ * 这里提供注入钩子，由 index.mjs 启动时注册 invalidateSessionsListCache。
+ */
+let runLifecycleInvalidator = null;
+export function setRunLifecycleInvalidator(fn) {
+  runLifecycleInvalidator = typeof fn === "function" ? fn : null;
+}
+function notifyRunLifecycleChanged() {
+  try { runLifecycleInvalidator?.(); } catch {}
+}
 const TODO_STATUS_ALIASES = Object.freeze({
   pending: "planned",
   todo: "planned",
@@ -679,6 +810,8 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
     threadId: threadId || null,
     sessionId,
     projectId: projectId || null,
+    // 归属实例：用于恢复阶段区分"本实例中断的 Run"与"其他实例正在跑的 Run"。
+    owner: { pid: RUN_OWNER.pid, instanceId: RUN_OWNER.instanceId, startedAt: new Date().toISOString() },
     // U3：分支溯源（可选字段，缺省 null 向后兼容）——该 Run 是否由某次会话树导航
     // （session-branch）继续而来；branchPointEntryId 指向 Pi 会话树的目标节点。
     branchOfRunId: branchOfRunId || null,
@@ -730,6 +863,8 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
   activeRunIndex.set(id, before.root);
   rememberTerminalRun(id, false);
   try { attachRunTimingSpans(id, { blobs: blobsMs, saveRun: saveMs, appendEvent: appendMs, beforeFiles: Object.keys(before.files || {}).length }); } catch {}
+  // Run 开始：会话列表的 runStatus 即发生变化，立即失效 /api/sessions 缓存。
+  notifyRunLifecycleChanged();
   return saved;
 }
 
@@ -835,10 +970,19 @@ export function recordRunEvent(id, type, data = {}) {
     return recordRunFinalText(id, data?.text, { source: data?.source || "agent", messageId: data?.messageId || null })?.run || null;
   }
   run.events = Array.isArray(run.events) ? run.events : [];
-  if (["write_started", "artifact_staged", "artifact_materialized"].includes(type) && data && typeof data === "object" && data.path) {
+  if (["write_started", "artifact_staged", "artifact_materialized", "artifact_conflict"].includes(type) && data && typeof data === "object") {
     run.touchedPaths = Array.isArray(run.touchedPaths) ? run.touchedPaths : [];
-    const trackedPath = normalizeTrackedPath(run, data.path);
-    if (!run.touchedPaths.includes(trackedPath)) run.touchedPaths.push(trackedPath);
+    // bash 可一次写多个目标：data.path 是主路径，data.paths 是完整写域。
+    // 冲突副本也要记入台账，否则产物面板看不到“另一份内容”。
+    const candidates = [
+      data.path,
+      data.conflictPath,
+      ...(Array.isArray(data.paths) ? data.paths : []),
+    ].filter(Boolean);
+    for (const value of candidates) {
+      const trackedPath = normalizeTrackedPath(run, value);
+      if (trackedPath && !run.touchedPaths.includes(trackedPath)) run.touchedPaths.push(trackedPath);
+    }
   }
   updateStepFromEvent(run, type, data);
   if (type === "runtime_health" && data && typeof data === "object") {
@@ -1113,6 +1257,8 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
   // 并发收尾（例如 SSE 重放、后台异常兜底、取消请求同时到达）只能落一次终态。
   // 否则第二次会重复发布/丢失产物并再次追加 run_finished，前端恢复时就会出现两条结论。
   if (isTerminalRun(run)) {
+    // 终态早退也要释放本次 Run 可能残留的锁（重复收尾/并发收尾路径）。
+    releaseRunLocks(run.id);
     rememberTerminalRun(id, true);
     activeRunIndex.delete(id);
     return run;
@@ -1334,6 +1480,8 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
   } finally {
     releaseRunLocks(run.id);
     activeRunIndex.delete(run.id);
+    // Run 落终态：会话列表 runStatus 变化，失效 /api/sessions 缓存。
+    notifyRunLifecycleChanged();
     if (isTerminalRun(run)) rememberTerminalRun(run.id, true);
   }
 }
@@ -1388,9 +1536,18 @@ export function recoverActiveRuns({ onlyIds = null } = {}) {
   reclaimStaleWriteLocks();
   const allowList = Array.isArray(onlyIds) ? new Set(onlyIds.map(String)) : null;
   const recovered = [];
+  const skipped = [];
   for (const name of fs.readdirSync(RUNS_DIR).filter((item) => item.endsWith(".json"))) {
     const run = loadRun(path.basename(name, ".json"));
     if (!run || !ACTIVE_RUN_STATUSES.has(run.status)) continue;
+    // 归属检查：owner 实例仍存活且不是本进程 → 该 Run 由另一个实例正在执行，
+    // 不能标记成 recovering（否则另一个实例的任务会被误判为"服务重启后需用户确认"）。
+    // owner.pid 等于本进程 pid 时按"上一进程恰好复用了同一 pid"处理，仍按中断恢复。
+    const ownerPid = Number(run.owner?.pid || 0);
+    if (ownerPid && ownerPid !== process.pid && ownerInstanceAlive(run.owner)) {
+      skipped.push(run.id);
+      continue;
+    }
     // 上次重启已经标记为 recovering、这次重启仍然挂着：先看客观完成证据。
     // 有终稿/agent_end → 按完成收尾；没有 → 才判失败（discard staging + 补 run_finished）。
     if (run.status === "recovering") {
@@ -1435,6 +1592,9 @@ export function recoverActiveRuns({ onlyIds = null } = {}) {
     appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_recovered", data: { status: "recovering", reason: run.recovery.reason } });
     recovered.push(run.id);
   }
+  if (skipped.length) {
+    console.warn(`[runs] 跳过 ${skipped.length} 个由其他存活实例持有的活动 Run（未标记 recovering）：${skipped.slice(0, 5).join(", ")}`);
+  }
   return recovered;
 }
 
@@ -1459,6 +1619,8 @@ export function requestRunCancellation(id, reason = "用户请求中断") {
     cancelRequestedAt: run.cancelRequestedAt || new Date().toISOString(),
     lastEventAt: lastRunEventAt(run),
   });
+  // 取消中 → 会话列表/项目卡显示「正在中断」，立即失效 /api/sessions 缓存。
+  notifyRunLifecycleChanged();
   return getRun(id);
 }
 
@@ -1569,6 +1731,7 @@ function publicRunView(run, { includeEvents = true, eventByteBudget = 0 } = {}) 
   }
   return {
     ...publicRun,
+    interruption: classifyRunInterruption(publicRun),
     actions: {
       canCancel: ["running", "queued", "waiting_user", "recovering"].includes(publicRun.status),
       canResume: ["recovering", "failed", "cancelled", "aborted"].includes(publicRun.status),
@@ -1583,21 +1746,92 @@ function publicRunView(run, { includeEvents = true, eventByteBudget = 0 } = {}) 
 
 // 任务中心列表、徽标计数只需要状态摘要：完整 Run 视图（步骤/待办/事件/引用）
 // 单条可达数十 KB，列表一次 50 条就是 1MB 级响应，而明细点击时另有单条加载。
+export function classifyRunInterruption(view = {}) {
+  const cancelReason = String(view.cancelReason || "");
+  const errorText = String(
+    typeof view.error === "string"
+      ? view.error
+      : view.error?.message || view.error?.error || "",
+  );
+  const recoveryText = String(view.recovery?.reason || "");
+  const combined = `${errorText}\n${recoveryText}`;
+  const events = Array.isArray(view.events) ? view.events : [];
+  const finalText = String(view.finalText || "").trim()
+    || [...events].reverse().find((event) => event?.type === "assistant_final" && String(event?.data?.text || "").trim())?.data?.text
+    || "";
+  const hasEvent = (type, predicate = () => true) => events.some((event) => event?.type === type && predicate(event?.data || {}));
+
+  if (/用户/.test(cancelReason)) {
+    return { kind: "user_cancel", label: "已停止生成", detail: cancelReason, action: "continue" };
+  }
+  if (/401|403|invalid\s*api\s*key|authentication|unauthori[sz]ed/i.test(combined)) {
+    return { kind: "provider_auth", label: "模型鉴权失败，请更新 API Key", detail: errorText.slice(0, 240), action: "open_settings" };
+  }
+  if (/thinking\.type\.enabled|invalid_request_error|not supported for this model/i.test(combined)) {
+    return { kind: "provider_config", label: "模型配置不兼容，本轮未执行", detail: errorText.slice(0, 240), action: "open_settings" };
+  }
+  if (/服务重启|service restart/i.test(combined)) {
+    return { kind: "service_restart", label: "服务重启导致中断，可继续", detail: recoveryText.slice(0, 240), action: "continue" };
+  }
+  if (hasEvent("run_budget_blocked", (data) => /BUDGET_HARD/.test(String(data?.code || "")))) {
+    return { kind: "budget_hard", label: "已达回合上限，进入受限收尾", detail: "继续将增加预算", action: "continue" };
+  }
+  if (/流水线.*(?:超时|超过|未完成)|子\s*Agent\s*执行超过|writer.*(?:超时|超过|未完成)/i.test(combined)) {
+    return { kind: "pipeline_timeout", label: "流水线超时，未产出终稿", detail: recoveryText.slice(0, 240), action: "retry" };
+  }
+  if (/模型连接超过|模型流式输出超过|MODEL_TIMEOUT|MODEL_STREAM_TIMEOUT/i.test(combined)) {
+    return { kind: "watchdog", label: "模型无响应，已自动中止", detail: combined.slice(0, 240), action: "retry" };
+  }
+  if (view.status === "completed" && !finalText) {
+    return { kind: "final_text_missing", label: "模型只输出了思考，没有最终答复", detail: "过程记录已保留", action: "continue" };
+  }
+  return { kind: "unknown", label: "本轮未正常结束", detail: combined.slice(0, 240), action: "retry" };
+}
+
+// 任务中心列表、徽标计数只需要状态摘要：完整 Run 视图（步骤/待办/事件/引用）
+// 单条可达数十 KB，列表一次 50 条就是 1MB 级响应，而明细点击时另有单条加载。
 export function runSummaryView(view) {
   if (!view) return null;
+  const startedAt = Date.parse(String(view.startedAt || "")) || 0;
+  const endedAt = Date.parse(String(view.finishedAt || view.updatedAt || "")) || 0;
+  const durationMs = startedAt && endedAt && endedAt >= startedAt ? endedAt - startedAt : 0;
+  const artifacts = Array.isArray(view.artifacts) ? view.artifacts : [];
   return {
     id: view.id,
     status: view.status,
     mode: view.mode || "",
     task: view.task ? { goal: view.task.goal || "", title: view.task.title || "" } : null,
     summary: view.summary || "",
+    finalText: view.finalText || "",
+    summarySource: view.completion?.summary ? "completion" : view.summary ? "run" : view.finalText ? "final" : "none",
     completion: view.completion || null,
+    interruption: classifyRunInterruption(view),
     sessionId: view.sessionId || null,
     threadId: view.threadId || null,
     projectId: view.projectId || null,
     cwd: view.cwd || "",
     startedAt: view.startedAt || null,
     finishedAt: view.finishedAt || null,
+    durationMs,
+    stepCount: Array.isArray(view.steps) ? view.steps.length : 0,
+    toolCount: Number(view.progress?.toolTotal) || 0,
+    artifactCount: artifacts.length,
+    // 历史首屏只带紧凑产物；完整 artifact 快照按需 getRun 加载。
+    artifacts: artifacts.slice(0, 50).map((item) => ({
+      path: item?.path || item?.relativePath || "",
+      relativePath: item?.relativePath || item?.path || "",
+      size: item?.after?.size ?? item?.size ?? null,
+      changeType: item?.changeType || item?.status || "",
+      status: item?.status || item?.changeType || "",
+      source: item?.source || "artifact",
+      confidence: item?.confidence || (item?.confirmed === true ? "confirmed" : "run-window"),
+      deliverable: Boolean(item?.deliverable ?? item?.autoDeliverable),
+      confirmed: item?.confirmed === true || item?.confidence === "confirmed",
+      attributed: item?.attributed !== false,
+      acceptanceStatus: item?.acceptanceStatus || null,
+      publicationStatus: item?.publicationStatus || null,
+      after: { size: item?.after?.size ?? item?.size ?? null },
+    })),
     acceptanceStatus: view.acceptanceStatus || null,
     verificationStatus: view.verificationStatus || null,
     progress: view.progress || null,

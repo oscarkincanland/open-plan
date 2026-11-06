@@ -120,10 +120,15 @@ export function registerServerStream({ path, client = "", thread = "", tab = "",
     safeClose(victim);
   }
   // 最新者胜：同类型同客户端同标签页只留最新 keep 条，超宽限期的旧流一律收掉。
+  // 对话流额外按 thread 区分：同一标签页切到另一个会话时，不能把另一个
+  // 仍在后台运行的会话流当成“旧流”收掉（2026-11-04 多会话并发修复）。
   const rule = SUPERSEDE[path];
   if (rule && client) {
     const samePath = [...streams.values()]
-      .filter((entry) => entry.path === path && entry.client === client && (entry.tab || "") === (tab || ""))
+      .filter((entry) => entry.path === path
+        && entry.client === client
+        && (entry.tab || "") === (tab || "")
+        && (path !== "/api/agent/stream" || (entry.thread || "") === (thread || "")))
       .sort((a, b) => b.openedAt - a.openedAt);
     const now = Date.now();
     for (const entry of samePath.slice(rule.keep)) {

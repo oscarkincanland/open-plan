@@ -162,7 +162,7 @@ export default function QueueDock({
                   ) : (
                     <>
                       <提示气泡 label="编辑排队消息">
-                        <button type="button" onClick={() => startEdit(item)} aria-label="编辑排队消息"><Icon name="penTool" size={11} /></button>
+                        <button type="button" onClick={() => startEdit(item)} aria-label="编辑排队消息"><Icon name="edit" size={11} /></button>
                       </提示气泡>
                       <提示气泡 label={item.status === "failed" ? "重试发送" : busy ? "中断当前回合并立即发送" : "立即发送"}>
                         <button

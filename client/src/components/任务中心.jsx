@@ -50,7 +50,7 @@ function lifecycleText(run) {
   return statusText[status] || status;
 }
 
-// 任务达成：模型 complete_task 声明（explicit）或按终态推断（inferred）。
+// 任务达成：一律按 Run 终态推断（inferred）；历史会话可能带显式声明（explicit）。
 function completionText(run) {
   const completion = run?.completion;
   if (!completion?.status) return "";
@@ -214,7 +214,7 @@ function TaskCenterInternal({ sessions = [], projects = [], currentProjectId = "
     refresh();
     // 任务状态通过 SSE 事件即时刷新；轮询只作为断线兜底，避免打开面板时
     // 每 1.5 秒重复扫描服务端的全部任务记录。
-    const timer = window.setInterval(refresh, open ? 3000 : 10000);
+    const timer = window.setInterval(refresh, open ? 3000 : 30000);
     return () => window.clearInterval(timer);
   }, [open, refresh]);
 

@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { normalizeWorkspace, isInside } from "./workspace.mjs";
 import { atomicWriteFile, atomicWriteJson, ensureDirectory, readJsonFile } from "./持久化工具.mjs";
+import { revisionOf, sameRevision, conflictCopyPath } from "./文件版本.mjs";
 
 const ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const RUNS_DIR = process.env.OAW_RUNS_DIR || path.join(ROOT, ".oaw", "runs");
@@ -26,6 +27,18 @@ function safeRunId(runId) {
 }
 
 function now() { return new Date().toISOString(); }
+
+/**
+ * 写锁等待上限（毫秒）。默认 20 秒；可用 OAW_WRITE_LOCK_TIMEOUT_MS 调整。
+ * 取值 0 表示不等待，冲突立即失败。
+ */
+function writeLockTimeoutMs() {
+  const raw = process.env.OAW_WRITE_LOCK_TIMEOUT_MS;
+  if (raw === undefined || raw === null || String(raw).trim() === "") return 20000;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return 20000;
+  return value;
+}
 
 function lockKey(target) {
   const resolved = path.resolve(target);
@@ -249,13 +262,47 @@ export function acquireWriteLock({ workspace, targetPath, runId, threadId = null
  * “文件正在被其他任务修改”）。现在工具侧改为“用完即放”，并发时的重叠通常只有秒级，
  * 这里用短退避重试把冲突变成“稍等一下”，超过上限才按原错误抛出。
  */
-export async function acquireWriteLockWithRetry(options = {}, { timeoutMs = 20000, intervalMs = 350 } = {}) {
+export async function acquireWriteLockWithRetry(options = {}, { timeoutMs = writeLockTimeoutMs(), intervalMs = 350, onWait = null } = {}) {
   const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  const startedAt = Date.now();
+  let attempts = 0;
   for (;;) {
+    attempts += 1;
     try {
-      return acquireWriteLock(options);
+      const token = acquireWriteLock(options);
+      token.waitedMs = Date.now() - startedAt;
+      token.attempts = attempts;
+      return token;
     } catch (error) {
-      if (error?.code !== "WRITE_CONFLICT" || Date.now() >= deadline) throw error;
+      if (error?.code !== "WRITE_CONFLICT") throw error;
+      const waitedMs = Date.now() - startedAt;
+      if (Date.now() >= deadline) {
+        // 超时前把等待过程写进 details：调用方（模型）据此知道是"别的任务在写"，
+        // 可以选择等待或换路径，而不是当成不可恢复的失败。
+        error.details = {
+          ...(error.details || {}),
+          retryable: true,
+          attempts,
+          waitedMs,
+          ownerRunId: error.details?.ownerRunId || null,
+          ownerThreadId: error.details?.ownerThreadId || null,
+          ownerKind: error.details?.ownerKind || null,
+          lockedAt: error.details?.lockedAt || null,
+        };
+        // 2026-11-04 并发修复：超时错误直接说清「谁占着、等了多久、怎么办」。
+        // 此前只有一句「写入范围与其他任务冲突」，模型只能盲目重试或放弃。
+        const owner = String(error.details.ownerThreadId || error.details.ownerRunId || "").slice(0, 24);
+        const seconds = Math.max(1, Math.round(waitedMs / 1000));
+        error.message = `${error.message}（已等待 ${seconds} 秒${owner ? `，占用任务 ${owner}` : ""}；` +
+          `可稍后重试，或把本次写入改到其他文件/子目录）`;
+        if (typeof onWait === "function") {
+          try { onWait({ attempts, waitedMs, error }); } catch {}
+        }
+        throw error;
+      }
+      if (typeof onWait === "function") {
+        try { onWait({ attempts, waitedMs, error }); } catch {}
+      }
       const wait = intervalMs + Math.random() * 250;
       await new Promise((resolve) => { setTimeout(resolve, wait); });
     }
@@ -354,36 +401,91 @@ export function stageWrite({ runId, workspace, targetPath, content, threadId = n
   let token;
   try {
     token = acquireWriteLock({ workspace: root, targetPath: target, runId, threadId, kind });
-    emitWriteEvent(onEvent, "write_started", data);
-    emitWriteEvent(onEvent, "write_locked", data);
-    const stagedPath = path.resolve(info.stagingDir, relative);
-    if (!isInside(info.stagingDir, stagedPath)) throw new Error("临时产物路径非法");
-    atomicWriteFile(stagedPath, content, "utf8");
-    const { manifest } = loadManifest(runId);
-    const previous = manifest.files.find((item) => item.path === relative);
-    const entry = {
-      path: relative,
-      stagedPath: path.relative(info.runDir, stagedPath).replace(/\\/g, "/"),
-      status: fs.existsSync(target) ? "modified" : "added",
-      kind,
-      runId: safeRunId(runId),
-      threadId: threadId || null,
-      stagedAt: now(),
-      writes: Number(previous?.writes || 0) + 1,
-      size: Buffer.isBuffer(content) ? content.length : Buffer.byteLength(String(content), "utf8"),
-    };
-    manifest.files = [...manifest.files.filter((item) => item.path !== relative), entry];
-    manifest.updatedAt = now();
-    saveManifest(info, manifest);
-    emitWriteEvent(onEvent, "artifact_staged", { ...data, stagedPath: entry.stagedPath, status: entry.status, size: entry.size });
-    return { ok: true, ...entry, target };
+    return stageWriteLocked({ info, data, root, target, relative, content, runId, threadId, kind, onEvent });
   } catch (error) {
     emitWriteEvent(onEvent, "write_rejected", { ...data, code: error?.code || "WRITE_FAILED", message: String(error?.message || error) });
     throw error;
   } finally {
-    // Run 结束前故意不释放锁，避免同一 Run 的临时产物和其他 Run 交错发布。
-    void token;
+    // 2026-11-04：锁只保护“写暂存”这一瞬间；发布阶段会重新取锁并做版本 CAS。
+    // 早先持有到 Run 结束会让长任务早期写过的文件挡住其他会话。
+    if (token) releaseWriteLock(token);
   }
+}
+
+/**
+ * 带退避重试的暂存写入。
+ *
+ * 背景：write/edit 工具此前直接取锁，撞上另一个任务的工作区级锁（bash/地图工具）
+ * 会在 2ms 内立刻失败（实测压力测试中 C 任务因此丢掉一次写入），
+ * 模型只能自己重试。改为先按短退避等待锁可用，等不到再按 WRITE_CONFLICT 报错，
+ * 并在错误 details 里给出 owner 与等待时长，便于模型判断"稍等"还是"换路径"。
+ *
+ * 锁语义与 stageWrite 一致：只保护写暂存；发布时重新取锁并做版本 CAS。
+ */
+export async function stageWriteWithRetry({ runId, workspace, targetPath, content, threadId = null, kind = "agent", onEvent } = {}, { timeoutMs, intervalMs = 350, onWait = null } = {}) {
+  const { root, target, relative } = validateTarget(workspace, targetPath, { allowWorkspaceRoot: false });
+  if (!relative) throw new Error("不能把工作区根目录作为文件写入目标");
+  if (isProtectedMemoryTarget(root, target) && !["attachment", "memory_approval"].includes(kind)) {
+    const error = new Error("长期记忆必须通过 memory_update 建议并经用户审核，不能使用普通文件写入工具");
+    error.code = "MEMORY_WRITE_REQUIRES_PROPOSAL";
+    throw error;
+  }
+  const info = stageInfo(runId);
+  const data = eventData({ runId: safeRunId(runId), workspace: root, target, relative, kind, threadId });
+  let token;
+  try {
+    token = await acquireWriteLockWithRetry({ workspace: root, targetPath: target, runId, threadId, kind }, { timeoutMs, intervalMs, onWait });
+    return stageWriteLocked({ info, data, root, target, relative, content, runId, threadId, kind, onEvent });
+  } catch (error) {
+    emitWriteEvent(onEvent, "write_rejected", {
+      ...data,
+      code: error?.code || "WRITE_FAILED",
+      message: String(error?.message || error),
+      ...(error?.details || {}),
+    });
+    throw error;
+  } finally {
+    if (token) releaseWriteLock(token);
+  }
+}
+
+/** 已持有写锁时的暂存写入主体。 */
+function stageWriteLocked({ info, data, root, target, relative, content, runId, threadId, kind, onEvent }) {
+  emitWriteEvent(onEvent, "write_started", data);
+  emitWriteEvent(onEvent, "write_locked", data);
+  const stagedPath = path.resolve(info.stagingDir, relative);
+  if (!isInside(info.stagingDir, stagedPath)) throw new Error("临时产物路径非法");
+  atomicWriteFile(stagedPath, content, "utf8");
+  const { manifest } = loadManifest(runId);
+  const previous = manifest.files.find((item) => item.path === relative);
+  // 首次暂存时记录目标文件的版本指纹；同一 Run 再次写同一文件时保留最初基线，
+  // 这样发布阶段能发现“本轮开始后别处改过这个文件”。
+  const keepBase = previous && Object.prototype.hasOwnProperty.call(previous, "baseRevision");
+  const baseRevision = keepBase ? previous.baseRevision : revisionOf(target);
+  const baseExisted = keepBase
+    ? Boolean(previous.baseExisted)
+    : fs.existsSync(target);
+  const entry = {
+    path: relative,
+    stagedPath: path.relative(info.runDir, stagedPath).replace(/\\/g, "/"),
+    status: baseExisted ? "modified" : "added",
+    kind,
+    runId: safeRunId(runId),
+    threadId: threadId || null,
+    stagedAt: now(),
+    writes: Number(previous?.writes || 0) + 1,
+    size: Buffer.isBuffer(content) ? content.length : Buffer.byteLength(String(content), "utf8"),
+    baseRevision,
+    baseExisted,
+  };
+  manifest.files = [...manifest.files.filter((item) => item.path !== relative), entry];
+  manifest.updatedAt = now();
+  // 写过的 Run 重新回到 open，避免“发布过又继续写”时 manifest 状态自相矛盾。
+  manifest.status = "open";
+  delete manifest.publishedAt;
+  saveManifest(info, manifest);
+  emitWriteEvent(onEvent, "artifact_staged", { ...data, stagedPath: entry.stagedPath, status: entry.status, size: entry.size });
+  return { ok: true, ...entry, target };
 }
 
 function stagedPathFor(runId, workspace, targetPath) {
@@ -447,7 +549,7 @@ export function listStagedFilesForValidation(runId) {
  * （第二轮 `.ch6work/b4.json` 就是这样）。
  * 只物化被显式引用、且磁盘上没有更新版本的文件；返回被物化的相对路径。
  */
-export function materializeStagedReferences({ runId, workspace, paths = [] } = {}) {
+export function materializeStagedReferences({ runId, workspace, paths = [], onEvent } = {}) {
   if (!runId || !Array.isArray(paths) || !paths.length) return [];
   let loaded;
   try { loaded = loadManifest(runId); } catch { return []; }
@@ -464,16 +566,40 @@ export function materializeStagedReferences({ runId, workspace, paths = [] } = {
     if (!isInside(info.stagingDir, stagedPath) || !fs.existsSync(stagedPath)) continue;
     let target;
     try { target = validateTarget(workspace, path.resolve(workspace, rel), { allowWorkspaceRoot: false }).target; } catch { continue; }
+    let token = null;
     try {
+      // 物化也要取短锁：检查版本与 copy 之间不能再被别的 Run 插入。
+      token = acquireWriteLock({ workspace, targetPath: target, runId, threadId: entry.threadId || null, kind: "materialize" });
+      const currentRevision = revisionOf(target);
+      const hasBase = Object.prototype.hasOwnProperty.call(entry, "baseRevision");
+      if (hasBase && !sameRevision(currentRevision, entry.baseRevision)) {
+        // 目标在本轮暂存后已被其他会话改过：不能把旧暂存内容盖回去。
+        emitWriteEvent(onEvent, "artifact_materialize_skipped", {
+          runId: safeRunId(runId),
+          path: rel,
+          reason: "target_changed_since_stage",
+        });
+        continue;
+      }
       const stagedStat = fs.statSync(stagedPath);
       const diskStat = fs.existsSync(target) ? fs.statSync(target) : null;
-      // 磁盘上已有更新（或同样新）的版本就不覆盖：那种情况是 Agent 直接写盘的结果。
-      if (diskStat && diskStat.mtimeMs >= stagedStat.mtimeMs) continue;
+      // 旧 manifest 没有 baseRevision 时保留原有 mtime 兜底。
+      if (!hasBase && diskStat && diskStat.mtimeMs >= stagedStat.mtimeMs) continue;
       ensureDirectory(path.dirname(target));
       fs.copyFileSync(stagedPath, target);
       entry.materializedAt = new Date().toISOString();
       materialized.push(rel);
-    } catch {}
+    } catch (error) {
+      if (error?.code === "WRITE_CONFLICT") {
+        emitWriteEvent(onEvent, "artifact_materialize_skipped", {
+          runId: safeRunId(runId),
+          path: rel,
+          reason: "write_conflict",
+        });
+      }
+    } finally {
+      if (token) releaseWriteLock(token);
+    }
   }
   if (materialized.length) {
     try { saveManifest(info, manifest); } catch {}
@@ -558,10 +684,42 @@ export function publishStagedRun(runId, workspace, { onEvent, threadId = null, p
   });
   const fileLocks = [];
   const backups = [];
+  const createdConflicts = [];
+  const published = [];
   const backupDir = path.join(info.runDir, "发布备份");
   try {
-    for (const entry of checked) {
+    // 按目标路径排序取锁，避免两个 Run 交叉发布时互相等待。
+    const lockOrder = [...checked].sort((left, right) => left.target.localeCompare(right.target));
+    for (const entry of lockOrder) {
       fileLocks.push(acquireWriteLock({ workspace: root, targetPath: entry.target, runId, threadId, kind: "artifact_publish" }));
+    }
+    for (const entry of checked) {
+      const content = fs.readFileSync(entry.stagedPath);
+      const currentRevision = revisionOf(entry.target);
+      const hasBase = Object.prototype.hasOwnProperty.call(entry, "baseRevision");
+      const untouched = !hasBase || sameRevision(currentRevision, entry.baseRevision);
+      if (!untouched) {
+        // 本轮暂存后目标被其他会话/外部程序改过：不覆盖，保留为冲突副本。
+        const copyTarget = conflictCopyPath(entry.target, runId);
+        ensureDirectory(path.dirname(copyTarget));
+        const materialized = materializeStagedFile(copyTarget, content, false);
+        const conflictPath = path.relative(root, copyTarget).replace(/\\/g, "/");
+        createdConflicts.push(copyTarget);
+        entry.status = "conflict";
+        entry.conflictPath = conflictPath;
+        entry.publishedAt = now();
+        published.push(entry);
+        emitWriteEvent(onEvent, "artifact_conflict", {
+          runId: safeRunId(runId),
+          path: entry.path,
+          conflictPath,
+          kind: entry.kind,
+          size: content.length,
+          fallback: materialized.fallback || undefined,
+          reason: "target_changed_since_stage",
+        });
+        continue;
+      }
       const backupPath = path.resolve(backupDir, entry.path);
       if (!isInside(backupDir, backupPath)) throw new Error(`发布备份路径非法：${entry.path}`);
       const existed = fs.existsSync(entry.target);
@@ -570,9 +728,10 @@ export function publishStagedRun(runId, workspace, { onEvent, threadId = null, p
         fs.copyFileSync(entry.target, backupPath);
       }
       backups.push({ target: entry.target, backupPath, existed });
-      const content = fs.readFileSync(entry.stagedPath);
       const materialized = materializeStagedFile(entry.target, content, existed);
+      entry.status = "published";
       entry.publishedAt = now();
+      published.push(entry);
       emitWriteEvent(onEvent, "artifact_materialized", { runId: safeRunId(runId), path: entry.path, kind: entry.kind, size: content.length, fallback: materialized.fallback || undefined });
     }
   } catch (error) {
@@ -582,12 +741,21 @@ export function publishStagedRun(runId, workspace, { onEvent, threadId = null, p
         else fs.rmSync(backup.target, { force: true });
       } catch {}
     }
+    for (const conflict of createdConflicts) {
+      try { fs.rmSync(conflict, { force: true }); } catch {}
+    }
     throw error;
   } finally {
     for (const lock of fileLocks.reverse()) releaseWriteLock(lock);
     try { fs.rmSync(backupDir, { recursive: true, force: true }); } catch {}
   }
-  const next = { ...manifest, files: checked.map(({ target: _target, stagedPath: _stagedPath, ...entry }) => ({ ...entry, status: "published" })), status: "published", publishedAt: now(), updatedAt: now() };
+  const next = {
+    ...manifest,
+    files: published.map(({ target: _target, stagedPath: _stagedPath, ...entry }) => ({ ...entry })),
+    status: "published",
+    publishedAt: now(),
+    updatedAt: now(),
+  };
   saveManifest(info, next);
   return next.files;
 }

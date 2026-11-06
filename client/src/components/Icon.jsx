@@ -1,143 +1,217 @@
 import React from "react";
 import 品牌图形 from "./供应商品牌图形.js";
+import {
+  IconAlertTriangle,
+  IconArrowBackUp,
+  IconArrowLeft,
+  IconArrowRight,
+  IconArrowsSplit2,
+  IconAt,
+  IconBook,
+  IconBookmark,
+  IconBrain,
+  IconBus,
+  IconChartBar,
+  IconChartHistogram,
+  IconCheck,
+  IconChevronDown,
+  IconChevronLeft,
+  IconChevronRight,
+  IconCloud,
+  IconCode,
+  IconCopy,
+  IconDots,
+  IconDownload,
+  IconExternalLink,
+  IconEye,
+  IconEyeOff,
+  IconFile,
+  IconFileTypeHtml,
+  IconFileTypePdf,
+  IconFileTypePpt,
+  IconFileTypeTxt,
+  IconFileTypeXls,
+  IconFilter,
+  IconFolder,
+  IconFolderOpen,
+  IconHistory,
+  IconInfoCircle,
+  IconLayoutColumns,
+  IconLayoutGrid,
+  IconLink,
+  IconList,
+  IconLoader2,
+  IconLock,
+  IconMap2,
+  IconMapPin,
+  IconMarkdown,
+  IconMaximize,
+  IconMenu2,
+  IconMessage,
+  IconMessagePlus,
+  IconMinimize,
+  IconMinus,
+  IconMoon,
+  IconMusic,
+  IconPackage,
+  IconPencil,
+  IconPhoto,
+  IconPin,
+  IconPlayerPlay,
+  IconPlayerStop,
+  IconPlug,
+  IconPlus,
+  IconPointer,
+  IconRefresh,
+  IconRoad,
+  IconRobot,
+  IconRoute,
+  IconSearch,
+  IconSend,
+  IconSettings,
+  IconShield,
+  IconShieldCheck,
+  IconSparkles,
+  IconStack2,
+  IconStar,
+  IconSun,
+  IconTerminal2,
+  IconTextWrap,
+  IconTool,
+  IconTrash,
+  IconUpload,
+  IconUser,
+  IconWorld,
+  IconX,
+} from "@tabler/icons-react";
 
 /**
- * 统一图标库（线性 SVG，stroke 风格，统一粗细/尺寸）
+ * 统一图标库（Tabler Icons，stroke 风格）。
  * 用法: <Icon name="file" size={14} />
+ *
+ * 2026-11-04：业务图标从手绘 SVG 迁移到 @tabler/icons-react；
+ * Logo（Policy）与 ProviderIcon（供应商品牌）保持独立，不走 Tabler。
+ * 映射目标保持唯一：同一语义不重复占用两个 Tabler 字形。
  */
-const PATHS = {
+const ICONS = {
   // 文件类型
-  xls: (<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /><path d="M8 13h2l3 3 3-3h2" /><path d="M8 17h8" /></>),
-  ppt: (<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /><path d="M12 18v-6" /><path d="M8 14h8v2a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2z" /></>),
-  md: (<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /><path d="M8 15v-5l2 2 2-2v5" /><path d="M8 18h8" /></>),
-  html: (<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /><path d="M10 12l-2 2 2 2" /><path d="M14 12l2 2-2 2" /></>),
-  txt: (<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /><path d="M8 13h8" /><path d="M8 17h5" /></>),
-  // v0.13.8：音视频附件类型图标（Play 三角取自 Lucide play，音波为自绘，均按需内联）
-  play: (<polygon points="6 3 20 12 6 21 6 3" />),
-  audio: (<><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></>),
-  // v0.13.10：双面板开关（两栏矩形）
-  columns: (<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M12 4v16" /></>),
-  pdf: (<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /><path d="M9 18l2-7h2l2 7" /><path d="M9 15h4" /></>),
-  folder: (<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />),
-  file: (<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></>),
-
-  // 地图/GIS
-  map: (<><path d="M1 6v16l7-3 8 3 7-3V3l-7 3-8-3z" /><path d="M8 3v16" /><path d="M16 6v16" /></>),
-  layers: (<><polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" /><polyline points="2 12 12 17 22 12" /></>),
-  chart: (<><path d="M4 19V5" /><path d="M4 19h17" /><path d="M8 16v-5" /><path d="M12 16V7" /><path d="M16 16v-3" /><path d="M20 16V4" /></>),
-  flow: (<><circle cx="5" cy="6" r="2" /><circle cx="19" cy="18" r="2" /><path d="M7 6h5a4 4 0 0 1 4 4v6" /><path d="M16 16l2 2-2 2" /></>),
-  sankey: (<><path d="M4 5h5v14H4z" /><path d="M15 7h5v10h-5z" /><path d="M9 9h6" /><path d="M9 15h6" /></>),
-  road: (<><path d="M8 3 5 21" /><path d="M16 3l3 18" /><path d="M10 6h4" /><path d="M9 12h6" /><path d="M8 18h8" /></>),
-  route: (<><circle cx="6" cy="19" r="2" /><circle cx="18" cy="5" r="2" /><path d="M8 19h4a4 4 0 0 0 4-4V9a4 4 0 0 1 4-4" /></>),
-
+  xls: IconFileTypeXls,
+  ppt: IconFileTypePpt,
+  md: IconMarkdown,
+  html: IconFileTypeHtml,
+  txt: IconFileTypeTxt,
+  pdf: IconFileTypePdf,
+  file: IconFile,
+  folder: IconFolder,
+  folderOpen: IconFolderOpen,
+  // 媒体/布局/地图
+  play: IconPlayerPlay,
+  audio: IconMusic,
+  columns: IconLayoutColumns,
+  map: IconMap2,
+  layers: IconStack2,
+  chart: IconChartBar,
+  flow: IconArrowsSplit2,
+  sankey: IconChartHistogram,
+  road: IconRoad,
+  route: IconRoute,
+  locate: IconMapPin,
+  bus: IconBus,
   // 界面操作
-  search: (<><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></>),
-  refresh: (<><path d="M23 4v6h-6" /><path d="M1 20v-6h6" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" /><path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14" /></>),
-  close: (<><path d="M18 6L6 18" /><path d="M6 6l12 12" /></>),
-  plus: (<><path d="M12 5v14" /><path d="M5 12h14" /></>),
-  minus: (<path d="M5 12h14" />),
-  chevronDown: (<path d="M6 9l6 6 6-6" />),
-  chevronRight: (<path d="M9 18l6-6-6-6" />),
-  chevronLeft: (<path d="M15 18l-6-6 6-6" />),
-  arrowRight: (<><path d="M5 12h14" /><path d="m13 6 6 6-6 6" /></>),
-  cursor: (<><path d="m5 3 14 9-6 2-3 6z" /><path d="m13 14 4 5" /></>),
-  lock: (<><rect x="5" y="10" width="14" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></>),
-  copy: (<><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></>),
-  trash: (<><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></>),
-  download: (<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="M7 10l5 5 5-5" /><path d="M12 15V3" /></>),
-  upload: (<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="M17 8l-5-5-5 5" /><path d="M12 3v12" /></>),
-  folderOpen: (<><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /><path d="M2 11h20" /></>),
-  // 用系统默认应用打开（外链箭头）
-  externalLink: (<><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" /></>),
-  maximize: (<><path d="M8 3H3v5" /><path d="M3 3l6 6" /><path d="M16 3h5v5" /><path d="M21 3l-6 6" /><path d="M8 21H3v-5" /><path d="M3 21l6-6" /><path d="M16 21h5v-5" /><path d="M21 21l-6-6" /></>),
-  minimize: (<><path d="M9 3v6H3" /><path d="M3 9l6-6" /><path d="M15 3v6h6" /><path d="M21 9l-6-6" /><path d="M9 21v-6H3" /><path d="M3 15l6 6" /><path d="M15 21v-6h6" /><path d="M21 15l-6 6" /></>),
-
+  search: IconSearch,
+  refresh: IconRefresh,
+  close: IconX,
+  plus: IconPlus,
+  minus: IconMinus,
+  chevronDown: IconChevronDown,
+  chevronRight: IconChevronRight,
+  chevronLeft: IconChevronLeft,
+  arrowRight: IconArrowRight,
+  back: IconArrowLeft,
+  cursor: IconPointer,
+  lock: IconLock,
+  copy: IconCopy,
+  trash: IconTrash,
+  download: IconDownload,
+  upload: IconUpload,
+  externalLink: IconExternalLink,
+  maximize: IconMaximize,
+  minimize: IconMinimize,
+  more: IconDots,
+  menu: IconMenu2,
   // 状态
-  check: (<path d="M20 6L9 17l-5-5" />),
-  warning: (<><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><path d="M12 9v4" /><path d="M12 17h.01" /></>),
-  info: (<><circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" /></>),
-  loading: (<path d="M21 12a9 9 0 1 1-6.219-8.56" />),
-  robot: (<><rect x="4" y="8" width="16" height="12" rx="2" /><path d="M12 4v4" /><circle cx="9" cy="13" r="1" /><circle cx="15" cy="13" r="1" /><path d="M9 17h6" /></>),
-  // 思考语义图标；路径取自 Lucide `brain`（ISC 许可），仅按需内联、不引入整套图标库。
-  brain: (<><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" /><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z" /><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" /><path d="M17.599 6.5a3 3 0 0 0 .399-1.375" /><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5" /><path d="M3.477 10.896a4 4 0 0 1 .585-.396" /><path d="M19.938 10.5a4 4 0 0 1 .585.396" /><path d="M6 18a4 4 0 0 1-1.967-.516" /><path d="M19.967 17.484A4 4 0 0 1 18 18" /></>),
-  user: (<><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></>),
-
-  // 对话/批注
-  comment: (<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />),
-  pin: (<><path d="M12 17v5" /><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z" /></>),
-  locate: (<><path d="M12 21s-7-5.4-7-11a7 7 0 0 1 14 0c0 5.6-7 11-7 11z" /><circle cx="12" cy="10" r="2.5" /></>),
-  image: (<><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" /></>),
-  link: (<><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></>),
-  send: (<><path d="M22 2L11 13" /><path d="M22 2l-7 20-4-9-9-4z" /></>),
-  stop: (<rect x="6" y="6" width="12" height="12" rx="2" />),
-  at: (<><circle cx="12" cy="12" r="4" /><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94" /></>),
-  grid: (<><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></>),
-  list: (<><path d="M8 6h13" /><path d="M8 12h13" /><path d="M8 18h13" /><path d="M3 6h.01" /><path d="M3 12h.01" /><path d="M3 18h.01" /></>),
-  history: (<><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /><path d="M12 7v5l4 2" /></>),
-  eye: (<><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z" /><circle cx="12" cy="12" r="2.5" /></>),
-  eyeOff: (<><path d="M3 3l18 18" /><path d="M10.6 6.2A10.8 10.8 0 0 1 12 6c6.5 0 10 6 10 6a18.5 18.5 0 0 1-3.1 3.7" /><path d="M6.3 6.4C3.5 8.3 2 12 2 12s3.5 6 10 6c1.2 0 2.3-.2 3.3-.6" /></>),
-  shield: (<><path d="M12 3 20 6v5c0 5-3.4 8.3-8 10-4.6-1.7-8-5-8-10V6z" /><path d="m8.5 12 2.2 2.2 4.8-4.8" /></>),
-  star: (<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />),
-  sun: (<><circle cx="12" cy="12" r="4" /><path d="M12 2v2" /><path d="M12 20v2" /><path d="M4.93 4.93l1.41 1.41" /><path d="M17.66 17.66l1.41 1.41" /><path d="M2 12h2" /><path d="M20 12h2" /><path d="M6.34 17.66l-1.41 1.41" /><path d="M19.07 4.93l-1.41 1.41" /></>),
-  moon: (<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />),
-  menu: (<><path d="M3 12h18" /><path d="M3 6h18" /><path d="M3 18h18" /></>),
-  // 技能/能力：Sparkles（Lucide，ISC），与图层类图标区分
-  sparkles: (<><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" /><path d="M5 3v4" /><path d="M19 17v4" /><path d="M3 5h4" /><path d="M17 19h4" /></>),
-  back: (<><path d="M19 12H5" /><path d="M12 19l-7-7 7-7" /></>),
-  cloud: (<><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" /></>),
-  backlink: (<><path d="M17 7h-2a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2" /><path d="M7 17h2a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2H7" /></>),
-  penTool: (<><path d="M12 19l7-7 3 3-7 7-3-3z" /><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" /><path d="M2 2l7.586 7.586" /><circle cx="11" cy="11" r="2" /></>),
-  // 记忆治理入口用它标记「待审核的记忆条目」；与书签语义务必区分于 book（打开的书）。
-  bookmark: (<path d="m19 21-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />),
-  // 公交线路/站点模块标题图标。
-  bus: (<><path d="M8 6h8" /><path d="M4 8a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z" /><path d="M4 13h16" /><path d="M7 17v2" /><path d="M17 17v2" /><circle cx="8" cy="10.5" r=".5" /><circle cx="16" cy="10.5" r=".5" /></>),
-  filter: (<path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" />),
-  gear: (<><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></>),
-  book: (<><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></>),
-  tool: (<><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /></>),
-  globe: (<><circle cx="12" cy="12" r="10" /><path d="M2 12h20" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></>),
-  terminal: (<><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 9l3 3-3 3" /><path d="M13 15h5" /></>),
-  code: (<><path d="m8 8-4 4 4 4" /><path d="m16 8 4 4-4 4" /><path d="m14 4-4 16" /></>),
-  plug: (<><path d="M12 22v-5" /><path d="M9 8V2" /><path d="M15 8V2" /><path d="M18 8v4a6 6 0 0 1-12 0V8z" /></>),
-  package: (<><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="M3 12l9 5 9-5" /><path d="M3 16l9 5 9-5" /><path d="M12 8v5" /></>),
-  edit: (<><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" /></>),
-  more: (<g fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" /></g>),
-  chatPlus: (<><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" /><path d="M12 8.5v6" /><path d="M9 11.5h6" /></>),
+  check: IconCheck,
+  warning: IconAlertTriangle,
+  info: IconInfoCircle,
+  loading: IconLoader2,
+  // 身份/内容
+  robot: IconRobot,
+  brain: IconBrain,
+  user: IconUser,
+  comment: IconMessage,
+  chatPlus: IconMessagePlus,
+  pin: IconPin,
+  image: IconPhoto,
+  link: IconLink,
+  backlink: IconArrowBackUp,
+  send: IconSend,
+  stop: IconPlayerStop,
+  at: IconAt,
+  grid: IconLayoutGrid,
+  list: IconList,
+  history: IconHistory,
+  eye: IconEye,
+  eyeOff: IconEyeOff,
+  shield: IconShieldCheck,
+  shieldPlain: IconShield,
+  star: IconStar,
+  sun: IconSun,
+  moon: IconMoon,
+  sparkles: IconSparkles,
+  cloud: IconCloud,
+  bookmark: IconBookmark,
+  filter: IconFilter,
+  gear: IconSettings,
+  book: IconBook,
+  tool: IconTool,
+  globe: IconWorld,
+  terminal: IconTerminal2,
+  code: IconCode,
+  wrap: IconTextWrap,
+  plug: IconPlug,
+  package: IconPackage,
+  edit: IconPencil,
 };
 
+// 兼容旧调用名：语义与 edit 重复，统一指向同一字形，不再新增重复映射。
+const ICON_ALIASES = Object.freeze({ penTool: "edit" });
+
+export const ICON_NAMES = Object.keys(ICONS);
+const MISSING_ICON_WARNED = new Set();
+
 export default function Icon({ name, size = 16, className = "", strokeWidth = 2 }) {
-  const d = PATHS[name];
-  if (!d) {
+  const key = ICON_ALIASES[name] || name;
+  const Component = ICONS[key];
+  if (!Component) {
     // 未注册的名称过去静默返回 null，页面上只会“图标不见了”，很难定位。
     // 开发期每个名称只告警一次，指明补注册位置；生产构建不产生噪音。
     if (name && !MISSING_ICON_WARNED.has(name)) {
       MISSING_ICON_WARNED.add(name);
       if (typeof console !== "undefined" && import.meta?.env?.DEV) {
-        console.warn(`[Icon] 未注册的图标名称 "${name}"：请在 Icon.jsx 的 PATHS 中补注册，或改用已有名称（现有 ${ICON_NAMES.length} 个）。`);
+        console.warn(`[Icon] 未注册的图标名称 "${name}"：请在 Icon.jsx 的 ICONS 中补注册，或改用已有名称（现有 ${ICON_NAMES.length} 个）。`);
       }
     }
     return null;
   }
   return (
-    <svg
+    <Component
       className={`icon icon-${name} ${className}`}
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={strokeWidth}
-      strokeLinecap="round"
-      strokeLinejoin="round"
+      size={size}
+      stroke={strokeWidth}
       aria-hidden="true"
-    >
-      {d}
-    </svg>
+    />
   );
 }
-
-export const ICON_NAMES = Object.keys(PATHS);
-const MISSING_ICON_WARNED = new Set();
 
 // 模型供应商标识使用项目已有的本地品牌 SVG 路径，不依赖 CDN 或远程图片请求。
 // 路径对应 templates/opendesign/open-design-landing/assets/agents 下的矢量资源，

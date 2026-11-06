@@ -96,13 +96,19 @@ export async function waitForFlush(before, workspace = getWorkspace()) {
   return diffWorkspace(before, lastSnapshot);
 }
 
-// 完成语义：显式 complete_task 优先；否则按 Run 终态推断（source:"inferred"），
-// 前端据此区分“回答结束”与“任务真正完成”。
-export function resolveRunCompletion(entry, runStatus, { artifacts = 0, validations = [], runId = null } = {}) {
-  const pending = entry?.pendingCompletion && typeof entry.pendingCompletion === "object" ? entry.pendingCompletion : null;
-  // 完成声明必须属于当前 Run：同一会话上一轮的声明不能串到本轮（否则会误报 success）。
-  const explicit = pending && (!runId || !pending.runId || pending.runId === runId) ? pending : null;
-  return explicit || inferCompletion({ runStatus, artifacts, validations });
+// 完成语义：一律按 Run 终态推断（source:"inferred"），结论文本取模型最终答复。
+// 显式完成声明工具（complete_task）已于 2026-11-03 移除，这里不再有"显式优先"分支。
+export function resolveRunCompletion(entry, runStatus, { artifacts = 0, validations = [], runId = null, finalText = "" } = {}) {
+  const effectiveFinalText = finalText || entry?.lastFinalText || "";
+  const completion = inferCompletion({ runStatus, artifacts, validations, finalText: effectiveFinalText });
+  // thinking-only 回合：模型想完了但没有正文终稿。不能报 success，也不能用
+  // 上一段进度文本冒充终稿；标成 partial，让前后端按“没有最终答复”处理。
+  if (runStatus === "completed" && !String(effectiveFinalText).trim() && entry?.lastAssistantState?.thinkingOnly) {
+    completion.status = "partial";
+    completion.summary = "模型只输出了思考，没有给出最终答复";
+    completion.incomplete = [...new Set([...(completion.incomplete || []), "final_answer_missing"])];
+  }
+  return completion;
 }
 
 export function getRunFinalText(run) {
@@ -458,7 +464,7 @@ export function 创建执行句柄(初始依赖 = {}) {
           verificationStatus: "not_checked",
         }
         : null;
-      const failureCompletion = truncationCompletion || resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations], runId: run.id });
+      const failureCompletion = truncationCompletion || resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations], runId: run.id, finalText: entry?.lastFinalText || "" });
       const failed = deps.runs.finishRun(run.id, {
         status: cancelled ? "cancelled" : (truncatedRecoverable ? "completed" : "failed"),
         sessionId: entry?.session?.sessionId || null,
@@ -492,7 +498,7 @@ export function 创建执行句柄(初始依赖 = {}) {
     const finalStatus = cancelled ? "cancelled" : "completed";
     const publishPaths = publishableStagedValidations.map((item) => item.path).filter(Boolean);
     const publishedCount = changed.length + publishableStagedValidations.length;
-    const completed = run ? deps.runs.finishRun(run.id, { status: finalStatus, sessionId: entry?.session?.sessionId || null, summary: cancelled ? "任务已取消" : (publishedCount ? `本轮对话完成，共处理 ${publishedCount} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更"), validations: allValidations, publishPaths: run ? publishPaths : null, completion: resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }) }) : null;
+    const completed = run ? deps.runs.finishRun(run.id, { status: finalStatus, sessionId: entry?.session?.sessionId || null, summary: cancelled ? "任务已取消" : (publishedCount ? `本轮对话完成，共处理 ${publishedCount} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更"), validations: allValidations, publishPaths: run ? publishPaths : null, completion: resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations, finalText: entry?.lastFinalText || "" }) }) : null;
     if (entry) {
       const productPaths = [...changed, ...publishableStagedValidations.map((item) => item.path).filter(Boolean)];
       if (productPaths.length) deps.emit(entry, "file_changed", { files: productPaths, runId: run?.id || null });
@@ -507,7 +513,7 @@ export function 创建执行句柄(初始依赖 = {}) {
         references: resolved,
         status: completed?.status || finalStatus,
       });
-      if (run) deps.emit(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked", completion: completed?.completion || resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }), finalText: getRunFinalText(deps.runs.getRun(run.id)), model: deps.runs.getRun(run.id)?.model || null, finalMessageId: deps.runs.getRun(run.id)?.finalMessageId || null });
+      if (run) deps.emit(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked", completion: completed?.completion || resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations, finalText: entry?.lastFinalText || "" }), finalText: getRunFinalText(deps.runs.getRun(run.id)), model: deps.runs.getRun(run.id)?.model || null, finalMessageId: deps.runs.getRun(run.id)?.finalMessageId || null });
     }
     if (run) {
       void 记忆抽取({
@@ -545,7 +551,19 @@ export function 创建执行句柄(初始依赖 = {}) {
     const live = manager.resolveLiveEntry?.(key) || null;
     // P2-3：一并回执「取消后仍排队的轮次数量」，前端据此区分「已停」与「排队中已停」
     // （基线只返回 ok/runId，无法判断是否还有排队的轮次）。字段为新增，不影响既有消费方。
-    const payload = { ...result, runId: result?.runId || targetRunId || null, stillQueued: Number(live?.queuedCount || 0) };
+    // settleDeadlineMs：服务端取消看门狗的上限（15s）+ 5s 余量。客户端据此设置
+    // “中断未确认”提示窗口，避免固定 10s 小于服务端结算期限而必然误报。
+    const payload = {
+      ...result,
+      runId: result?.runId || targetRunId || null,
+      stillQueued: Number(live?.queuedCount || 0),
+      // 2026-11-03-001 P0-4：任务中心“收尾中”语义——runtime 中断未被显式确认
+      //（abort 抛错路径）仍有排队链路时 stillRunning=true，不要立即显示已取消。
+      stillRunning: Boolean(result?.cancelled && !result?.runtimeAborted)
+        || Boolean(live && (live.chainDepth || 0) > 0),
+      chainDepth: Number(live?.chainDepth || 0),
+      settleDeadlineMs: 20000,
+    };
     通知("已中断", { runId: payload.runId });
     return payload;
   }
@@ -560,6 +578,18 @@ export function 创建执行句柄(初始依赖 = {}) {
     const result = 管理器().submitAnswer(key, String(answer ?? "").slice(0, 2000));
     if (result?.ok) 通知("交互已响应", { key });
     return result;
+  }
+
+  /**
+   * 跳过当前待答交互：模型按专业判断继续，不再等待用户回答。
+   */
+  function 跳过问答(id, options = {}) {
+    const client = String(id || "");
+    const thread = options.thread || "";
+    const key = deps.agentKey(client, thread);
+    const result = 管理器().skipPendingAsk?.(key);
+    if (result) 通知("交互已跳过", { key });
+    return result ? { ok: true, mode: "skipped" } : { ok: false };
   }
 
   /**
@@ -634,7 +664,7 @@ export function 创建执行句柄(初始依赖 = {}) {
       release: true,
       subscribe: true,
       availability: true,
-      actions: ["执行", "中断", "响应交互", "释放", "订阅", "可用性", "能力"],
+      actions: ["执行", "中断", "响应交互", "跳过问答", "释放", "订阅", "可用性", "能力"],
       availabilityState: 可用性(),
       sessions: manager.sessions?.size || 0,
       runtimes: manager.listRuntimes?.().length || 0,
@@ -645,6 +675,7 @@ export function 创建执行句柄(初始依赖 = {}) {
     执行,
     中断,
     响应交互,
+    跳过问答,
     释放,
     订阅,
     可用性,

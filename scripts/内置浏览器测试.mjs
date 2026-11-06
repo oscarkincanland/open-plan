@@ -256,7 +256,7 @@ await test("回归：scroll 缺省分支返回值逐字不变，仅新增可选 
   assert.match(src, /export async function browserScroll\(key, direction, amount, options = \{\}\)/, "browserScroll 应新增可选 options 参数");
 });
 
-await test("契约：新工具已登记（agent 定义 + 三处白名单 + task 白名单 + 开关快照）", () => {
+await test("契约：新工具已登记（agent 定义 + task 单一事实源白名单 + customTools + 开关快照）", () => {
   const agent = fs.readFileSync(path.join(ROOT, "server", "agent.mjs"), "utf8");
   const task = fs.readFileSync(path.join(ROOT, "server", "task.mjs"), "utf8");
   const flags = fs.readFileSync(path.join(ROOT, "server", "运行开关.mjs"), "utf8");
@@ -264,11 +264,14 @@ await test("契约：新工具已登记（agent 定义 + 三处白名单 + task 
   for (const name of names) {
     assert.match(agent, new RegExp(`name: "${name}"`), `agent 缺少工具定义 ${name}`);
     assert.match(task, new RegExp(`"${name}"`), `task 白名单缺少 ${name}`);
+    // 单一事实源收敛后 agent.mjs 只保留定义处字符串；运行时激活改由 task.mjs
+    // 白名单 + customTools 变量数组驱动，不再维护第二份名称串。
     const quoted = (agent.match(new RegExp(`"${name}"`, "g")) || []).length;
-    assert.ok(quoted >= 2, `tools/setActiveTools 白名单应包含 ${name}（实际 ${quoted} 处字符串）`);
+    assert.equal(quoted, 1, `agent.mjs 应只保留定义处 ${name}（白名单单一事实源在 task.mjs；实际 ${quoted} 处）`);
   }
   for (const toolVar of ["browserWaitForTool", "browserActTool", "browserExtractTool", "browserSelectOptionTool"]) {
-    assert.match(agent, new RegExp(toolVar), `customTools 缺少 ${toolVar}`);
+    // 2026-11-06 起 browser_* 工具经 wrapBrowserStepTool 包装注册（T6 步骤事件），兼容两种登记形态
+    assert.match(agent, new RegExp(`(wrapBrowserStepTool\\("[a-z]+", ${toolVar}\\))|(${toolVar},)`), `customTools 缺少 ${toolVar}`);
   }
   assert.match(flags, /browserAtomic/, "运行开关应含 browserAtomic");
   for (const key of ["browserAtomic", "browserWaitFor", "browserAct", "browserScrollContainer", "browserExtract", "browserSelectOption"]) {
@@ -301,8 +304,8 @@ await test("agent / task / index / 前端已接入浏览器能力", () => {
   assert.match(panel, /queueBrowserInput/, "浏览器输入事件必须经过串行队列");
   assert.match(panel, /action: "resize"/, "浏览器面板尺寸变化需要同步给 CDP viewport");
   assert.match(fs.readFileSync(path.join(ROOT, "client", "src", "styles.css"), "utf8"), /object-fit: contain/);
-  assert.match(app, /setBrowserPanelOpen\(true\)/, "浏览器活动应自动打开独立侧栏");
-  assert.match(app, /canvas-tab-browser/, "浏览器应为独立可伸缩侧栏（v0.13 布局重构后挂画布槽位 canvas-tab-browser，宽度由 --browser-w 驱动）");
+  assert.match(app, /openCanvasView\("browser"\)/, "浏览器活动应打开浏览器标签");
+  assert.match(app, /const browserOpen = canvasTabs\.some\(\(tab\) => tab\.kind === "browser"\)/, "浏览器标签存在性由画布标签推导");
   assert.doesNotMatch(app, /setPreviewTab\("browser"\)/, "浏览器不应再作为工作产物页签");
   // 标签页 UI 与文档按 cwd 打开（产物跨工作区）
   assert.match(panel, /action: "tab_switch"/);
@@ -316,38 +319,43 @@ await test("agent / task / index / 前端已接入浏览器能力", () => {
 
 // ---------- 会话流改版接线（落地文档 2026-10-31-001 §7） ----------
 console.log("\n▶ 会话流改版接线");
-await test("Run 轮次走整轮折叠新路径（已转正），组件与样式齐备", () => {
+await test("Run 轮次走新路径（已转正），组件与样式齐备", () => {
   const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
   const chat = read("client/src/components/ChatPanel.jsx");
   const projection = read("client/src/会话流投影.js");
   const styles = read("client/src/styles.css");
   const pkg = JSON.parse(read("package.json"));
   const flags = read("server/运行开关.mjs");
-  assert.match(chat, /!isUser && Boolean\(m\.runId\)/, "Run 轮次应走整轮折叠新路径（Review 保留旧渲染）");
+  assert.match(chat, /!isUser && Boolean\(m\.runId\)/, "Run 轮次应走新路径（Review 保留旧渲染）");
   assert.doesNotMatch(chat, /flag\("chatTimelineUi"\)/, "新路径已转正，不应再有 chatTimelineUi 开关判断");
   assert.doesNotMatch(flags, /OAW_CHAT_TIMELINE/, "转正后服务端不应残留 OAW_CHAT_TIMELINE 开关");
-  assert.match(chat, /<RunFold/, "新路径应渲染 RunFold 整轮折叠");
+  assert.match(chat, /<RunFoldBar/, "终态过程应折叠成一行折叠头（规范 v2.0 / ADR 0014）");
+  assert.doesNotMatch(chat, /<RunFold\s/, "不得复用已删除的旧 RunFold 组件");
+  assert.match(chat, /className=\{`tl-list/, "时间流应直接渲染为无框条目列表");
   assert.match(chat, /<SummaryBlock/, "新路径应渲染框外总结");
   assert.match(chat, /<ArtifactCard/, "新路径应渲染本轮产物卡");
   assert.match(chat, /buildRunTimeline/, "新路径应经会话流投影归约时间线");
   assert.match(chat, /splitCompletionSummary/, "总结应拆分结论与详细展开");
   assert.match(projection, /export function buildRunTimeline/, "投影模块应导出 buildRunTimeline");
   assert.match(projection, /export function splitCompletionSummary/, "投影模块应导出 splitCompletionSummary");
-  for (const comp of ["RunFold.jsx", "TimelineRow.jsx", "SummaryBlock.jsx", "ArtifactCard.jsx"]) {
+  assert.match(projection, /export function describeRunFold/, "投影模块应导出 describeRunFold 折叠头呈述");
+  for (const comp of ["TimelineRow.jsx", "RunFoldBar.jsx", "SummaryBlock.jsx", "ArtifactCard.jsx"]) {
     assert.ok(fs.existsSync(path.join(ROOT, "client", "src", "components", "会话流", comp)), `缺少组件文件 ${comp}`);
   }
-  for (const cls of [".rf-head", ".rf-body", ".tl-row-head", ".tl-detail-wrap", ".sum-block", ".sum-conclusion", ".ac-card"]) {
+  for (const cls of [".tl-list", ".tl-row-head", ".tl-detail-wrap", ".run-fold-head", ".sum-block", ".sum-body", ".ac-card"]) {
     assert.ok(styles.includes(cls), `styles.css 缺少会话流样式 ${cls}`);
   }
   // 精修计划 2026-10-31-002 接线断言
   const artifact = read("client/src/components/会话流/ArtifactCard.jsx");
-  assert.match(chat, /useTypewriter|TypewriterText/, "正文/思考应接打字机");
+  assert.match(chat, /import \{ TypewriterText \} from "\.\/会话流\/useTypewriter\.jsx"/, "打字机必须命名导入（默认导出是 hook，误用会渲染出数字）");
+  assert.match(chat, /!block\.answer && !block\.expired/, "已回答/已过期的 ask 必须从常驻交互区移除");
+  assert.match(chat, /showCap/, "流式文本不得显示「阶段结论」标签");
   assert.match(chat, /跑马灯文本/, "思考折叠态应使用既有跑马灯做滚动预览");
   assert.match(chat, /tl-row-head no-toggle|locked/, "ask/审批应为 locked 一行头");
   assert.match(artifact, /product-card-main/, "本轮产物应恢复既有 product-card 行格式");
   assert.match(artifact, /在产物面板查看/, "本轮产物应保留产物面板入口");
   assert.match(styles, /--msg-content-max: min\(100%, 720px\)/, "内容列宽令牌应存在");
-  assert.match(styles, /font-family: "Segoe UI Variable Text"/, "字体栈应升级（方案 A：系统栈优先）");
+  assert.match(styles, /font-family: "OPPO Sans 4\.0", "Segoe UI Variable Text"/, "字体栈应以 OPPO Sans 4.0 优先、系统栈兜底");
   assert.equal(pkg.scripts["test:chat-timeline"], "node scripts/会话流时间线测试.mjs", "应注册 test:chat-timeline 脚本");
 });
 
@@ -495,6 +503,75 @@ if (LIVE) {
 } else {
   console.log("\n（跳过真实浏览器链路：加 --live 运行）");
 }
+
+console.log("\n▶ 可观测性（动作广播与导航进度，2026-11-06 批次）");
+
+await test("agent-action 广播：写操作路径均发出动作事件", () => {
+  const src = fs.readFileSync(path.join(ROOT, "server", "内置浏览器.mjs"), "utf8");
+  assert.match(src, /emitAgentAction\(action\) \{/, "会话应有动作广播方法");
+  const anchor = src.indexOf("emitAgentAction(action) {");
+  const body = src.slice(0, anchor > 0 ? anchor : src.length);
+  for (const [label, method] of [["navigate", "async navigate(rawUrl)"], ["click", "async click(ref)"], ["type", "async type(ref"], ["press", "async press(key)"], ["scroll", "async scroll(direction"], ["scrollContainer", "async scrollContainer(selector"], ["back", "async back()"]]) {
+    const start = src.indexOf(method);
+    assert.ok(start > 0, `应存在 ${label} 方法`);
+    // 方法体可能较长（navigate/click 含完整等待逻辑），统一向前截 1600 字足以覆盖首段广播
+    const segment = src.slice(start, start + 1600);
+    assert.match(segment, /emitAgentAction\(/, `${label} 应发出 agent-action 广播`);
+  }
+  assert.ok(true);
+});
+
+await test("导航进度：state.phase 阶段字段与等待条件联动", () => {
+  const src = fs.readFileSync(path.join(ROOT, "server", "内置浏览器.mjs"), "utf8");
+  assert.match(src, /stateView\(\) \{[\s\S]{0,400}?phase: this\.state\.phase/, "stateView 应暴露 phase");
+  assert.match(src, /this\.state\.phase = "navigating"/, "navigate 应标记 navigating");
+  assert.match(src, /this\.state\.phase = "settling"/, "waitForLoad 应进入 settling 观察窗");
+  assert.match(src, /session\.state\.phase = "waiting-condition"/, "waitForCondition 应标记等待条件");
+  // 阶段结束必须清零：navigate 收尾、settle 结束、条件结束三类出口
+  assert.match(src, /this\.state\.phase = "";/, "阶段结束应清零");
+  assert.match(src, /session\.state\.phase = "";/, "等待条件结束应清零");
+});
+
+await test("前端：隐藏不连帧流，phase 文案与 Blob 渲染路径", () => {
+  const panel = fs.readFileSync(path.join(ROOT, "client", "src", "components", "内置浏览器面板.jsx"), "utf8");
+  assert.match(panel, /if \(!clientId \|\| !visible\) return undefined/, "画布非激活时不应建立帧流连接");
+  assert.match(panel, /\}, \[clientId, threadId, visible\]\)/, "订阅 effect 应依赖 visible");
+  assert.match(panel, /state\.phase === "navigating"/, "状态文案应区分导航阶段");
+  assert.match(panel, /state\.phase === "settling"/, "状态文案应区分稳定观察窗");
+  assert.match(panel, /state\.phase === "waiting-condition"/, "状态文案应区分等待条件");
+  assert.match(panel, /URL\.createObjectURL\(new Blob\(\[bytes\]/, "帧渲染应走 Blob URL 路径");
+  assert.match(panel, /URL\.revokeObjectURL\(frameUrlBacklogRef\.current\.shift\(\)\)/, "Blob URL 应按预算回收");
+  const app = fs.readFileSync(path.join(ROOT, "client", "src", "App.jsx"), "utf8");
+  assert.match(app, /visible=\{activeCanvasTab\?\.kind === "browser"\}/, "App 应把画布激活状态传给浏览器面板");
+});
+
+await test("步骤/读取事件：契约登记且 browser_* 工具统一包装", () => {
+  const registry = fs.readFileSync(path.join(ROOT, "server", "事件注册表.mjs"), "utf8");
+  for (const type of ["browser_step_start", "browser_step_end", "browser_read", "browser_progress"]) {
+    assert.match(registry, new RegExp(`type: "${type}"`), `${type} 应登记进事件注册表`);
+  }
+  assert.match(registry, /browser_progress[\s\S]{0,240}?persist: false/, "browser_progress 高频不落盘");
+  const agent = fs.readFileSync(path.join(ROOT, "server", "agent.mjs"), "utf8");
+  assert.match(agent, /const withBrowserStep = \(kind, execute\)/, "应有步骤包装器");
+  assert.match(agent, /const wrapBrowserStepTool = \(kind, tool\)/, "应有注册期包装");
+  assert.match(agent, /execute: withBrowserStep\(kind, tool\.execute\)/, "包装器应接管 execute");
+  assert.match(agent, /wrapBrowserStepTool\("open", browserOpenTool\)/, "注册表应替换为包装工具");
+  assert.doesNotMatch(agent, /, browserOpenTool,/, "原始工具不得重复注册");
+  assert.match(agent, /emitBrowserRead\(toolCallId, "snapshot"/, "snapshot 应发布 browser_read");
+  assert.match(agent, /emitBrowserRead\(_toolCallId, "extract"/, "extract 应发布 browser_read");
+});
+
+await test("前端时间线：browser-steps 过程卡聚合三类事件", () => {
+  const chat = fs.readFileSync(path.join(ROOT, "client", "src", "components", "ChatPanel.jsx"), "utf8");
+  assert.match(chat, /case "browser_step_start":[\s\S]{0,80}?case "browser_read":/, "SSE 分发应接步骤/读取事件");
+  assert.match(chat, /reduceBrowserSteps\(block\.steps \|\| \[\], type, data\)/, "聚合器应按 toolCallId 归并行");
+  assert.match(chat, /"browser-steps"[\]]\)[;,]?/, "过程块类型应包含 browser-steps");
+  assert.match(chat, /case "browser-steps":/, "过程区渲染应支持 browser-steps");
+  assert.match(chat, /function BrowserStepsCard\(/, "时间线卡组件应存在");
+  assert.match(chat, /BROWSER_STEP_VERBS/, "动词映射应存在");
+  const css = fs.readFileSync(path.join(ROOT, "client", "src", "styles.css"), "utf8");
+  assert.match(css, /\.browser-steps-card/, "时间线样式应存在");
+});
 
 await new Promise((resolve) => setTimeout(resolve, 400));
 console.log(failed ? "\n内置浏览器测试：失败" : "\n内置浏览器测试：通过");

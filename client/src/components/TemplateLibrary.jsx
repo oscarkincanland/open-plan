@@ -435,7 +435,7 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
                 title="一键让 agent 按该模板风格生成作品（输入主题后自动带入对话）"
                 onClick={() => setGenOpen(true)}
               >
-                <Icon name="penTool" size={12} /> 用此模板生成
+                <Icon name="edit" size={12} /> 用此模板生成
               </button>
               {preview.relPath?.includes("/") && (
                 <button
@@ -459,7 +459,7 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
         <div className="tpl-gen-backdrop" onClick={() => setGenOpen(false)}>
           <div className="tpl-gen" onClick={(e) => e.stopPropagation()}>
             <div className="tpl-gen-head">
-              <span><Icon name="penTool" size={14} /> 用模板生成</span>
+              <span><Icon name="edit" size={14} /> 用模板生成</span>
               <button className="mp-op" onClick={() => setGenOpen(false)} title="关闭"><Icon name="close" size={14} /></button>
             </div>
             <div className="tpl-gen-body">

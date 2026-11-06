@@ -6,6 +6,7 @@
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import JSZip from "jszip";
 
@@ -79,6 +80,38 @@ await check("图层文件进包（项目有 layers 目录时）", async () => {
   for (const f of diskLayers) assert.ok(zip.file(`layers/${f.name}`), `layers/${f.name} 应在包内`);
 });
 
+await check("zip 解压后可读取工程配置与图层（恢复演练）", async () => {
+  const out = await buildProjectZip({ project: PROJECT });
+  const zip = await JSZip.loadAsync(out.buffer);
+  const tmp = path.join(os.tmpdir(), `oaw-pack-restore-${Date.now()}`);
+  fs.mkdirSync(tmp, { recursive: true });
+  try {
+    for (const [name, entry] of Object.entries(zip.files)) {
+      const target = path.join(tmp, name);
+      if (entry.dir) { fs.mkdirSync(target, { recursive: true }); continue; }
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, await entry.async("nodebuffer"));
+    }
+    const config = JSON.parse(fs.readFileSync(path.join(tmp, "map.config.json"), "utf8"));
+    assert.equal(config.project, PROJECT);
+    assert.equal(config.schemaVersion, 2, "解压后工程配置应为 v2 可读");
+    assert.ok(Array.isArray(config.layers) && config.layers.length > 0, "解压后应有图层定义");
+    const manifest = JSON.parse(fs.readFileSync(path.join(tmp, "MANIFEST.json"), "utf8"));
+    assert.match(manifest.restoreHint, /重建瓦片/, "恢复提示应说明重建瓦片");
+    const layersDir = path.join(tmp, "layers");
+    if (fs.existsSync(layersDir)) {
+      const files = fs.readdirSync(layersDir).filter((n) => n.endsWith(".geojson"));
+      assert.ok(files.length > 0, "解压后应有图层数据文件");
+      for (const name of files.slice(0, 3)) {
+        const geo = JSON.parse(fs.readFileSync(path.join(layersDir, name), "utf8"));
+        assert.equal(geo.type, "FeatureCollection", `${name} 应为可解析的 FeatureCollection`);
+      }
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 await check("不存在的项目 → MAP_PROJECT_NOT_FOUND", async () => {
   await assert.rejects(
     () => buildProjectZip({ project: "no-such-project-xyz" }),
@@ -105,7 +138,7 @@ await check("路由源码挂 OAW_MAP_PACK 门控", () => {
 });
 await check("运行开关含 mapPack 位", () => {
   const src = fs.readFileSync(path.join(import.meta.dirname, "..", "server", "运行开关.mjs"), "utf8");
-  assert.match(src, /mapPack: readFlag\("OAW_MAP_PACK"\)/);
+  assert.match(src, /mapPack: readFlagDefault\("OAW_MAP_PACK", true\)/);
   assert.match(src, /mapPack: RUNTIME_FLAGS\.mapPack/);
 });
 

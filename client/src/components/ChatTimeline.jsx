@@ -128,7 +128,9 @@ export default function ChatTimeline({ messages, containerRef }) {
     return list;
   }, [messages]);
 
-  // 刻度：只取用户消息（相邻重复只留一个定位点），按比例分布。
+  // 刻度：只取用户消息（相邻重复只留一个定位点）。
+  // 2026-11-04：改为按短杠序号均分，形成左侧竖排等距的「并列」导轨；
+  // 不再按消息下标比例分布（工具条目多时会把用户轮次挤在一起）。
   const beads = useMemo(() => {
     const raw = entries
       .filter((entry) => entry.role === "user")
@@ -137,11 +139,15 @@ export default function ChatTimeline({ messages, containerRef }) {
         summary: entry.summary.slice(0, 40),
         error: entry.error,
         count: entry.count,
-        top: ((entry.idx + 0.5) / Math.max(1, (messages || []).length)) * 100,
       }));
     const stride = Math.max(1, Math.ceil(raw.length / 24));
-    return raw.filter((_, i) => i % stride === 0 || i === raw.length - 1);
-  }, [entries, messages]);
+    const sampled = raw.filter((_, i) => i % stride === 0 || i === raw.length - 1);
+    const total = Math.max(1, sampled.length);
+    return sampled.map((bead, index) => ({
+      ...bead,
+      top: ((index + 0.5) / total) * 100,
+    }));
+  }, [entries]);
   // v0.13.8：显示门槛之二——用户轮次 ≥2（1 轮会话无需轨道导航）。
   const userTurnCount = useMemo(() => entries.filter((entry) => entry.role === "user").length, [entries]);
 

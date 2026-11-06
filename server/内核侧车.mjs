@@ -12,6 +12,7 @@
  * off（默认）时走 createLocalBashOperations 原路径，行为与基线一致。
  */
 import { spawn } from "node:child_process";
+import { resolveBashShell } from "./环境能力.mjs";
 
 const DEFAULT_TIMEOUT_MS = 120000;
 const MAX_CONCURRENCY = 4;
@@ -58,8 +59,14 @@ export class BashSidecarManager {
     if (!commandText.trim()) return Promise.resolve({ code: 1, stdout: "", stderr: "empty command", ms: 0, killed: false });
     const started = Date.now();
     return this._acquire().then(() => new Promise((resolve) => {
+      // 与探测端共用同一个 shell：Windows 上走 Git Bash（已解析），不再用 cmd.exe。
+      // 否则会出现「探测说 Git Bash 可用、实际却是 cmd 语义」的错位（ls/sed -i 行为不同）。
+      const shell = resolveBashShell();
       const isWindows = process.platform === "win32";
-      const child = spawn(isWindows ? "cmd.exe" : "sh", isWindows ? ["/d", "/s", "/c", commandText] : ["-c", commandText], {
+      const command = shell.shell
+        ? [isWindows && shell.kind === "wsl" ? "-s" : "-c", commandText]
+        : (isWindows ? ["/d", "/s", "/c", commandText] : ["-c", commandText]);
+      const child = spawn(shell.shell || (isWindows ? "cmd.exe" : "sh"), command, {
         cwd: cwd || process.cwd(),
         env: { ...process.env, ...env },
         windowsHide: true,

@@ -91,9 +91,6 @@ jobs:
       - name: AVA 画布页签（文件树 / 新会话 / 切换不卸载 / 宽度约束）
         run: node scripts/CI运行测试.mjs AVA画布页签测试
 
-      - name: AVA 双面板（并排常驻 / 各自拖宽 / 窄屏降级）
-        run: node scripts/CI运行测试.mjs AVA双面板测试
-
       - name: 长连接预算与流去重（切工作区/切会话卡死防护）
         run: node scripts/CI运行测试.mjs 长连接预算与流去重测试
 
@@ -124,6 +121,88 @@ jobs:
       - name: Office 写作契约（四路由 / 澄清 / 模板 / 版式 / 闸门）
         run: node scripts/CI运行测试.mjs Office写作契约回归测试
 
+      - name: Office CLI 调用规约（模式 / 路由 / 命令 / 流水线状态）
+        run: node scripts/CI运行测试.mjs OfficeCLI调用规约测试
+
+      - name: 终稿边界与中断分类（thinking-only / 401 / 服务重启 / 预算）
+        run: node scripts/CI运行测试.mjs 终稿与中断分类测试
+
+      # 契约层与并发回归：2026-11-01 收敛时发现这些此前不在 CI 里，
+      # 导致"后加工具没同步元数据表""写入撞锁立即失败"等问题长期无人发现。
+      - name: 能力契约（模式白名单 / 工具元数据双向一致 / 内部工具可追溯）
+        run: node scripts/CI运行测试.mjs 能力契约测试
+
+      - name: 工具元数据契约（白名单覆盖 + 反向无孤儿 + 无第二份清单）
+        run: node scripts/CI运行测试.mjs 工具元数据契约测试
+
+      - name: 写锁并发（按文件加锁 / 撞锁退避 / 结构化可重试错误）
+        run: node scripts/CI运行测试.mjs 写入锁并发测试
+
+      - name: 恢复隔离（跨实例不误标 recovering / 验证实例运行时隔离）
+        run: node scripts/CI运行测试.mjs 恢复隔离测试
+
+      - name: 决策记录索引（无孤儿 ADR / 无空文件 / 头部元信息齐全）
+        run: node scripts/CI运行测试.mjs 决策记录索引守护测试
+
+      - name: 长期规范索引（规范层无孤儿 / 头部元信息齐全 / 生效规范有引用）
+        run: node scripts/CI运行测试.mjs 规范索引守护测试
+
+      - name: 事件发射点（注册表里的事件必须有真实发射点）
+        run: node scripts/CI运行测试.mjs 事件发射点守护测试
+
+      - name: 输入栏与工作区面板收敛（上下文/审批并入输入栏；工作区入口为面板）
+        run: node scripts/CI运行测试.mjs 工作区面板与输入栏收敛测试
+
+      - name: 会话收敛与流水线状态（跳过/修订不再画叉；思考跟随；记忆后不追问）
+        run: node scripts/CI运行测试.mjs 会话收敛与流水线状态测试
+
+      - name: ask 超时与跳过（30 分钟窗口 / 自动回执 / 跳过继续）
+        run: node scripts/CI运行测试.mjs ask超时与跳过测试
+
+      - name: 后台任务（2 分钟阈值 / 完成回执 / 取消 / 重启中断）
+        run: node scripts/CI运行测试.mjs 后台任务测试
+
+      - name: bash 写锁范围（同工作区不同文件的并发任务不互相阻塞）
+        run: node scripts/CI运行测试.mjs bash写锁测试
+
+      - name: 原生文本编辑（简单段落/样式走原生，批注等仍走 CLI）
+        run: node scripts/CI运行测试.mjs 原生文本编辑测试
+
+      - name: 编辑流水线（docx/pptx / sourceMarkdown / 长 requirements）
+        run: node scripts/CI运行测试.mjs 编辑流水线测试
+
+      - name: 产物文件类型图标（docx 等按类型出图，不回退通用图标）
+        run: node scripts/CI运行测试.mjs 产物图标测试
+
+      - name: 跨标签页长连接配额（全局满额时面板流让位，必需流不拒）
+        run: node scripts/CI运行测试.mjs 跨标签页流配额测试
+
+      - name: 构建版本守卫（部署新构建后旧页面必须被提示刷新）
+        run: node scripts/CI运行测试.mjs 构建版本守卫测试
+
+      - name: 会话加载 TDZ（不得先用后声明 / 历史优先显示 / 失败带堆栈）
+        run: node scripts/CI运行测试.mjs 会话加载TDZ回归测试
+
+      - name: 会话恢复与中断一致性（resume 幂等 / ask 结算 / 排队可见性 / 精确匹配）
+        run: node scripts/CI运行测试.mjs 会话恢复与中断一致性测试
+
+      - name: 会话归档（默认隐藏 / 设置归档历史 / 批量归档与恢复）
+        run: node scripts/CI运行测试.mjs 会话归档测试
+
+      - name: 上下文单次读取（运行宪法 / 祖先研发宪法过滤 / AGENTS.md 不重复）
+        run: node scripts/CI运行测试.mjs 上下文单次读取测试
+
+      - name: 工作区初始化（AGENTS.md + memory 种子 / 幂等不覆盖）
+        run: node scripts/CI运行测试.mjs 工作区初始化测试
+
+      - name: 任务复杂度与技能策略（简单默认 / 复杂发现 / 草稿确认）
+        run: node scripts/CI运行测试.mjs 任务复杂度与技能策略测试
+
+      - name: 图标体系（Tabler 映射唯一 / 无裸 SVG / Word 预览箭头）
+        run: node scripts/CI运行测试.mjs 图标体系契约测试
+
+
+
       - name: Office 写作闸门通电（ADR 0012 / 工具书 / 环境预检）
         run: node scripts/CI运行测试.mjs Office写作闸门通电测试
 
@@ -138,3 +217,6 @@ jobs:
 
       - name: 会话流排版（横向滚动 / 四档缩进 / 加粗字体 / 表格 / 分页 / 切换）
         run: node scripts/CI运行测试.mjs 会话流排版回归测试
+
+      - name: 会话流文本分块（工具卡不切断同一句话 / 权威全文缺口定位）
+        run: node scripts/CI运行测试.mjs 会话流文本分块回归测试

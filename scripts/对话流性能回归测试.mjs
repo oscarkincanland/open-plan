@@ -39,12 +39,9 @@ try {
   assert.match(chatPanelSource, /\}, \[messages\]\);/, "自动滚动只应由消息内容变化触发");
   assert.match(chatPanelSource, /className="chat-scroll-latest"/, "用户离开底部后应提供回到底部按钮");
   assert.match(chatPanelSource, /function appendExecutionFlowEvent\(/, "执行流应合并重复的文件/总结事件");
-  assert.match(chatPanelSource, /className="chat-topbar"/);
+  assert.doesNotMatch(chatPanelSource, /className="chat-topbar"/, "输入栏收敛后消息流上方不再有独立横带");
   assert.match(chatPanelSource, /const showExecutionFlow = busy &&/, "SSE 执行流只在当前运行期间呈现");
-  const topbarStart = chatPanelSource.indexOf('<div className="chat-topbar">');
-  const chatBodyStart = chatPanelSource.indexOf('<div className="chat-body"', topbarStart);
-  const topbarSource = chatPanelSource.slice(topbarStart, chatBodyStart);
-  assert.doesNotMatch(topbarSource, /<ExecutionFlow/, "执行流不能再挂在对话顶部栏");
+  const chatBodyStart = chatPanelSource.indexOf('<div className="chat-body"');
   assert.ok(chatBodyStart >= 0 && chatPanelSource.indexOf("<ExecutionFlow", chatBodyStart) > chatBodyStart, "实时执行流应作为当前消息流的一部分呈现");
   assert.doesNotMatch(chatPanelSource, /className="task-status-bar"/, "顶部不再重复展示复杂状态栏");
   assert.doesNotMatch(stylesSource, /\.chat-body > \.execution-flow \{\s*position: sticky/, "消息内执行流不能吸顶遮挡消息");
@@ -67,7 +64,7 @@ try {
   assert.match(runSummarySource, /className=\{`product-card\$\{item\.deliverable \? " deliverable" : ""\}\$\{item\.confirmed \? "" : " provisional"\}`\}/, "本轮产物应渲染为文件卡片（图标 + 名称 + 类型，未确认的带待确认标记）");
   assert.match(runSummarySource, /className="product-card-badge">交付/, "产物卡片应标记交付项");
   assert.match(runSummarySource, /className="product-card-open"[\s\S]{0,200}?>打开</, "产物卡片应有“打开”按钮");
-  assert.match(runSummarySource, /productCards\.map/, "产物卡片应来自统一去重集合（不再截断成 6 项）");
+  assert.match(runSummarySource, /productCards\.slice\(0, 6\)\.map/, "产物卡片首屏最多 6 个，其余走产物面板");
   // 归属分层：write-ledger/已验收 = 已确认；"本轮写过 + 窗口内变更" = 待确认（可见但标注）；
   // 完全没有写入证据的差异才是"未归属线索"，不参与产物计数。
   assert.match(runSummarySource, /const attributedProducts = useMemo\(\(\) => products\.filter\(\(item\) => item\.attributed\)/, "产物应按归属过滤（未归属线索不计数）");
@@ -82,10 +79,11 @@ try {
   assert.doesNotMatch(runSummarySource, /run-summary-details/, "文件清单不再另起一层折叠，统一进结果区页签");
   assert.match(runSummarySource, /run-result-fold \$\{embedded \? "embedded" : ""\}/, "嵌入式结果摘要应服从消息级统一折叠");
   assert.doesNotMatch(runSummarySource, /任务轮次 \{m\.runIndex/, "常规对话结果头不显示任务轮次计数");
-  assert.match(runSummarySource, /useEffect\(\(\) => setSummaryOpen\(runIsLive\), \[runIsLive\]\)/, "任务结束时应自动收起结论与工具轨迹");
+  assert.match(runSummarySource, /useEffect\(\(\) => setSummaryOpen\(runIsLive \|\| hasSummaryText\), \[runIsLive, hasSummaryText\]\)/, "运行中/有总结时展开，过程仍单独折叠");
   assert.match(runSummarySource, /!embedded && \(trace\?\.tools\?\.length > 0/, "嵌入式结果卡不重复渲染工具明细");
   assert.match(runSummarySource, /run-trace-step-heading/, "独立结果摘要仍保留有序工具时间线");
-  assert.match(runSummarySource, /const fallbackSummary = finalAnswer \? ""/, "已有最终答案时结果卡不再重复展示结论");
+  assert.match(runSummarySource, /const summaryText = String\(completion\?\.summary/, "总结优先取完成摘要（推断来源即模型终稿）");
+  assert.match(runSummarySource, /const fallbackSummary = finalAnswer \? "" : \(summaryText \|\|/, "终稿存在时结果卡不再重复摘要");
   assert.match(chatPanelSource, /foldedProcessBlocks/, "思考、工具及运行中的进度播报应并入消息级过程卡");
   assert.match(chatPanelSource, /message-process-scroll/, "过程内容应在一个有界滚动容器中回看");
   assert.match(chatPanelSource, /<ExecutionFlow \{\.\.\.messageExecutionFlow\} embedded \/>/, "去重后的 SSE 轨迹应嵌入消息过程卡");
@@ -213,7 +211,8 @@ try {
   assert.match(livePlainStyles, /\.result-tabbed/, "结果区页签应有独立视觉分节");
   assert.match(livePlainStyles, /\.product-card-main/, "产物卡片应有可点击主体样式");
   assert.match(livePlainStyles, /\.artifact-inline \{/, "结论内嵌产物应有行内文件条样式");
-  assert.match(livePlainStyles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,220}?margin-left: auto;/, "无侧栏时消息列应居中（有侧栏时自适应）");
+  // 2026-11-03：内容列在对话区自身宽度内居中（右侧画布开/关时自动重新居中）。
+  assert.match(livePlainStyles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,220}?margin-left: auto;/, "消息列应在对话区内居中");
   // 会话定位导航栏：细横杠刻度（ZCode 风格），不再有轨道线/圆珠；当前阅读位置高亮
   const timelineSource = fs.readFileSync(new URL("../client/src/components/ChatTimeline.jsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   assert.doesNotMatch(timelineSource, /timeline-rail/, "导航栏不再画连续轨道线");
@@ -254,7 +253,8 @@ try {
   assert.doesNotMatch(widthStyles, /\.msg-main > \.message-process-fold \{ order: -1; \}/, "执行过程顺序应由 DOM 表达，不再用 flex order 制造视觉/阅读顺序错位");
   assert.match(chatPanelSource, /\{renderMessageBlocks\(\)\}[\s\S]{0,300}?<div className="msg-blocks">|className="msg-blocks">[\s\S]{0,60}?\{renderMessageBlocks\(\)\}/, "过程折叠与正文按输出顺序同列渲染");
   assert.match(widthStyles, /\.msg-main > \.msg-header \{ margin-bottom: 2px; order: -2; \}/, "标题应保持在最上方");
-  assert.match(widthStyles, /\.msg \.markdown-body \{ line-height: 1\.65; \}/, "对话正文行距应收紧");
+  // 规范 v2.0 §4：对话正文 14px / 行高 1.75（与 ZCode 同口径），不再压到 1.65。
+  assert.match(widthStyles, /\.msg \.markdown-body \{ font-size: 14px; line-height: 1\.75; \}/, "对话正文应为 14px / 1.75");
   assert.match(chatPanelSource, /待审批：\{approvalLabel\}/, "待审批应显示在输入栏");
   assert.match(chatPanelSource, /待回答：\{String\(ask\.question/, "待回答应显示在输入栏");
   assert.match(chatPanelSource, /\/api\/agent\/approval/, "输入栏可直接提交审批");
@@ -267,7 +267,7 @@ try {
   assert.match(chatPanelSource, /const renderMessageBlocks = \(\) => renderSegments\.map/, "过程折叠应按片段渲染，并包含去重后的 SSE 轨迹");
   assert.match(chatPanelSource, /isLastProcess && messageExecutionFlow && <ExecutionFlow \{\.\.\.messageExecutionFlow\} embedded \/>/, "SSE 轨迹只挂在最后一个过程片段里");
   assert.doesNotMatch(chatPanelSource.slice(chatPanelSource.indexOf("const renderProcessBlock ="), chatPanelSource.indexOf("className=\"msg-blocks\"")), /RunSummary/, "结果卡不得再渲染进过程折叠容器");
-  assert.match(chatPanelSource, /className="msg-blocks">[\s\S]{0,120}?\{renderMessageBlocks\(\)\}[\s\S]{0,900}?assistant-final-answer[\s\S]{0,700}?\{runSummary && \(\s*<RunSummary/, "DOM 顺序应为：过程与正文 → 答案 → 结果与产物");
+  assert.match(chatPanelSource, /className="msg-blocks">[\s\S]{0,120}?\{renderMessageBlocks\(\)\}[\s\S]{0,900}?assistant-final-answer[\s\S]{0,1500}?\{runSummary && \(\s*<RunSummary/, "DOM 顺序应为：过程与正文 → 答案 → 结果与产物");
   assert.match(chatPanelSource, /authoritativeFinalText[\s\S]{0,220}assistant-final-answer/, "简洁的权威最终答复仍保持可见");
   // 结论内嵌产物：正文里提到的产物名与本地文件链接渲染为可点击文件条（点击打开预览）。
   assert.match(chatPanelSource, /artifacts=\{answerArtifacts\}/, "结论正文应带本轮产物索引");
@@ -283,7 +283,7 @@ try {
   assert.match(chatPanelSource, /未被分组消费的提醒消息同样不渲染/, "渲染层应有提醒兜底过滤");
   assert.match(chatPanelSource, /const open = typeof override === "boolean" \? override : isLiveFold;/, "运行中的过程片段默认展开，其余收成一行摘要（用户点过按用户选择）");
   assert.match(chatPanelSource, /else if \(!isTaskLive && processWasLiveRef\.current\)[\s\S]{0,120}setProcessOpenMap\(\{\}\)/, "运行完成后统一收束过程卡");
-  assert.match(chatPanelSource, /const \[summaryOpen, setSummaryOpen\] = useState\(runIsLive\)/, "运行中展开、结束后收起总结");
+  assert.match(chatPanelSource, /const \[summaryOpen, setSummaryOpen\] = useState\(runIsLive \|\| hasSummaryText\)/, "运行中/有总结时默认展开，过程单独折叠");
   assert.match(serverSource, /function officeResults\(response\)/, "Excel 解析应兼容 Office CLI 结果结构");
   assert.match(serverSource, /s\.path \|\| `\/\$\{s\.name\}`/, "Excel 工作表读取应使用 DOM 路径");
   assert.match(serverSource, /ext === "xlsx" \|\| ext === "xls"/, "Excel 预览应同时识别 xlsx/xls");
@@ -308,7 +308,8 @@ try {
   // UI 的模式说明不可混入用户输入；普通 Agent 任务不应因此误触发 Office 或 Skills。
   const plan = planTaskCapabilities({ text: "测试一下", task: { mode: "agent" } });
   assert.equal(plan.routing.officecli, "not_needed");
-  assert.equal(plan.routing.skills, "available_on_demand");
+  // 2026-11-06 技能路由：DESIGN §7 要求每轮注入技能目录，普通任务返回 catalog。
+  assert.equal(plan.routing.skills, "catalog");
   assert.equal(isGlobalSearchCommand('find / -name "梳理总结"'), true);
   assert.equal(isGlobalSearchCommand('find . -name "梳理总结"'), false);
   assert.equal(normalizeBashOptions({}).timeout, bashTimeoutPolicy.defaultSeconds);
@@ -391,7 +392,7 @@ try {
   assert.match(appSource, /const previewAutoOpen = appearance\.previewAutoOpen;/, "App 应消费自动打开预览策略");
   assert.match(appSource, /if \(previewAutoOpen === "never"\) return;/, "never 应从不自动打开");
   assert.match(appSource, /if \(previewAutoOpen === "deliverable"\) \{[\s\S]{0,200}?acceptanceStatus/, "deliverable 应只认通过验收的交付文件");
-  assert.match(appSource, /\}, \[activeTab, currentWorkspace, flushFileChanges, open, previewAutoOpen, previewOpen, tabs, threadId\]\)/, "策略变化、焦点守卫与刷新合并应立即生效（依赖数组）");
+  assert.match(appSource, /\}, \[activeCanvasTab\?\.kind, activeTab, currentWorkspace, flushFileChanges, open, previewAutoOpen, tabs, threadId\]\)/, "策略变化、焦点守卫与刷新合并应立即生效（依赖数组）");
 
   // 卡死防护：同源 HTTP/1.1 只有 6 个连接槽位，SSE 长期占位。
   // App 不再为"浏览器活跃"常驻第二条 /api/browser/stream，改由对话流的工具事件驱动。

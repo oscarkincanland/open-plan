@@ -257,8 +257,8 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
       {/* 工具栏 */}
       <div className="memory-toolbar">
         <button className="btn-sm" onClick={refresh}>刷新</button>
-        <button className="btn-sm" onClick={handleInit} disabled={loading}>
-          {loading ? "创建中..." : "初始化记忆"}
+        <button className="btn-sm" onClick={handleInit} disabled={loading} title="按本项目特点创建 AGENTS.md 与 memory/MEMORY.md（已存在则不覆盖）">
+          {loading ? "创建中..." : "初始化项目约定"}
         </button>
       </div>
 

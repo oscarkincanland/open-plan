@@ -1,47 +1,58 @@
 /**
- * 资源发现（H3-4 读取侧）
+ * 资源发现（H3-4 读取侧，2026-11-04 技能目录改造）
  *
- * 把“同名资源用了哪一份”从隐式顺序变成带 source 的候选列表：
- *   显式 > 用户目录 > 工作区目录 > 额外目录
- * 本模块只做纯路径排序与来源标注，不读文件内容、不改既有默认顺序。
+ * 技能根按“当前任务 workspace > 应用项目 > 用户目录”排序：
+ *   1. <workspace>/.zcode/skills、.agents/skills、.pi/skills、.claude/skills、.oaw/skills
+ *   2. <projectDir>/.agents/skills、.pi/skills、.claude/skills、父目录 .claude/skills
+ *   3. agentDir/skills、~/.agents/skills、~/.claude/skills
+ *
+ * 早先只扫 projectDir（应用仓库），任务工作区里的技能完全不可见；
+ * 这里把 workspace 作为一等来源，并按 rank 升序返回（rank 越小越优先）。
+ * 同名技能由调用方按数组顺序先到先得。
+ *
+ * @returns {Array<{path:string, source:string, rank:number, kind:string}>}
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { discoverResources } from "./配置来源.mjs";
 
-/**
- * @returns {Array<{path:string, source:string, rank:number, kind:string}>}
- */
 export function skillRootCandidates({
   agentDir = "",
   userProfile = process.env.USERPROFILE || os.homedir(),
   projectDir = "",
+  workspace = "",
 } = {}) {
-  const userRoots = [
-    agentDir ? path.join(agentDir, "skills") : "",
-    path.join(userProfile, ".agents", "skills"),
-    path.join(userProfile, ".claude", "skills"),
-  ].filter(Boolean);
-  const workspaceRoots = [
-    projectDir ? path.join(projectDir, ".agents", "skills") : "",
-    projectDir ? path.join(projectDir, ".pi", "skills") : "",
-    projectDir ? path.join(projectDir, ".claude", "skills") : "",
-    projectDir ? path.resolve(projectDir, "..", ".claude", "skills") : "",
-  ].filter(Boolean);
-  const kindByPath = new Map([
-    [agentDir ? path.join(agentDir, "skills") : "", "agent.skills"],
-    [path.join(userProfile, ".agents", "skills"), "user.agents"],
-    [path.join(userProfile, ".claude", "skills"), "user.claude"],
-    [projectDir ? path.join(projectDir, ".agents", "skills") : "", "project.agents"],
-    [projectDir ? path.join(projectDir, ".pi", "skills") : "", "project.pi"],
-    [projectDir ? path.join(projectDir, ".claude", "skills") : "", "project.claude"],
-    [projectDir ? path.resolve(projectDir, "..", ".claude", "skills") : "", "parent.claude"],
-  ]);
-  return discoverResources({ user: userRoots, workspace: workspaceRoots }).map((item) => ({
-    ...item,
-    kind: kindByPath.get(item.path) || item.source,
-  }));
+  const roots = [];
+  const push = (base, sub, kind, rank, source) => {
+    if (!base) return;
+    roots.push({ path: path.resolve(base, sub), kind, rank, source });
+  };
+  if (workspace) {
+    push(workspace, ".zcode/skills", "workspace.zcode", 10, "workspace");
+    push(workspace, ".agents/skills", "workspace.agents", 11, "workspace");
+    push(workspace, ".pi/skills", "workspace.pi", 12, "workspace");
+    push(workspace, ".claude/skills", "workspace.claude", 13, "workspace");
+    push(workspace, ".oaw/skills", "workspace.oaw", 14, "workspace");
+  }
+  if (projectDir) {
+    push(projectDir, ".agents/skills", "project.agents", 20, "project");
+    push(projectDir, ".pi/skills", "project.pi", 21, "project");
+    push(projectDir, ".claude/skills", "project.claude", 22, "project");
+    push(path.resolve(projectDir, ".."), ".claude/skills", "parent.claude", 23, "project");
+  }
+  if (agentDir) push(agentDir, "skills", "agent.skills", 30, "user");
+  push(userProfile, ".agents/skills", "user.agents", 31, "user");
+  push(userProfile, ".claude/skills", "user.claude", 32, "user");
+
+  const seen = new Set();
+  return roots
+    .filter((item) => {
+      const key = process.platform === "win32" ? item.path.toLowerCase() : item.path;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((left, right) => left.rank - right.rank);
 }
 
 export function listExistingSkillRoots(options = {}) {

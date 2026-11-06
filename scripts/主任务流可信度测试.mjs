@@ -16,6 +16,7 @@ import fs from "node:fs";
 // 而下面若干断言用 `\n` 写多行源码形状，不归一会「本地红、CI 绿」地漂移。
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const 对话面板 = read("../client/src/components/ChatPanel.jsx");
+const 欢迎卡片 = read("../client/src/components/欢迎卡片.jsx");
 const 命令面板 = read("../client/src/components/CommandPalette.jsx");
 const 图标 = read("../client/src/components/Icon.jsx");
 const 样式 = read("../client/src/styles.css");
@@ -52,10 +53,11 @@ assert.match(样式, /\.agent-brief-grid/, "知情信息应有样式");
 assert.match(对话面板, /const EMPTY_EXAMPLES = \{/, "应有按模式划分的空白态示例");
 assert.match(对话面板, /chat: \{[\s\S]*?全程不会修改文件/, "Chat 空白态应说明只读");
 assert.match(对话面板, /const emptyExample = EMPTY_EXAMPLES\[normalizeUiMode\(editMode\)\]/, "空白态应按当前模式取示例");
-// 会话流改版后空白态由「欢迎卡片」组件承担（原 chat-empty 容器与 chat-empty-example 已下线），
-// 断言改为校验"按模式渲染欢迎卡片并传入示例"。
-assert.match(对话面板, /<欢迎卡片[\s\S]{0,200}?mode=\{normalizeUiMode\(editMode\)\}/, "空白态应按模式渲染欢迎卡片");
+// 空白态由「欢迎卡片」组件承担：模式标记与示例由 props 传入。
+assert.match(欢迎卡片, /className=\{`chat-empty mode-\$\{mode\}`\}/, "空白态应带模式标记");
+assert.match(对话面板, /<欢迎卡片[\s\S]{0,200}?mode=\{normalizeUiMode\(editMode\)\}/, "欢迎卡片应按当前模式渲染");
 assert.match(对话面板, /<欢迎卡片[\s\S]{0,300}?emptyExample=\{emptyExample\}/, "欢迎卡片应取当前模式的示例");
+assert.match(欢迎卡片, /chat-empty-example/, "示例应可点击填入输入框");
 {
   const chatBlock = 对话面板.slice(对话面板.indexOf("chat: {"), 对话面板.indexOf("agent: {"));
   assert.doesNotMatch(chatBlock, /改成|填入|生成一份/, "Chat 只读模式的示例不得引导改文件/生成产物");
@@ -75,12 +77,12 @@ assert.match(对话面板, /const modelSections = useMemo/, "应有当前/最近
 assert.match(对话面板, /title: "当前使用"/, "应有当前使用分区");
 assert.match(对话面板, /title: "最近使用"/, "应有最近使用分区");
 assert.match(对话面板, /title: "收藏"/, "应有收藏分区");
-assert.match(对话面板, /全部模型（\{models\.length\}）/, "应保留可展开的全部模型高级入口");
+assert.match(对话面板, /全部模型（\{modelGroups\.reduce\(/, "应保留可展开的全部模型高级入口（按当前供应商过滤后计数）");
 assert.match(对话面板, /function modelCapabilityLabel\(model\)/, "能力标签应走统一函数");
 assert.match(对话面板, /typeof model\.vision === "boolean"/, "能力标签应基于真实 vision 元数据");
 assert.match(对话面板, /Number\(model\.contextWindow\)/, "能力标签应读取真实上下文窗口");
 assert.doesNotMatch(对话面板, /m\.vision \? "支持图片" : "文本"/, "不应再按布尔直接猜能力文案");
-assert.match(图标, /star: \(/, "应提供收藏图标");
+assert.match(图标, /star: IconStar/, "应提供收藏图标");
 
 // 4. 运行态：下一步 + 待审批定位，详细事件可展开
 assert.match(对话面板, /const nextStepText = useMemo/, "应派生当前下一步");
@@ -109,7 +111,9 @@ assert.match(对话面板, /import \{[^}]*projectLegacyRunSummary[^}]*\} from "\
 assert.match(对话面板, /const fileChanges = useMemo\(\(\) => changes\.filter\(\(change\) => change\.role !== "internal"\)/, "文件改动应来自投影的单一份集合");
 // 最终答案只在助手正文显示；结果卡只给状态与文件入口。
 assert.match(对话面板, /const finalAnswer = String\(view\.answer\?\.text \|\| m\.authoritativeFinalText/, "结果卡应识别已显示的权威答案");
-assert.match(对话面板, /const fallbackSummary = finalAnswer \? ""/, "有最终答案时不得再显示 completion 摘要");
+// 2026-11-03 口径：最终答复就是整体结论。终稿已在正文/结论区完整展示时，
+// 结果卡不再重复一段压缩摘要；只有历史记录缺少终稿时才退回 summary/正文。
+assert.match(对话面板, /const fallbackSummary = finalAnswer \? "" : \(summaryText \|\|/, "终稿存在时结果卡不再重复摘要");
 assert.doesNotMatch(对话面板, /run-result-conclusion/, "结果卡不能再生成第二份折叠结论");
 assert.match(对话面板, /交付产物 \{deliverables\.length\}/, "交付产物应单独成入口");
 assert.doesNotMatch(对话面板, /m\.products\.map/, "结果卡不应再单独渲染产物标签（与变更重复）");

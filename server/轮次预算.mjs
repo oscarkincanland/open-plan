@@ -25,12 +25,16 @@ export function turnNoticeKind(turnCount, {
   soft = TURN_BUDGET_SOFT,
   hard = TURN_BUDGET_HARD,
   minTurns = TURN_PROGRESS_MIN_TURNS,
+  budget = true,
 } = {}) {
   const turn = Number(turnCount || 0);
   if (!Number.isFinite(turn) || turn <= 0) return null;
-  // 关键点优先：25/45 轮是明确的收尾节点，不能被周期播报顶掉
-  if (turn === soft) return "turn-budget";
-  if (turn === hard) return "turn-budget-hard";
+  // 无上限模式只保留周期进度小结，不再注入 25/45 的预算/收尾提醒。
+  if (budget) {
+    // 关键点优先：25/45 轮是明确的收尾节点，不能被周期播报顶掉
+    if (turn === soft) return "turn-budget";
+    if (turn === hard) return "turn-budget-hard";
+  }
   if (interval > 0 && turn >= minTurns && turn % interval === 0) return "turn-progress";
   return null;
 }
@@ -44,7 +48,7 @@ export function turnNoticeText(kind, turnCount, { interval = TURN_PROGRESS_INTER
     case "turn-budget":
       return `[系统提醒] 本轮已经进行 ${turn} 个模型回合。请先给出一段阶段结论（已完成什么、还差什么、下一步计划），并用 ask_user 询问用户是否继续，不要无汇报地继续扩大范围。`;
     case "turn-budget-hard":
-      return `[系统提醒] 本轮已经进行 ${turn} 个模型回合，已明显超出常规预算。请立即收尾：总结当前结果、把未完成项写入 complete_task 的 incomplete，并调用 complete_task 结束本轮，剩余工作交给用户决定是否新开一轮。`;
+      return `[系统提醒] 本轮已经进行 ${turn} 个模型回合，已明显超出常规预算。请立即收尾：直接给用户最终答复，写清当前结果与未完成项，结束本轮，剩余工作交给用户决定是否新开一轮。`;
     default:
       return "";
   }

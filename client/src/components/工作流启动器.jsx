@@ -135,8 +135,8 @@ export default function 工作流启动器({ onClose }) {
         <>
           <p className="wf-desc">{当前.description}</p>
           <div className="wf-meta">
-            <span className="wf-chip" title="预算上限：模型回合 / 工具调用 / 墙钟时长">
-              <Icon name="route" size={12} /> {当前.budget.maxTurns} 回合 · {当前.budget.maxToolCalls} 次工具 · {格式预算(当前.budget.maxWallMs)}
+            <span className="wf-chip" title="运行不设回合/工具/时长上限；以下只是完成同名任务的历史参考规模">
+              <Icon name="route" size={12} /> 不设上限 · 参考 {当前.budget.maxTurns} 回合 / {当前.budget.maxToolCalls} 次工具 / 约 {格式预算(当前.budget.maxWallMs)}
             </span>
             <span className="wf-chip" title="前置硬约束（失败即阻断）">
               <Icon name="lock" size={12} /> {当前.preflight.map((项) => 预检标签[项] || 项).join(" / ") || "无"}

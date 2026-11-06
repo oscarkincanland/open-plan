@@ -10,16 +10,31 @@
  */
 
 const TRUTHY = new Set(["1", "true", "on", "yes"]);
+const FALSY = new Set(["0", "false", "off", "no"]);
 
 function readFlag(name) {
   const raw = String(process.env?.[name] ?? "").trim().toLowerCase();
   return TRUTHY.has(raw);
 }
 
-/** 读取一个显式关闭值（"0"/"off"/"false"/"no"）：用于"默认开、env 可退出"的开关。 */
-function readOffFlag(name) {
+/**
+ * 默认开启的开关：未设置环境变量时返回 defaultValue；
+ * 显式 0/false/off 关闭，显式 1/true/on 开启，其它值回落默认值。
+ */
+export function readFlagDefault(name, defaultValue = true) {
   const raw = String(process.env?.[name] ?? "").trim().toLowerCase();
-  return raw === "0" || raw === "off" || raw === "false" || raw === "no";
+  if (!raw) return defaultValue;
+  if (TRUTHY.has(raw)) return true;
+  if (FALSY.has(raw)) return false;
+  return defaultValue;
+}
+
+/**
+ * 读取一个显式关闭值（"0"/"off"/"false"/"no"）：用于"默认开、env 可退出"的开关。
+ * 统一走 readFlagDefault，保证「默认开、显式可退出」只有一处语义来源。
+ */
+function readOffFlag(name) {
+  return !readFlagDefault(name, true);
 }
 
 function readPositiveInt(name, fallback) {
@@ -50,6 +65,11 @@ const BROWSER_ATOMIC = readFlag("OAW_BROWSER_ATOMIC");
 
 /** 只读快照：进程内唯一事实。模块加载时解析一次（服务生命周期内不热更）。 */
 export const RUNTIME_FLAGS = Object.freeze({
+  /** 运行预算：默认无上限（不再按 25/45 回合、80/160 工具、45/90 分钟强制收尾）。
+      显式 OAW_RUN_BUDGET_UNLIMITED=0 可恢复旧的限额行为。 */
+  runBudgetUnlimited: readFlagDefault("OAW_RUN_BUDGET_UNLIMITED", true),
+  /** 后台任务：长工具调用超过阈值自动转后台（默认开，OAW_BACKGROUND_JOBS=0 可关）。 */
+  backgroundJobs: readFlagDefault("OAW_BACKGROUND_JOBS", true),
   /** U2+U6：Pi 把关扩展（ToolCallEvent 单工具拦截 + 压缩生命周期事件增强） */
   piToolGateExtension: readFlag("OAW_PI_TOOL_GATE"),
   /** U5：bash 侧车执行（operations 派发到子进程） */
@@ -108,20 +128,20 @@ export const RUNTIME_FLAGS = Object.freeze({
   resumeAutoRetry: readFlag("OAW_RESUME_AUTO_RETRY"),
   /** GIS G1：空间分析算子（buffer/spatial_filter/bbox_clip，默认关） */
   spatialAnalysis: readFlag("OAW_SPATIAL_ANALYSIS"),
-  /** GIS G8：地图分析报告一键成文（/api/map/report + 面板按钮，默认关） */
-  mapReport: readFlag("OAW_MAP_REPORT"),
-  /** GIS G7：批量导出队列（多项目×多图层×多尺寸×PNG/PDF，默认关；PDF/截图复用 B4 底座） */
-  mapExport: readFlag("OAW_MAP_EXPORT"),
+  /** GIS G8：地图分析报告一键成文（/api/map/report + 面板按钮，默认开启；OAW_MAP_REPORT=0 关闭） */
+  mapReport: readFlagDefault("OAW_MAP_REPORT", true),
+  /** GIS G7：批量导出队列（多项目×多图层×多尺寸×PNG/PDF，默认开启；OAW_MAP_EXPORT=0 关闭） */
+  mapExport: readFlagDefault("OAW_MAP_EXPORT", true),
   /** GIS G2：外部数据适配器（live-traffic-api / sql-database，默认关） */
   dataAdapters: readFlag("OAW_DATA_ADAPTERS"),
   /** GIS G3：高德 MCP 桥（mcp.amap.com 官方 ?key= 协议豁免 + 预置模板，默认关） */
   amapMcpBridge: readFlag("OAW_AMAP_MCP_BRIDGE"),
-  /** GIS G9：地图项目打包 zip 归档导出（默认关） */
-  mapPack: readFlag("OAW_MAP_PACK"),
-  /** GIS G5：场景化分析模板（v1 仅 OD 通勤分析，默认关） */
-  mapTemplates: readFlag("OAW_MAP_TEMPLATES"),
-  /** GIS G10-v1：视图书签（视角收藏与一键恢复，默认关） */
-  mapBookmarks: readFlag("OAW_MAP_BOOKMARKS"),
+  /** GIS G9：地图项目打包 zip 归档导出（默认开启；OAW_MAP_PACK=0 关闭） */
+  mapPack: readFlagDefault("OAW_MAP_PACK", true),
+  /** GIS G5：场景化分析模板（v1 仅 OD 通勤分析，默认开启；OAW_MAP_TEMPLATES=0 关闭） */
+  mapTemplates: readFlagDefault("OAW_MAP_TEMPLATES", true),
+  /** GIS G10-v1：视图书签（视角收藏与一键恢复，默认开启；OAW_MAP_BOOKMARKS=0 关闭） */
+  mapBookmarks: readFlagDefault("OAW_MAP_BOOKMARKS", true),
   /** 会话恢复 A4：运行中刷新恢复（冷启动探测 LIVE Run + Run 起点整段回放 + 恢复内容新建气泡，默认关） */
   replayRecover: readFlag("OAW_REPLAY_RECOVER"),
   /** Qoder 对标总开关：打开后整族优化项生效（默认关；关掉即整体回滚） */
@@ -169,6 +189,12 @@ export const RUNTIME_FLAGS = Object.freeze({
   qoderInteractionOwner: readFlag("OAW_QODER_INTERACTION_OWNER") || QODER_ALIGN,
   /** Office 写作规范层：模板路由 / 场景参数 / 版式令牌 / 规则闸门（默认关 = 旧行为逐字一致） */
   officeFormat: readFlag("OAW_OFFICE_FORMAT"),
+  /* ===== CAD 能力（2026-10-21 方案评审通过：DXF/DWG 预览 + agent 读取/修改）===== */
+  /** CAD 预览：DXF/DWG 进文件树白名单 + /api/doc 预览分支 + CadViewer。
+      2026-11-06 起默认开（纯只读 SVG 渲染，用户反馈「图纸点不开」；OAW_CAD_PREVIEW=0 可整体回退基线）。 */
+  cadPreview: readFlagDefault("OAW_CAD_PREVIEW", true),
+  /** CAD agent 能力：documentRead 读取 CAD + cad_read/cad_edit 工具（默认关，写能力保留显式开启） */
+  cadAgent: readFlag("OAW_CAD_AGENT"),
 
   /* ===== ZCode Harness 对标开关族（默认全关）===== */
   /** 总开关：一键打开 H 线整族（仅测试/预览；关闭即整体回滚） */
@@ -294,6 +320,8 @@ export function runtimeFlagsSnapshot() {
     qoderToolOutputSplit: RUNTIME_FLAGS.qoderToolOutputSplit,
     qoderInteractionOwner: RUNTIME_FLAGS.qoderInteractionOwner,
     officeFormat: RUNTIME_FLAGS.officeFormat,
+    cadPreview: RUNTIME_FLAGS.cadPreview,
+    cadAgent: RUNTIME_FLAGS.cadAgent,
     // ZCode Harness 对标开关族
     harnessAlign: RUNTIME_FLAGS.harnessAlign,
     toolMetadata: RUNTIME_FLAGS.toolMetadata,

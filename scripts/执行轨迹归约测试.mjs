@@ -19,7 +19,7 @@ import {
   turnMetricsText,
   verificationLabel,
 } from "../client/src/运行轨迹.js";
-import { inferCompletion, normalizeCompletion } from "../server/运行轨迹.mjs";
+import { inferCompletion, summarizeFinalText } from "../server/运行轨迹.mjs";
 
 let failed = 0;
 function ok(msg) { console.log(`  ✓ ${msg}`); }
@@ -209,22 +209,14 @@ test("run_finished 的验收状态进入摘要与标签", () => {
 // ---------- 4. 服务端完成模块 ----------
 console.log("\n▶ 服务端完成模块");
 
-test("normalizeCompletion 校验状态与摘要", () => {
-  assert.equal(normalizeCompletion({ status: "nope", summary: "x" }), null);
-  assert.equal(normalizeCompletion({ status: "success", summary: "  " }), null);
-  const value = normalizeCompletion({ status: "success", summary: "已生成报告", verification: "read 回读通过" });
-  assert.equal(value.status, "success");
-  assert.equal(value.source, "explicit");
-  assert.equal(value.verification, "read 回读通过");
-});
-
-test("结论可承载详细 Markdown（上限放宽，不再截到 600 字）", () => {
+test("终稿清洗为一行摘要（长文不被截到 600 字以内）", () => {
   const long = "## 成果\n" + "- 要点一\n".repeat(200); // 约 1000+ 字
-  const value = normalizeCompletion({ status: "success", summary: long, incomplete: Array.from({ length: 15 }, (_, i) => `未完成项 ${i + 1}`) });
+  const value = summarizeFinalText(long);
   assert.ok(value, "长结论应被接受");
-  assert.ok(value.summary.length > 600, `长结论不应被截到 600 字，实际 ${value.summary.length}`);
-  assert.match(value.summary, /## 成果/, "Markdown 结构应保留");
-  assert.equal(value.incomplete.length, 15, "未完成项上限应放宽到 20");
+  assert.ok(value.length > 200, `长结论不应被截得过短，实际 ${value.length}`);
+  assert.ok(value.length <= 401, `摘要应截到 400 字 + 省略号，实际 ${value.length}`);
+  assert.doesNotMatch(value, /##/, "Markdown 标题符号应被清洗");
+  assert.doesNotMatch(value, /\n/, "摘要应是单行");
 });
 
 test("inferCompletion 区分失败/取消/部分完成", () => {
@@ -232,6 +224,10 @@ test("inferCompletion 区分失败/取消/部分完成", () => {
   assert.equal(inferCompletion({ runStatus: "failed" }).status, "failed");
   assert.equal(inferCompletion({ runStatus: "cancelled" }).status, "cancelled");
   assert.equal(inferCompletion({ runStatus: "completed", validations: [{ status: "failed" }] }).status, "partial");
+  // 结论优先取模型终稿；没有终稿才回退通用文案
+  assert.match(inferCompletion({ runStatus: "completed", finalText: "已完成两份评估报告" }).summary, /已完成两份评估报告/);
+  assert.match(inferCompletion({ runStatus: "completed", artifacts: 3 }).summary, /任务结束，产生 3 项文件变更/);
+  assert.equal(inferCompletion({ runStatus: "completed" }).source, "inferred");
 });
 
 // ---------- 每轮用时与 token（用户要求：计划/执行事件表隐藏，改成逐轮指标）----------

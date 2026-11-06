@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
-import { listSkills, listWorkflows, exportSkill, importSkill, validateWorkflow } from "../api.js";
+import { listSkills, listSkillDrafts, installSkillDraft, discardSkillDraft, listWorkflows, exportSkill, importSkill, validateWorkflow } from "../api.js";
 import Icon from "./Icon.jsx";
+import { askConfirm } from "./Feedback.jsx";
 import RetrievalChat from "./检索对话.jsx";
 
 /**
@@ -59,6 +60,8 @@ const WORKFLOWS = [
 
 export default function SkillsManager({ open, onClose, onAtMention, clientId, workspace = "", project = null, models = [], defaultModel = "", onPromoteToAgent, fullPage = false }) {
   const [skills, setSkills] = useState([]);
+  // 2026-11-03：模型生成的技能草稿，只有用户确认后才安装到技能库。
+  const [drafts, setDrafts] = useState([]);
   const [workflows, setWorkflows] = useState(WORKFLOWS);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
@@ -76,14 +79,40 @@ export default function SkillsManager({ open, onClose, onAtMention, clientId, wo
       const d = await listSkills();
       setSkills(d.skills || []);
       try {
+        const draftResult = await listSkillDrafts(workspace);
+        setDrafts(Array.isArray(draftResult?.drafts) ? draftResult.drafts : []);
+      } catch {}
+      try {
         const w = await listWorkflows();
         if (w.workflows?.length) setWorkflows(w.workflows);
       } catch {}
     } catch (e) { setMsg("加载失败: " + e.message); }
     setLoading(false);
-  }, []);
+  }, [workspace]);
 
   useEffect(() => { if (open) refresh(); }, [open, refresh]);
+
+  const handleInstallDraft = async (draft) => {
+    if (!(await askConfirm(`安装技能草稿「${draft.name}」到技能库？同名技能默认不覆盖。`))) return;
+    try {
+      await installSkillDraft(draft.name, workspace, false);
+      setMsg(`已安装技能：${draft.name}`);
+      await refresh();
+    } catch (error) {
+      setMsg(`安装失败：${error.message}`);
+    }
+  };
+
+  const handleDiscardDraft = async (draft) => {
+    if (!(await askConfirm(`丢弃技能草稿「${draft.name}」？`))) return;
+    try {
+      await discardSkillDraft(draft.name, workspace);
+      setMsg(`已丢弃草稿：${draft.name}`);
+      await refresh();
+    } catch (error) {
+      setMsg(`丢弃失败：${error.message}`);
+    }
+  };
 
   // 按分类聚合（hooks 必须无条件执行）
   const grouped = useMemo(() => {
@@ -196,6 +225,25 @@ export default function SkillsManager({ open, onClose, onAtMention, clientId, wo
         </div>
 
         {msg && <div className="modal-msg">{msg}</div>}
+
+        {drafts.length > 0 && (
+          <div className="skills-drafts" role="note">
+            <div className="skills-drafts-head"><Icon name="bookmark" size={12} /> 技能草稿（{drafts.length}，待确认）</div>
+            <div className="skills-drafts-hint">草稿由复杂任务生成，只存在工作区；点击「安装」才会写入技能库。</div>
+            {drafts.map((draft) => (
+              <div className="skills-draft-item" key={draft.name}>
+                <div className="skills-draft-main">
+                  <strong>{draft.name}</strong>
+                  <small>{draft.description || "无简介"}</small>
+                </div>
+                <div className="skills-draft-actions">
+                  <button type="button" className="btn-xs primary" onClick={() => handleInstallDraft(draft)}>安装到技能库</button>
+                  <button type="button" className="btn-xs" onClick={() => handleDiscardDraft(draft)}>丢弃</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {chatOpen && (
           <div className="skills-chat-panel">

@@ -16,7 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { flowEventTone, runConclusion, toolIdentity } from "../client/src/事件展示.js";
-import { applyObjectiveDowngrade } from "../server/运行轨迹.mjs";
+import { applyObjectiveDowngrade, inferCompletion, summarizeFinalText } from "../server/运行轨迹.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -44,6 +44,7 @@ const agent源 = read("server/agent.mjs");
 const index源 = read("server/index.mjs");
 // 成功/异常/截断收口已迁到执行句柄；恢复路径仍在 index.mjs。
 const 执行句柄源 = read("server/执行句柄.mjs");
+const { allModeToolNames } = await import("../server/task.mjs");
 
 // ---------- 1. 运行终态（Run 生命周期层） ----------
 console.log("\n▶ 运行终态与语气");
@@ -103,20 +104,21 @@ test("思维 / 搜索 / 读写 / 终端 / 浏览器 / Office / 知识库 / 审�
 });
 
 test("内置工具清单全部映射到确定图标（无遗漏、无异常）", () => {
-  // agent.mjs 里还有子代理等较短的 tools 清单；内置工具清单是最长的那一个，按此取用。
-  const candidates = [...agent源.matchAll(/tools: \[([^\]]+)\]/g)].map((m) => m[1]);
-  const toolsLine = candidates.reduce((longest, item) => (item.length > (longest?.length || 0) ? item : longest), null);
-  assert.ok(toolsLine, "应能从 agent.mjs 解析出内置工具清单");
-  const names = [...toolsLine.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  // 工具清单的唯一来源是 server/task.mjs 的模式白名单并集（agent.mjs 不再维护第二份清单）。
+  const names = allModeToolNames();
   assert.ok(names.length >= 30, `工具清单应完整（实际 ${names.length} 项）`);
   const expected = {
     read: "file", context_read: "file",
     write: "edit", edit: "edit", review_source_apply: "edit",
     bash: "terminal", officecli: "doc",
     grep: "search", find: "search", ls: "search", web_search: "search", web_fetch: "search",
-    kb_search: "book", kb_read: "book", skills_search: "book", skills_read: "book", memory_update: "book",
+    kb_search: "book", kb_read: "book", skills_search: "book", skills_read: "book", memory_update: "book", skill_draft: "book",
+    job_status: "history", job_cancel: "history",
     map_read: "map", map_datasets: "map", map_edit: "map", map_import: "map", map_analyze: "map", map_template: "map", map_save_analysis: "map", map_clear_analysis: "map",
-    review_copy: "shield", ask_user: "comment", todo: "list", complete_task: "check", run_subagent: "flow",
+    map_layer_info: "map", map_reset: "map", map_project_create: "map",
+    review_copy: "shield", ask_user: "comment", todo: "list", run_subagent: "flow",
+    // 团队协作与子代理同属编排类
+    team_list: "flow", team_spawn: "flow", team_send: "flow", team_wait: "flow", team_task: "flow",
     // P2-A：编辑流水线与子代理同属编排类
     editorial_pipeline: "flow",
   };
@@ -140,7 +142,7 @@ test("语义图标与状态徽记是两套：语义文件独立、工具卡同�
   assert.match(对话面板, /className=\{`tool-icon \$\{done \? \(isError \? "err" : "ok"\) : "run"\}`\}/);
   // 思维图标与工具图标都由映射表驱动，颜色之外保留文字
   assert.match(事件展示, /export function toolIdentity\(/);
-  assert.match(图标, /\n  brain: \(/);
+  assert.match(图标, /\n  brain: IconBrain,/);
 });
 
 // ---------- 3. 客观结果降级（服务端） ----------
@@ -256,11 +258,11 @@ test("新 Run 开始即清空终稿缓存（跨 Run 隔离）", () => {
   assert.match(agent源, /entry\.lastFinalText = "";/);
   assert.match(agent源, /entry\.suppressFinalText = false;/);
 });
-test("提醒回合不得生成第二份用户终稿", () => {
-  assert.match(agent源, /const previousSuppressFinalText = entry\.suppressFinalText/);
-  assert.match(agent源, /entry\.suppressFinalText = true/);
-  assert.match(agent源, /entry\.suppressFinalText = previousSuppressFinalText/);
-  assert.match(agent源, /if \(entry\.lastAssistantText && !entry\.suppressFinalText\)/);
+test("不再有提醒回合，终稿只有主回合一份", () => {
+  // 显式完成声明与「补一句收尾」的提醒回合都已移除：只有主回合产生终稿。
+  assert.doesNotMatch(agent源, /suppressFinalText = previousSuppressFinalText/, "不应再有补充提醒回合");
+  assert.doesNotMatch(agent源, /completion_nudge/, "不应再发 completion_nudge");
+  assert.match(agent源, /if \(entry\.lastAssistantText && !entry\.suppressFinalText\)/, "终稿仍只取主回合文本");
 });
 test("终稿有唯一写入点，recordRunEvent 的 assistant_final 走幂等路径", () => {
   assert.match(runs源, /export function recordRunFinalText/);
@@ -278,14 +280,34 @@ test("run_finished 携带 finalText 与 finalMessageId", () => {
 test("结论详细度：提示词允许结构化成果摘要，Run 摘要优先用结论", () => {
   // 生成端：不再强制「1-3 句、禁止 Markdown」，有成果时允许结构化 Markdown
   assert.match(agent源, /当本轮产生了文件、报告、数据、代码改动等成果时，用简洁但完整的 Markdown 把成果讲清楚/);
-  // complete_task 取消软上限（D1：本次只改工具层，不改最终答复策略）
-  assert.doesNotMatch(agent源, /建议 ≤800 字/, "complete_task 不再限定 800 字");
-  assert.doesNotMatch(agent源, /纯问答一句话即可/, "complete_task 不再要求一句话");
-  assert.match(agent源, /不设字数上限（服务端上限 4000 字符）/);
-  assert.match(agent源, /同一事实只写一次/);
-  assert.match(agent源, /不复述工具流水/);
   // 落盘端：Run 摘要优先采用结论，历史列表/结果卡标题才能显示真实结论
   assert.match(runs源, /if \(run\.completion\?\.summary\) run\.summary = String\(run\.completion\.summary\)\.slice\(0, 4000\)/);
+});
+test("显式完成声明已移除：结论回到模型终稿（原生收尾）", () => {
+  // 工具层：complete_task 不再是工具、不再进白名单、不再有元数据
+  assert.doesNotMatch(agent源, /complete_task/, "agent.mjs 不应再出现 complete_task");
+  assert.doesNotMatch(read("server/task.mjs"), /complete_task/, "task.mjs 白名单不应再含 complete_task");
+  assert.doesNotMatch(read("server/工具元数据.mjs"), /complete_task/, "工具元数据不应再含 complete_task");
+  assert.ok(!allModeToolNames().includes("complete_task"), "complete_task 不应出现在可激活工具清单");
+  // 提示词：不再要求模型调用收尾工具，改为"直接给最终答复"
+  assert.match(agent源, /收尾（原生终稿）/);
+  assert.match(agent源, /直接给用户最终答复/);
+  // 收尾回合：不再追加"补一句完成声明"的模型回合
+  assert.doesNotMatch(agent源, /completion_nudge/);
+  // 完成语义：一律按终态推断，结论取模型最终答复
+  assert.match(执行句柄源, /export function resolveRunCompletion\(entry, runStatus, \{ artifacts = 0, validations = \[\], runId = null, finalText = "" \} = \{\}\)/);
+  assert.match(执行句柄源, /inferCompletion\(\{ runStatus, artifacts, validations, finalText:/);
+  assert.doesNotMatch(执行句柄源, /pendingCompletion/, "不再有显式声明优先分支");
+});
+test("推断摘要优先取模型终稿（会话列表不退化成通用文案）", () => {
+  const completion = inferCompletion({ runStatus: "completed", artifacts: 2, finalText: "# 结论\n已完成 **两处** 修改\n- 甲\n- 乙" });
+  assert.equal(completion.source, "inferred");
+  assert.match(completion.summary, /已完成 两处 修改/, "摘要应来自模型终稿而不是通用文案");
+  assert.doesNotMatch(completion.summary, /未检测到文件变更/);
+  assert.equal(summarizeFinalText(""), "");
+  assert.ok(summarizeFinalText("x".repeat(600)).length <= 401, "超长终稿要截断到 400 字 + 省略号");
+  // 没有终稿时回退到通用文案
+  assert.match(inferCompletion({ runStatus: "completed", artifacts: 2 }).summary, /任务结束，产生 2 项文件变更/);
 });
 test("执行句柄读取权威终稿优先走 Run 根级投影", () => {
   assert.match(执行句柄源, /if \(run && String\(run\.finalText \|\| ""\)\.trim\(\)\) return String\(run\.finalText\);/);
@@ -345,12 +367,20 @@ test("中断不把 Runtime 标成失败（否则下一条消息被当作失效�
   assert.match(运行时源, /if \(this\.isUserAbort\(record, error\)\) \{[\s\S]{0,260}?reason: "user_abort"/, "中断收尾记 user_abort 而不是 markFailure");
 });
 
-test("abort 接口返回真实结果，并按 client 兜底查找在跑会话", () => {
-  assert.match(agent源, /resolveLiveEntry\(clientId\)/, "找不到精确 key 时要按 client 前缀兜底");
+test("abort 接口返回真实结果，并按 runId 精确兜底查找在跑会话", () => {
+  // 009 起：精确 key 缺失时先按已知 runId 匹配 activeRunId；未知 runId 仅在唯一
+  // 候选时兜底前缀，多候选拒绝猜测并记诊断——客户端中断不再可能命中别的会话。
+  assert.match(agent源, /resolveLiveEntry\(clientId, \{ runId: options\.runId \}\)/, "abort 要携带 runId 查找在跑会话");
   assert.match(agent源, /return \{ ok: true, cancelled: false, reason: "no-live-session" \}/, "没有在跑的任务要如实返回");
+  assert.match(agent源, /candidate\?\.activeRunId === runId\) return candidate/, "已知 runId 按 activeRunId 精确匹配");
+  assert.match(agent源, /多个候选时拒绝猜测并记诊断/, "多候选拒绝猜测并记诊断");
   // P2-3 起该响应还会附带 stillQueued（取消后仍排队的轮次），因此只锁定前缀形状，不写死整行。
-  assert.match(index源, /res\.json\(await 执行句柄\.中断\(runId,/, "中断应委托执行句柄收口");
-  assert.match(执行句柄源, /const payload = \{ \.\.\.result, runId: result\?\.runId \|\| targetRunId \|\| null/, "中断结果要回传 runId");
+  assert.match(index源, /await 执行句柄\.中断\(run\.id,/, "任务中心取消应委托执行句柄收口");
+  assert.match(index源, /res\.json\(await 执行句柄\.中断\(runId,/, "对话中断应委托执行句柄收口");
+  // 001 起 payload 由多行对象承载（新增 stillRunning/chainDepth/settleDeadlineMs），
+  // 只锁定 runId 回传与期限字段，不写死整块形状。
+  assert.match(执行句柄源, /const payload = \{[\s\S]{0,120}?runId: result\?\.runId \|\| targetRunId \|\| null/, "中断结果要回传 runId");
+  assert.match(执行句柄源, /settleDeadlineMs: 20000/, "中断回执带服务端确认期限");
   assert.match(index源, /const running = listRuns\(\{ limit: 20 \}\)\.find/, "内存 key 不匹配时按 Run 记录兜底取消");
 });
 
@@ -368,9 +398,13 @@ test("客户端：中断后的 agent_error 按中断处理，且不残留错误�
     "中断后到达的 agent_error 应直接收尾为中断");
   assert.match(对话面板, /if \(id\) patch\(id, \(m\) => \(\{ \.\.\.m, status: "done", stopped: true, errorText: "" \}\)\)/,
     "中断收尾要清掉 errorText，结果卡里不能再留「模型调用失败」");
-  assert.match(对话面板, /pushSystem\("已请求中断，但服务端未在 10 秒内确认收尾/, "服务端未确认时要说实话");
+  // 009 起：确认窗口按服务端 settleDeadlineMs（先 20s 兜底，响应后按服务端时限重置），
+  // 超时说真话（可能卡在不响应中断的工具里），不再写死 10 秒。
+  assert.match(对话面板, /pushSystem\(`已受理中断，但服务端在 \$\{seconds\} 秒内仍未确认收尾/, "服务端未确认时要说实话（含实际等待秒数）");
+  assert.match(对话面板, /const settleDeadlineMs = Number\(result\?\.settleDeadlineMs \|\| 0\);/, "客户端读服务端期限（settleDeadlineMs）");
+  assert.match(对话面板, /if \(settleDeadlineMs > 0 && stoppingRef\.current && settleDeadlineMs !== defaultConfirmMs\) \{[\s\S]{0,120}?armStopConfirm\(settleDeadlineMs\);/, "拿到服务端期限后重排确认窗口");
+  assert.match(对话面板, /armStopConfirm\(defaultConfirmMs\);/, "默认确认窗口 20s（小于服务端结果回执不再误报）");
   assert.match(对话面板, /pushSystem\("没有找到正在运行的任务，可能这一轮已经结束了。"/, "没有在跑的任务不要谎报已中断");
-  assert.match(对话面板, /}, 10000\);\n    try \{\n      const res = await fetch\("\/api\/agent\/abort"/, "确认窗口应为 10 秒而不是 1.2 秒本地收尾");
 });
 
 // ---------- 7. 供应商流截断（不是"模型调用失败"）----------
@@ -395,7 +429,7 @@ test("流截断但有产物 → 按「部分完成」收尾，而不是「本轮
 console.log("\n▶ 写入通道与台账精度");
 
 test("officecli 调用前把引用到的暂存文件按需物化", () => {
-  assert.match(agent源, /materializeStagedReferences\(\{ runId: ctx\.runId, workspace: ctx\.workspace, paths: referenced \}\)/, "officecli 前必须物化被引用的暂存文件");
+  assert.match(agent源, /materializeStagedReferences\(\{ runId: ctx\.runId, workspace: ctx\.workspace, paths: referenced(?:, onEvent: writeEvent)? \}\)/, "officecli 前必须物化被引用的暂存文件");
   // v0.11.52 起参数处理（分词 / 引用识别 / 输出目录）抽到纯函数模块，便于单测；
   // agent.mjs 仍要把它接上，物化链路才算完整。
   assert.match(agent源, /import \{ collectReferencedPaths, ensureOfficeOutputDirs, parseOfficeArgs as parseArgs \} from "\.\/office参数\.mjs"/, "agent.mjs 要接上参数处理模块");

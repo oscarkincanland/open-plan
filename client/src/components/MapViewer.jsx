@@ -57,7 +57,7 @@ function setBasemapVisibility(map, ids, desired) {
  * - 导出 PNG / 导入 GeoJSON+SHP（外部 ref API）
  */
 const MapViewer = forwardRef(function MapViewer(
-  { project = "zhejiang-map", config, onConfigChange, onBasemapResolved, onLayerTilesChanged, onDrillDown, onViewportChange },
+  { project = "zhejiang-map", config, onConfigChange, onBasemapResolved, onLayerTilesChanged, onDrillDown, onViewportChange, readOnly = false, initialView = null, reloadToken = 0 },
   ref
 ) {
   const containerRef = useRef(null);
@@ -443,8 +443,8 @@ const MapViewer = forwardRef(function MapViewer(
   const map = new MapLibreMap({
       container: containerRef.current,
       style: STYLE_PATH(project),
-      center: config?.center || [120.0, 29.2],
-      zoom: config?.zoom || 7,
+      center: initialView?.center || config?.center || [120.0, 29.2],
+      zoom: initialView?.zoom || config?.zoom || 7,
       // MapLibre 5.x 通过 canvasContextAttributes 保留 WebGL 绘制缓冲，供导出读回。
       canvasContextAttributes: { preserveDrawingBuffer: true },
       attributionControl: { compact: true },
@@ -521,6 +521,8 @@ const MapViewer = forwardRef(function MapViewer(
           const c = map.getCenter();
           const bounds = map.getBounds();
           viewportCallbackRef.current({
+            // project 随视口一起上报：上层合并会话上下文时不能丢地图项目。
+            project,
             center: [Number(c.lng.toFixed(6)), Number(c.lat.toFixed(6))],
             zoom: Number(map.getZoom().toFixed(3)),
             bounds: [
@@ -540,7 +542,22 @@ const MapViewer = forwardRef(function MapViewer(
     });
     map.on("moveend", publishViewport);
     publishViewport();
+    // 三栏可拖动：容器尺寸变化时 MapLibre 不会自动重算画布，必须显式 resize，
+    // 否则会留下黑边或拉伸错位。防抖避免拖动过程中每帧重建 WebGL 缓冲。
+    let resizeTimer;
+    const resizeObserver = typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(() => {
+        if (resizeTimer) window.clearTimeout(resizeTimer);
+        resizeTimer = window.setTimeout(() => {
+          if (mapRef.current !== map) return;
+          try { map.resize(); } catch {}
+        }, 80);
+      })
+      : null;
+    resizeObserver?.observe(containerRef.current);
     return () => {
+      resizeObserver?.disconnect();
+      if (resizeTimer) window.clearTimeout(resizeTimer);
       try { clearLayerRegistry(mapRef.current || map); } catch {}
       try { if (window.__oawMap === map) window.__oawMap = null; } catch {}
       try { map.remove(); } catch {}
@@ -568,6 +585,7 @@ const MapViewer = forwardRef(function MapViewer(
     if (!map || !loaded) return undefined;
     const popup = new Popup({ closeButton: true, closeOnClick: false, maxWidth: "300px" });
     const onClick = (e) => {
+      if (readOnly) return; // 只读小地图：不弹属性窗、不触发下钻
       if (drawModeRef.current) return; // 绘制/选点模式：不弹要素
       if (!popupEnabledRef.current) return; // 绘制/测量模式下不弹属性窗
       const feats = map.queryRenderedFeatures(e.point, {});
@@ -604,11 +622,12 @@ const MapViewer = forwardRef(function MapViewer(
       map.off("move", move);
       try { popup.remove(); } catch {}
     };
-  }, [loaded]);
+  }, [loaded, readOnly]);
 
   // 轮询 style.json + map.config.json，感知 agent 修改（file_changed 后由上层触发立即刷新）
   useEffect(() => {
-    if (!loaded) return undefined;
+    // 只读小地图不轮询 style：避免为卡片持续请求样式并反复 setStyle。
+    if (!loaded || readOnly) return undefined;
     const timer = setInterval(async () => {
       try {
         const res = await fetch(STYLE_PATH(project));
@@ -622,7 +641,7 @@ const MapViewer = forwardRef(function MapViewer(
     }, 3000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded, project]);
+  }, [loaded, project, readOnly]);
 
   // 应用样式（保留相机 + 重放客户端图层状态）
   const applyStyle = useCallback((style) => {
@@ -685,6 +704,27 @@ const MapViewer = forwardRef(function MapViewer(
     });
   }, []);
 
+  /** 热更新：agent 修改 style.json 后调用；保留相机，不重挂地图。 */
+  const reloadStyleNow = useCallback(async () => {
+    try {
+      const res = await fetch(STYLE_PATH(project));
+      const text = await res.text();
+      styleHashRef.current = styleHash(text);
+      const style = JSON.parse(text);
+      applyStyle(style);
+      return true;
+    } catch { return false; }
+  }, [applyStyle, project]);
+  // 只读小地图不轮询 style，但地图正式文件变更时仍需显式热更新：
+  // reloadToken 由上层（App → MiniMapPreview/MapPanel）递增，避免整块地图重挂。
+  const appliedReloadTokenRef = useRef(reloadToken);
+  useEffect(() => {
+    if (!loaded || !reloadToken) return;
+    if (appliedReloadTokenRef.current === reloadToken) return;
+    appliedReloadTokenRef.current = reloadToken;
+    void reloadStyleNow();
+  }, [loaded, reloadToken, reloadStyleNow]);
+
   // 外部命令（MapPanel 调用）
   useImperativeHandle(ref, () => ({
     getMap: () => mapRef.current,
@@ -696,16 +736,7 @@ const MapViewer = forwardRef(function MapViewer(
       return { center: [c.lng, c.lat], zoom: map.getZoom(), bounds: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] };
     },
     /** 热更新：agent 修改 style.json 后调用 */
-    reloadStyle: async () => {
-      try {
-        const res = await fetch(STYLE_PATH(project));
-        const text = await res.text();
-        styleHashRef.current = styleHash(text);
-        const style = JSON.parse(text);
-        applyStyle(style);
-        return true;
-      } catch { return false; }
-    },
+    reloadStyle: reloadStyleNow,
     /** 持久化样式后只更新轮询游标，不触发一次完整的 MapLibre setStyle。 */
     syncStyleHash: async () => {
       try {
@@ -1134,7 +1165,7 @@ const MapViewer = forwardRef(function MapViewer(
       map.on("click", onClick);
       drawModeRef.current = true;
     },
-  }), [applyStyle, project]);
+  }), [applyStyle, project, reloadStyleNow]);
 
   // 导入文件：GeoJSON 直传；SHP 用 shpjs 解析后上传
   const handleImportFiles = useCallback(async (files) => {
@@ -1198,25 +1229,27 @@ const MapViewer = forwardRef(function MapViewer(
         </div>
       )}
 
-      {/* 顶部工具条 */}
-      <div className="map-toolbar">
-        <span className="map-toolbar-title">
-          <Icon name="map" size={14} /> {config?.name || "地图"}
-        </span>
-        <label className="map-import-btn" title="导入 GeoJSON / SHP 矢量数据">
-          <Icon name="upload" size={14} /> 导入
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            accept=".geojson,.json,.zip,.shp,.dbf,.prj,.cpg"
-            style={{ display: "none" }}
-            onChange={(e) => handleImportFiles(e.target.files)}
-          />
-        </label>
-        <span className="map-msg">{msg}</span>
-        {importing && <Icon name="loading" size={14} className="mp-spin" />}
-      </div>
+      {/* 顶部工具条（只读小地图隐藏导入入口） */}
+      {!readOnly && (
+        <div className="map-toolbar">
+          <span className="map-toolbar-title">
+            <Icon name="map" size={14} /> {config?.name || "地图"}
+          </span>
+          <label className="map-import-btn" title="导入 GeoJSON / SHP 矢量数据">
+            <Icon name="upload" size={14} /> 导入
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".geojson,.json,.zip,.shp,.dbf,.prj,.cpg"
+              style={{ display: "none" }}
+              onChange={(e) => handleImportFiles(e.target.files)}
+            />
+          </label>
+          <span className="map-msg">{msg}</span>
+          {importing && <Icon name="loading" size={14} className="mp-spin" />}
+        </div>
+      )}
 
       {/* 左下状态栏 */}
       <div className="map-status">
