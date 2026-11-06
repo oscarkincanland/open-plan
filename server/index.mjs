@@ -28,6 +28,7 @@ import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor,
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities, stripAutoContextPrefix } from "./task.mjs";
 import { workspaceTrustSummary, setWorkspaceTrust } from "./项目信任.mjs";
 import { runtimeFlagsSnapshot, RUNTIME_FLAGS } from "./运行开关.mjs";
+import { readCadDocument, CAD_ENTITY_LIMIT } from "./CAD解析.mjs";
 import { summarizeRunUsage, exportObservabilityJson } from "./观测导出.mjs";
 import { listPlans, writePlan } from "./计划文件.mjs";
 import { loadHookConfig, HOOK_EVENTS } from "./Hook事件层.mjs";
@@ -1329,6 +1330,18 @@ app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
     } else if (IMAGE_EXTENSIONS.has(ext)) {
       // D04：独立图片格式走专用查看器（raw 已按扩展名给正确 MIME）
       res.json({ kind: "image", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/raw${cwdQuery}` });
+    } else if (RUNTIME_FLAGS.cadPreview && (ext === "dxf" || ext === "dwg")) {
+      // CAD 预览（开关 cadPreview，默认关=DXF/DWG 落入下方 html 兜底与基线一致）：
+      // 解析结果随 open 响应一次返回（实体数受 CAD_ENTITY_LIMIT 截断，truncated 标记提示）。
+      // DWG 无转换工具时 readCadDocument 抛安装指引，由 500 错误链路转述（AC2 降级）。
+      const cad = await readCadDocument(p, { maxEntities: CAD_ENTITY_LIMIT });
+      res.setHeader("Cache-Control", "no-store, max-age=0");
+      res.json({
+        kind: "cad", name: fileName, ext, identity,
+        format: cad.format, converter: cad.converter,
+        layers: cad.layers, blocks: cad.blocks, entities: cad.entities,
+        entityCounts: cad.entityCounts, extents: cad.extents, truncated: cad.truncated,
+      });
     } else {
       res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "html", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/html${cwdQuery}` });

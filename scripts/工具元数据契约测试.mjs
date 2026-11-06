@@ -25,7 +25,9 @@ function test(name, fn) {
 const allModeTools = [...new Set(["chat", "office", "agent", "review"].flatMap((mode) => toolPolicyForMode(mode).tools))];
 // 内部工具：不对模型暴露，但仍需在元数据表里可追溯（AGENTS.md §5）。
 // run_subagent 由会话按 hasSubagent 动态注入（AGENTS.md §5 明文允许），不进静态白名单。
-const INTERNAL_TOOLS = new Set(["editorial_pipeline", "review_copy", "review_source_apply", "run_subagent"]);
+// cad_read/cad_edit 由 OAW_CAD_AGENT 门控：开关关闭时不进任何模式白名单，
+// 但元数据表始终保留其能力事实（开启后可追溯）。
+const INTERNAL_TOOLS = new Set(["editorial_pipeline", "review_copy", "review_source_apply", "run_subagent", "cad_read", "cad_edit"]);
 
 test("所有模式白名单工具都有元数据", () => {
   const report = validateToolMetadata(allModeTools);

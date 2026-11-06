@@ -28,6 +28,7 @@
     "start:foreground": "node scripts/服务监督.mjs --foreground",
     "service:status": "node scripts/服务监督.mjs --status",
     "build": "cd client && npm run build",
+    "test:cad": "node scripts/CAD解析测试.mjs",
     "verify": "node scripts/验证脚本.mjs",
     "inspect:events": "node scripts/事件流健康巡检.mjs",
     "test:phase1": "node scripts/阶段一稳定性测试.mjs",

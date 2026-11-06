@@ -12916,3 +12916,25 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 @container (max-width: 559px) {
   .team-panel.show-detail .team-roster { display: none; }
 }
+
+/* ===== CAD 预览查看器（CadViewer.jsx · 开关 OAW_CAD_PREVIEW，默认关=不渲染不占样式）=====
+   配色全部走既有主题变量，暗/亮主题自动跟随；描边色 --oaw-cad-ink 按主题定义一次。 */
+:root { --oaw-cad-ink: #cfd3e0; }
+[data-theme="light"] { --oaw-cad-ink: #3a4050; }
+.oaw-cad-wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--panel-bg); }
+.oaw-cad-toolbar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.oaw-cad-toolbar .btn-xs.active { color: var(--text); border-color: var(--border); }
+.oaw-cad-meta { margin-left: auto; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.oaw-cad-truncated { display: flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 11px; color: var(--warning); border-bottom: 1px solid color-mix(in srgb, var(--warning) 40%, var(--border)); background: color-mix(in srgb, var(--warning) 10%, transparent); }
+.oaw-cad-main { flex: 1; display: flex; min-height: 0; }
+.oaw-cad-svg { flex: 1; min-width: 0; cursor: grab; touch-action: none; background: var(--panel2-bg); }
+.oaw-cad-svg:active { cursor: grabbing; }
+.oaw-cad-layers { width: 168px; flex: 0 0 auto; overflow: auto; border-left: 1px solid var(--border); padding: 6px 4px; }
+.oaw-cad-layers-head { font-size: 11px; color: var(--muted); padding: 0 4px 6px; }
+.oaw-cad-layers-empty { font-size: 11px; color: var(--muted); padding: 4px; }
+.oaw-cad-layer { display: flex; align-items: center; gap: 4px; padding: 2px 4px; border-radius: 5px; cursor: pointer; }
+.oaw-cad-layer:hover { background: color-mix(in srgb, var(--border) 40%, transparent); }
+.oaw-cad-layer-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text); }
+.oaw-cad-layer-count { font-size: 10px; color: var(--muted); }
+.oaw-cad-state { flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.oaw-cad-state.error { color: var(--warning); }

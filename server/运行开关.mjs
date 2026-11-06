@@ -189,6 +189,11 @@ export const RUNTIME_FLAGS = Object.freeze({
   qoderInteractionOwner: readFlag("OAW_QODER_INTERACTION_OWNER") || QODER_ALIGN,
   /** Office 写作规范层：模板路由 / 场景参数 / 版式令牌 / 规则闸门（默认关 = 旧行为逐字一致） */
   officeFormat: readFlag("OAW_OFFICE_FORMAT"),
+  /* ===== CAD 能力（2026-10-21 方案评审通过：DXF/DWG 预览 + agent 读取/修改）===== */
+  /** CAD 预览：DXF/DWG 进文件树白名单 + /api/doc 预览分支 + CadViewer（默认关 = 白名单/路由/图标与基线一致） */
+  cadPreview: readFlag("OAW_CAD_PREVIEW"),
+  /** CAD agent 能力：documentRead 读取 CAD + cad_read/cad_edit 工具（默认关） */
+  cadAgent: readFlag("OAW_CAD_AGENT"),
 
   /* ===== ZCode Harness 对标开关族（默认全关）===== */
   /** 总开关：一键打开 H 线整族（仅测试/预览；关闭即整体回滚） */
@@ -314,6 +319,8 @@ export function runtimeFlagsSnapshot() {
     qoderToolOutputSplit: RUNTIME_FLAGS.qoderToolOutputSplit,
     qoderInteractionOwner: RUNTIME_FLAGS.qoderInteractionOwner,
     officeFormat: RUNTIME_FLAGS.officeFormat,
+    cadPreview: RUNTIME_FLAGS.cadPreview,
+    cadAgent: RUNTIME_FLAGS.cadAgent,
     // ZCode Harness 对标开关族
     harnessAlign: RUNTIME_FLAGS.harnessAlign,
     toolMetadata: RUNTIME_FLAGS.toolMetadata,

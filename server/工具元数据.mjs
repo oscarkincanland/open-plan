@@ -114,6 +114,20 @@ add([
   // 图层工程信息：只读（读图层注册表与工程元数据）。
   meta("map_layer_info", { ...READ, resultBudget: budget(30 * KB, "head", "artifact") }),
 
+  // ---- CAD（cadAgent 开关，默认关；关闭时不在任何模式白名单中）----
+  meta("cad_read", { ...READ, resultBudget: budget(30 * KB, "head", "truncate") }),
+  meta("cad_edit", {
+    readOnly: false,
+    destructive: false,
+    sideEffectScope: "workspace",
+    riskLevel: "medium",
+    needsApproval: true,
+    patternSource: "path",
+    denyPriority: 100,
+    resultBudget: budget(4 * KB, "head", "truncate"),
+    notes: "DXF/DWG 白名单修改；落盘前走 write 审批并记录写入清单",
+  }),
+
   // ---- 文档 ----
   meta("officecli", {
     readOnly: false,

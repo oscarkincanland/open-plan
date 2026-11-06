@@ -6,6 +6,7 @@ import { selectScene, sceneLabels, defaultScene } from "./office规范/场景选
 
 const OFFICE_EXTENSIONS = /\.(?:docx|xlsx|pptx|xls|doc)$/i;
 const DOCUMENT_EXTENSIONS = /\.(?:docx|xlsx|pptx|xls|doc|pdf|csv|json|md|markdown|txt|html|htm)$/i;
+const CAD_EXTENSIONS = /\.(?:dxf|dwg)$/i;
 
 /**
  * 工作台保留四种后端模式值。office 是历史兼容值，前端主入口展示
@@ -21,6 +22,8 @@ const READ_ONLY_TOOLS = Object.freeze([
   "read", "grep", "find", "ls", "ask_user", "kb_search", "kb_read", "context_read", "skills_search", "skills_read",
   "web_search", "web_fetch",
   "map_read", "map_analyze", "map_clear_analysis", "map_datasets", "map_layer_info",
+  // CAD 读取（cadAgent 开关，默认关）：Chat/Office 只读查看图纸，不声明修改工具。
+  ...(RUNTIME_FLAGS.cadAgent ? ["cad_read"] : []),
 ]);
 // Office 模式专注文档处理，不暴露地图工具（地图能力只在 Chat 与 Work 出现）。
 const OFFICE_TOOLS = Object.freeze([
@@ -51,6 +54,8 @@ const AGENT_TOOLS = Object.freeze([
   "team_spawn", "team_send", "team_wait", "team_list", "team_task",
   // 场景化分析模板（确定性编排，产出图层统计 + Word 报告；由 OAW_MAP_TEMPLATES 控制启用）
   "map_template",
+  // CAD 白名单修改（cadAgent 开关，默认关）：仅 Work；落盘走统一审批与写入通道。
+  ...(RUNTIME_FLAGS.cadAgent ? ["cad_edit"] : []),
   "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close",
   "browser_wait_for", "browser_act", "browser_extract", "browser_select_option",
 ]);
@@ -337,6 +342,8 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
     : null;
   const knowledge = refList.some((item) => ["knowledge", "knowledge_dir"].includes(item.kind)) || containsAny(source, ["知识库", "知识库搜索", "知识检索", "参考资料"]);
   const map = containsAny(source, ["地图", "图层", "geojson", "等时圈", "热力图", "od图", "空间分析"]) || /(?:^|[\\/])maps(?:[\\/]|$)/i.test(ctx.files);
+  // CAD 意图：文件扩展名或话术命中（cad 读取/修改能力，cadPreview/cadAgent 开关族）
+  const cad = CAD_EXTENSIONS.test(ctx.files) || containsAny(source, ["dxf", "dwg", "cad", "图纸", "红线图", "总平面"]);
   const workflow = Boolean(task.workflowId) || /@工作流\[|@技能\[|#技能\[|工作流|skill|workflow/i.test(String(text || ""));
   // 2026-11-03：复杂度只影响“默认技能清单 / 技能发现 / 草稿钩子”，不改变工具权限。
   const complexity = estimateTaskComplexity({ text, task, references, attachments });
@@ -428,6 +435,14 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
         ? "地图查询、分析与图层写入（写操作需审批）"
         : "地图只读查询与临时可视化（不落盘；保存图层需切到 Work 模式）",
     });
+  }
+  // CAD 能力（cadAgent 开关，默认关）：关闭时不声明，编排/遥测与基线一致。
+  // cad 恒 preferred（解析内置于工作台，无外部二进制）；cad_dwg 的实际可用性取决于
+  // 外部转换工具（ODA/LibreDWG），计划期不做同步探测，以 cad_read/cad_edit 返回为准。
+  if (RUNTIME_FLAGS.cadAgent && cad && (mode === "chat" || mode === "agent")) {
+    capabilities.push({ id: "cad", label: "CAD 读取", status: "ready", required: false, provider: "native", reason: "DXF/DWG 结构化读取（cad_read/context_read），解析内置于工作台" });
+    capabilities.push({ id: "cad_edit", label: "CAD 白名单修改", status: mode === "agent" ? "ready" : "not_available", required: false, provider: "native", reason: mode === "agent" ? "DXF 实体级白名单修改（cad_edit，写入走审批）；DWG 经 DXF 往返" : "Chat 只读，不声明修改能力" });
+    capabilities.push({ id: "cad_dwg", label: "CAD DWG 转换", status: "planned", required: false, provider: "external", reason: "DWG 依赖外部转换工具（ODA/LibreDWG），未装时自动降级 DXF 另存" });
   }
   if (workflow) capabilities.push({ id: "skills", label: "Skills / 工作流", status: "planned", required: Boolean(task.workflowId), provider: "native", reason: task.workflowId ? `工作流 ${task.workflowId} 声明了技能依赖` : "本轮出现工作流或技能意图" });
   else if (skillsRouting === "preflight" || skillsRouting === "catalog") capabilities.push({ id: "skills", label: "Skills 目录", status: "available", required: false, provider: "native", reason: "每轮注入技能目录，模型按任务匹配读取" });
