@@ -1,0 +1,61 @@
+appId: com.guiju.openplan
+productName: GuiJu
+copyright: Copyright © 2026 Open Plan
+
+electronVersion: 33.4.11
+# 复用 desktop/node_modules/electron/dist，避免 electron-builder 再去 GitHub/镜像下载 115MB
+electronDist: node_modules/electron/dist
+
+directories:
+  output: dist-app
+  buildResources: build
+
+# asar 打包 + bin/ 解包：外部二进制（officecli / LibreDWG）不能从 asar 内执行
+asar: true
+asarUnpack:
+  - "**/bin/**"
+
+files:
+  - "src/**/*"
+  - "package.json"
+
+# 随包资源：服务端源码 + 前端构建产物 + 外部二进制
+extraResources:
+  - from: "../server"
+    to: "app/server"
+  - from: "../client/dist"
+    to: "app/client/dist"
+  - from: "../package.json"
+    to: "app/package.json"
+  - from: "../node_modules"
+    to: "app/node_modules"
+    filter:
+      - "**/*"
+      - "!**/*.md"
+      - "!**/{test,tests,example,examples,docs}/**"
+  - from: "../bin"
+    to: "bin"
+    filter:
+      - "**/*"
+
+win:
+  # 本机构建环境无法下载 winCodeSign（GitHub 不通）且无证书：跳过签名与 rcedit 改写。
+  # 正式分发（M3）请配置证书后改为 true。
+  signAndEditExecutable: false
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+  artifactName: "${productName}-Setup-${version}.${ext}"
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Open Plan 规聚
+  deleteAppDataOnUninstall: false
+
+publish: null

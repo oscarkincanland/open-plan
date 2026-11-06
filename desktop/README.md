@@ -1,0 +1,86 @@
+# 桌面端（Electron 外壳）
+
+> 依据：[ADR 0024](../docs/决策记录/0024-桌面端采用壳优先与平台适配层.md)、[计划 023](../docs/plans/2026-11-06-023-桌面端完整修改计划（0.13.x）.md)
+
+## 这是什么
+
+**壳优先**：Electron 主进程 `import` 现有的 `server/index.mjs`（不重写后端），窗口加载
+现有的 `client/dist`（不重写前端）。差异只发生在「外壳 + 平台适配层」。
+
+```
+GuiJu.exe (Electron main)
+├─ src/main.cjs            单实例锁 / 窗口 / 生命周期 / 原生 IPC
+├─ src/浏览器视图.mjs      内嵌浏览器视图（WebContentsView + webdriver debugger）
+├─ src/preload.cjs         contextBridge 白名单桥（不暴露 ipcRenderer）
+└─ server/服务入口.mjs     随机端口 + token → import server/index.mjs
+```
+
+## 开发
+
+```powershell
+# 1) 先构建前端（桌面端加载 client/dist）
+npm run build
+
+# 2) 启动桌面端
+npm run desktop:dev
+
+# 3) 出安装包（NSIS，per-user）
+npm run desktop:dist
+```
+
+产物：`desktop/release/GuiJu-Setup-<version>.exe`、`desktop/release/win-unpacked/`。
+
+## 平台差异在哪
+
+| 能力 | web 形态 | 桌面形态 | 落点 |
+|---|---|---|---|
+| 文件/目录选择 | `<input type=file>` / 服务端 | 原生对话框 | `client/src/平台/文件对话框.js` |
+| 系统打开/定位 | `/api/native/*` | `shell.openPath` | `client/src/平台/外部打开.js` |
+| 内置浏览器 | 系统 Edge + CDP 帧流 | 内嵌视图（无帧流） | `server/平台/浏览器驱动.mjs` |
+| officecli / LibreDWG | 仓库 `bin/` 或 PATH | `resources/bin` | `server/平台/外部二进制.mjs` |
+| 启动/退出 | 独立进程 + 监督脚本 | 主进程生命周期 | `server/平台/生命周期.mjs` |
+
+**业务代码只问能力、不问形态**：`if (平台能力.原生文件对话框) …`，而不是 `if (isDesktop) …`。
+
+## 边界与门禁
+
+`npm run test:platform-boundary`（已并入 `npm run verify`）会拦下：
+
+1. `client/`、`server/` 出现 `electron` 依赖（平台层除外）；
+2. 前端直接使用 `window.require` / `ipcRenderer` / `process.versions.electron`；
+3. `desktop/` 出现壳文件白名单以外的文件（疑似复制业务实现）；
+4. `server/` 写死本机项目路径或当前用户目录；
+5. 平台层反向依赖业务模块。
+
+## 回退
+
+- 桌面端异常 → 直接 `npm start`（web 形态完全不变）；
+- 内嵌浏览器异常 → `OAW_BROWSER_DRIVER=system` 回到系统 Edge + 帧流；
+- 打包体积超标 → 调整 `electron-builder.yml` 的 extraResources 过滤。
+
+## 随包二进制
+
+`bin/` 被 `.gitignore` 忽略，只有 `bin/清单.json` 入库（文件名 + 版本 + sha256 + 来源）。
+
+```powershell
+npm run desktop:prepare            # 按清单准备并校验（缺失且无 url 则失败）
+node scripts/桌面/准备随包二进制.mjs --write   # 用现有 bin/ 文件回写 sha256
+```
+
+**能力边界**（LibreDWG 随包、ODA 不随包）：
+
+| 能力 | 随包 LibreDWG | 需要 ODA（未随包） |
+|---|---|---|
+| DWG 预览 / Agent 读取 | ✅ | — |
+| DWG 原格式写回 | ❌ 另存 `-修改.dxf` | ✅ |
+
+## 已知限制
+
+- 本仓库开发环境（沙箱）**无法启动 GUI**：`electron --version` 无输出，
+  因此桌面窗口与内嵌浏览器视图的**运行时行为未在本环境实测**。
+  已验证的是：服务入口真实可起（随机端口 + token + SPA 200 + 未授权 401）、
+  外壳接线与打包配置的契约测试（`npm run test:desktop`，9 项）。
+- 需要 `ELECTRON_RUN_AS_NODE` 未设置（否则 Electron 会退化成纯 Node）。
+- 若 Electron 二进制下载失败（GitHub 不通），用镜像：
+  `$env:ELECTRON_MIRROR='https://npmmirror.com/mirrors/electron/'`。
+- 打包已用 `electronDist: node_modules/electron/dist` 复用本地 Electron，避免重复下载。

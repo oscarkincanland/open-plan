@@ -1,0 +1,20 @@
+{
+  "name": "open-plan-desktop",
+  "version": "0.13.25",
+  "private": true,
+  "description": "Open Plan（规聚）桌面端外壳：Electron 主进程内运行现有 Express 服务（ADR 0024 壳优先）",
+  "type": "module",
+  "main": "src/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "dist": "electron-builder --win --config electron-builder.yml",
+    "postinstall": "node -e \"console.log('desktop deps ready')\"",
+    "pack": "electron-builder --win --dir --config electron-builder.yml"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "author": "Open Plan"
+}

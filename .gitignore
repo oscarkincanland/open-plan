@@ -143,3 +143,8 @@ server/models-dev-目录.json
 /规聚项目完整介绍汇报-25页口播稿.docx
 # 运行时状态（程序写入项目根）
 /.file-roots.json
+# 桌面端构建产物（ADR 0024）
+desktop/node_modules/
+desktop/release/
+desktop/release2/
+desktop/dist-app/

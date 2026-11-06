@@ -180,12 +180,19 @@ test("截断摘要带不完整提示", () => {
 
 console.log("\n▶ DWG 转换探测（AC2 降级，环境容忍：本机是否装了转换器均可）");
 test("源码包含内置便携包探测（bin/libredwg，先于 PATH 与 ODA 目录）", () => {
-  assert.match(cadSource, /PROJECT_DIR = path\.resolve\(path\.dirname\(fileURLToPath\(import\.meta\.url\)\), "\.\."\)/);
-  assert.match(cadSource, /path\.join\(PROJECT_DIR, "bin", "libredwg"/);
+  // 2026-11-06（ADR 0024）：随包路径解析下沉到平台适配层 server/平台/外部二进制.mjs，
+  // CAD解析 只调用 bundledLibreDwg()，桌面端 resources/bin 与 web 端仓库 bin/ 共用同一解析。
+  assert.match(cadSource, /import \{ bundledLibreDwg, bundledOda \} from "\.\/平台\/外部二进制\.mjs"/);
+  assert.match(cadSource, /const bundled = bundledLibreDwg\(\);/);
+  const platformSource = read("server/平台/外部二进制.mjs");
+  assert.match(platformSource, /path\.join\(bundledBinDir\(\), "libredwg"/);
+  assert.match(platformSource, /export function bundledLibreDwg/);
 });
 test("写入链路使用 ODA 专用探测（读取转换器与写回转换器不混用）", () => {
   assert.match(cadSource, /export async function resolveOdaConverter/);
-  assert.match(cadSource, /path\.join\(PROJECT_DIR, "bin", "oda"/);
+  assert.match(cadSource, /return bundledOda\(\);/);
+  const platformSource = read("server/平台/外部二进制.mjs");
+  assert.match(platformSource, /path\.join\(bundledBinDir\(\), "oda"/);
   assert.match(editSource, /resolveOdaConverter/);
   assert.doesNotMatch(editSource, /resolveDwgConverter/);
 });

@@ -29,7 +29,7 @@
     "service:status": "node scripts/服务监督.mjs --status",
     "build": "cd client && npm run build",
     "test:cad": "node scripts/CAD解析测试.mjs",
-    "verify": "node scripts/验证脚本.mjs",
+    "verify": "node scripts/平台边界检查.mjs && node scripts/验证脚本.mjs",
     "inspect:events": "node scripts/事件流健康巡检.mjs",
     "test:phase1": "node scripts/阶段一稳定性测试.mjs",
     "test:phase2": "node scripts/第二阶段记忆治理测试.mjs",
@@ -171,9 +171,7 @@
     "test:event-emission": "node scripts/事件发射点守护测试.mjs",
     "test:build-guard": "node scripts/构建版本守卫测试.mjs",
     "test:session-load-tdz": "node scripts/会话加载TDZ回归测试.mjs",
-
     "test:artifact-icon": "node scripts/产物图标测试.mjs",
-
     "test:cross-tab-quota": "node scripts/跨标签页流配额测试.mjs",
     "test:event-archive": "node scripts/事件流归档测试.mjs",
     "test:event-replay": "node scripts/事件流回放窗口测试.mjs",
@@ -238,7 +236,14 @@
     "test:code-preview": "node scripts/源码预览测试.mjs",
     "test:chat-layout": "node scripts/会话流排版回归测试.mjs",
     "test:md-preview": "node scripts/Markdown预览增强测试.mjs",
-    "test:chat-text-split": "node scripts/会话流文本分块回归测试.mjs"
+    "test:chat-text-split": "node scripts/会话流文本分块回归测试.mjs",
+    "test:platform-boundary": "node scripts/平台边界检查.mjs",
+    "desktop:dev": "npm --prefix desktop run dev",
+    "desktop:start": "npm --prefix desktop start",
+    "desktop:dist": "npm --prefix desktop run dist",
+    "desktop:prepare": "node scripts/桌面/准备随包二进制.mjs",
+    "test:desktop": "node scripts/桌面端契约测试.mjs",
+    "desktop:pack": "npm --prefix desktop run pack"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.1.0",

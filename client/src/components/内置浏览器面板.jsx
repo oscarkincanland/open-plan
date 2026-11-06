@@ -5,6 +5,7 @@ import { browserClose, browserFullpage, browserInput, browserOpen, browserPdf, b
 import { acquireStream, waitForStreamSlot } from "../长连接预算.js";
 import { flag } from "../运行开关.js";
 import { setBrowserStreamState } from "../浏览器联动.js";
+import { 是内嵌浏览器视图, 浏览器会话键, 上报视图边界, 设置视图可见 } from "../平台/内嵌浏览器.js";
 
 // 只有「启动 / profile 锁 / CDP 归属」这类异常才值得重置浏览器；
 // 导航失败、URL 无效、用户接管都不应销毁标签与登录态。
@@ -83,6 +84,61 @@ export default function BrowserPanel({ clientId, threadId, visible = true, fulls
     return undefined;
   }, [frame]);
   const frameSrc = frameUrl || (frame ? `data:image/jpeg;base64,${frame}` : null);
+
+  // 桌面宿主：页面由 Electron WebContentsView 原生渲染（ADR 0024 §6）。
+  // 前端不再接收帧，改为把面板矩形与可见性上报给主进程；web 形态下全部为 no-op。
+  const 内嵌视图 = useMemo(() => 是内嵌浏览器视图(), []);
+  const 会话键 = useMemo(() => 浏览器会话键(clientId, threadId), [clientId, threadId]);
+  useEffect(() => {
+    if (!内嵌视图) return undefined;
+    const node = viewRef.current;
+    if (!node) return undefined;
+    let last = "";
+    let timer = null;
+    const report = () => {
+      const rect = node.getBoundingClientRect();
+      const payload = {
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+      const signature = `${payload.x},${payload.y},${payload.width},${payload.height}`;
+      if (signature === last) return;
+      last = signature;
+      void 上报视图边界(会话键, payload);
+    };
+    const schedule = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(report, 80);
+    };
+    report();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(schedule) : null;
+    if (observer) observer.observe(node);
+    window.addEventListener("resize", schedule);
+    window.addEventListener("scroll", schedule, true);
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      if (observer) observer.disconnect();
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("scroll", schedule, true);
+    };
+  }, [内嵌视图, 会话键, state.active, fullscreen]);
+
+  // 可见性同步：面板切走/页面隐藏时把原生视图一起藏起来，避免浮在其他页签之上
+  useEffect(() => {
+    if (!内嵌视图) return undefined;
+    const sync = () => {
+      const hidden = typeof document !== "undefined" && document.hidden;
+      void 设置视图可见(会话键, visible && !hidden && state.active);
+    };
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      document.removeEventListener("visibilitychange", sync);
+      void 设置视图可见(会话键, false);
+    };
+  }, [内嵌视图, 会话键, visible, state.active]);
   // 卸载时兜底回收：帧流仍活跃时卸载组件，[frame] effect 的提前 return 不会触发清理
   useEffect(() => () => {
     for (const url of frameUrlBacklogRef.current) URL.revokeObjectURL(url);
@@ -680,7 +736,13 @@ export default function BrowserPanel({ clientId, threadId, visible = true, fulls
           }}
           onKeyDown={handleKeyboardKeyDown}
         />
-        {frame ? (
+        {内嵌视图 ? (
+          // 桌面宿主（ADR 0024 §6）：页面由 Electron WebContentsView 原生绘制在这个矩形里，
+          // 前端不再接收帧，只上报矩形与可见性。下面的占位块保证布局高度正确。
+          <div className="browser-embedded-host" aria-label="内嵌浏览器视图">
+            <span>页面由原生视图渲染（无帧流）</span>
+          </div>
+        ) : frame ? (
           <img
             ref={imgRef}
             src={frameSrc || undefined}

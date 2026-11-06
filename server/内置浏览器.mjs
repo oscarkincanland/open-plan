@@ -5,6 +5,7 @@ import path from "node:path";
 import { PROJECT_DIR } from "./workspace.mjs";
 import { loadNetworkSettings } from "./Pi配置管理.mjs";
 import { RUNTIME_FLAGS } from "./运行开关.mjs";
+import { currentBrowserDriver, getEmbeddedBrowserHost } from "./平台/浏览器驱动.mjs";
 
 /**
  * 内置浏览器：Agent 可直接操作的可视化浏览器。
@@ -557,6 +558,7 @@ class BrowserSession {
     this.frameBroadcastTimer = null;
     this.lastFrameAt = 0; // 最近一次成功产生画面的时间
     this.capturing = false; // 防止兜底截图并发堆积
+    this.embedded = false; // 桌面宿主内嵌视图模式（无帧流）
     this.screencastOn = false;
     this.screencastError = "";
     this.screencastStartedAt = 0;
@@ -599,6 +601,10 @@ class BrowserSession {
    * 同时安排一次兜底截图，保证面板不会一直停在“正在获取画面…”。
    */
   async startScreencast() {
+    // 内嵌视图模式：页面已经画在窗口里，不需要 JPEG 帧流（省掉编码/传输/解码全链路）
+    if (this.embedded) return true;
+    // 内嵌视图模式：页面已经画在窗口里，不需要 JPEG 帧流（省掉编码/传输/解码全链路）
+    if (this.embedded) return true;
     if (!this.cdp || !this.state.active) return false;
     this.lastScreencastAttemptAt = Date.now();
     try { await this.cdp.send("Page.stopScreencast"); } catch {}
@@ -640,6 +646,10 @@ class BrowserSession {
 
   /** 截取当前画面（兜底与首帧）。系统繁忙时同一时刻只允许一个截图在途。 */
   async captureFrame() {
+    // 内嵌视图模式：没有帧流，抓帧无意义（截图走 Page.captureScreenshot 独立方法）
+    if (this.embedded) return null;
+    // 内嵌视图模式：没有帧流，抓帧无意义（截图走 Page.captureScreenshot 独立方法）
+    if (this.embedded) return null;
     if (!this.cdp || !this.state.active || this.capturing) return null;
     this.capturing = true;
     try {
@@ -965,6 +975,26 @@ class BrowserSession {
   }
 
   async start() {
+    // 桌面宿主（ADR 0024 §6）：页面由 Electron WebContentsView 原生渲染，
+    // 无需 spawn 系统 Edge/Chrome，也无需 screencast 帧流。CDP 传输由宿主注入。
+    if (currentBrowserDriver() === "embedded") {
+      const host = getEmbeddedBrowserHost();
+      if (host) {
+        const transport = await host.attach(this.key);
+        this.cdp = transport;
+        this.embedded = true;
+        await this.cdp.ready;
+        await this.cdp.send("Page.enable");
+        await this.cdp.send("Runtime.enable");
+        this.state.active = true;
+        this.state.startedAt = this.state.startedAt || new Date().toISOString();
+        this.state.error = null;
+        this.frame = null;
+        this.emitState();
+        this.scheduleTabsRefresh(100);
+        return;
+      }
+    }
     if (this.state.active && await this.probeAlive()) return;
     if (this.state.active) {
       // 进程已死但状态还挂着（复用的外部实例被强杀时没有 exit 事件）：

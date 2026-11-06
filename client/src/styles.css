@@ -13317,3 +13317,17 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .browser-steps-card .bsc-preview { margin: 2px 6px 4px 30px; padding: 6px 8px; border-left: 2px solid var(--border); color: var(--muted); font-size: 11px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
 .browser-steps-card .bsc-error { margin: 0 6px 4px 30px; color: var(--warning); font-size: 11px; }
 .browser-steps-card .bsc-url { margin: 0 6px 4px 30px; color: color-mix(in srgb, var(--muted) 75%, transparent); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 桌面内嵌浏览器视图占位（ADR 0024 §6）：页面由原生 WebContentsView 绘制在这个矩形里，
+   前端不再接收帧流，只保证布局高度与可交互区域位置正确。 */
+.browser-embedded-host {
+  flex: 1;
+  min-height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dim);
+  font-size: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+}

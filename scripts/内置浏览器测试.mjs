@@ -547,10 +547,11 @@ await test("前端：隐藏不连帧流，phase 文案与 Blob 渲染路径", ()
 
 await test("步骤/读取事件：契约登记且 browser_* 工具统一包装", () => {
   const registry = fs.readFileSync(path.join(ROOT, "server", "事件注册表.mjs"), "utf8");
-  for (const type of ["browser_step_start", "browser_step_end", "browser_read", "browser_progress"]) {
+  // 2026-11-06：browser_progress 因无发射点已被移除（事件发射点守护要求「登记即发射」），
+  // 等待进度改由 state.phase 承载；此处只断言实际在用的三个事件。
+  for (const type of ["browser_step_start", "browser_step_end", "browser_read"]) {
     assert.match(registry, new RegExp(`type: "${type}"`), `${type} 应登记进事件注册表`);
   }
-  assert.match(registry, /browser_progress[\s\S]{0,240}?persist: false/, "browser_progress 高频不落盘");
   const agent = fs.readFileSync(path.join(ROOT, "server", "agent.mjs"), "utf8");
   assert.match(agent, /const withBrowserStep = \(kind, execute\)/, "应有步骤包装器");
   assert.match(agent, /const wrapBrowserStepTool = \(kind, tool\)/, "应有注册期包装");

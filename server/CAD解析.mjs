@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { bundledLibreDwg, bundledOda } from "./平台/外部二进制.mjs";
 
 const execFileAsync = promisify(execFile);
 /** 项目根目录：用于探测随项目分发的便携转换器（bin/ 已在 .gitignore 中，不随仓库提交）。 */
@@ -332,8 +333,9 @@ async function detectConverter() {
   }
   const bundledOda = bundledOdaProgram();
   if (bundledOda) return { kind: "oda", program: bundledOda };
-  const bundled = path.join(PROJECT_DIR, "bin", "libredwg", process.platform === "win32" ? "dwg2dxf.exe" : "dwg2dxf");
-  if (fs.existsSync(bundled)) return { kind: "libredwg", program: bundled };
+  // 随包 LibreDWG 路径由平台适配层解析（桌面端 resources/bin，web 端仓库 bin/）
+  const bundled = bundledLibreDwg();
+  if (bundled) return { kind: "libredwg", program: bundled };
   const finder = process.platform === "win32" ? "where" : "which";
   for (const name of ["dwg2dxf", "ODAFileConverter"]) {
     try {
@@ -355,8 +357,8 @@ async function detectConverter() {
 }
 
 function bundledOdaProgram() {
-  const exe = path.join(PROJECT_DIR, "bin", "oda", process.platform === "win32" ? "ODAFileConverter.exe" : "ODAFileConverter");
-  return fs.existsSync(exe) ? exe : null;
+  // 随包 ODA 路径由平台适配层解析（本项目不随包 ODA，保留以兼容用户自行放置）
+  return bundledOda();
 }
 
 async function detectOdaConverter() {

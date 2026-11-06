@@ -1,0 +1,28 @@
+{
+  "说明": "随包外部二进制清单（ADR 0024）。bin/ 不入库，仅本清单入库；构建前用 scripts/桌面/准备随包二进制.mjs 准备并校验 sha256。",
+  "policy": {
+    "libredwg": "随包：覆盖 DWG 读取（DWG→DXF）。写入不受支持（dxf2dwg 会丢实体）。",
+    "oda": "不随包：DWG 原格式写回需要 ODA File Converter，由用户自行安装或用 OAW_DWG_CONVERTER 指定。",
+    "officecli": "随包：文档引擎（docx/xlsx/pptx 高保真、批注查询）。"
+  },
+  "items": [
+    {
+      "id": "officecli",
+      "path": "officecli.exe",
+      "version": "",
+      "sha256": "",
+      "url": "",
+      "optional": true,
+      "note": "开发期通常使用本机已安装版本（%LOCALAPPDATA%/OfficeCLI/officecli.exe）；正式分发前用 --write 固化 sha256 并填入 url。"
+    },
+    {
+      "id": "libredwg",
+      "path": "libredwg/dwg2dxf.exe",
+      "version": "",
+      "sha256": "",
+      "url": "",
+      "optional": true,
+      "note": "LibreDWG 便携包（GNU GPLv3）。放入 bin/libredwg/ 后运行 --write 固化 sha256，并把官方发布地址填入 url。"
+    }
+  ]
+}
