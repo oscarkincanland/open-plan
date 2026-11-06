@@ -3196,6 +3196,13 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   justify-content: center;
   align-items: flex-start;
 }
+/* 批注/修订开关：只切 CSS 显隐，不重新渲染整篇文档（DocxViewer D6，2026-11-06）
+   —— docx-preview 的批注渲染为 `<span class="oaw-docx-comment-ref">` + `.oaw-docx-comment-popover`，
+   修订渲染为 <ins>/<del>；此前切换开关会把它们放进 renderAsync 选项，点一次就整篇重排。 */
+.oaw-docx-host.oaw-hide-comments .oaw-docx-comment-ref,
+.oaw-docx-host.oaw-hide-comments .oaw-docx-comment-popover { display: none; }
+.oaw-docx-host.oaw-hide-changes ins { text-decoration: none; }
+.oaw-docx-host.oaw-hide-changes del { display: none; }
 /* docx-preview 动态类名（className="oaw-docx" → .oaw-docx-wrapper / section.oaw-docx） */
 .oaw-docx-host .oaw-docx-wrapper {
   background: gray;

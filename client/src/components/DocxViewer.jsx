@@ -46,6 +46,24 @@ const HEADING_OPTIONS = [
   { label: "标题 4", value: "h4" },
 ];
 const ZOOM_LEVELS = [50, 75, 100, 125, 150, 200];
+// D3 大小预算：超过此体积不再走浏览器排版（与 PptxViewer 的 100MB 预算同思路，
+// Word 有图片解压 + 逐块排版 + 二次分页，阈值需要更保守）。
+const DOCX_NATIVE_MAX_BYTES = 25 * 1024 * 1024;
+
+/**
+ * 统计 docx 内浏览器无法解码的矢量图（EMF/WMF）数量。
+ * docx-preview 对这两类完全没有支持分支，命中即为确定性破图——
+ * 必须先识别出来，才能避免「破图 → 整篇 base64 重渲染」的无谓开销。
+ */
+async function countVectorOnlyMedia(buffer) {
+  try {
+    const JSZip = (await import("jszip")).default;
+    const zip = await JSZip.loadAsync(buffer);
+    return Object.keys(zip.files).filter((name) => /^word\/media\/.+\.(?:emf|wmf)$/i.test(name)).length;
+  } catch {
+    return 0;
+  }
+}
 
 export default function DocxViewer({ name, revision = 0, identity, onPreviewState, onPreviewError, onInsertContext, onSendToAgent, onDirtyChange }) {
   const hostRef = useRef(null);
@@ -228,11 +246,28 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
       if (serverIdentity && !identityMatches(fileIdentity, serverIdentity)) {
         throw new Error("预览内容与打开的文件不一致（文件身份不匹配），已停止渲染");
       }
+      // D3 大小预算：超过阈值不再硬渲染（与 PPT 的 LARGE_PPT_BYTES 策略对齐）。
+      // 依据：17MB/28 张图的 Word 实测渲染链路可达十余秒且必然触发破图重渲染。
+      const declaredSize = Number(res.headers.get("content-length") || 0);
+      if (declaredSize > DOCX_NATIVE_MAX_BYTES) {
+        try { await res.body?.cancel(); } catch {}
+        if (!live()) return;
+        setImageNotice(`文件约 ${(declaredSize / 1024 / 1024).toFixed(0)}MB，超过浏览器排版预算，已自动切到 OfficeCLI 高保真预览`);
+        setRenderMode("office");
+        setLoading(false);
+        onPreviewState?.(PREVIEW_STATE.PARTIAL);
+        return;
+      }
       const buf = await res.arrayBuffer();
       if (!live()) return;
 
-      // docx-preview 的图片是异步取回的，渲染完成后要给它一点时间；个别文档在
-      // blob 链路下拿不到图片（src 落空 / 解码失败），这里改用 base64 数据链重渲染一次。
+      // D4：EMF/WMF 是浏览器无法解码的矢量图（docx-preview 零支持），
+      // 命中这类文档时破图是**确定性**的，不能靠 base64 重渲染抢救。
+      const vectorOnlyCount = await countVectorOnlyMedia(buf);
+      if (!live()) return;
+
+      // 批注/修订一律渲染出来，工具栏开关只切 CSS 显隐（D6）——
+      // 旧实现把它们放进 renderAsync 选项，点一次开关就整篇重新渲染。
       const paint = async (buffer, { base64URL = false } = {}) => {
         host.innerHTML = "";
         await renderAsync(new Uint8Array(buffer), host, null, {
@@ -241,8 +276,8 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
           breakPages: true,
           // 保留 Word 写入的 lastRenderedPageBreak，避免长文被压成一个连续大页面。
           ignoreLastRenderedPageBreak: false,
-          renderComments: showComments, // 批注显示跟随工具栏开关
-          renderChanges: showChanges,   // 修订痕迹显示跟随工具栏开关
+          renderComments: true,
+          renderChanges: true,
           useBase64URL: base64URL,
         });
       };
@@ -261,15 +296,6 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
 
       await paint(buf);
       if (!live()) return;
-      let broken = await brokenImages(6000);
-      if (!live()) return;
-      if (broken.length) {
-        await paint(buf, { base64URL: true });
-        if (!live()) return;
-        broken = await brokenImages(8000);
-        if (!live()) return;
-      }
-      if (broken.length) setImageNotice(`有 ${broken.length} 张图片未能加载`);
 
       // 按 A4 页高做二次分页：生成的文档通常没有 Word 的 lastRenderedPageBreak，
       // 只靠 breakPages 会出现 9000+px 的超长"纸"，这里补上逐页切分。
@@ -286,8 +312,26 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
       applyFitWidth({ silent: true });
       // 加载批注数据
       loadComments({ signal, isCurrent });
-      // 有图片未加载 → partial（页面可读但内容不完整）；否则 ready。
-      onPreviewState?.(broken.length ? PREVIEW_STATE.PARTIAL : PREVIEW_STATE.READY);
+      // D5：先让首屏可读（ready），图片校验放到后台，不再阻塞首屏最多 14 秒。
+      onPreviewState?.(vectorOnlyCount ? PREVIEW_STATE.PARTIAL : PREVIEW_STATE.READY);
+      if (vectorOnlyCount) {
+        setImageNotice(`有 ${vectorOnlyCount} 张 EMF/WMF 矢量图无法在浏览器中渲染（Word 可正常显示）`);
+      }
+
+      // 后台图片校验：仅当不是 EMF/WMF 已知无解时，才用 base64 数据链重渲染一次。
+      void (async () => {
+        const broken = await brokenImages(3000);
+        if (!live()) return;
+        if (!broken.length) return;
+        if (vectorOnlyCount) { setImageNotice(`有 ${broken.length} 张图片未能加载（含 EMF/WMF 矢量图）`); return; }
+        await paint(buf, { base64URL: true });
+        if (!live()) return;
+        repaginateDocx(host);
+        const stillBroken = await brokenImages(4000);
+        if (!live()) return;
+        if (stillBroken.length) setImageNotice(`有 ${stillBroken.length} 张图片未能加载`);
+        onPreviewState?.(stillBroken.length ? PREVIEW_STATE.PARTIAL : PREVIEW_STATE.READY);
+      })().catch(() => {});
     } catch (e) {
       if (e?.name === "AbortError") return;
       if (!live()) return;
@@ -297,7 +341,7 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
     } finally {
       if (live()) setLoading(false);
     }
-  }, [urls, fileIdentity, showComments, showChanges, applyFitWidth, onPreviewState, onPreviewError]);
+  }, [urls, fileIdentity, applyFitWidth, onPreviewState, onPreviewError]);
 
   const loadComments = async (options = {}) => {
     const { signal, isCurrent } = options;
@@ -324,6 +368,14 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
     renderDoc({ signal: controller.signal, isCurrent: () => seq === renderSeqRef.current });
     return () => { try { controller.abort(); } catch {} };
   }, [renderDoc, renderKey, renderMode]);
+
+  // D6：批注/修订开关只切 CSS 显隐，不重新渲染整篇文档（渲染时两者都已产出）。
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    host.classList.toggle("oaw-hide-comments", !showComments);
+    host.classList.toggle("oaw-hide-changes", !showChanges);
+  }, [showComments, showChanges, renderKey, renderMode, loading]);
 
   // 提取标题大纲：优先使用 docx 内部样式（heading N / 标题 N）解析出的真实层级；
   // 解析不到时才退回"编号开头的短段落"启发式，且不再把加粗正文全部列进来。

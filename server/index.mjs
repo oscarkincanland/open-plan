@@ -11,6 +11,7 @@ import { ACTIVE_SESSION_STATUSES, archiveHeaderPatch, shouldIncludeArchived, sor
 import { initializeWorkspace } from "./工作区初始化.mjs";
 import { RUNTIME_CONSTITUTION_VERSION } from "./智能体运行宪法.mjs";
 import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, queryComments, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
+import { previewCache } from "./预览缓存.mjs";
 import { getApprovalMode, listPendingApprovals, listPermissionRules, removeUserRule, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
 import { agentManager, classifyAgentError, getCredentialErrors, isAbortLikeError, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
 import { bashEnvironmentInfo } from "./环境能力.mjs";
@@ -1248,7 +1249,10 @@ app.get(/^\/api\/doc\/(.+)\/raw$/, (req, res) => {
     svg: "image/svg+xml",
   };
   try {
-    res.setHeader("Cache-Control", "no-store, max-age=0");
+    // D2：允许条件请求。此前写死 no-store 导致每次打开都全量重下
+    // （实测 17 MB 的 Word 每切一次标签就重传一次）；改为 must-revalidate +
+    // ETag/Last-Modified 由 sendFile 生成，内容未变即 304 空响应。
+    res.setHeader("Cache-Control", "private, max-age=0, must-revalidate");
     res.setHeader("Content-Type", mimeMap[ext] || "application/octet-stream");
     res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(fileName)}"`);
     if (ext === "svg") {
@@ -1388,7 +1392,11 @@ app.get(/^\/api\/doc\/(.+)\/html$/, async (req, res) => {
   if (!p) return res.status(404).send("not found");
   const identity = previewFileIdentity(fileName, requestedCwd, p);
   try {
-    const html = await renderHtml(p);
+    // D1：高保真 HTML 按文件指纹缓存（实测 17 MB 文档渲染 3.0 s、产出 18 MB，重复打开不必重付）。
+    const stat = await fs.promises.stat(p);
+    const html = await previewCache.resolve("office-html", stat, () => renderHtml(p), {
+      measure: (value) => (typeof value === "string" ? value.length * 2 : 0),
+    });
     // 老式 .doc/.wps 会被渲染成空字符串；直接 send("") 就是一片空白。
     if (!html || !String(html).trim()) {
       return res.send(previewUnsupportedPage(fileName, path.extname(p).slice(1).toLowerCase(), "", identity));
@@ -1454,7 +1462,12 @@ app.get(/^\/api\/doc\/(.+)\/comments$/, async (req, res) => {
       const unique = comments.filter((c) => { if (seen.has(c.text)) return false; seen.add(c.text); return true; });
       return res.json({ comments: unique.slice(0, 20), identity });
     }
-    const r = await queryComments(p);
+    // D7：批注查询按文件指纹缓存（冷启动实测 1.5–2.6 s，且每次都整文件拷贝 + 起进程）。
+    // 只缓存「原始 officecli 结果」，映射与身份校验仍逐次执行，避免跨文件串内容。
+    const stat = await fs.promises.stat(p);
+    const r = await previewCache.resolve("office-comments", stat, () => queryComments(p), {
+      measure: (value) => JSON.stringify(value?.json || null).length * 2,
+    });
     const results = r.json?.data?.results || [];
     const comments = results.map((c) => ({
       // 2026-11-06：补 id 与锚点段落。此前只回传 path/author/text/date，
