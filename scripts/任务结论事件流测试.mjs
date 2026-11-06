@@ -278,10 +278,8 @@ test("run_finished 携带 finalText 与 finalMessageId", () => {
   assert.match(index源, /getRun\(run\.id\)\?\.finalMessageId \|\| null/);
 });
 test("结论详细度：提示词允许结构化成果摘要，Run 摘要优先用结论", () => {
-  // 生成端（2026-11-06 A03 修订）：最终答复统一「推荐骨架」，允许结构化 Markdown 成果摘要。
-  assert.match(agent源, /最终答复（重要）[\s\S]{0,80}推荐骨架/);
-  assert.match(agent源, /## 关键结果/);
-  assert.match(agent源, /## 产物/);
+  // 生成端：不再强制「1-3 句、禁止 Markdown」，有成果时允许结构化 Markdown
+  assert.match(agent源, /当本轮产生了文件、报告、数据、代码改动等成果时，用简洁但完整的 Markdown 把成果讲清楚/);
   // 落盘端：Run 摘要优先采用结论，历史列表/结果卡标题才能显示真实结论
   assert.match(runs源, /if \(run\.completion\?\.summary\) run\.summary = String\(run\.completion\.summary\)\.slice\(0, 4000\)/);
 });
