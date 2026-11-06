@@ -256,6 +256,15 @@ test("CadViewer 三态齐备：加载/空/错误 + 截断提示 + 图层显隐 +
   assert.match(cadViewerSource, /toggleLayer/);
   assert.match(cadViewerSource, /onPointerDown/);
 });
+test("CadViewer 图层显隐按组切换：几何只建一次，渲染期不 setState", () => {
+  // 2026-11-06：切图层不再重建全部实体（旧实现把 hiddenLayers 放进 useMemo 依赖）
+  assert.match(cadViewerSource, /data-layer=\{e\.layer\}/, "实体应按图层包 <g data-layer>");
+  assert.match(cadViewerSource, /querySelectorAll\("\[data-layer\]"\)/, "显隐应直接切 display");
+  assert.match(cadViewerSource, /node\.style\.display = hiddenLayers\.has\(layer\) \? "none" : ""/, "隐藏层应置 display:none");
+  const geometryBlock = cadViewerSource.slice(cadViewerSource.indexOf("const geometry = useMemo"), cadViewerSource.indexOf("const elements = geometry.elements"));
+  assert.doesNotMatch(geometryBlock, /setRenderError|setState/, "useMemo 内不得 setState（渲染期 setState 反模式）");
+  assert.doesNotMatch(cadViewerSource, /useMemo\([^)]*hiddenLayers/, "几何构建不应依赖 hiddenLayers");
+});
 
 console.log("\n▶ CAD 白名单修改（步骤 4 运行时）");
 test("replace_text 主路径：TEXT 文字被替换且其余实体不动", () => {

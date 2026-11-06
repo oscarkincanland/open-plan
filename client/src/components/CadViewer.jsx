@@ -49,9 +49,8 @@ function arcPath(e) {
   return `M ${x1} ${y1} A ${e.r} ${e.r} 0 ${sweepDeg > 180 ? 1 : 0} 0 ${x2} ${y2}`;
 }
 
-/** 单实体 → SVG 元素（hiddenLayers 命中返回 null；INSERT 递归展开受深度限制）。 */
-function renderEntity(e, key, hiddenLayers, blockMap, depth = 0) {
-  if (hiddenLayers.has(e.layer)) return null;
+/** 单实体 → SVG 元素（INSERT 递归展开受深度限制；不在此处按图层过滤，见下方 data-layer 说明）。 */
+function renderEntity(e, key, blockMap, depth = 0) {
   const stroke = "var(--oaw-cad-ink)";
   switch (e.type) {
     case "LINE":
@@ -87,8 +86,8 @@ function renderEntity(e, key, hiddenLayers, blockMap, depth = 0) {
       if (!block) return null;
       const transform = `translate(${e.x ?? 0} ${e.y ?? 0}) rotate(${e.rot ?? 0}) scale(${e.sx ?? 1} ${e.sy ?? 1}) translate(${-block.baseX} ${-block.baseY})`;
       return (
-        <g key={key} transform={transform}>
-          {block.entities.map((child, i) => renderEntity(child, `${key}-${i}`, hiddenLayers, blockMap, depth + 1))}
+        <g key={key} transform={transform} data-layer={e.layer}>
+          {block.entities.map((child, i) => wrapByLayer(child, `${key}-${i}`, blockMap, depth + 1))}
         </g>
       );
     }
@@ -97,9 +96,23 @@ function renderEntity(e, key, hiddenLayers, blockMap, depth = 0) {
   }
 }
 
+/**
+ * 按实体自身图层包一层 `<g data-layer>`。
+ *
+ * 为什么这样分层：旧实现把 hiddenLayers 放进 useMemo 依赖，切一次图层就要
+ * 把成千上万个实体重新建一遍 React 元素。现在几何只构建一次（依赖 entities），
+ * 图层显隐改由 effect 直接切换 `[data-layer]` 的 display——大图纸切图层不再是 O(实体数)。
+ */
+function wrapByLayer(e, key, blockMap, depth = 0) {
+  const node = renderEntity(e, key, blockMap, depth);
+  if (!node) return null;
+  // INSERT 已自带 data-layer（块内子实体各自再包），其余实体在这里包
+  if (e.type === "INSERT") return node;
+  return <g key={`${key}-l`} data-layer={e.layer}>{node}</g>;
+}
+
 export default function CadViewer({ doc }) {
   // ── 三态：加载 / 空 / 错误 ─────────────────────────────────────────────
-  const [renderError, setRenderError] = useState(null);
   const [layersOpen, setLayersOpen] = useState(true);
   // 冻结图层默认隐藏（CAD 惯例）；用户开关后由 hiddenLayers 接管
   const [hiddenLayers, setHiddenLayers] = useState(() => new Set((doc?.layers || []).filter((l) => l.frozen).map((l) => l.name)));
@@ -133,16 +146,28 @@ export default function CadViewer({ doc }) {
     return [...names].map((name) => ({ name, count: counts.get(name) || 0, frozen: declared.get(name)?.frozen || false }));
   }, [doc?.layers, doc?.entities, blockMap]);
 
-  // SVG 元素构建放 useMemo：几何异常在此被捕获 → 错误态（渲染期异常兜底）
-  const elements = useMemo(() => {
+  // SVG 元素构建放 useMemo：几何只依赖 entities/blocks（图层显隐不参与重建）。
+  // 几何异常在此被捕获并返回结果对象——旧实现在 useMemo 里调 setState（渲染期 setState
+  // 属 React 反模式，会触发额外重渲染告警），这里改为纯计算 + 渲染期读取。
+  const geometry = useMemo(() => {
     try {
-      setRenderError(null);
-      return (doc?.entities || []).map((e, i) => renderEntity(e, `e${i}`, hiddenLayers, blockMap));
+      return { ok: true, error: null, elements: (doc?.entities || []).map((e, i) => wrapByLayer(e, `e${i}`, blockMap)) };
     } catch (e) {
-      setRenderError(e?.message || "图形渲染失败");
-      return null;
+      return { ok: false, error: e?.message || "图形渲染失败", elements: null };
     }
-  }, [doc?.entities, hiddenLayers, blockMap]);
+  }, [doc?.entities, blockMap]);
+  const elements = geometry.elements;
+  const geometryError = geometry.ok ? null : geometry.error;
+
+  // 图层显隐：只切换 [data-layer] 的 display，不重建 React 元素（O(变更层) 而非 O(实体数)）
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    for (const node of svg.querySelectorAll("[data-layer]")) {
+      const layer = node.getAttribute("data-layer");
+      node.style.display = hiddenLayers.has(layer) ? "none" : "";
+    }
+  }, [hiddenLayers, geometry]);
 
   const fit = useCallback(() => {
     if (!bounds) { setView(null); return; }
@@ -152,10 +177,9 @@ export default function CadViewer({ doc }) {
     setView({ x: bounds.minX - pad, y: -(bounds.maxY + pad), w: w + pad * 2, h: h + pad * 2 });
   }, [bounds]);
 
-  // 切文件：清错误、重建默认隐藏层、复位视图
+  // 切文件：重建默认隐藏层、复位视图（渲染期状态由 geometry 派生，无需在此重置）
   const docKey = doc?.id || doc?.name || "";
   useEffect(() => {
-    setRenderError(null);
     setHiddenLayers(new Set((doc?.layers || []).filter((l) => l.frozen).map((l) => l.name)));
     fit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -236,17 +260,17 @@ export default function CadViewer({ doc }) {
     );
   }
   const visibleCount = (doc.entities || []).length;
-  if (renderError || !elements || visibleCount === 0) {
+  if (geometryError || !elements || visibleCount === 0) {
     return (
       <div className="oaw-cad-wrap">
-        <div className={`oaw-cad-state ${renderError ? "error" : ""}`} role={renderError ? "alert" : undefined}>
-          <Icon name={renderError ? "warning" : "info"} size={16} />
+        <div className={`oaw-cad-state ${geometryError ? "error" : ""}`} role={geometryError ? "alert" : undefined}>
+          <Icon name={geometryError ? "warning" : "info"} size={16} />
           <span>
-            {renderError
-              ? `CAD 渲染失败：${renderError}`
+            {geometryError
+              ? `CAD 渲染失败：${geometryError}`
               : "未解析到可显示的图形实体（可能是空图纸，或全部为暂不支持的实体类型）"}
           </span>
-          {renderError && <button className="btn-xs" onClick={fit}>复位视图</button>}
+          {geometryError && <button className="btn-xs" onClick={fit}>复位视图</button>}
         </div>
       </div>
     );
