@@ -60,7 +60,8 @@ test("会话行运行态旋转图标", () => {
 });
 
 test("运行图标旋转受动效闸门约束（reduced-motion 静止）", () => {
-  assert.match(styles, /\.icon-loading,\n\s*\.marquee-inner,\n\s*\.marquee-text\n\) \{ animation: none !important; \}/, "icon-loading 必须进统一闸门");
+  // 统一闸门的选择器清单会随新增动画增长，只要求 .icon-loading 出现在同一组 :is(...) 内。
+  assert.match(styles, /:is\(\[data-reduce-motion="1"\], \[data-motion-level="off"\]\) :is\([\s\S]{0,1600}?\.icon-loading,/, "icon-loading 必须进统一闸门");
   assert.match(motionTest, /spin: \["\.loading-spinner", "\.icon-loading"\]/, "动效治理测试宿主清单同步");
 });
 

@@ -140,7 +140,8 @@ function 场景(name, fn) {
   const inputAt = panel.indexOf('<div className="chat-input">', composeAt);
   assert.ok(cardAt > 0 && inputAt > cardAt, "任务卡要排在输入框之前（在输入框外面）");
   assert.match(css, /\.center-chat-slot \.chat-compose \{/);
-  assert.match(css, /\.center-chat-slot \.chat-compose > \.task-card \{/, "任务卡样式挂到新外壳上");
+  // 任务进度改为输入框上方悬浮圆环（DESIGN §7），外壳选择器随之改为 .task-orb。
+  assert.match(css, /\.chat-compose > \.task-orb \{/, "任务圆环样式挂到新外壳上");
   assert.doesNotMatch(css, /\.chat-input > \.task-card/, "旧的「输入框内任务卡」选择器应已移除");
   assert.match(css, /\.center-chat-slot \.chat-body \{ min-height: 120px; \}/, "对话区要有高度下限");
   assert.match(css, /@media \(max-height: 560px\)[\s\S]{0,200}\.chat-target-bar \{ display: none; \}/, "矮窗口先收起目标范围行");
@@ -153,7 +154,7 @@ function 场景(name, fn) {
   assert.match(panel, /const available = card\.getBoundingClientRect\(\)\.top - clipTop - 12;/);
   assert.match(panel, /window\.addEventListener\("resize", measure\)/, "窗口尺寸变化后要重算，否则缩放窗口又会裁到");
   assert.match(panel, /setPanelMaxHeight\(Math\.max\(96, Math\.min\(260, Math\.round\(available\)\)\)\)/);
-  assert.match(panel, /<div className="task-body" style=\{\{ maxHeight: panelMaxHeight \}\}>/);
+  assert.match(panel, /<div className="task-body[^"]*" style=\{\{ maxHeight: panelMaxHeight \}\}[^>]*>/);
 });
 
 console.log(failed ? "\n有失败项 ✗" : "\n全部通过 ✓");

@@ -72,10 +72,11 @@ test("skipped/revise/cancelled 有独立样式，不再共用失败红", () => {
 
 /* ---------------- 2) 思考字号与跟随尾部 ---------------- */
 
-test("思考正文使用 12px，比正文更小", () => {
+test("思考正文与正文同档 14px", () => {
   const match = styles.match(/\.tl-thinking-text \{[^}]*font-size: (\d+)px/);
   assert.ok(match, "找不到 .tl-thinking-text 字号");
-  assert.equal(match[1], "12", "思考正文字号应为 12px");
+  // 规范 §4：思考正文属正文层，14px / --text（此前 12px/--dim 是信息权重倒挂）。
+  assert.equal(match[1], "14", "思考正文字号应为 14px");
 });
 
 test("思考文本做展示层空格/空行归一化，不再撑大字间距", () => {
