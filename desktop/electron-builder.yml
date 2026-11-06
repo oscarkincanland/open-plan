@@ -38,6 +38,14 @@ extraResources:
     filter:
       - "**/*"
 
+  # 运行期被 server 直接 import / spawn 的脚本（不是测试脚本，不能整目录带）
+  - from: ../scripts/lib
+    to: app/scripts/lib
+  - from: ../scripts/prepare-map-data.mjs
+    to: app/scripts/prepare-map-data.mjs
+  - from: ../scripts/build-vector-tiles.mjs
+    to: app/scripts/build-vector-tiles.mjs
+
 win:
   # 本机构建环境无法下载 winCodeSign（GitHub 不通）且无证书：跳过签名与 rcedit 改写。
   # 正式分发（M3）请配置证书后改为 true。
