@@ -331,13 +331,8 @@ body.resizing .map-chat-resizer {
 .badge { font-size: 10px; color: var(--dim); background: var(--surface); padding: 1px 6px; border-radius: 3px; }
 .badge.err-badge { color: var(--error); border: 1px solid var(--error); }
 .badge.ws-hint { color: var(--success); border: 1px solid var(--success); }
-/* 统一预览状态徽标（D01）：loading | ready | partial | unsupported | failed */
-.badge.preview-state { display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--border); }
-.badge.preview-state-loading { color: var(--dim); }
-.badge.preview-state-ready { color: var(--success); border-color: var(--success); }
-.badge.preview-state-partial { color: var(--warn, var(--accent)); border-color: var(--warn, var(--accent)); }
-.badge.preview-state-unsupported { color: var(--dim); border-style: dashed; }
-.badge.preview-state-failed { color: var(--error); border-color: var(--error); }
+/* 预览状态徽标已由标题行的状态圆点取代（.preview-state-dot），原 .badge.preview-state-*
+   六条规则已删除（2026-11-06 死样式清理：全仓 JSX 无任何 `badge preview-state` 用法）。 */
 .badge.preview-capability { white-space: nowrap; border-style: dashed; }
 .badge.preview-capability-partial { color: var(--muted); }
 .badge.preview-capability-values-only { color: var(--warning); border-color: var(--warning); }
@@ -688,7 +683,9 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 /* 预览状态圆点：替代原来常驻的「已就绪」文字徽标 */
 .preview-state-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--dim); }
 .preview-state-dot.preview-state-ready { background: var(--success); }
-.preview-state-dot.preview-state-partial { background: var(--warn, var(--accent)); }
+/* 「部分可用」必须示警（琥珀），不能落到强调色：:root 未定义 --warn，
+   旧写法 var(--warn, var(--accent)) 会永远取 fallback → 显示成品牌青。 */
+.preview-state-dot.preview-state-partial { background: var(--warning); }
 .preview-state-dot.preview-state-failed { background: var(--error); }
 .preview-state-dot.preview-state-unsupported { background: transparent; border: 1px dashed var(--dim); }
 .preview-state-dot.preview-state-loading { background: var(--accent); }
@@ -13032,8 +13029,13 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 
 /* ===== CAD 预览查看器（CadViewer.jsx · 开关 OAW_CAD_PREVIEW，默认关=不渲染不占样式）=====
    配色全部走既有主题变量，暗/亮主题自动跟随；描边色 --oaw-cad-ink 按主题定义一次。 */
-:root { --oaw-cad-ink: #cfd3e0; }
-[data-theme="light"] { --oaw-cad-ink: #3a4050; }
+/* CAD 预览描边色：令牌写成独立行，设计令牌棘轮才能识别为令牌定义而非硬编码色值 */
+:root {
+  --oaw-cad-ink: #cfd3e0;
+}
+[data-theme="light"] {
+  --oaw-cad-ink: #3a4050;
+}
 .oaw-cad-wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--panel-bg); }
 .oaw-cad-toolbar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--border); }
 .oaw-cad-toolbar .btn-xs.active { color: var(--text); border-color: var(--border); }
@@ -13064,7 +13066,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .browser-steps-card .bsc-line.no-detail { cursor: default; }
 .browser-steps-card .bsc-line:not(.no-detail):hover { background: color-mix(in srgb, var(--border) 32%, transparent); }
 .browser-steps-card .bsc-state { display: inline-flex; align-items: center; width: 12px; justify-content: center; }
-.browser-steps-card .bsc-state.ok { color: var(--success, #2a9d5c); }
+.browser-steps-card .bsc-state.ok { color: var(--success); }
 .browser-steps-card .bsc-state.err { color: var(--warning); }
 .browser-steps-card .bsc-state.run { color: var(--accent); }
 .browser-steps-card .bsc-verb { flex: none; font-weight: 600; }

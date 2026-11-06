@@ -261,11 +261,14 @@ await test("边界：预览解析仍拒绝越界绝对路径（未放开任意�
 
 console.log("\n▶ 样式与交付完整性");
 
-await test("共享预览状态徽标有样式", () => {
+await test("共享预览状态圆点有样式（徽标已由圆点取代）", () => {
   const styles = read("client/src/styles.css");
-  assert.match(styles, /\.badge\.preview-state-ready/);
-  assert.match(styles, /\.badge\.preview-state-failed/);
-  assert.match(styles, /\.badge\.preview-state-partial/);
+  assert.match(styles, /\.preview-state-dot\.preview-state-ready/);
+  assert.match(styles, /\.preview-state-dot\.preview-state-failed/);
+  // 「部分可用」必须用语义令牌 --warning 示警；:root 没有 --warn，旧写法永远落 fallback
+  assert.match(styles, /\.preview-state-dot\.preview-state-partial \{ background: var\(--warning\)/);
+  // 死样式：标题行已改圆点，.badge.preview-state-* 不应再存在
+  assert.doesNotMatch(styles, /\.badge\.preview-state-ready/);
 });
 
 await test("预览头部收敛：状态圆点 + ⓘ，不再有「专用预览工具栏」", () => {

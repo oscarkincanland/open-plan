@@ -563,23 +563,16 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext, o
         />
         {doc.kind === "html" && !isOfficePreview && (
           <>
-            <span className="badge">{watchUrl ? "实时预览" : "静态预览"}</span>
             {!watchUrl && (
               <button className="btn-sm" onClick={startLive} disabled={watchLoading}>
                 {watchLoading ? "启动中..." : "开启实时预览"}
               </button>
             )}
             {watchUrl && (
-              <button className="btn-sm" onClick={stopLive}>静态预览</button>
+              <button className="btn-sm" onClick={stopLive}>转为静态预览</button>
             )}
           </>
         )}
-        {doc.kind === "xlsx" && <span className="badge">可编辑</span>}
-        {doc.kind === "cad" && <span className="badge">CAD 图纸</span>}
-        {doc.kind === "htmlfile" && <span className="badge">HTML 页面</span>}
-        {doc.kind === "pdf" && <span className="badge">PDF</span>}
-        {doc.kind === "text" && <span className="badge">{doc.ext === "md" || doc.ext === "markdown" ? "Markdown" : "文本"}</span>}
-        {doc.kind === "code" && <span className="badge">源码 · {doc.language || doc.ext || "text"}</span>}
         {(doc.kind === "text" || doc.kind === "htmlfile") && (
           <div className="doc-viewmode" role="group" aria-label="预览方式">
             <button type="button" className={`btn-sm ${sourceMode ? "" : "active"}`} onClick={() => setSourceMode(false)}>预览</button>
@@ -640,6 +633,13 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext, o
               <p>{capability.detail}</p>
               <p className="doc-info-row">编辑能力：{capability.editable || "无"}</p>
               <p className="doc-info-row">文件：{doc.name}</p>
+              {/* DESIGN §8：预览方式与类型说明收进 ⓘ，标题行不再常驻文字徽标 */}
+              <p className="doc-info-row">格式：{String(doc.ext || "").toUpperCase() || "-"}</p>
+              {doc.kind === "html" && !isOfficePreview && (
+                <p className="doc-info-row">预览方式：{watchUrl ? "实时预览（随文件变化刷新）" : "静态预览"}</p>
+              )}
+              {doc.kind === "code" && <p className="doc-info-row">语言：{doc.language || doc.ext || "text"}</p>}
+              {doc.truncated && <p className="doc-info-row">内容：超过预览上限，仅显示前一部分</p>}
             </div>
           )}
         </div>
