@@ -4,6 +4,7 @@ import { Document, Packer, Paragraph, TextRun, AlignmentType, HeadingLevel } fro
 import Icon from "./Icon.jsx";
 import CommentMarker from "./CommentMarker.jsx";
 import { repaginateDocx } from "./文档分页.js";
+import { scrollToElementInContainer } from "./文档定位.js";
 import { extractDocxOutline } from "./文档目录.js";
 import { motionScrollBehavior } from "../界面外观.js";
 import { askConfirm } from "./Feedback.jsx";
@@ -406,13 +407,11 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
     });
   };
 
-  // 只滚动预览容器，避免把整个工作台一起滚动
+  // 只滚动预览容器，避免把整个工作台一起滚动（zoom 换算统一走 文档定位.js）
   const scrollHostTo = (el, offset = 16) => {
     const host = hostRef.current;
     if (!host || !el) return false;
-    const rect = el.getBoundingClientRect();
-    const base = host.getBoundingClientRect();
-    host.scrollTo({ top: Math.max(0, host.scrollTop + (rect.top - base.top) - offset), behavior: motionScrollBehavior() });
+    scrollToElementInContainer(host, el, { offset, behavior: motionScrollBehavior() });
     const page = Number(el.closest("section.oaw-docx")?.dataset.page || 0);
     if (page) setCurrentPage(page);
     return true;
@@ -427,10 +426,7 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
     const el = hostRef.current?.querySelector(`section.oaw-docx[data-page="${target}"]`);
     if (!el) return;
     setCurrentPage(target);
-    const host = hostRef.current;
-    const rect = el.getBoundingClientRect();
-    const base = host.getBoundingClientRect();
-    host.scrollTo({ top: Math.max(0, host.scrollTop + (rect.top - base.top) - 8), behavior: motionScrollBehavior() });
+    scrollToElementInContainer(hostRef.current, el, { offset: 8, behavior: motionScrollBehavior() });
   };
 
   // ===== 编辑模式：contentEditable + execCommand（即时生效，零后端延迟） =====

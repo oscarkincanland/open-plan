@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import Icon from "./Icon.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
 import { motionScrollBehavior } from "../界面外观.js";
+import { scrollToElementInContainer } from "./文档定位.js";
 
 /**
  * 批注组件（Word 风格）
@@ -42,23 +43,43 @@ export default function CommentMarker({ comments, containerRef, activeComment, s
     return kws;
   }, []);
 
-  // 收集 docx-preview 渲染生成的批注锚点注释节点（按文档顺序）。
-  // docx-preview 将批注范围渲染为 HTML 注释节点：
-  //   "start of comment #N"（范围起点）/ "comment #N by author on date"（批注引用处）
+  // 收集 docx-preview 渲染出的批注锚点，按「批注 id → 节点」建映射。
+  //
+  // 为什么不能用数组下标：docx-preview 为每条批注生成**两个** HTML 注释节点
+  //   ① "start of comment #N"（范围起点，docx-preview.js renderCommentRangeStart）
+  //   ② "comment #N by <author> on <date>"（引用处，renderCommentReference）
+  // 旧实现把两类都塞进同一数组再按批注序号取数组下标，
+  // 于是从第 2 条起整体偏前一位 → 几乎所有批注都跳到上一条的位置。
+  // 现在从注释文本里解析出批注 id 精确匹配，与顺序/条数无关。
   const collectCommentAnchors = useCallback((doc, container) => {
-    const anchors = [];
+    const anchors = new Map(); // id(number) -> { start, ref }
     try {
-      // createNodeIterator 是 Document 的方法；root 可为任意 Node（含 Element）
       const docObj = doc && doc.nodeType === 9 ? doc : (doc?.ownerDocument || doc);
       const walker = docObj.createNodeIterator(container, NodeFilter.SHOW_COMMENT, null);
       let n;
       while ((n = walker.nextNode())) {
         const t = (n.nodeValue || "").trim();
-        if (/^(start of comment #|comment #\d+ by)/.test(t)) anchors.push(n);
+        const m = t.match(/^(start of comment|comment) #(\d+)/);
+        if (!m) continue;
+        const id = Number(m[2]);
+        if (!Number.isFinite(id)) continue;
+        const entry = anchors.get(id) || { start: null, ref: null };
+        if (m[1] === "start of comment") {
+          if (!entry.start) entry.start = n;
+        } else if (!entry.ref) {
+          entry.ref = n;
+        }
+        anchors.set(id, entry);
       }
     } catch { /* 非 DOM 容器（如未渲染完成的 iframe） */ }
     return anchors;
   }, []);
+
+  /** 取锚点里最靠前的那一类：范围起点优先（更贴近被批注的正文），其次引用处。 */
+  const anchorNodeOf = (anchors, id) => {
+    const entry = anchors?.get(Number(id));
+    return entry ? (entry.start || entry.ref || null) : null;
+  };
 
   // 从注释锚点向上找最近的块级元素（段落）
   const findBlockAncestor = useCallback((el, root) => {
@@ -70,24 +91,20 @@ export default function CommentMarker({ comments, containerRef, activeComment, s
     return null;
   }, []);
 
-  // 定位批注对应段落
+  // 定位批注对应段落（优先级：批注 id 锚点 → 文档顺序兜底 → 关键词兜底）
   const findCommentElement = useCallback((comment, index) => {
     if (!containerRef?.current) return null;
     const container = containerRef.current;
     const doc = container.tagName === "IFRAME" ? (container.contentDocument || container.contentWindow?.document) : container;
     if (!doc) return null;
 
-    // 1) docx-preview 注释锚点：按文档顺序与批注列表索引对应
-    //    （officecli 与 docx-preview 均按文档顺序处理批注）
     const anchors = collectCommentAnchors(doc, container);
-    const anchor = typeof index === "number" ? anchors[index] : null;
-    if (anchor) {
-      const para = findBlockAncestor(anchor.parentElement, container);
-      if (para) {
-        // 顺序对应校验：锚点段落若含批注关键词则直接采用；否则继续关键词匹配
-        const kws = extractKeywords(comment.text);
-        if (kws.some((k) => para.textContent.includes(k))) return para;
-      }
+
+    // 1) 首选：服务端回传的 commentId 精确命中（与文档顺序、批注条数无关）
+    const byId = anchorNodeOf(anchors, comment?.id);
+    if (byId) {
+      const para = findBlockAncestor(byId.parentElement, container);
+      if (para) return para;
     }
 
     // 2) 显式 path / data-comment-id
@@ -95,18 +112,38 @@ export default function CommentMarker({ comments, containerRef, activeComment, s
       const el = doc.querySelector(`[data-path="${comment.path}"], [data-comment-id="${comment.id}"]`);
       if (el) return el;
     }
-    // 3) 关键词匹配：提取的正文关键词 → 找包含它的段落
+
+    // 3) 没有 id 时按文档顺序兜底：把锚点 id 升序排好，取第 index 个
+    //    （仅当服务端未提供 id 的旧响应才会走到这里）
+    if (!comment?.id && anchors.size && typeof index === "number") {
+      const orderedIds = [...anchors.keys()].sort((a, b) => a - b);
+      const node = anchorNodeOf(anchors, orderedIds[index]);
+      if (node) {
+        const para = findBlockAncestor(node.parentElement, container);
+        if (para) return para;
+      }
+    }
+
+    // 4) 最后兜底：关键词匹配。批注正文与正文通常没有交集，只在前面全部落空时使用；
+    //    且从当前视口附近开始找，避免恒命中文档最前面一个偶然同词段落。
     const keywords = extractKeywords(comment.text);
-    const candidates = Array.from(doc.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, td, th"));
-    for (const kw of [...keywords].sort((a, b) => b.length - a.length)) {
-      const hit = candidates.find((el) => el.textContent.includes(kw));
-      if (hit) return hit;
+    if (keywords.length) {
+      const candidates = Array.from(doc.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, td, th"));
+      const containerRect = container.getBoundingClientRect();
+      const near = (el) => {
+        const r = el.getBoundingClientRect();
+        return Math.abs(r.top - containerRect.top - containerRect.height / 2);
+      };
+      for (const kw of [...keywords].sort((a, b) => b.length - a.length)) {
+        const hits = candidates.filter((el) => el.textContent.includes(kw));
+        if (hits.length === 1) return hits[0];
+        if (hits.length > 1) return hits.sort((a, b) => near(a) - near(b))[0];
+      }
     }
-    // 4) 兜底：锚点顺序对应（无关键词命中时仍可用）
-    if (anchor) {
-      const para = findBlockAncestor(anchor.parentElement, container);
-      if (para) return para;
-    }
+
+    // 5) 仍无命中但有锚点：回到该 id 的锚点（即使是引用处）
+    const fallbackAnchor = anchorNodeOf(anchors, comment?.id);
+    if (fallbackAnchor) return findBlockAncestor(fallbackAnchor.parentElement, container);
     return null;
   }, [containerRef, extractKeywords, collectCommentAnchors, findBlockAncestor]);
 
@@ -140,13 +177,10 @@ export default function CommentMarker({ comments, containerRef, activeComment, s
         badge.style.zIndex = "50";
         pageEl.appendChild(badge);
       }
-      // 只滚动预览容器，避免把整个工作台/页面一起滚动（那样会在底部露出空白）
+      // 只滚动预览容器，避免把整个工作台/页面一起滚动（zoom 换算走 文档定位.js）
       const scroller = container && container.tagName !== "IFRAME" ? container : null;
-      if (scroller && scroller.scrollHeight > scroller.clientHeight + 4) {
-        const rect = el.getBoundingClientRect();
-        const baseRect = scroller.getBoundingClientRect();
-        const delta = rect.top - baseRect.top - (baseRect.height - rect.height) / 2;
-        scroller.scrollTo({ top: Math.max(0, scroller.scrollTop + delta), behavior: motionScrollBehavior() });
+      if (scroller) {
+        scrollToElementInContainer(scroller, el, { center: true, behavior: motionScrollBehavior() });
       } else {
         el.scrollIntoView({ behavior: motionScrollBehavior(), block: "center" });
       }

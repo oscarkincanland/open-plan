@@ -1406,6 +1406,11 @@ app.get(/^\/api\/doc\/(.+)\/html$/, async (req, res) => {
 
 // watch 模式：启动/获取某文件的实时预览地址（docx/pptx）
 // 获取批注列表：docx/pptx 用 officecli；md/txt 从 agent 会话提取修订记录
+/** OfficeCLI 的 --json 会把字符串再包一层引号（如 "\"文档审查\""），预览展示前统一剥掉。 */
+function cleanQuoted(value) {
+  return String(value ?? "").replace(/^"+|"+$/g, "").trim();
+}
+
 app.get(/^\/api\/doc\/(.+)\/comments$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
   const requestedCwd = requestedPreviewWorkspace(req);
@@ -1452,10 +1457,14 @@ app.get(/^\/api\/doc\/(.+)\/comments$/, async (req, res) => {
     const r = await queryComments(p);
     const results = r.json?.data?.results || [];
     const comments = results.map((c) => ({
+      // 2026-11-06：补 id 与锚点段落。此前只回传 path/author/text/date，
+      // 前端只能靠「数组下标 ≈ 文档顺序」猜锚点，导致批注定位整体错位。
+      id: String(c.format?.id ?? c.id ?? "").replace(/^"|"$/g, ""),
+      anchoredTo: String(c.format?.anchoredTo ?? "").replace(/^"|"$/g, ""),
       path: c.path,
-      author: c.format?.author || c.author || "",
-      text: c.text || c.preview || "",
-      date: c.format?.date || c.date || "",
+      author: cleanQuoted(c.format?.author || c.author || ""),
+      text: cleanQuoted(c.text || c.preview || ""),
+      date: cleanQuoted(c.format?.date || c.date || ""),
     }));
     res.json({ comments, identity });
   } catch (e) {
