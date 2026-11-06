@@ -190,9 +190,10 @@ export const RUNTIME_FLAGS = Object.freeze({
   /** Office 写作规范层：模板路由 / 场景参数 / 版式令牌 / 规则闸门（默认关 = 旧行为逐字一致） */
   officeFormat: readFlag("OAW_OFFICE_FORMAT"),
   /* ===== CAD 能力（2026-10-21 方案评审通过：DXF/DWG 预览 + agent 读取/修改）===== */
-  /** CAD 预览：DXF/DWG 进文件树白名单 + /api/doc 预览分支 + CadViewer（默认关 = 白名单/路由/图标与基线一致） */
-  cadPreview: readFlag("OAW_CAD_PREVIEW"),
-  /** CAD agent 能力：documentRead 读取 CAD + cad_read/cad_edit 工具（默认关） */
+  /** CAD 预览：DXF/DWG 进文件树白名单 + /api/doc 预览分支 + CadViewer。
+      2026-11-06 起默认开（纯只读 SVG 渲染，用户反馈「图纸点不开」；OAW_CAD_PREVIEW=0 可整体回退基线）。 */
+  cadPreview: readFlagDefault("OAW_CAD_PREVIEW", true),
+  /** CAD agent 能力：documentRead 读取 CAD + cad_read/cad_edit 工具（默认关，写能力保留显式开启） */
   cadAgent: readFlag("OAW_CAD_AGENT"),
 
   /* ===== ZCode Harness 对标开关族（默认全关）===== */

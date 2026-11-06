@@ -1358,6 +1358,13 @@ function previewUnsupportedPage(fileName, ext, detail, identity, type = "unsuppo
   const tips = {
     doc: "老式 .doc 二进制格式不被预览引擎支持。请用 WPS/Word 打开后另存为 .docx，即可在规聚中正常预览。",
     wps: "WPS 专有格式不被预览引擎支持。请用 WPS 打开后另存为 .docx。",
+    // 2026-11-06：CAD 关闭态不再只给「暂不支持」的否定结论，直接告诉用户怎么打开。
+    dxf: RUNTIME_FLAGS.cadPreview
+      ? "该 DXF 图纸解析失败（可能文件损坏或实体类型暂不支持）。可在 CAD 中另存为较新的 DXF，或让 Agent 用 cad_read 读取摘要。"
+      : "CAD 预览当前被显式关闭（OAW_CAD_PREVIEW=0）。去掉该环境变量（或设为 1）并重启服务后即可预览 DXF/DWG。",
+    dwg: RUNTIME_FLAGS.cadPreview
+      ? "该 DWG 转换失败。DWG 需要 ODA File Converter 或 LibreDWG（放入 bin/oda 或 bin/libredwg，或用 OAW_DWG_CONVERTER 指定）；也可以先另存为 DXF。"
+      : "CAD 预览当前被显式关闭（OAW_CAD_PREVIEW=0）。去掉该环境变量（或设为 1）并重启服务后即可预览 DXF/DWG。",
   }[String(ext || "").toLowerCase()] || "该格式暂不支持内嵌预览。";
   const page = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>${safeName}</title>
 <style>body{margin:0;font:14px/1.7 -apple-system,"Microsoft YaHei",sans-serif;background:#f5f6f8;color:#2b2f36;display:flex;align-items:center;justify-content:center;height:100vh}

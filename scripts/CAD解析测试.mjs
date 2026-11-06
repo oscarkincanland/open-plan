@@ -44,8 +44,10 @@ const agentSource = read("server/agent.mjs");
 const taskSource = read("server/task.mjs");
 const cadSource = read("server/CAD解析.mjs");
 const editSource = read("server/CAD修改.mjs");
-test("cadPreview/cadAgent 注册且默认关（readFlag，非 readFlagWithDefault）", () => {
-  assert.match(flagsSource, /cadPreview: readFlag\("OAW_CAD_PREVIEW"\)/);
+test("cadPreview 默认开（readFlagDefault 可显式退出）/ cadAgent 默认关（readFlag）", () => {
+  // 2026-11-06：用户反馈「图纸点不开」——cadPreview 从默认关改为默认开（只读 SVG 渲染）；
+  // cadAgent（Agent 读写图纸）仍为显式开启。
+  assert.match(flagsSource, /cadPreview: readFlagDefault\("OAW_CAD_PREVIEW", true\)/);
   assert.match(flagsSource, /cadAgent: readFlag\("OAW_CAD_AGENT"\)/);
 });
 test("快照下发 cadPreview/cadAgent", () => {
