@@ -355,6 +355,7 @@ const TOOL_IDENTITY_RULES = [
   [/^(job_status|job_cancel)$/i, "history"],
   [/^(todo|taskcreate|taskupdate)$/i, "list"],
   [/^(run_subagent|subagent)$/i, "flow"],
+  [/^team_/i, "flow"],
   [/^editorial_pipeline$/i, "flow"],
   [/^(tool_approval|approval|review_copy)/i, "shield"],
   [/^(ask_user)$/i, "comment"],

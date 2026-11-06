@@ -50,7 +50,6 @@ const REGISTRY = [
   { type: "browser_step_start", lifecycle: true, persist: true, note: "浏览器步骤开始（browser_* 工具）", schema: { required: ["toolCallId", "kind"], types: { toolCallId: "string", kind: "string", url: "string", title: "string" } } },
   { type: "browser_step_end", lifecycle: true, persist: true, note: "浏览器步骤结束（done/error）", schema: { required: ["toolCallId", "kind", "status"], types: { toolCallId: "string", kind: "string", status: "string", durationMs: "number", url: "string", title: "string", error: "string" } } },
   { type: "browser_read", lifecycle: true, persist: true, note: "浏览器读取内容（snapshot/extract：字数/元素数/预览）", schema: { required: ["toolCallId", "kind"], types: { toolCallId: "string", kind: "string", url: "string", title: "string", chars: "number", elementCount: "number", preview: "string" } } },
-  { type: "browser_progress", lifecycle: true, persist: false, note: "浏览器等待/进度（高频，对齐 tool_call_progress 不落盘）", schema: { required: ["toolCallId", "phase"], types: { toolCallId: "string", phase: "string", detail: "string", elapsedMs: "number" } } },
   { type: "tool_repeat_warning", lifecycle: true, persist: true, note: "同参数重复调用提醒" },
   { type: "completion_nudge", lifecycle: true, persist: true, legacy: true, note: "历史事件：收尾强制完成声明提醒（显式完成声明已停用，不再发射）" },
   { type: "write_started", lifecycle: true, persist: true, note: "写入开始（含锁）" },
@@ -193,7 +192,6 @@ const REGISTRY = [
   { type: "memory_proposal_failed", lifecycle: true, persist: true, note: "记忆建议失败" },
   { type: "memory_written", lifecycle: true, persist: true, note: "记忆写入" },
   { type: "memory_file_edited", lifecycle: true, persist: true, note: "记忆文件编辑" },
-  { type: "memory_initialized", lifecycle: true, persist: true, note: "记忆初始化" },
   { type: "workspace_initialized", lifecycle: true, persist: true, note: "工作区初始化（AGENTS.md + memory/MEMORY.md 种子）", schema: { required: ["workspace", "version", "created", "skipped"], types: { workspace: "string", version: "string", created: "array", upgraded: "array", skipped: "array" } } },
 
   // ---- 长期目标（v0.13.x Goal）----

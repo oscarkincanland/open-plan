@@ -78,7 +78,8 @@ test("penTool 调用点已统一为 edit", () => {
 console.log("\n▶ 白名单与 Word 预览");
 
 test("除白名单外的组件不再有裸 svg", () => {
-  const allow = new Set(["Logo.jsx", "Icon.jsx", "LayerPanel.jsx", "内置浏览器面板.jsx", "ChatPanel.jsx"]);
+  // CadViewer 用 SVG 画 DXF 几何（线段/折线），不是功能图标，按白名单放行。
+  const allow = new Set(["Logo.jsx", "Icon.jsx", "LayerPanel.jsx", "内置浏览器面板.jsx", "ChatPanel.jsx", "CadViewer.jsx"]);
   const violations = [];
   for (const file of walk(path.join(ROOT, "client/src/components"))) {
     if (allow.has(path.basename(file))) continue;

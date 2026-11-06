@@ -267,7 +267,7 @@ try {
   assert.match(chatPanelSource, /const renderMessageBlocks = \(\) => renderSegments\.map/, "过程折叠应按片段渲染，并包含去重后的 SSE 轨迹");
   assert.match(chatPanelSource, /isLastProcess && messageExecutionFlow && <ExecutionFlow \{\.\.\.messageExecutionFlow\} embedded \/>/, "SSE 轨迹只挂在最后一个过程片段里");
   assert.doesNotMatch(chatPanelSource.slice(chatPanelSource.indexOf("const renderProcessBlock ="), chatPanelSource.indexOf("className=\"msg-blocks\"")), /RunSummary/, "结果卡不得再渲染进过程折叠容器");
-  assert.match(chatPanelSource, /className="msg-blocks">[\s\S]{0,120}?\{renderMessageBlocks\(\)\}[\s\S]{0,900}?assistant-final-answer[\s\S]{0,700}?\{runSummary && \(\s*<RunSummary/, "DOM 顺序应为：过程与正文 → 答案 → 结果与产物");
+  assert.match(chatPanelSource, /className="msg-blocks">[\s\S]{0,120}?\{renderMessageBlocks\(\)\}[\s\S]{0,900}?assistant-final-answer[\s\S]{0,1500}?\{runSummary && \(\s*<RunSummary/, "DOM 顺序应为：过程与正文 → 答案 → 结果与产物");
   assert.match(chatPanelSource, /authoritativeFinalText[\s\S]{0,220}assistant-final-answer/, "简洁的权威最终答复仍保持可见");
   // 结论内嵌产物：正文里提到的产物名与本地文件链接渲染为可点击文件条（点击打开预览）。
   assert.match(chatPanelSource, /artifacts=\{answerArtifacts\}/, "结论正文应带本轮产物索引");
@@ -308,8 +308,8 @@ try {
   // UI 的模式说明不可混入用户输入；普通 Agent 任务不应因此误触发 Office 或 Skills。
   const plan = planTaskCapabilities({ text: "测试一下", task: { mode: "agent" } });
   assert.equal(plan.routing.officecli, "not_needed");
-  // 2026-11-04 技能路由：普通任务返回 default（不主动发现），复杂任务才 discover。
-  assert.equal(plan.routing.skills, "default");
+  // 2026-11-06 技能路由：DESIGN §7 要求每轮注入技能目录，普通任务返回 catalog。
+  assert.equal(plan.routing.skills, "catalog");
   assert.equal(isGlobalSearchCommand('find / -name "梳理总结"'), true);
   assert.equal(isGlobalSearchCommand('find . -name "梳理总结"'), false);
   assert.equal(normalizeBashOptions({}).timeout, bashTimeoutPolicy.defaultSeconds);

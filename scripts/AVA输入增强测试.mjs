@@ -57,7 +57,7 @@ test("`#` 触发与三组候选", () => {
 });
 
 test("服务端解析 # 引用", () => {
-  assert.match(context, /#技能\\\[\(\[\^\\\]\]\+\)\\\]/);
+  assert.match(context, /\[@#\]技能\\\[\(\[\^\\\]\]\+\)\\\]/);
   assert.match(context, /#插件\\\[\(\[\^\\\]\]\+\)\\\]/);
   assert.match(context, /#文件\\\[\(\[\^\\\]\]\+\)\\\]/);
   assert.match(context, /"skill", "plugin"/);

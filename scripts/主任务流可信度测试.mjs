@@ -82,7 +82,7 @@ assert.match(对话面板, /function modelCapabilityLabel\(model\)/, "能力标�
 assert.match(对话面板, /typeof model\.vision === "boolean"/, "能力标签应基于真实 vision 元数据");
 assert.match(对话面板, /Number\(model\.contextWindow\)/, "能力标签应读取真实上下文窗口");
 assert.doesNotMatch(对话面板, /m\.vision \? "支持图片" : "文本"/, "不应再按布尔直接猜能力文案");
-assert.match(图标, /star: \(/, "应提供收藏图标");
+assert.match(图标, /star: IconStar/, "应提供收藏图标");
 
 // 4. 运行态：下一步 + 待审批定位，详细事件可展开
 assert.match(对话面板, /const nextStepText = useMemo/, "应派生当前下一步");

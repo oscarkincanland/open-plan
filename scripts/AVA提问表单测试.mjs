@@ -42,7 +42,7 @@ test("ask_user 事件与持久化携带 fields", () => {
 });
 
 test("回答接口支持 values 并序列化", () => {
-  assert.match(index, /const \{ client, thread, answer, values \} = req\.body \|\| \{\}/);
+  assert.match(index, /const \{ client, thread, answer, values(?:, skip)? \} = req\.body \|\| \{\}/);
   assert.match(index, /values && typeof values === "object"/);
   assert.match(index, /Object\.entries\(values\)/);
 });
