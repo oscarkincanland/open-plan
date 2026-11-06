@@ -33,13 +33,17 @@ const NAV_SETTLE_POLL_MS = 200;
 // 比对比 URL 更可靠：重定向、跨域跳转都不会误判成"上一份文档已就绪"。
 const NAV_DOC_PROBE = "({ ready: document.readyState, origin: Number(performance.timeOrigin) || 0 })";
 const NAV_CONTENT_PROBE = "(() => { const body = document.body; const text = body ? body.innerText : ''; return text.length + ':' + (body ? body.getElementsByTagName('*').length : 0); })()";
-const FRAME_BROADCAST_INTERVAL_MS = 90;
+const FRAME_BROADCAST_INTERVAL_MS = Math.max(40, Number(process.env.OAW_BROWSER_FRAME_INTERVAL) || 120);
 // 帧流预算：以「面板可读」为先，限制质量/采样/最大边长，并给单帧设字节上限，
 // 避免每帧几百 KB 的 JPEG 把 SSE、React 和浏览器主线程一起拖垮。
-const FRAME_QUALITY = Math.min(100, Math.max(40, Number(process.env.OAW_BROWSER_FRAME_QUALITY) || 70));
+// 2026-11-06 基线调优（docs/plans/2026-11-06-001 T2）：面板实际显示宽度远小于 1600，
+// quality 70 + 1600 宽会让内容密集页单帧达到 140–240KB（11fps ≈ 30Mbps 文本流）。
+// 新基线 quality 55 / maxWidth 1280：带宽约降一半，字号仍可读；
+// 如需更高画质可用 OAW_BROWSER_FRAME_QUALITY / OAW_BROWSER_FRAME_MAX_WIDTH 覆盖。
+const FRAME_QUALITY = Math.min(100, Math.max(40, Number(process.env.OAW_BROWSER_FRAME_QUALITY) || 55));
 const FRAME_EVERY_NTH = Math.max(1, Number(process.env.OAW_BROWSER_FRAME_EVERY_NTH) || 2);
-const FRAME_MAX_WIDTH = Math.max(640, Number(process.env.OAW_BROWSER_FRAME_MAX_WIDTH) || 1600);
-const FRAME_MAX_HEIGHT = Math.max(480, Number(process.env.OAW_BROWSER_FRAME_MAX_HEIGHT) || 1000);
+const FRAME_MAX_WIDTH = Math.max(640, Number(process.env.OAW_BROWSER_FRAME_MAX_WIDTH) || 1280);
+const FRAME_MAX_HEIGHT = Math.max(480, Number(process.env.OAW_BROWSER_FRAME_MAX_HEIGHT) || 900);
 const MAX_FRAME_BYTES = Math.max(120_000, Number(process.env.OAW_BROWSER_FRAME_MAX_BYTES) || 900_000);
 const SUBSCRIBER_WATCHDOG_MS = 1500; // 面板空白时的恢复巡检间隔
 const SCREENCAST_RETRY_MS = 4000; // 推流恢复的最小重试间隔
@@ -1160,7 +1164,7 @@ class BrowserSession {
       // 面板会停在旧画面/空白，这里保证加载完成后一定刷新。
       this.captureFrame().catch(() => {});
     });
-    // 帧流参数见上方常量；服务端以约 11fps 广播最新帧，避免每个 CDP 帧都挤占 SSE 与 React。
+    // 帧流参数见上方常量；服务端以约 8fps（120ms 节流）广播最新帧，避免每个 CDP 帧都挤占 SSE 与 React。
     await this.startScreencast();
     if (target.id) this.activeTargetId = target.id;
     this.state.active = true;

@@ -2868,7 +2868,8 @@ export default function App() {
                 )}
                 {browserOpen && (
                   <div className={`app-canvas-body canvas-body-browser ${activeCanvasTab?.kind === "browser" ? "" : "canvas-hidden"}`}>
-                    <BrowserPanel clientId={clientId} threadId={threadId} fullscreen={browserFullscreen} onToggleFullscreen={() => setBrowserFullscreen((value) => !value)} />
+                    {/* T1：面板只在浏览器画布标签为激活页时连帧流；隐藏的其他画布标签不挂流 */}
+                    <BrowserPanel clientId={clientId} threadId={threadId} visible={activeCanvasTab?.kind === "browser"} fullscreen={browserFullscreen} onToggleFullscreen={() => setBrowserFullscreen((value) => !value)} />
                   </div>
                 )}
                 {objectsOpen && (
