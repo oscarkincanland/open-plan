@@ -54,7 +54,8 @@ App.jsx（总编排：会话、工作区、模式、三栏布局、懒加载）
 ├─ 工作产物面板.jsx          本轮/历史产物、diff、验收、回滚
 ├─ 对象栏.jsx                本轮产出/来源/技能/记忆汇总
 ├─ 工作流启动器.jsx          结构化工作流入口与依赖提示
-├─ 内置浏览器面板.jsx        打开/截图/点击/输入/标签
+├─ 内置浏览器面板.jsx        打开/截图/点击/输入/标签；Agent 动作虚拟鼠标/动作气泡（agent-action）；导航阶段状态文案
+│  └─ ChatPanel 浏览器任务时间线：browser_step_* / browser_read 聚合为一张过程折叠卡，一行一步（动词 + 目标 + 读取 N 字 + 耗时/失败，点行展开读取预览）
 ├─ SettingsPanel.jsx         模型、网络、外观、集成、诊断
 ├─ MemoryTab.jsx             记忆建议审核
 ├─ CommandPalette.jsx        命令面板
