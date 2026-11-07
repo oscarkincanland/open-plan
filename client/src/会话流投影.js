@@ -166,10 +166,15 @@ export function buildRunTimeline({ blocks = [], trace = null } = {}) {
         });
         break;
       }
-      case "text":
+      case "text": {
         // 模型正文中间态是进度，不是成果；只有 assistant_final 才进入“结论”区。
-        items.push({ kind: "text", id, cap: "阶段小结", text: String(block.text || "") });
+        // 空白正文（换行/缩进/零宽字符）不产生条目：它会渲染成一个只有 padding 的
+        // 空 .textblock，在工具卡与下一行之间撑出看不见的空白（2026-11-07 实测）。
+        const text = String(block.text || "");
+        if (!text.replace(/[\u200B-\u200D\uFEFF]/g, "").trim()) break;
+        items.push({ kind: "text", id, cap: "阶段小结", text });
         break;
+      }
       case "tool": {
         // 轨迹里同名/同 id 的工具结果合并回块：历史恢复时块可能没拿到结果。
         const traceTool = findTraceTool(index, block);

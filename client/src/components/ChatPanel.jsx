@@ -86,6 +86,29 @@ const newId = () => `m${++msgSeq}`;
 const MODEL_KEY = "oaw_model";
 const MODE_KEY = "oaw_chat_mode";
 const THINKING_KEY = "oaw_thinking_level";
+const THINKING_MIGRATION_KEY = "oaw_thinking_level_v3";
+// 2026-11-07：默认推理档位改为「高」。此前默认 default（跟随模型），
+// 对规划分析类问题深度不够；用户可在工具栏显式改回。
+const DEFAULT_THINKING_EFFORT = "high";
+
+/**
+ * 读取初始推理档位。
+ * 老版本把「跟随默认」写成 default，无法区分"用户主动选了跟随默认"和"从未设置"。
+ * 这里做一次性迁移（带标记键）：历史遗留的 default 视为未设置，改为「高」；
+ * 迁移后用户再显式选「跟随默认」会被正常保留。
+ */
+function readInitialThinkingEffort() {
+  let saved = "";
+  try { saved = localStorage.getItem(THINKING_KEY) || ""; } catch {}
+  const valid = THINKING_OPTIONS.some((item) => item.id === saved);
+  const migrated = (() => { try { return localStorage.getItem(THINKING_MIGRATION_KEY) === "1"; } catch { return true; } })();
+  if (valid && !(saved === "default" && !migrated)) return saved;
+  try {
+    localStorage.setItem(THINKING_KEY, DEFAULT_THINKING_EFFORT);
+    localStorage.setItem(THINKING_MIGRATION_KEY, "1");
+  } catch {}
+  return DEFAULT_THINKING_EFFORT;
+}
 const APPROVAL_MODE_KEY = "oaw_approval_mode";
 const DEFAULT_CONTEXT_WINDOW = 128000;
 // 与服务端 Pi 压缩策略保持一致（server/Pi运行时管理.mjs 的 PI_COMPACTION_POLICY）：
@@ -657,7 +680,7 @@ export function extractSessionLinks(messages = []) {
   return [...seen.values()];
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, agentReady = true, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "", onTeamChange, onOpenSettings }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, agentReady = true, onFileChanged, onMapAction, onDraftChanged, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "", onTeamChange, onOpenSettings }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   // 供非渲染事件（重试复用气泡、终态清理）同步读取最新消息，避免依赖异步 state。
   const messagesRef = useRef([]);
@@ -790,10 +813,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     return forcedMode ? normalizeUiMode(forcedMode) : normalizeUiMode(saved);
   }); // Chat 只读检索 / Agent 完整执行与产出
   const [lastPrompt, setLastPrompt] = useState(null);
-  const [effort, setEffort] = useState(() => {
-    const saved = localStorage.getItem(THINKING_KEY);
-    return THINKING_OPTIONS.some((item) => item.id === saved) ? saved : "default";
-  }); // Pi 标准推理档位：default/off/minimal/low/medium/high/xhigh/max
+  const [effort, setEffort] = useState(readInitialThinkingEffort); // Pi 标准推理档位：default/off/minimal/low/medium/high/xhigh/max
   const [modelOpen, setModelOpen] = useState(false); // 模型选择浮层
   // 模型弹层曾用 right:0 贴着窄触发器向左伸，在 1440px 三栏布局下被
   // .center-chat-slot 的 overflow:hidden 裁掉左侧（交接文档问题 2）。改为
@@ -1108,13 +1128,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     () => THINKING_OPTIONS.filter((item) => thinkingAvailable(item.id)),
     [thinkingAvailable],
   );
-  useEffect(() => {
-    if (!thinkingAvailable(effort)) {
-      setEffort("default");
-      try { localStorage.setItem(THINKING_KEY, "default"); } catch {}
-    }
+  // 有效档位 = 用户偏好能被当前模型支持就用它，否则按 高 → 标准 → 跟随默认 降级。
+  // 降级结果不写回 localStorage（2026-11-07）：之前会把降级结果持久化，从支持 high 的
+  // 模型切到只支持 off 的模型（如 Claude Haiku 5.5）再切回来，用户的「高」被永久改掉。
+  const effectiveEffort = useMemo(() => {
+    if (thinkingAvailable(effort)) return effort;
+    return ["high", "medium", "default"].find((id) => thinkingAvailable(id)) || "default";
   }, [effort, thinkingAvailable]);
-  const selectedEffort = availableThinkingOptions.find((item) => item.id === effort) || availableThinkingOptions[0] || THINKING_OPTIONS[0];
+  const selectedEffort = availableThinkingOptions.find((item) => item.id === effectiveEffort) || availableThinkingOptions[0] || THINKING_OPTIONS[0];
   const selectedEffortIndex = Math.max(0, availableThinkingOptions.findIndex((item) => item.id === selectedEffort.id));
   const selectedContextWindow = Number(selectedModelInfo?.contextWindow) || DEFAULT_CONTEXT_WINDOW;
   const selectedUsage = usageDetails(runState.usage);
@@ -1502,7 +1523,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       agentEventAtRef.current = 0;
       agentErrorRef.current = false;
     }
-  }, [historyMessages]);
+  }, [historyMessages, historyThreadId, threadId]);
 
   // 待答问题恢复（服务端 SSE 握手指发之外的第二道保险）：
   // 历史水合会整体替换 messages，如果 ask_user 实时事件先到会被覆盖；
@@ -1601,8 +1622,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       busy,
       editMode,
       team: teamRef.current,
+      // 模型随会话缓存：切回时立刻显示该会话自己的模型，不等 connected 握手纠正。
+      model,
     });
     const cached = threadCacheRef.current.get(threadId);
+    if (cached?.model) {
+      setModel(cached.model);
+      applyModelForSession(cached.model);
+    }
     // 团队跟随会话：优先用历史 Run 事件重建；否则回到该 thread 的本地缓存。
     const hydratedTeam = teamFromEvents((hydratedRun?.events || []).filter((event) => String(event?.type || "").startsWith("team_")));
     emitTeam(hydratingHistory ? hydratedTeam : (cached?.team || null), "hydrate");
@@ -1649,11 +1676,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     // 这样既不丢草稿，也不会把 A 的内容带到 B。
     if (input) writeDraft(previous, input);
     setInput(readDraft(threadId));
-    if (!hydratingHistory) {
-      setLastPrompt(null);
-      setAgentPhase("");
-      agentEventAtRef.current = 0;
-    }
+    // 切会话必须清掉上一个会话的「当前动作」与上一轮提示：它们不随会话缓存，
+    // 残留会把 A 的执行阶段（如「调用工具：read」）显示在 B 上，看起来 B 也在跑。
+    setLastPrompt(null);
+    setAgentPhase("");
+    agentEventAtRef.current = 0;
     agentErrorRef.current = false;
     systemEventKeysRef.current.clear();
     // 记录目标会话的阅读位置：等 messages 水合完成后由下面的 layout effect 恢复。
@@ -2082,19 +2109,28 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       setModels(nextModels);
       if (d.counts) setModelCounts(d.counts);
       const saved = localStorage.getItem(MODEL_KEY);
-      const preferred = saved || d.default || "";
+      // 会话自己的模型优先（thread 缓存），其次才是全局"上次使用"；否则切回会话
+      // 会先把别的会话的模型显示出来，再由 connected 纠正（用户看到的模型跳变）。
+      const cachedModel = threadCacheRef.current.get(threadId)?.model || "";
+      const preferred = cachedModel || saved || d.default || "";
       const cur = nextModels.some((m) => m.id === preferred) ? preferred : (nextModels[0]?.id || "");
       setModel(cur);
-      applyModel(cur, nextModels);
-      onModelChange?.(cur);
+      // 只做显示层初始化，不写全局偏好、不回推 onModelChange：
+      // 这里每次切会话都会跑，回推会把「上一个会话的模型」推给当前会话。
+      applyModelForSession(cur, nextModels);
       // 初始化只读取本地偏好，不主动触发 provider 初始化。真正发送时由服务端
       // 在同一个 admission 链路同步模型，避免页面加载/切换会话与 Agent 运行竞态。
     })();
     return () => { cancelled = true; };
-  }, [modelsProp, defaultModel, clientId, threadId, onModelChange]);
+  }, [modelsProp, defaultModel, clientId, threadId]);
 
-  // 设置面板与输入框共用同一个当前模型；真正切换仍沿用原有 Pi/Agent API。
+  // 设置面板与输入框共用同一个当前模型；只有「用户真的改了全局选择」才推给当前会话。
+  // 用 ref 记录上一值：切会话导致的 selectedModel/model 不一致不算用户操作。
+  const lastSelectedModelRef = useRef(selectedModel);
   useEffect(() => {
+    const previous = lastSelectedModelRef.current;
+    lastSelectedModelRef.current = selectedModel;
+    if (selectedModel === previous) return;
     if (!selectedModel || selectedModel === model || !models.some((item) => item.id === selectedModel)) return;
     void changeModel(selectedModel);
   }, [selectedModel, model, models]);
@@ -2103,6 +2139,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     const m = (list || models).find((x) => x.id === id);
     setModelVision(!!m?.vision);
     localStorage.setItem(MODEL_KEY, id);
+  }
+
+  // 2026-11-06 会话隔离：服务端/会话上报的模型只属于「这个 thread 的运行时」，
+  // 只能更新本地显示，绝不能写全局偏好（MODEL_KEY）或 App 级 selectedModel——
+  // 否则切到另一个会话时会把它的模型反向推给当前会话（用户看到的「模型自动切换」）。
+  function applyModelForSession(id, list) {
+    const m = (list || models).find((x) => x.id === id);
+    setModelVision(!!m?.vision);
   }
 
   const changeModel = async (id) => {
@@ -2626,8 +2670,9 @@ case "runtime_connecting":
         runtimeConnectingEventRef.current = null;
         setConnected(true);
         if (data.model && data.model !== model) {
+          // 只同步本会话显示：这是服务端该 thread 运行时的真实模型，不是全局偏好。
           setModel(data.model);
-          applyModel(data.model);
+          applyModelForSession(data.model);
           if (data.modelFallbackFrom) {
             setModelMsg(`旧模型连接失败，已恢复到 ${data.model}`);
             window.setTimeout(() => setModelMsg(""), 3600);
@@ -3183,7 +3228,7 @@ case "runtime_connecting":
       case "agent_model_fallback":
         if (data.to) {
           setModel(data.to);
-          applyModel(data.to);
+          applyModelForSession(data.to);
           setAgentPhase("切换备用模型");
           pushSystem(data.message || `模型连接失败，已切换到 ${data.to}`, `agent_model_fallback:${data.from || "unknown"}:${data.to}`);
         }
@@ -3207,9 +3252,9 @@ case "runtime_connecting":
         }
         if (to) {
           setModel(to);
-          applyModel(to);
+          applyModelForSession(to);
           rememberModel(to);
-          onModelChange?.(to);
+          // 不再 onModelChange：通道回退/自动切换属于本会话事实，不能改全局偏好。
         }
         setPendingModel("");
         setModelMsg(data.reason === "fallback" ? `通道回退为 ${to}` : `已切换为 ${to}`);
@@ -3436,6 +3481,10 @@ case "runtime_connecting":
           });
         }
         if (data.files?.length) onFileChanged(data.files);
+        break;
+      case "map_draft_changed":
+        // 草稿层只用于地图面板实时刷新；对话流不逐条播报，避免噪音。
+        onDraftChanged?.(data);
         break;
       case "map_action":
         if (data && acceptSystemEvent(`map_action:${data.id || "analysis"}:${data.updatedAt || JSON.stringify(data.stats || {})}`)) {
@@ -3863,7 +3912,8 @@ case "runtime_connecting":
     // 但真正打开的文件和后续轮次不受影响。
     const selectedCurrentDoc = source.currentDoc ?? (contextFileDismissed ? null : currentDoc);
     const selectedEditMode = normalizeUiMode(forcedMode || source.editMode || editMode);
-    const selectedEffort = source.effort ?? effort;
+    // 发送用「有效档位」：当前模型不支持用户偏好时按降级档执行，而不是把不支持的档位发下去。
+    const selectedEffort = source.effort ?? effectiveEffort;
     if (selectedEditMode === "review" && !selectedCurrentDoc && !sendReferences.some((item) => item?.kind === "file") && !allAttachments.length) {
       setModelMsg("Review 需要先打开、@ 引用或上传一份材料");
       window.setTimeout(() => setModelMsg(""), 3200);
@@ -4022,7 +4072,7 @@ case "runtime_connecting":
       const d = await res.json().catch(() => ({}));
       if (d.model && d.model !== model) {
         setModel(d.model);
-        applyModel(d.model);
+        applyModelForSession(d.model);
         if (d.modelFallbackFrom) {
           setModelMsg(`旧模型连接失败，已恢复到 ${d.model}`);
           window.setTimeout(() => setModelMsg(""), 3600);
@@ -4473,16 +4523,26 @@ case "runtime_connecting":
     }
   }, [messages]);
   useEffect(() => {
-    if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+    // 2026-11-07：跟底滚动不能被"高频 token"饿死。
+    // 旧实现每次 messages 变化都 clearTimeout + 重新 60ms，流式打字每 ~16ms 就改一次
+    // messages → 定时器永远等不到触发 → 表现为"有时跟、有时不跟"。
+    // 改为：已有排队就复用，不再重置；定时器自己触发一次后清位。
+    if (!followLatestRef.current) return;
+    if (scrollTimerRef.current) return;
     scrollTimerRef.current = setTimeout(() => {
+      scrollTimerRef.current = null;
       const el = bodyRef.current;
       if (!el || !followLatestRef.current) return;
       // 用用户滚动时记录的跟随意图，而不是在流式内容增高后重新判断距离。
       // 否则回复变长就会让滚动距离超过阈值，后续 token 留在视口外。
       el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
     }, 60);
-   return () => { if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current); };
   }, [messages]);
+  // 卸载时清掉排队中的跟底定时器（effect 本身不再每次清理，见上）。
+  useEffect(() => () => {
+    if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+    scrollTimerRef.current = null;
+  }, []);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -6590,6 +6650,10 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
           {m.status === "error" && <span className="msg-error-badge">生成失败</span>}
           {/* 中断既要认本地标记，也要认 Run 的终态：刷新/切回会话后本地标记会丢，只有 runStatus 还在 */}
           {(m.stopped || runInterrupted) && <span className="msg-stopped-badge">{m.stopped ? "已停止生成" : "本轮已中断"}</span>}
+          {/* 运行中的用时/当前动作：放在固定高度的消息头里，结算时消失不会造成内容上跳。 */}
+          {isTaskLive && runElapsedText && !showTimelineSummary && (
+            <span className="msg-run-elapsed">{runElapsedText}</span>
+          )}
         </div>
         )}
         {isUser ? (
@@ -6611,7 +6675,10 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                 失败/取消同样默认折叠，可执行动作靠「需行动提示」在折叠外表达。 */}
             {isTaskLive ? (
               <>
-                {runElapsedText && !showTimelineSummary && <div className="tl-elapsed">{runElapsedText}</div>}
+                {/* 2026-11-07：运行中的「已运行 xx」并入消息头（固定高度），
+                    不再单独占一行——否则结算瞬间这一行消失会让整段内容上跳。
+                    compact/嵌入式隐藏消息头时仍保留独立行作为兜底。 */}
+                {runElapsedText && hideHeader && !showTimelineSummary && <div className="tl-elapsed">{runElapsedText}</div>}
                 <div className={`tl-list ${isTaskLive ? "is-live" : ""}`}>{runTimelineView.map(renderTimelineItem)}</div>
                 {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
               </>

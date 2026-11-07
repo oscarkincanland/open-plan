@@ -44,7 +44,7 @@ test("消息列与输入区共用 --msg-content-max", () => {
 });
 
 test("对话区 padding 只由 --chat-gutter 控制", () => {
-  assert.match(css, /\.center-chat-slot \.chat-body \{[\s\S]{0,240}?padding: 34px var\(--chat-gutter\) 28px;/);
+  assert.match(css, /\.center-chat-slot \.chat-body \{[\s\S]{0,240}?padding: 24px var\(--chat-gutter\) 18px;/);
   assert.doesNotMatch(css, /\.center-chat-slot \.chat-body \{ padding: 28px clamp\(28px, 7vw, 104px\) 20px; \}/);
 });
 

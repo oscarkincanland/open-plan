@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
   追加文本块,
+  追加流式文本块,
   并回上一段文本块,
   构建流式块序列,
   计算权威文本缺口,
@@ -121,6 +122,39 @@ test("追加文本块：尾部是 text 就并入，否则新开", () => {
   const fresh = 追加文本块([{ type: "tool", id: "t1" }], "丙");
   assert.equal(fresh.length, 2);
   assert.equal(fresh[1].text, "丙");
+});
+
+console.log("\n▶ 空白增量不新开文本块（工具卡后的隐形空白）");
+
+test("追加流式文本块：工具卡后的纯空白不生成空文本块", () => {
+  for (const blank of ["\n\n", "   ", "\t"]) {
+    const blocks = 追加流式文本块([{ type: "tool", id: "t1" }], blank);
+    assert.equal(blocks.length, 1, `${JSON.stringify(blank)} 不应新开文本块`);
+  }
+});
+
+test("追加流式文本块：尾部是文本时保留句内空白", () => {
+  const blocks = 追加流式文本块([{ type: "text", text: "甲" }], " ");
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].text, "甲 ");
+});
+
+test("追加文本块 / 并回上一段：无文本块时纯空白直接丢弃", () => {
+  assert.equal(追加文本块([{ type: "tool", id: "t1" }], "  \n").length, 1);
+  assert.equal(并回上一段文本块([{ type: "tool", id: "t1" }], "  \n").length, 1);
+});
+
+test("构建流式块序列：工具卡后的轮次换行不产生可见空块", () => {
+  const blocks = 构建流式块序列([], [
+    { kind: "text", text: "第一段。" },
+    { kind: "block", block: { type: "tool", id: "t1", name: "bash" } },
+    { kind: "text", text: "\n\n" },
+    { kind: "text", text: "第二段。" },
+  ]);
+  assert.deepEqual(blocks.map((block) => block.type), ["text", "tool", "text"]);
+  assert.equal(blocks.filter((block) => block.type === "text").length, 2, "空白增量不应新增第三段 text 块");
+  assert.equal(blocks[0].text, "第一段。");
+  assert.equal(blocks[2].text.trim(), "第二段。");
 });
 
 console.log("\n▶ 权威全文补齐的缺口定位");

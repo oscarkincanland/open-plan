@@ -163,7 +163,10 @@ await test("历史轮用 runSummary / 消息起止时间兜底", () => {
 });
 
 await test("结束后用时进折叠头，不再单占一行、也不再进总结 cap", () => {
-  assert.match(chatPanel, /\{runElapsedText && !showTimelineSummary && <div className="tl-elapsed">/);
+  // 2026-11-07：运行中的用时并入消息头（固定高度），结算时不产生高度跳变；
+  // compact/嵌入式隐藏消息头时才回落到独立行。
+  assert.match(chatPanel, /isTaskLive && runElapsedText && !showTimelineSummary && \(\s*\n\s*<span className="msg-run-elapsed">/);
+  assert.match(chatPanel, /\{runElapsedText && hideHeader && !showTimelineSummary && <div className="tl-elapsed">/);
   assert.match(chatPanel, /elapsedMs: runElapsedMs/);
   assert.match(projection, /`\$\{headText\} · 用时 \$\{formatDuration\(ms\)\}`/);
   assert.doesNotMatch(summaryBlock, /elapsedMs/, "总结块不再接收耗时");
@@ -340,7 +343,7 @@ await test("多轮 Run 的过程按 turn 分组（只留间距、不显示轮次
   assert.doesNotMatch(chatPanel, /<span>第 \{item\.turn\} 轮<\/span>/, "不得显示轮次文字");
   assert.doesNotMatch(styles, /\.tl-turn-sep::before/, "不得画轮次分隔线");
   const rule = styles.match(/\.tl-turn-sep \{[^}]*\}/)?.[0] || "";
-  assert.match(rule, /margin: 10px 0 4px/, "轮次之间只留间距");
+  assert.match(rule, /margin: 2px 0 1px/, "轮次之间只留极小间距（2026-11-07 二次压缩）");
   // 步数仍按未分组条目计算，分隔行不计入
   assert.match(chatPanel, /steps=\{runTimeline\.length\}/);
 });

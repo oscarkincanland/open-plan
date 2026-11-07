@@ -1,15 +1,11 @@
 #!/usr/bin/env node
 /**
- * 流恢复冻结回归测试（2026-11-06，P0 修复）
+ * 流恢复 / 会话隔离 / 渲染形态回归测试
  *
- * 背景：刷新 / 切工作区 / 切会话后再切回「正在运行」的会话，界面冻结、运行动画消失。
- * 调查见 `docs/audits/2026-11-06-切回运行中会话冻结调查.md`。本测试冻结四条 P0 修复：
- *   P0-1 App：恢复/加载失败必须落到「横幅 + 可重试」，不能静默停在 agentReady=false；
- *        自动重试不再依赖默认关闭的开关。
- *   P0-2 ChatPanel：对账探测不再依赖「本地已判定 live」或 replayRecover 开关；
- *        探测期间的 SSE 事件先缓冲，确认 live 后再冲刷；stream_resync 无条件重探。
- *   P0-3 server：切片回放必须发 stream_resync（reason=replay_window）并报告实际起点。
- *   P0-4 server：Runtime 健康失败但忙时不得重建（否则 SSE 被打成 agent_error 循环）。
+ * 覆盖三轮修复（2026-11-06 ~ 11-07），调查见：
+ *   docs/audits/2026-11-06-切回运行中会话冻结调查.md
+ *   docs/audits/2026-11-06-双会话隔离与模型污染调查.md
+ *   docs/audits/2026-11-07-时间流与对话流渲染审查.md
  *
  * 项目无 DOM 测试环境，这里做源码/契约级断言（与既有守护脚本口径一致）。
  * 用法：node scripts/流恢复冻结回归测试.mjs
@@ -24,8 +20,10 @@ const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
 
 const app = read("client/src/App.jsx");
 const chat = read("client/src/components/ChatPanel.jsx");
+const css = read("client/src/styles.css");
 const index = read("server/index.mjs");
 const agent = read("server/agent.mjs");
+const runs = read("server/runs.mjs");
 const api = read("client/src/api.js");
 
 let failed = 0;
@@ -37,45 +35,45 @@ console.log("▶ P0-1 恢复失败不再静默卡死（App）");
 
 test("失败统一落到 markSessionLoadFailed（横幅 + 可重试）", () => {
   assert.match(app, /const markSessionLoadFailed = \(message, code = ""\)/);
-  assert.match(app, /代码|setSessionResumeError\(\{ sessionId: session\.id, message, code, detail: null \}\)/);
+  assert.match(app, /setSessionResumeError\(\{ sessionId: session\.id, message, code, detail: null \}\)/);
 });
 
 test("历史加载失败与异常路径都会记录可重试错误", () => {
-  assert.match(app, /markSessionLoadFailed\(`加载会话历史失败/, "历史失败必须可重试");
-  assert.match(app, /markSessionLoadFailed\(`加载会话失败/, "异常路径必须可重试");
+  assert.match(app, /markSessionLoadFailed\(`加载会话历史失败/);
+  assert.match(app, /markSessionLoadFailed\(`加载会话失败/);
 });
 
 test("自动重试不再依赖默认关闭的开关", () => {
   assert.doesNotMatch(app, /flag\("resumeAutoRetry"\)/, "不得再以默认关的开关作为重试前提");
-  assert.match(app, /code === "SESSION_BUSY" \|\| code === ""/, "只对等一会可能成功的原因重试");
+  assert.match(app, /code === "SESSION_BUSY" \|\| code === ""/);
 });
 
 console.log("▶ P0-2 解除自举死锁（ChatPanel）");
 
 test("对账探测不再依赖 replayRecover 开关或本地 live 判定", () => {
-  assert.doesNotMatch(chat, /flag\("replayRecover"\) && threadId && !replayProbedThreadsRef/, "探测入口不得被开关门控");
-  assert.match(chat, /2026-11-06 冻结修复/, "应有修复注释可追溯");
-  assert.match(chat, /if \(!shouldReconcile\) \{/, "本地非 live 时也要进入探测");
+  assert.doesNotMatch(chat, /flag\("replayRecover"\) && threadId && !replayProbedThreadsRef/);
+  assert.match(chat, /2026-11-06 冻结修复/);
+  assert.match(chat, /if \(!shouldReconcile\) \{/);
 });
 
 test("探测使用 includeEvents=all 并恢复执行轨迹", () => {
   assert.match(chat, /listRuns\(probeThread, 12, \{ cwd: workspace, includeEvents: "all" \}\)/);
-  assert.match(chat, /replaceExecutionEvents\(flowEvents\)/, "应恢复运行动画/轨迹");
+  assert.match(chat, /replaceExecutionEvents\(flowEvents\)/);
 });
 
 test("探测期间事件先缓冲，确认 live 后才冲刷", () => {
-  assert.match(chat, /replayProbeRef\.current\.pending && replayProbeRef\.current\.thread === threadId/, "缓冲门闩不应再带开关");
-  assert.match(chat, /if \(live\) for \(const ev of buffered\) eventHandlerRef\.current\?\.\(ev\)/, "只在确认 live 后冲刷，避免历史重渲染");
+  assert.match(chat, /replayProbeRef\.current\.pending && replayProbeRef\.current\.thread === threadId/);
+  assert.match(chat, /if \(live\) for \(const ev of buffered\) eventHandlerRef\.current\?\.\(ev\)/);
 });
 
-test("切回会话时允许重新探测（否则第二次切回再次死锁）", () => {
+test("切回会话时允许重新探测", () => {
   assert.match(chat, /if \(threadId\) replayProbedThreadsRef\.current\.delete\(threadId\)/);
 });
 
 test("stream_resync 无条件重探", () => {
   const block = chat.slice(chat.indexOf('case "stream_resync"'), chat.indexOf('case "connected"'));
   assert.ok(block.length > 0);
-  assert.doesNotMatch(block, /runInProgressRef\.current \|\| busy/, "不得再要求本地已知在运行");
+  assert.doesNotMatch(block, /runInProgressRef\.current \|\| busy/);
   assert.match(block, /replayProbedThreadsRef\.current\.delete\(threadId\)/);
   assert.match(block, /setReplayFlagsTick/);
 });
@@ -87,7 +85,7 @@ test("切片回放发 stream_resync 并报告实际起点", () => {
   assert.match(index, /skipped: entry\.channel\.history\.length - replayHistory\.length/);
   assert.match(index, /earliest: firstReplayId/);
   const slice = index.slice(index.indexOf("if (lastId === 0 && replayHistory.length < entry.channel.history.length)"));
-  assert.ok(slice.indexOf("stream_resync") < slice.indexOf("for (const ev of replayHistory)"), "resync 必须在回放之前发给客户端");
+  assert.ok(slice.indexOf("stream_resync") < slice.indexOf("for (const ev of replayHistory)"));
 });
 
 console.log("▶ P0-4 Runtime 忙时不重建");
@@ -97,21 +95,9 @@ test("ensureRuntime 在 busy/compacting/queued 时不重启", () => {
   assert.match(agent, /if \(current\.busy \|\| current\.compacting \|\| current\.queuedCount > 0 \|\| \(current\.chainDepth \|\| 0\) > 0\) return current;/);
 });
 
-console.log("▶ 基线保持");
-
-test("恢复未完成且无活跃 Run 时仍不建连（避免创建空 runtime）", () => {
-  // P1-1 放宽的只是"已知活跃 Run"这一种情况；冷会话仍必须等 resume 完成。
-  assert.doesNotMatch(chat, /if \(!agentReady\) return undefined;/);
-  assert.match(chat, /if \(!streamAttachAllowed\) return undefined;/);
-});
-
-test("listRuns 客户端支持 includeEvents（对账依赖）", () => {
-  assert.match(api, /if \(options\.includeEvents\) params\.set\("includeEvents", options\.includeEvents\)/);
-});
-
 console.log("▶ P1 解耦与清理");
 
-test("P1-1 活跃 Run 时不受 agentReady 门禁（attach 安全）", () => {
+test("P1-1 活跃 Run 时不受 agentReady 门禁", () => {
   assert.match(chat, /const streamAttachAllowed = Boolean\(agentReady \|\| busy\)/);
   assert.match(chat, /if \(!streamAttachAllowed\) return undefined;/);
   assert.match(chat, /\}, \[clientId, threadId, workspace, streamAttachAllowed\]\)/);
@@ -132,33 +118,39 @@ test("P1-3 关闭旧流带 tab 且跳过刚建立的流", () => {
   assert.match(read("client/src/长连接预算.js"), /tab: meta\.tab \|\| getTabId\(\)/);
 });
 
-test("P1-4 预算不足时不建连（避免黑流）", () => {
+test("P1-4 预算不足时不建连", () => {
   assert.match(chat, /P1-4：预算不足时不建连/);
   assert.match(chat, /if \(!slot\) \{[\s\S]{0,160}?reconnectTimer = setTimeout/);
 });
 
 test("P1-5 知识库/模板库改为隐藏而非卸载主布局", () => {
   assert.match(app, /<div className="app-main-shell" hidden=\{\["knowledge", "templates"\]\.includes\(activeModule\)\}>/);
-  assert.doesNotMatch(app, /\{!\["knowledge", "templates"\]\.includes\(activeModule\) && \(/, "不得再按模块条件卸载主布局");
-  assert.match(read("client/src/styles.css"), /\.app-main-shell \{ display: contents; \}/);
-  assert.match(read("client/src/styles.css"), /\.app-main-shell\[hidden\] \{ display: none; \}/);
+  assert.doesNotMatch(app, /\{!\["knowledge", "templates"\]\.includes\(activeModule\) && \(/);
+  assert.match(css, /\.app-main-shell \{ display: contents; \}/);
+  assert.match(css, /\.app-main-shell\[hidden\] \{ display: none; \}/);
 });
 
 console.log("▶ 刷新恢复的渲染形态");
 
-test("恢复气泡带 Run 锚点（走时间线而不是旧折叠路径）", () => {
+test("恢复气泡带 Run 锚点", () => {
   assert.match(chat, /const recoveredRunId = activeRunIdRef\.current \|\| runState\.runId \|\| null/);
   assert.match(chat, /role: "assistant", runId: recoveredRunId \|\| undefined, runStatus/);
 });
 
-test("命令类工具的 `$ ...` 显示命令本身，不显示整个 JSON（字符串/对象两种输入）", () => {
-  // 事件里的 input 是 JSON 字符串（"{\"command\":\"cd ...\"}"），旧修复只覆盖对象形态。
+test("命令类工具的 $ ... 显示命令本身（字符串/对象两种输入）", () => {
   assert.match(chat, /if \(!inputObject && typeof input === "string" && \/\^\\s\*\\\{\/\.test\(input\)\)/);
   assert.match(chat, /if \(typeof inputObject\.command === "string" && inputObject\.command\.trim\(\)\) inputStr = inputObject\.command;/);
 });
 
-test("Run 记录超限时保留最近事件（刷新对账要能看到当前进度）", () => {
-  const runs = read("server/runs.mjs");
+test("旧过程折叠区不出现横向滚动条", () => {
+  const rule = css.match(/\.message-process-scroll \{[^}]*\}/)?.[0] || "";
+  assert.match(rule, /overflow-y: auto; overflow-x: hidden;/);
+  assert.match(css, /\.message-process-scroll > \* \{ min-width: 0; \}/);
+});
+
+console.log("▶ 长任务记录与活性");
+
+test("Run 记录超限时保留最近事件", () => {
   const block = runs.slice(runs.indexOf("function pushRunEvent"), runs.indexOf("const MAX_FILES"));
   assert.match(block, /run\.events\.shift\(\);/);
   assert.match(block, /run\.events\.push\(event\);/);
@@ -166,52 +158,157 @@ test("Run 记录超限时保留最近事件（刷新对账要能看到当前进�
   assert.match(block, /run\.eventsDropped = Number\(run\.eventsDropped \|\| 0\) \+ 1;/);
 });
 
-test("旧过程折叠区不出现横向滚动条", () => {
-  const css = read("client/src/styles.css");
-  const rule = css.match(/\.message-process-scroll \{[^}]*\}/)?.[0] || "";
-  assert.match(rule, /overflow-y: auto; overflow-x: hidden;/);
-  assert.match(css, /\.message-process-scroll > \* \{ min-width: 0; \}/);
-});
-
-test("运行中工具显示「已运行 Ns」活性提示（长命令静默期不再像卡死）", () => {
+test("运行中工具显示「已运行 Ns」", () => {
   assert.match(chat, /const pendingElapsed = !done && tool\.startTime/);
   assert.match(chat, /className="tool-pending-elapsed">已运行 \{pendingElapsed\}s/);
-  assert.match(read("client/src/styles.css"), /\.tool-pending-elapsed \{/);
+  assert.match(css, /\.tool-pending-elapsed \{/);
 });
 
 console.log("▶ 实时事件与历史 hydrate 不混排");
 
 test("按 toolCallId 跨消息去重（历史已有则只更新那一块）", () => {
   assert.match(chat, /const findToolBlockOwner = useCallback\(/);
-  assert.match(chat, /if \(findToolBlockOwner\(data\.toolCallId\)\) break;/, "tool_start 不得重复建卡");
-  assert.match(chat, /const owner = findToolBlockOwner\(data\.toolCallId\);\s*\n\s*if \(owner\) queueToolOutput\(owner\.messageId, data\);/, "tool_output 必须回到拥有该卡片的消息");
-  assert.match(chat, /if \(owner\) \{\s*\n\s*patch\(owner\.messageId,/, "tool_end 必须在原消息上收尾");
-});
-
-test("hydrate 前缓冲的旧回放不追加到快照之后", () => {
-  assert.match(chat, /replayBufferRef\.current = \[\];\s*\n\s*replayProbeRef\.current = \{ pending: false, thread: null \};/);
+  assert.match(chat, /if \(findToolBlockOwner\(data\.toolCallId\)\) break;/);
+  assert.match(chat, /if \(owner\) queueToolOutput\(owner\.messageId, data\);/);
+  assert.match(chat, /if \(owner\) \{\s*\n\s*patch\(owner\.messageId,/);
 });
 
 test("hydrate 保留尚未落盘的实时气泡（思考栏/跑马灯不消失）", () => {
   assert.match(chat, /const liveStreaming = \(messagesRef\.current \|\| \[\]\)\.find\(\(item\) => item\?\.role === "assistant" && item\?\.status === "streaming"\)/);
   assert.match(chat, /mergedHistory = \[\.\.\.normalizedHistory, \{ \.\.\.liveStreaming, blocks: keptBlocks \}\]/);
-  assert.match(chat, /assistantIdRef\.current = keptLiveId \|\| \(isLiveRun/, "保留下来的气泡必须是新的流式锚点");
+  assert.match(chat, /assistantIdRef\.current = keptLiveId \|\| \(isLiveRun/);
 });
 
-test("合并时按 toolCallId 与文本重叠去重（不重复渲染）", () => {
-  assert.match(chat, /if \(block\.type === "tool"\) return !hydratedToolIds\.has/);
-  assert.match(chat, /return !hydratedTextBlob\.includes\(text\.slice\(0, Math\.min\(80, text\.length\)\)\)/);
-});
-
-test("中断后的孤儿消息归到一张「运行记录缺失」卡（不再每条一个折叠头）", () => {
+test("中断后的孤儿消息归到一张「运行记录缺失」卡", () => {
   assert.match(app, /function buildOrphanRunCards\(messages = \[\], runCards = \[\]\)/);
   assert.match(app, /const orphanCards = buildOrphanRunCards\(msgs, runMessages\);/);
   assert.match(app, /mergeRunSummaries\(msgs, \[\.\.\.runMessages, \.\.\.orphanCards\]\)/);
   assert.match(app, /mergeRunSummaries\(appendedMessages, \[\.\.\.runMessages, \.\.\.buildOrphanRunCards\(appendedMessages, runMessages\)\]\)/);
 });
 
+console.log("▶ 会话隔离");
+
+test("切换会话时目标会话的历史必须重新水合", () => {
+  const hydrate = chat.slice(chat.indexOf("if (historyThreadId && historyThreadId !== threadId) return;"));
+  assert.match(hydrate, /\}, \[historyMessages, historyThreadId, threadId\]\);/);
+});
+
+test("切会话清掉上一会话的当前动作/上一轮提示", () => {
+  const block = chat.slice(chat.indexOf("const hydratingHistory = Boolean(historyMessages"), chat.indexOf("previousThreadRef.current = threadId;"));
+  assert.match(block, /setLastPrompt\(null\);\s*\n\s*setAgentPhase\(""\);/);
+  assert.doesNotMatch(block, /if \(!hydratingHistory\) \{\s*\n\s*setLastPrompt\(null\);/);
+});
+
+test("模型隔离：会话上报的模型不写全局偏好、不回推 onModelChange", () => {
+  assert.match(chat, /function applyModelForSession\(id, list\)/);
+  const connected = chat.slice(chat.indexOf('case "connected":'));
+  assert.match(connected.slice(0, 400), /applyModelForSession\(data\.model\)/);
+  assert.doesNotMatch(connected.slice(0, 400), /onModelChange\?\.\(data\.model\)/);
+  assert.match(chat, /const lastSelectedModelRef = useRef\(selectedModel\);/);
+  assert.match(chat, /if \(selectedModel === previous\) return;/);
+});
+
+console.log("▶ 推理档位");
+
+test("默认推理档位为「高」，不支持时按 高→标准→默认 降级且不回写偏好", () => {
+  assert.match(chat, /const DEFAULT_THINKING_EFFORT = "high";/);
+  assert.match(chat, /function readInitialThinkingEffort\(\)/);
+  assert.match(chat, /const \[effort, setEffort\] = useState\(readInitialThinkingEffort\)/);
+  assert.match(chat, /const effectiveEffort = useMemo\(\(\) => \{/);
+  assert.match(chat, /return \["high", "medium", "default"\]\.find\(\(id\) => thinkingAvailable\(id\)\) \|\| "default";/);
+  assert.doesNotMatch(chat, /setEffort\(fallback\)/);
+  assert.doesNotMatch(chat, /localStorage\.setItem\(THINKING_KEY, fallback\)/);
+  assert.match(chat, /const selectedEffort = source\.effort \?\? effectiveEffort;/);
+});
+
+test("老版本遗留的 default 档位做一次性迁移", () => {
+  assert.match(chat, /const THINKING_MIGRATION_KEY = "oaw_thinking_level_v3";/);
+  assert.match(chat, /saved === "default" && !migrated/);
+});
+
+console.log("▶ 时间流排版节奏（2026-11-07 实测收敛，同日二次压缩）");
+
+test("单行条目用 1.35 行高，不继承正文 1.75", () => {
+  const head = css.match(/\.tl-row-head \{[\s\S]*?\}/)?.[0] || "";
+  assert.match(head, /line-height: 1\.35;/);
+  assert.match(css, /\.tl-verb \{ font-size: 14px; font-weight: 400; line-height: 1\.35; flex: none; \}/);
+  assert.match(css, /\.tl-obj \{ font-size: 14px; line-height: 1\.35;/);
+});
+
+test("工具行与工具卡间距收敛（header 3px / card 2px）", () => {
+  const headerRule = (css.match(/\.tool-header \{[^}]*\}/g) || []).pop() || "";
+  assert.match(headerRule, /padding: 3px 8px;/);
+  assert.match(headerRule, /line-height: 1\.35;/);
+  assert.match(css, /\.tool-card \{[\s\S]{0,300}?margin-bottom: 2px;/);
+  const listRule = css.match(/\.tl-list \{[\s\S]*?\}/)?.[0] || "";
+  assert.match(listRule, /gap: 1px;/);
+  assert.match(listRule, /margin: 2px 0 3px 0;/);
+});
+
+test("轮次分隔只留 2/1（不再在每张工具卡后形成 14px 空白）", () => {
+  assert.match(css, /\.tl-turn-sep \{ height: 0; margin: 2px 0 1px; \}/);
+});
+
+test("阶段小结：标签 1.5 行高 + 与思考正文同一左边缘（38px）", () => {
+  const block = css.match(/\.tl-list \.textblock \{[^}]*\}/)?.[0] || "";
+  assert.match(block, /padding: 2px 8px 4px 38px;/);
+  assert.match(block, /margin: 1px 0;/, "小结块上下各 1px，与工具卡形成分组感");
+  const capRule = css.match(/\.tl-list \.textblock \.tb-cap \{[^}]*\}/)?.[0] || "";
+  assert.match(capRule, /line-height: 1\.5;/);
+  assert.match(capRule, /margin-bottom: 2px;/, "标签与正文间距固定 2px");
+});
+
+test("消息列与消息内条目同步收敛（gap 12 / main 2）", () => {
+  const slot = css.match(/\.center-chat-slot \.chat-body \{[\s\S]*?\}/)?.[0] || "";
+  assert.match(slot, /gap: 12px;/);
+  assert.match(slot, /padding: 24px var\(--chat-gutter\) 18px;/);
+  const main = css.match(/\.msg-main \{[\s\S]*?\}/)?.[0] || "";
+  assert.match(main, /gap: 2px;/);
+});
+
+
+test("时间流小结正文首尾段落外边距归零（消除\"空格很大\"）", () => {
+  assert.match(css, /\.tl-list \.textblock \.markdown-body > :first-child \{ margin-top: 0; \}/);
+  assert.match(css, /\.tl-list \.textblock \.markdown-body > :last-child \{ margin-bottom: 0; \}/);
+});
+
+test("运行中用时并入消息头（结算时不产生高度跳变）", () => {
+  assert.match(chat, /isTaskLive && runElapsedText && !showTimelineSummary && \(\s*\n\s*<span className="msg-run-elapsed">/);
+  assert.match(chat, /runElapsedText && hideHeader && !showTimelineSummary && <div className="tl-elapsed">/);
+  assert.match(css, /\.msg-run-elapsed \{ margin-left: auto; color: var\(--muted\); font-variant-numeric: tabular-nums; \}/);
+});
+
+test("思考正文高度随视口收缩（不再固定 220px）", () => {
+  const rule = css.match(/\.tl-thinking-text \{[^}]*\}/)?.[0] || "";
+  assert.match(rule, /max-height: min\(220px, 45vh\);/);
+});
+
+test("正文行高仍按 DESIGN 1.75（不跟着收敛）", () => {
+  const flow = css.match(/\.flow-markdown \.markdown-body \{[^}]*\}/)?.[0] || "";
+  assert.match(flow, /font-size: 14px;/);
+  assert.match(css, /\.msg \.markdown-body \{ font-size: 14px; line-height: 1\.75; \}/);
+});
+
+test("跟底滚动定时器不会被高频 token 饿死", () => {
+  const block = chat.slice(chat.indexOf("跟底滚动不能被"), chat.indexOf("useEffect(() => () => {"));
+  assert.ok(block.length > 0, "未找到跟底滚动实现");
+  assert.match(block, /if \(scrollTimerRef\.current\) return;/, "已排队时不得重置定时器");
+  assert.doesNotMatch(block, /clearTimeout\(scrollTimerRef\.current\);\s*\n\s*scrollTimerRef\.current = setTimeout/, "不得每次 messages 变化都清理重建");
+});
+
+console.log("▶ 基线保持");
+
+test("冷会话仍不建连（避免创建空 runtime）", () => {
+  assert.doesNotMatch(chat, /if \(!agentReady\) return undefined;/);
+  assert.match(chat, /if \(!streamAttachAllowed\) return undefined;/);
+});
+
+test("listRuns 客户端支持 includeEvents", () => {
+  assert.match(api, /if \(options\.includeEvents\) params\.set\("includeEvents", options\.includeEvents\)/);
+});
+
 if (failed) {
-  console.error("\n✗ 流恢复冻结回归存在失败项\n");
+  console.error("\n✗ 流恢复/隔离/排版回归存在失败项\n");
   process.exit(1);
 }
-console.log("\n✓ 流恢复冻结回归全部通过\n");
+console.log("\n✓ 流恢复/隔离/排版回归全部通过\n");

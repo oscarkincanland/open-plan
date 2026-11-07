@@ -40,6 +40,9 @@ export function 追加文本块(blocks = [], text = "") {
     last.text = (last.text || "") + value;
     return arr;
   }
+  // 纯空白增量不新开文本块：否则时间流会多出一块看不见的 .textblock，
+  // 在工具卡与下一条之间撑出空白（2026-11-07 实测）。
+  if (!value.trim()) return arr;
   arr.push({ type: "text", text: value });
   return arr;
 }
@@ -62,6 +65,8 @@ export function 并回上一段文本块(blocks = [], text = "") {
     arr[index] = { ...block, text: (block.text || "") + value };
     return arr;
   }
+  // 没有可并回的文本块且增量只有空白：不新开空块。
+  if (!value.trim()) return arr;
   arr.push({ type: "text", text: value });
   return arr;
 }
@@ -84,6 +89,9 @@ export function 追加流式文本块(blocks = [], text = "") {
     last.text = (last.text || "") + value;
     return arr;
   }
+  // 尾部不是 text 块且增量只有空白：属于轮次之间的换行/缩进，不构成可见正文。
+  // 新开一块会渲染成空的 .textblock（有 padding 却无内容），表现为工具卡后的空白。
+  if (!value.trim()) return arr;
   // 尾部不是 text 块：向前找最近的一段 text，判断新文本是否它的同句延续。
   for (let index = arr.length - 1; index >= 0; index -= 1) {
     const block = arr[index];

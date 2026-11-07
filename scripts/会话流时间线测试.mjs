@@ -58,6 +58,21 @@ test("message_boundary 与未知块类型跳过，ask/approval 原样透传", ()
   assert.equal(items[1].kind, "approval");
 });
 
+test("空白正文块不产生时间流条目（消除工具卡后的隐形空白）", () => {
+  const items = buildRunTimeline({
+    blocks: [
+      { type: "tool", id: "t1", toolCallId: "c1", name: "bash", input: "ls", done: true },
+      { type: "text", id: "b1", text: "\n\n" },
+      { type: "text", id: "b2", text: "   " },
+      { type: "text", id: "b3", text: "\u200b" },
+      { type: "text", id: "b4", text: "\u00a0\u3000" },
+      { type: "text", id: "b5", text: "真正的小结" },
+    ],
+  });
+  assert.deepEqual(items.map((item) => item.kind), ["tool", "text"], "只有非空白正文进入时间流");
+  assert.equal(items[1].text, "真正的小结");
+});
+
 
 test("空思考块不渲染；只有 thinking 字段时也能取到正文", () => {
   const items = buildRunTimeline({
