@@ -50,7 +50,7 @@ import { importLocalPiSessionFile, readCredentials, readModelsConfig, readModels
 import { resolveReferences, readReference, contextSummary } from "./context.mjs";
 import { recordRunEvent, updateRunTodo, getRun, isRunTerminal } from "./runs.mjs";
 import { markRunTiming, attachRunTimingSpans } from "./首字延迟.mjs";
-import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode, routeTaskIntent, allModeToolNames } from "./task.mjs";
+import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode, routeTaskIntent, allModeToolNames, resolveWritingThinkingLevel } from "./task.mjs";
 import { finalAnswerState } from "./终稿.mjs";
 import { classifyToolCall, isReadonlyBash, isMutatingOfficecli } from "./office规范/执行闸门.mjs";
 import { probeBashAvailability, bashUnavailableError, bashWorkspaceRule, resolveBashShell } from "./环境能力.mjs";
@@ -149,12 +149,17 @@ import { buildExtractionPrompt } from "./记忆抽取调度.mjs";
 import { buildContextSections, renderContextSections, sectionSummary } from "./上下文段落.mjs";
 import { dispatchHooks } from "./Hook事件层.mjs";
 import { normalizeToolError, toolError } from "./工具错误.mjs";
-import { buildSkillCatalog, buildSkillInjection, normalizeSkillUsage, bumpSkillUsage, rankSkillsByUsage } from "./Skill注入.mjs";
+import { buildSkillCatalog, buildSkillInjection, buildSkillReadPayload, normalizeSkillUsage, bumpSkillUsage, rankSkillsByUsage } from "./Skill注入.mjs";
 import { buildSubagentProfile } from "./子代理配置.mjs";
 import { listSkillCatalog } from "./技能目录.mjs";
+import { searchSkills, rankSkills } from "./技能检索.mjs";
+import { selectWritingSkills } from "./写作技能筛选.mjs";
+import { probeSkillDeps } from "./技能依赖.mjs";
+import { createInteraction, settleInteraction, expireInteraction, assumeInteraction, cancelClientInteractions } from "./交互中枢.mjs";
 import {
   BACKGROUND_AFTER_MS,
   appendJobOutput,
+  backgroundNotice,
   cancelJob,
   cancelRunJobs,
   createJob,
@@ -519,14 +524,24 @@ function recordSkillUsage(name) {
   } catch {}
 }
 
+// 技能检索（2026-11-08 D0-2）：查询词做有限别名扩展后按“名称 > 描述 > 频次”打分，
+// 不再用“空格 AND 词面匹配”（旧实现让“PPT 演示”“文档审查”等 17 个自然语言查询 0 命中）。
 function searchLocalSkills(query = "", limit = 12, workspace = "") {
-  const words = String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const raw = String(query || "").trim();
   const skills = localSkillCatalog(workspace);
-  const matched = words.length
-    ? skills.filter((skill) => words.every((word) => `${skill.name} ${skill.description}`.toLowerCase().includes(word)))
-    : skills;
-  // 常用优先：命中集合内按使用频次降序、名称升序，留空 query 时最常用技能排前。
-  return rankSkillsByUsage(matched, readSkillUsage()).slice(0, Math.max(1, Math.min(30, Number(limit) || 12)));
+  const max = Math.max(1, Math.min(30, Number(limit) || 12));
+  if (!raw) return rankSkills(skills, readSkillUsage(), max);
+  return searchSkills(skills, raw, { limit: max, usage: readSkillUsage() });
+}
+
+/** 按名称或别名查找技能（目录名与 frontmatter.name 不同时，两者都能命中）。 */
+function findLocalSkill(name = "", workspace = "") {
+  const key = String(name || "").trim().toLowerCase();
+  if (!key) return null;
+  return localSkillCatalog(workspace).find((item) =>
+    String(item.name || "").toLowerCase() === key
+    || (Array.isArray(item.aliases) && item.aliases.some((alias) => String(alias).toLowerCase() === key)),
+  ) || null;
 }
 
 // Pi 已经负责一次短重试；工作台再补一层：无工具副作用的失败回合按退避重放，
@@ -1086,7 +1101,27 @@ function readMemoryContext(workspace = getWorkspace()) {
 const PENDING_ASKS_FILE = path.join(PROJECT_DIR, ".oaw", "pending-asks.json");
 
 function readPendingAsks() {
-  try { return JSON.parse(fs.readFileSync(PENDING_ASKS_FILE, "utf8")); } catch { return []; }
+  try {
+    const items = JSON.parse(fs.readFileSync(PENDING_ASKS_FILE, "utf8"));
+    if (!Array.isArray(items)) return [];
+    // D0-8：启动/读取时把已过 expiresAt 的 pending 标为 expired，
+    // 避免 pending-asks.json 里长期残留“点不动的待答问题”。
+    const now = Date.now();
+    let changed = false;
+    for (const item of items) {
+      if (item?.status !== "pending") continue;
+      const expiresAt = Date.parse(item.expiresAt || "");
+      if (Number.isFinite(expiresAt) && expiresAt < now) {
+        item.status = "expired";
+        item.resolvedAt = item.resolvedAt || new Date().toISOString();
+        changed = true;
+      }
+    }
+    if (changed) {
+      try { atomicWriteJson(PENDING_ASKS_FILE, items.slice(-100)); } catch {}
+    }
+    return items;
+  } catch { return []; }
 }
 function savePendingAsks(items) {
   fs.mkdirSync(path.dirname(PENDING_ASKS_FILE), { recursive: true });
@@ -1100,7 +1135,15 @@ function persistPendingAsk(item) {
 function resolvePendingAsk(clientId, answer, status = "answered") {
   const items = readPendingAsks();
   const item = [...items].reverse().find((x) => x.clientId === clientId && x.status === "pending");
-  if (item) { item.status = status; item.answer = answer || null; item.resolvedAt = new Date().toISOString(); savePendingAsks(items); }
+  if (item) {
+    item.status = status; item.answer = answer || null; item.resolvedAt = new Date().toISOString(); savePendingAsks(items);
+    // D2：同步结算交互中枢记录（legacy id 映射），保证 Dock 与消息流一致。
+    try {
+      const reason = status === "skipped" ? "skipped" : status === "expired" ? "expired" : status === "assumed" ? "assumed" : status === "cancelled" || status === "queued" ? "cancelled" : "answered";
+      const interactionId = `itx_${String(item.id).replace(/^ask_/, "")}`;
+      settleInteraction(interactionId, { reason, answer: answer || null, assumption: item.assumption || "" });
+    } catch {}
+  }
   return item;
 }
 
@@ -1413,10 +1456,17 @@ class AgentManager extends EventEmitter {
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
               "- **地图（GIS，仅 Work）**: 地图项目位于 `当前工作区/maps/{project}/`（当前任务指定 `mapProject` 时一律使用任务项目；缺省才回退 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。生成/修改地图数据时按“草稿层 → 用户确认 → 固化”流程：用 map_draft_layer 生成点/线/面草稿（只写 agent/drafts，不落正式库、免审批），把草稿 id 与摘要告诉用户，请用户在地图面板确认；用户明确要求固化/保存正式图层时，用 map_fixate_layer（需审批）。用 map_read 查看项目状态与图层清单；用 map_edit 修改正式图层样式（需审批）。**不要用 write/edit 直接改 style.json / map.config.json / layers/*.geojson 或 agent/drafts/*.json**——那会绕过锁定、审批、备份、操作日志与瓦片重建；也不要用 bash 重建瓦片，地图工具会处理。底图源：gaode/osm/carto/esri 等运行时配置。",
               "- **地图分析**: 用户说“在义乌生成热力图/等时圈”、要求 OD 期望线或公交分析时，优先使用 map_analyze；结果作为草稿层呈现，没有真实数据时必须明确标注演示数据，固化后仍保留演示标记。",
-              "- **主动询问（重要）**: 当用户要求撰写/生成/修改文字内容，但关键信息不明确（文档类型、篇幅、受众、数据来源、风格、范围；修改类还包括改哪一段、改成什么、是否保留原格式）时，**必须调用 ask_user 主动提问**，等待回答后再继续，不要猜测。**只在缺失 ≥2 项时提问，每次只问一个最阻塞的问题**；只缺 1 项时按默认值继续，并在结果中注明假设。",
+              "- **主动询问（提问预算，2026-11-08）**: 只在“关键信息缺失、不猜会做错”时调用 ask_user：文档类型/产物格式/必须包含的数据/覆盖范围。**禁止提问**：是否继续、下一步、是否写回、是否满意等收尾确认；篇幅、受众、风格、章节顺序等非阻塞项——一律给默认假设并在结果中注明。每次只问一张卡、一个最阻塞的问题；提问必须带 `assumption`（默认怎么做）。高风险不可逆动作才用 `intent=confirm`；澄清/预览用默认 clarify/review。只缺 1 项时按默认值继续。",
               "- **模板优先（重要）**: 用户要求写工可/可研/规划/汇报/交评/预可/选址/物流园区/年度报告等交通规划文体时，先用 read 读取 `" + PROJECT_DIR + "/templates/traffic-material/` 下对应模板（14 个），按其章节骨架、必备图表与格式规则写作；不要凭记忆自造结构。注意模板在项目目录而不在当前工作区，必须用这个绝对路径。",
               "- **改文档先读后改**: 修改既有 Office 文档时，先 `officecli view <file> text|outline` 确认内容，再 `get` 取真实路径，最后 `set/add`；禁止直接 set 未知路径。",
-              "- **草稿确认**: 如果已经生成 Markdown 草稿，调用 ask_user 时用 `previewFile` 指向该草稿（工作区相对路径），让用户先看内容再继续写入。",
+              "- **一次成稿（2026-11-08）**: 写作默认一次成稿：直接写完整 Markdown 正文 → 直通排版 → 预览即终稿；不需要独立“大纲确认/草稿确认”轮。只有用户明确要求先看大纲，或预计超过 8000 字时，才在正文前附可选大纲。生成草稿后用 ask_user 传 `previewFile` 让用户直接预览，不再为“是否继续写”提问。",
+              // 2026-11-08 D4（ADR-0028）：以下三条只在写作一次成稿开关打开时注入；
+              // 关闭时不进提示词，与基线逐字一致。
+              ...(RUNTIME_FLAGS.writingOneShot ? [
+                "- **写作一次成稿（D4，已开启）**: 写作默认直接产出终稿：先 read 模板/素材 → 一次写完整 Markdown 正文（不先出独立大纲）→ 同一份 Markdown 用 editorial_pipeline 的 sourceMarkdown 直通排版 → 预览即终稿。默认不设“大纲确认/草稿确认”轮；只有用户明确要大纲或预计 >8000 字才附可选大纲。",
+                "- **写作提问预算（D4）**: 只在“文档类型/产物格式/必须包含的数据/覆盖范围”缺失时问一次；篇幅、受众、风格、章节顺序一律给默认假设并在交付说明中标注。禁止用 ask_user 问“是否继续/下一步/是否写回/是否满意”等收尾确认——直接执行默认动作。写回原文件/覆盖正式文件等不可逆动作仍用 `intent=confirm` 保留高风险确认。",
+                "- **写作排版与验收（D4）**: 样式精修统一用一次 officecli `batch` 批量下发（禁止逐属性 `set`；batch 不覆盖的属性按每批 ≤5 条合并）；验收只跑一次 `validate` + 规则闸门，失败自动修一次后交付，不做多轮 revise。",
+              ] : []),
               "- **复杂任务待办**: 预计超过两步的任务，先调用 `todo` 工具创建 2-6 项结构化待办；每完成一项或状态发生变化后，立即用 `todo` 提交完整清单。不要把每个工具调用都拆成待办项。Markdown 清单只能作为可选的人类可读摘要，任务区以 `todo` 工具状态为准。",
               "- **回合结束沉淀记忆**: 每轮任务真正完成后，检查本轮是否出现对后续任务仍有价值的新项目事实、稳定工作规则、用户偏好或可复用经验（纯问答或一次性咨询不必检查，也不必为此额外追问）。若有，主动调用一次 memory_update 生成一条待审核建议；若没有，不要强行生成。只记录短句，不记录临时状态、完整对话、敏感凭据或大段原文。",
               "- **收尾（原生终稿）**: 回答最后一步直接给用户最终答复：说明做了什么、关键结果（含关键数字）、产物路径、如何验证、未完成项或风险；不要复述工具调用流水，也不要重复进度播报。结论就写在最终答复里，系统按回合终态记录本轮状态。**调用 memory_update 后直接收尾，不要再用 ask_user 追问或征求是否继续。**",
@@ -1425,7 +1475,7 @@ class AgentManager extends EventEmitter {
               "- **模板引用（@模板）**: 用户以 `@模板[文件名或相对路径]` 引用模板库中的模板时，优先使用本轮结构化引用里的 `context_read(refId)` 读取，避免只凭模板标题猜路径；若需兼容旧版本，再用 find 在 `templates/`、`_报告模板/` 和 `.claude/skills/` 下按文件名包含匹配搜索，找到后用 read 读取全文，作为撰写文档的结构与风格参考。产出保存到当前工作区（见 .agent-context.md）。用户以 `@模板目录[相对路径]` 引用整个模板目录时（如 `@模板目录[templates/opendesign/templates/html-ppt-tech-sharing]`），用 find 列出该目录下所有文件并逐个 read 理解其风格与结构，产出时保持该风格。",
               "- **规划素材库（traffic-material）**: 模板库在**项目目录**下（不在当前工作区）：绝对路径 `" + PROJECT_DIR + "/templates/traffic-material/`，内置 14 份交通规划详版模板（00_总览通用规范、01_年度工作报告、02_五年发展规划、03_规划文本条文式、04_工程可行性研究报告、05_线位论证预可、06_选址用地预审、07_交通影响评价、08_汇报材料、09_物流园区规划、10_规划研究报告、11_PPT汇报、12_素材库深挖）。用户要求撰写交通规划/工可/汇报/年度报告等文档时，**用 read 工具读取该绝对路径下的对应模板作为结构参考**（如 04_工程可行性研究报告模板.md、08_汇报材料模板.md），产出保存到当前工作区。完整列表可用 GET /api/templates?category=sucaiku 查看。",
               "- **模板库（OpenDesign HTML PPT）**: 项目 `templates/opendesign/` 内置 157 个 HTML 模板（64 款 html-ppt-* 演示风格 + landing/dashboard 等），每个模板目录含 example.html 首页可直接预览（模版库页面已接入）。用户要求生成 PPT/演示/海报/网页作品时，优先用 read 工具读取 `templates/opendesign/<模板名>/example.html` 作为风格与结构参考（如 html-ppt-zhangzara-studio、html-ppt-tech-sharing、html-ppt-pitch-deck、html-ppt-taste-editorial），产出应保存到当前工作区。",
-              "- **技能策略**: 每轮动态上下文会给出当前可用技能目录（workspace/project 优先）；用户点名技能或任务明显匹配某条 description 时，先 `skills_read(name)` 读取全文再动手；目录被截断或不确定技能是否存在时，再用 `skills_search`。不要根据摘要脑补技能正文。",
+              "- **技能策略（2026-11-08）**: 每轮动态上下文会给出当前可用技能目录（workspace/project 优先；预算不足时可能截断描述，但会保留全部技能名）。是否需要技能由你判断：用户点名 → 先 `skills_read(name)` 读全文再动手；任务明显匹配某条 description → 先 `skills_read`；不确定时用 `skills_search`（同一 Run 最多 2 次，空结果不要换词反复搜）。没有匹配或不需要时直接执行主任务，不要为“保险”空搜，也不要根据摘要脑补技能正文。技能依赖状态为 blocked 时不得自行安装依赖，改用产品能力并说明原因。",
               "- When you modify a document, confirm what changed. Files are auto-refreshed in the browser.",
               "",
               // 项目记忆（仅 memory/*.md）——工作区 AGENTS.md 已由 Pi 原生上下文加载一次，不重复注入。
@@ -1506,12 +1556,29 @@ class AgentManager extends EventEmitter {
       clarificationPending: entry?.clarificationPending || null,
       mode: entry?.mode || "agent",
       manualAllowed: Boolean(entry?.manualOfficeAllowed),
+      // D1：显式技能调用时，技能目录下的脚本走白名单通道（避免“生成 PPT”路由禁止技能脚本）。
+      skillExec: {
+        allowed: Boolean(entry?.skillExecAllowed),
+        roots: Array.isArray(entry?.skillExecRoots) ? entry.skillExecRoots : [],
+      },
     });
 
     /** 执行闸门：被拒时发 tool_gate_denied 并抛可读错误；放行时返回闸门结果（可能带 sanitizedInput）。 */
     const enforceOfficeGate = (tool, input) => {
       const gate = classifyToolCall({ tool, input, context: officeGateContext() });
-      if (!gate.blocked) return gate;
+      if (!gate.blocked) {
+        if (gate.skillExec) {
+          try {
+            writeEvent("skill_exec_allowed", {
+              runId: entry?.activeRunId || null,
+              tool,
+              route: entry?.task?.capabilityPlan?.route || null,
+              command: String(input?.command || input?.args || input?.path || "").slice(0, 300),
+            });
+          } catch {}
+        }
+        return gate;
+      }
       writeEvent("tool_gate_denied", {
         runId: entry?.activeRunId || null,
         kind: tool,
@@ -1903,7 +1970,9 @@ class AgentManager extends EventEmitter {
             return outcome.result;
           }
           // 超过阈值仍未完成：把等待移出主流程，进程继续跑；模型看到 marker 后继续其他步骤。
-          options?.onData?.(`\n[BACKGROUNDED] jobId=${job.jobId} 命令已转后台执行；需要结果时调用 job_status，或继续不依赖它的步骤。\n`);
+          // D0-5：onData 契约是 Buffer（SDK BashOperations.exec），传字符串会触发
+          // “The input argument must be an instance of ArrayBuffer...” 并丢掉 jobId。
+          options?.onData?.(backgroundNotice(job.jobId));
           forwardOutput = false;
           writeEvent("tool_backgrounded", {
             runId: ctx.runId,
@@ -1926,6 +1995,11 @@ class AgentManager extends EventEmitter {
       },
     });
 
+    // 2026-11-08 D4（ADR-0028）：writingOneShot 开启时，officecli 工具描述改为
+    // “一次成稿 + batch 批处理排版 + 一次验收”；关闭时逐字保留基线五步 WRITING PLAYBOOK。
+    const officecliWritingPlaybook = RUNTIME_FLAGS.writingOneShot
+      ? "WRITING PLAYBOOK (一次成稿，默认路径，不要自由发挥): STEP 1 read the traffic template at " + PROJECT_DIR + "/templates/traffic-material/ (absolute path — the templates live in the project directory, NOT the current workspace) and its style rules; determine document type and output format; only truly blocking gaps (type/format/must-include data/scope) may be asked once — fill the rest with explicit default assumptions noted in the final answer. STEP 2 write the COMPLETE Markdown body in ONE go — no separate outline or draft-confirmation round (an optional outline is allowed only when the user explicitly asks, or the body will exceed ~8000 Chinese characters) — then pass that SAME Markdown to the editorial_pipeline tool via sourceMarkdown to produce the docx/pptx directly (Planner/Writer are skipped). STEP 3 if you must format with officecli directly, 'create <file>.docx' already pre-registers the standard style set (Normal/Heading1-4/Title/TOC1-2/header/footer), so never hand-write styles.xml; apply ALL style/format changes in ONE 'batch' command — NEVER run one 'set' per attribute, and merge attributes a single batch cannot cover into batches of at most 5. STEP 4 run exactly ONE acceptance pass: 'validate <file>' plus 'view <file> issues' and the rule gate; if it fails, fix once automatically and deliver — do not start extra revision rounds. STEP 5 finish by giving the user the final answer directly (what was produced, artifact path, assumptions, open items); do NOT ask whether to continue, what next, or whether to write back. "
+      : "WRITING PLAYBOOK (写报告/规划文本/公文时的标准五步流程，按序执行，不要自由发挥): STEP 1 read the traffic template at " + PROJECT_DIR + "/templates/traffic-material/ (absolute path — the templates live in the project directory, NOT the current workspace) and its style rules; STEP 2 create the document with 'create <file>.docx' — it already contains the standard style set (Normal/Heading1-4/Title/TOC1-2/header/footer), so never hand-write styles.xml; STEP 3 write one chapter per 'write' call, then 'add <file> / --type markdown --prop src=<chapter.md>' immediately after each write (write→add in pairs, do not batch chapters); STEP 4 self-check with 'validate <file>' and 'view <file> issues'; STEP 5 finish by giving the user the final answer directly. ";
     const officeTool = defineTool({
       name: "officecli",
       label: "Office CLI",
@@ -1935,7 +2009,7 @@ class AgentManager extends EventEmitter {
         "PROP VALUES: write them as key=value tokens; values with spaces are fine as one token (--prop author=规聚 Agent is parsed as one value) — do NOT wrap them in escaped quotes like \\\"...\\\". " +
         "For Word comments, first locate a real paragraph path with get/query, use one get path per command, then verify with query <file> comment --json. " +
         "STRICT RULES (avoid wasted retries): (1) the file path must be a workspace-relative path such as '报告.docx' or '初稿/报告.docx' — absolute paths and ../ are rejected; (2) 'view' requires a mode from the list above, never call bare 'view'; (3) options are command-specific and unknown options abort the command: --json works everywhere; --compact and --fields exist ONLY on 'query' (putting --compact on get/view/set aborts with 'Unrecognized command or argument' — this cost 9 failed calls in a real run); --find/--replace are for 'set'; -o/--output is for 'view' and 'dump'; there is NO --limit/--page/--offset anywhere; (4) 'query <file> <selector>' takes a CSS-like selector as its own argument ('paragraph', 'paragraph[style=Normal]', 'table', 'run', '*'); do not pass subcommand names or paths as the selector; (5) 'add <file> / --type markdown --prop src=<file.md>' reads the source from disk: if you just wrote that .md with the write tool it may still be staged, so pass it through this tool's args (it gets materialized) and do not retry more than twice; (6) very large workbooks may return code 'decompression_bomb' (>3,000,000 XML elements): do not retry the same command, tell the user the file must be split, or read the data with a script instead; (7) an internal '.NET' assembly error (e.g. FileNotFoundException: System.Private.Xml) means the officecli installation is mid-update: retry the same command once, and if it fails again tell the user to re-run the officecli installer instead of looping. " +
-        "WRITING PLAYBOOK (写报告/规划文本/公文时的标准五步流程，按序执行，不要自由发挥): STEP 1 read the traffic template at " + PROJECT_DIR + "/templates/traffic-material/ (absolute path — the templates live in the project directory, NOT the current workspace) and its style rules; STEP 2 create the document with 'create <file>.docx' — it already contains the standard style set (Normal/Heading1-4/Title/TOC1-2/header/footer), so never hand-write styles.xml; STEP 3 write one chapter per 'write' call, then 'add <file> / --type markdown --prop src=<chapter.md>' immediately after each write (write→add in pairs, do not batch chapters); STEP 4 self-check with 'validate <file>' and 'view <file> issues'; STEP 5 finish by giving the user the final answer directly. " +
+        officecliWritingPlaybook +
         "COMMON COMMANDS (these cover most document work — do NOT run 'help' or '--help' to explore): 'create <f>.docx' (new doc, styles pre-registered); 'create <f>.docx --force' (overwrite existing); 'add <f> / --type markdown --prop src=<ch.md>' (import a written chapter); 'set <f> /body/p[N] --prop style=Heading2' (apply a heading style); 'set <f> /body/p[N] --prop bold=true' (bold a paragraph); 'add <f> /body/p[N] --type table --prop ...' or 'add <f> / --type table' (insert a table); 'add <f> /body/p[N] --type image --prop image=<path>' (insert a picture); 'view <f> text|outline|stats|issues' (read back); 'validate <f>' (OpenXML schema check). If a command fails, read the error and adjust the SAME command once — running 'help' instead of adjusting is what wastes turns. " +
         "STYLE BAN: do NOT use 'raw-set' on /styles/style to build or modify styles — 'create' pre-registers them, and 'set <file> /body/p[N] --prop style=Heading2' applies them. 'raw-set' on styles.xml is the single most error-prone operation (it produced 7 consecutive failures and one corrupted OOXML file in a real run). " +
         "KNOWN ERRORS (avoid loops): (a) 'Style Normal not found' means the style is absent — add it first via 'add <file> /styles --type style --prop id=Normal --prop name=Normal --prop type=paragraph'; (b) table paths only support '/body/tbl[1]' — never 'tbl[*]' or '//p'; iterate rows/cells one by one; (c) table elements do not accept 'size' — set font size on paragraphs inside cells; (d) 'Image file not found: <path>' means the referenced image was never written to disk — write it with the write tool first (the file is materialized automatically) or remove that reference, and do NOT retry the same command; (e) 'Malformed XML in document part' means the OOXML got corrupted by a raw/raw-set edit — stop editing that file and rebuild it with 'create' + 'add --type markdown' instead of trying to repair the XML; (f) 'markdown source file not found' — the .md source must exist on disk (write it first, or pass it through this tool's args so it gets materialized). " +
@@ -2862,11 +2936,58 @@ execute: async (_toolCallId, params, signal) => {
         limit: Type.Optional(Type.Number({ description: "最多返回条数，默认 12" })),
       }),
       execute: async (_toolCallId, params) => {
-        const results = searchLocalSkills(params.query || "", params.limit, entry?.workspace || getWorkspace());
-        if (!results.length) return { content: [{ type: "text", text: "未找到匹配的 Skill。" }], details: {} };
+        const query = String(params.query || "").trim();
+        const runKey = entry?.activeRunId || "none";
+        // 同一 Run 搜索次数上限（2026-11-08 D0-2）：旧实现实测模型会连续 4–8 次换词空搜。
+        if (!(entry.skillSearchAttempts instanceof Map)) entry.skillSearchAttempts = new Map();
+        const attempts = (entry.skillSearchAttempts.get(runKey) || 0) + 1;
+        entry.skillSearchAttempts.set(runKey, attempts);
+        if (attempts > 3) {
+          return {
+            content: [{ type: "text", text: "本 Run 已多次搜索技能；请停止搜索，直接执行主任务或说明能力缺口。" }],
+            details: { stopAutoSearch: true, attempts },
+          };
+        }
+        const results = searchLocalSkills(query, params.limit, entry?.workspace || getWorkspace());
+        const empty = results.length === 0;
+        const stopAutoSearch = empty && attempts >= 2;
+        const topNames = results.slice(0, 5).map((item) => item.name);
+        try {
+          writeEvent("skill_search", {
+            runId: entry?.activeRunId || null,
+            query,
+            hits: results.length,
+            topNames,
+            empty,
+            stopAutoSearch,
+            attempts,
+          });
+        } catch {}
+        if (empty) {
+          return {
+            content: [{
+              type: "text",
+              text: "未找到匹配的 Skill。"
+                + (stopAutoSearch ? "\n（本 Run 已连续空搜；不要再换词重试，直接执行主任务或说明能力缺口。）" : ""),
+            }],
+            details: { query, empty: true, stopAutoSearch, attempts },
+          };
+        }
+        const hint = stopAutoSearch ? "\n（本 Run 已连续空搜，如仍无结果请不要再换词重试。）" : "";
         return {
-          content: [{ type: "text", text: results.map((item) => `- ${item.name}（${item.source}）：${item.description || "无简介"}`).join("\n") }],
-          details: { skills: results.map(({ name, description, source }) => ({ name, description, source })) },
+          content: [{
+            type: "text",
+            text: results
+              .map((item) => `- ${item.name}（${item.source}；匹配：${item.matchReason}）：${item.description || "无简介"}`)
+              .join("\n") + hint,
+          }],
+          details: {
+            query,
+            empty: false,
+            stopAutoSearch,
+            attempts,
+            skills: results.map(({ name, description, source, score, matchReason }) => ({ name, description, source, score, matchReason })),
+          },
         };
       },
     });
@@ -2880,15 +3001,66 @@ execute: async (_toolCallId, params, signal) => {
       }),
       execute: async (_toolCallId, params) => {
         const name = String(params.name || "").trim();
-        const skill = localSkillCatalog(entry?.workspace || getWorkspace()).find((item) => item.name === name);
-        if (!skill) return { content: [{ type: "text", text: `未找到 Skill：${name}` }], details: {} };
-        recordSkillUsage(name);
+        const skill = findLocalSkill(name, entry?.workspace || getWorkspace());
+        if (!skill) {
+          const suggestions = searchLocalSkills(name, 5, entry?.workspace || getWorkspace());
+          const hint = suggestions.length ? `；相近技能：${suggestions.map((item) => item.name).join("、")}` : "";
+          return { content: [{ type: "text", text: `未找到 Skill：${name}${hint}` }], details: { suggestions: suggestions.map((item) => item.name) } };
+        }
+        recordSkillUsage(skill.name);
+        // D1：读取过说明的技能也进入白名单（同一 Run 内可执行其脚本）。
+        if (!Array.isArray(entry.skillExecRoots)) entry.skillExecRoots = [];
+        const skillRootDir = path.dirname(skill.path);
+        if (!entry.skillExecRoots.includes(skillRootDir)) entry.skillExecRoots.push(skillRootDir);
+        entry.skillExecAllowed = true;
         const raw = fs.readFileSync(skill.path, "utf8");
+        // D0-3：≤64KB 返回全文（旧实现按 16000 字符截断，正好切掉 PPT master 的 Step 2–6）；
+        // 超过 64KB 才降级为“章节目录 + 头部 + 分段读取提示”。
+        const payload = buildSkillReadPayload({ name: skill.name, raw });
+        // D1：读取时做一次只读依赖预检，把 ready/degraded/blocked 与原因交给模型，
+        // 避免模型拿到技能说明后自行 pip/npm 装环境（计划 §9.4 硬规则）。
+        let depsBlock = "";
+        let depsStatus = "ready";
+        try {
+          const deps = probeSkillDeps({ skill, workspace: entry?.workspace || getWorkspace() });
+          depsStatus = deps.status;
+          try {
+            writeEvent("skill_preflight", {
+              runId: entry?.activeRunId || null,
+              name: skill.name,
+              status: deps.status,
+              code: deps.code,
+              missing: (deps.checks || []).filter((check) => check.status === "blocked").map((check) => check.id),
+            });
+          } catch {}
+          if (deps.status !== "ready") {
+            depsBlock = [
+              "",
+              `<skill_requires status="${deps.status}" code="${deps.code}">`,
+              ...deps.reasons.map((reason) => `- ${reason}`),
+              "- 处理方式：不得自行执行 pip/npm/git clone 等安装命令；改用产品已有能力（editorial_pipeline/officecli/内置图表/地图工具），或请用户在技能广场点击「安装到工作区」。",
+              "</skill_requires>",
+            ].join("\n");
+          }
+        } catch {}
+        try {
+          writeEvent("skill_read", {
+            runId: entry?.activeRunId || null,
+            name: skill.name,
+            source: skill.source,
+            bytes: payload.bytes,
+            fullBytes: payload.fullBytes,
+            truncated: payload.truncated,
+            hash: payload.hash,
+          });
+        } catch {}
         if (RUNTIME_FLAGS.skillInjection) {
-          const injection = buildSkillInjection({ name, raw, maxBytes: RUNTIME_FLAGS.skillInjectionMaxBytes, source: skill.source });
+          // 注入格式开关只影响 skill_injected 审计载荷；正文仍按 64KB 全文预算返回，
+          // 避免 20KB 注入预算再次截断长技能说明。
+          const injection = buildSkillInjection({ name: skill.name, raw, maxBytes: RUNTIME_FLAGS.skillInjectionMaxBytes, source: skill.source });
           try {
             writeEvent("skill_injected", {
-              name,
+              name: skill.name,
               source: skill.source,
               bytes: injection.bytes,
               fullBytes: injection.fullBytes,
@@ -2897,12 +3069,19 @@ execute: async (_toolCallId, params, signal) => {
               runId: entry?.activeRunId || null,
             });
           } catch {}
-          return {
-            content: [{ type: "text", text: injection.text }],
-            details: { name, source: skill.source, hash: injection.hash, truncated: injection.truncated, bytes: injection.bytes },
-          };
         }
-        return { content: [{ type: "text", text: `# ${name}\n\n${limitToolText(raw)}` }], details: { name, source: skill.source } };
+        return {
+          content: [{ type: "text", text: payload.text + depsBlock }],
+          details: {
+            name: skill.name,
+            source: skill.source,
+            hash: payload.hash,
+            truncated: payload.truncated,
+            bytes: payload.bytes,
+            fullBytes: payload.fullBytes,
+            depsStatus,
+          },
+        };
       },
     });
 
@@ -3204,11 +3383,12 @@ execute: async (_toolCallId, params, signal) => {
       name: "map_import",
       label: "地图数据导入",
       description:
-        "把工作区中的 GeoJSON 文件导入为地图项目的新图层（自动生成矢量瓦片）。参数 file 为相对工作区根目录的路径，layerId 可选（默认取文件名）。导入后前端图层树会显示新图层。",
+        "把工作区中的 GeoJSON 文件放入当前地图项目的草稿层（默认；不写 layers/style/tiles，用户确认后再固化）。参数 file 为相对工作区根目录的路径。只有用户明确要求“直接写成正式图层”时才传 formal=true（需审批、会立即落盘并重建瓦片）。",
       parameters: Type.Object({
         file: Type.String({ description: "相对工作区的 GeoJSON 文件路径，如 maps_data/highways.geojson" }),
         project: Type.Optional(Type.String({ description: "项目名；缺省使用当前任务的地图项目，最终回退 zhejiang-map" })),
-        layerId: Type.Optional(Type.String({ description: "图层 id（字母数字下划线），默认取文件名" })),
+        layerId: Type.Optional(Type.String({ description: "图层 id（字母数字下划线），默认取文件名；仅 formal=true 时生效" })),
+        formal: Type.Optional(Type.Boolean({ description: "true=直接导入为正式图层（需审批）；默认 false=进入草稿层等待用户确认固化" })),
       }),
       execute: async (_toolCallId, params) => {
         const map = await import("./map.mjs");
@@ -3224,6 +3404,39 @@ execute: async (_toolCallId, params, signal) => {
           return { content: [{ type: "text", text: `文件不存在: ${rel}` }], details: {} };
         }
         const name = params.project || entry.task?.mapProject || map.DEFAULT_PROJECT;
+        let geojson;
+        try { geojson = JSON.parse(fs.readFileSync(fp, "utf8")); } catch {
+          return { content: [{ type: "text", text: `不是合法的 GeoJSON: ${rel}` }], details: {} };
+        }
+        // 默认进入草稿层：Agent 生成/转换的数据先给用户预览，确认后再固化。
+        if (params.formal !== true) {
+          try {
+            const firstGeom = String(geojson?.features?.[0]?.geometry?.type || geojson?.geometry?.type || "");
+            const geometryType = /Polygon/.test(firstGeom) ? "polygon" : /LineString/.test(firstGeom) ? "line" : "point";
+            const draft = map.createDraft(name, {
+              name: path.basename(rel, path.extname(rel)),
+              geometryType,
+              geojson,
+              actor: "agent",
+              provenance: {
+                source: "import",
+                demo: false,
+                runId: entry.activeRunId || "",
+                sessionId: entry.sessionId || "",
+                threadId: entry.threadId || "",
+              },
+            });
+            const summary = map.draftSummary(draft);
+            emitChannelSafe(entry, "map_draft_changed", { project: name, draftId: summary.id, action: "create", ...summary });
+            return {
+              content: [{ type: "text", text: `已把 ${rel} 放入草稿层「${summary.name}」（${summary.features} 要素），正式图层未改变。请在地图面板确认后再固化；只有用户明确要求直接写正式图层时才用 formal=true。` }],
+              details: summary,
+            };
+          } catch (error) {
+            mapDomainErrorEvent(error);
+            return { content: [{ type: "text", text: `导入草稿失败：${error?.message || error}` }], details: { code: error?.code || null } };
+          }
+        }
         const fallbackId = path.basename(rel, path.extname(rel)).replace(/[^a-zA-Z0-9_-]/g, "_") || "layer";
         const layerId = (params.layerId || fallbackId).replace(/[^a-zA-Z0-9_-]/g, "_");
         // 覆盖导入同样受图层锁约束；新增图层（id 不存在）不受影响。
@@ -3240,12 +3453,6 @@ execute: async (_toolCallId, params, signal) => {
           entry, tool: "map_import", input: String(rel || ""),
           runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
         });
-        // 导入会同时更新当前地图项目的 GeoJSON、配置、样式和瓦片；以项目目录
-        // 作为本 Run 的归属边界，不能把输入源文件误算成产物。
-        let geojson;
-        try { geojson = JSON.parse(fs.readFileSync(fp, "utf8")); } catch {
-          return { content: [{ type: "text", text: `不是合法的 GeoJSON: ${rel}` }], details: {} };
-        }
         const r = await withPathWriteLock(ctx, "map_import", path.join(ctx.workspace, "maps", name), async () => {
           // 台账记**具体文件**（不是项目目录）：产物归属按精确路径匹配，
           // 记目录会让导入的图层只落到"待确认"（run-window）而不是"已确认"（write-ledger）。
@@ -4143,9 +4350,16 @@ execute: async (_toolCallId, params, signal) => {
       name: "ask_user",
       label: "询问用户",
       description:
-        "当用户要求不明确、任务关键信息缺失（文档类型/格式/篇幅/受众/数据来源/风格/范围等）时调用，向用户提出具体问题并等待回答，避免盲目猜测。每次只问一个最关键的、阻塞后续工作的问题，可提供快捷选项。用户回答后继续执行。",
+        "当且仅当关键信息缺失、不猜会做错时，向用户提出一个具体问题并等待回答。提问预算（2026-11-08）：① 禁止问“是否继续/下一步/是否写回”这类收尾确认——直接执行默认动作；② 篇幅、受众、风格、章节顺序不提问，给默认假设并在结果中标注；③ 必须随提问给出 assumption（默认怎么做），clarify/review 超时后按 assumption 继续；④ 高风险不可逆动作才用 intent=confirm（超时不自动继续）。每次只问一个最关键的、阻塞后续工作的问题，可提供快捷选项。用户回答后继续执行。",
       parameters: Type.Object({
         question: Type.String({ description: "向用户提出的问题（具体、聚焦、一次一个）" }),
+        // 2026-11-08 D0-7：交互语义 + 默认假设（计划 2026-11-08-001 §10）。
+        intent: Type.Optional(Type.Union([
+          Type.Literal("clarify"),
+          Type.Literal("confirm"),
+          Type.Literal("review"),
+        ], { description: "交互语义：clarify=补充信息（默认，超时按假设继续）、confirm=高风险确认（超时只取消不自动继续）、review=草稿预览确认" })),
+        assumption: Type.Optional(Type.String({ description: "默认假设（≤200 字）：clarify/review 超时后按此继续，并写入回执；confirm 不使用" })),
         // 兼容两种传法：字符串数组（推荐）或对象数组 {label, description}
         options: Type.Optional(Type.Array(Type.Union([
           Type.String({ description: "快捷选项文本" }),
@@ -4188,6 +4402,12 @@ execute: async (_toolCallId, params, signal) => {
         }
         // 归一化 options（对象 → 字符串）
         const opts = (params.options || []).map((o) => (typeof o === "string" ? o : o.label || JSON.stringify(o)));
+        // D0-7：默认假设。clarify/review 超时按 assumption 继续；confirm 不自动继续。
+        const intent = ["clarify", "confirm", "review"].includes(String(params.intent || "")) ? String(params.intent) : "clarify";
+        const assumption = String(params.assumption || "").trim().slice(0, 200)
+          || (intent === "confirm" ? "" : "按专业判断继续（用户未在窗口内回答）");
+        const assumeEnabled = RUNTIME_FLAGS.askAssumption && intent !== "confirm";
+        const waitMs = assumeEnabled ? Math.min(ASK_TIMEOUT_MS, RUNTIME_FLAGS.askAssumeTimeoutMs) : ASK_TIMEOUT_MS;
         // 计划 008：提问时自动打开已生成的草稿，让用户先确认内容。
         const previewFile = String(params.previewFile || entry.clarificationPreview || "").trim() || null;
         if (previewFile) {
@@ -4217,29 +4437,82 @@ execute: async (_toolCallId, params, signal) => {
         // 阻塞等待用户回答（最长 30 分钟），期间 SSE 推送 ask_user 事件
         return await new Promise((resolve) => {
           const pendingAskId = `ask_${crypto.randomUUID()}`;
-          const expiresAt = new Date(Date.now() + ASK_TIMEOUT_MS).toISOString();
+          const expiresAt = new Date(Date.now() + waitMs).toISOString();
+          // D2：同时写入交互中枢（单一状态存储）；legacy pending-asks 继续写一版用于回退与回放。
+          const interactionResult = createInteraction({
+            id: `itx_${pendingAskId.replace(/^ask_/, "")}`,
+            kind: intent === "confirm" ? "confirm" : (previewFile ? "review" : "clarify"),
+            clientId,
+            threadId: entry.threadId || "",
+            runId: entry.activeRunId || null,
+            payload: {
+              question: String(params.question || ""),
+              options: opts,
+              ...(fields.length ? { fields } : {}),
+              ...(previewFile ? { previewFile } : {}),
+            },
+            expiresAt,
+            assumption,
+            legacy: { source: "pending-asks", id: pendingAskId },
+          });
+          const interactionId = interactionResult.ok ? interactionResult.interaction.interactionId : null;
           persistPendingAsk({
             id: pendingAskId,
             clientId,
             runId: entry.activeRunId || null,
             question: String(params.question || ""),
             options: opts,
-            previewFile: previewFile || null,
             ...(fields.length ? { fields } : {}),
+            intent,
+            ...(assumption ? { assumption } : {}),
+            previewFile: previewFile || null,
             status: "pending",
             createdAt: new Date().toISOString(),
             expiresAt,
           });
           const timer = setTimeout(() => {
             this.pendingAsks.delete(clientId);
+            if (assumeEnabled && assumption) {
+              resolvePendingAsk(clientId, null, "assumed");
+              if (interactionId) {
+                expireInteraction(interactionId, { assumption });
+                try {
+                  emitChannelSafe(entry, "interaction_settled", { interactionId, runId: entry.activeRunId || null, reason: "assumed", assumption });
+                } catch {}
+              }
+              resolve({
+                content: [{
+                  type: "text",
+                  text: `(用户未在 ${Math.round(waitMs / 1000)} 秒内回答，已按假设继续：${assumption}。请在最终结果中如实注明该假设，便于用户核对或撤销。)`,
+                }],
+              });
+              return;
+            }
             resolvePendingAsk(clientId, null, "expired");
+            if (interactionId) {
+              expireInteraction(interactionId, {});
+              try {
+                emitChannelSafe(entry, "interaction_expired", { interactionId, runId: entry.activeRunId || null, assumed: false });
+              } catch {}
+            }
             resolve({
               content: [{ type: "text", text: `(用户未在 ${Math.round(ASK_TIMEOUT_MS / 60000)} 分钟内回答，请按专业判断继续，并在最终结果中注明你的假设)` }],
             });
-          }, ASK_TIMEOUT_MS);
+          }, waitMs);
           const done = (answer) => {
             clearTimeout(timer);
             resolvePendingAsk(clientId, String(answer || ""), "answered");
+            if (interactionId) {
+              settleInteraction(interactionId, { reason: "answered", answer: String(answer || "") });
+              try {
+                emitChannelSafe(entry, "interaction_settled", {
+                  interactionId,
+                  runId: entry.activeRunId || null,
+                  reason: "answered",
+                  answer: String(answer || "").slice(0, 500),
+                });
+              } catch {}
+            }
             if (entry.mode === "review" && entry.reviewAwaitingConfirmation) {
               const value = String(answer || "").trim();
               const confirmed = /^(是|确认|同意|写回|继续|可以|好|yes|y|ok|okay)$/i.test(value) || /确认.*写回|同意.*写回|写回.*原文/.test(value);
@@ -4260,6 +4533,9 @@ execute: async (_toolCallId, params, signal) => {
             question: params.question,
             options: opts,
             ...(fields.length ? { fields } : {}),
+            intent,
+            ...(assumption ? { assumption } : {}),
+            waitMs,
             // 前端据此显示/收起"待回答"卡片：到期后服务端不再接受回答，卡片必须同步失效。
             expiresAt,
             ...(previewFile ? { previewFile } : {}),
@@ -4276,6 +4552,19 @@ execute: async (_toolCallId, params, signal) => {
           // 否则通道历史重建后界面只能把它渲染成普通工具卡。
           askPayload.runId = entry.activeRunId || null;
           done.payload = askPayload;
+          if (interactionId) {
+            try {
+              emitChannelSafe(entry, "interaction_open", {
+                interactionId,
+                kind: intent === "confirm" ? "confirm" : (previewFile ? "review" : "clarify"),
+                runId: entry.activeRunId || null,
+                threadId: entry.threadId || "",
+                expiresAt,
+                priority: intent === "confirm" ? 20 : (previewFile ? 5 : 10),
+                assumption,
+              });
+            } catch {}
+          }
           emitChannelSafe(entry, "ask_user", askPayload);
           if (reviewConfirmation) {
             emitChannelSafe(entry, "review_waiting_confirmation", {
@@ -4958,7 +5247,9 @@ execute: async (_toolCallId, params, signal) => {
       label: "编辑流水线",
       description:
         "把「生成一份新 Word / PPT」类任务交给内置编辑流水线：规划结构（Planner）→ 撰写正文（Writer）→ 原生 OOXML 排版生成（Formatter，无外部 CLI 冷启动）→ 独立验收（Evaluator：文件可打开、结构完整、章节覆盖；revise 回环最多 1 轮）。" +
-        "适合结构化文档/PPT 初稿的一次性生成；生成后再用 officecli 做精修。传 goal（目标）与 format（docx|pptx），可选 outputPath 与 requirements。",
+        "适合结构化文档/PPT 初稿的一次性生成；生成后再用 officecli 做精修。传 goal（目标）与 format（docx|pptx），可选 outputPath 与 requirements。" +
+        // D4：一次成稿开启时把 sourceMarkdown 直通声明为默认推荐路径（关闭时不追加，描述与基线一致）。
+        (RUNTIME_FLAGS.writingOneShot ? "写作一次成稿开启：已有完整 Markdown 正文时优先直接传 sourceMarkdown 直通排版（跳过 Planner/Writer），不要再走大纲/草稿确认轮，排版后用一次 validate + 规则闸门验收。" : ""),
       promptSnippet: "生成新的 Word/PPT 初稿时优先用编辑流水线（每步有检查、产物可回放）。",
       parameters: Type.Object({
         goal: Type.String({ minLength: 4, maxLength: 6000, description: "要生成的文档目标与背景（越具体越好）" }),
@@ -5025,7 +5316,8 @@ execute: async (_toolCallId, params, signal) => {
             requirements: params.requirements ? String(params.requirements) : "",
             emit: (type, data) => writeEvent(type, { ...data, parentToolCallId: _toolCallId ? String(_toolCallId) : null }),
             runModelTask: runPipelineModelTask,
-            autoClarify: RUNTIME_FLAGS.officeFormat,
+            // D4（ADR-0028）：一次成稿开启时编辑流水线默认不做澄清闸门（模块内也有同一道保险）。
+            autoClarify: RUNTIME_FLAGS.officeFormat && !RUNTIME_FLAGS.writingOneShot,
             clarificationAnswers: Array.isArray(params.clarificationAnswers) ? params.clarificationAnswers.map(String) : [],
             sourceMarkdown: params.sourceMarkdown ? String(params.sourceMarkdown) : "",
             scene: params.scene ? String(params.scene) : (writingIntent?.scene?.scene || ""),
@@ -5246,9 +5538,16 @@ execute: async (_toolCallId, params, signal) => {
           // 判定与文案统一来自 server/轮次预算.mjs。
           // 已请求取消的 Run 不再提醒——此时鼓励"汇报进度"会与收尾意图相反。
           if (entry && !this.isRunStopping(entry.clientId)) {
-            const noticeKind = turnNoticeKind(entry.turnCount, { budget: !RUNTIME_FLAGS.runBudgetUnlimited });
+            // 2026-11-08 D0-6：写作路由（template/generate/edit）在开关打开时使用软 30 / 硬 60
+            // 回合预算并关闭每 6 轮进度播报，避免长文任务 400+ 回合无刹车、旁白刷屏。
+            const routeName = String(entry.task?.capabilityPlan?.route || "");
+            const writingRoute = ["template", "generate", "edit"].includes(routeName);
+            const writingBudget = RUNTIME_FLAGS.writingBudget && writingRoute && entry.mode !== "chat";
+            const noticeKind = turnNoticeKind(entry.turnCount, writingBudget
+              ? { budget: true, soft: 30, hard: 60, interval: 0 }
+              : { budget: !RUNTIME_FLAGS.runBudgetUnlimited });
             if (noticeKind) {
-              const notice = turnNoticeText(noticeKind, entry.turnCount, { interval: TURN_PROGRESS_INTERVAL });
+              const notice = turnNoticeText(noticeKind, entry.turnCount, { interval: writingBudget ? 0 : TURN_PROGRESS_INTERVAL });
               emitChannelSafe(entry, "steer", { source: noticeKind, message: notice, turnCount: entry.turnCount });
               // U7：轮次预算提醒改用 followUp 投递（工具链收尾后才进入模型），
               // 不再打断进行中的工具执行；周期进度与硬轮次保持 steer 立即引导。
@@ -5929,6 +6228,16 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.busyStartedAt = Date.now();
     entry.references = Array.isArray(references) ? references : [];
     entry.activeRunId = runContext?.runId || null;
+    // D1：本轮显式点名的技能 → 允许其目录下脚本通过写作闸门（白名单通道）。
+    entry.skillExecRoots = [];
+    entry.skillExecAllowed = false;
+    for (const reference of entry.references) {
+      if (String(reference?.kind || "") !== "skill") continue;
+      const referencedSkill = findLocalSkill(reference.target, entry.workspace || workspace);
+      if (!referencedSkill) continue;
+      entry.skillExecRoots.push(path.dirname(referencedSkill.path));
+      entry.skillExecAllowed = true;
+    }
     // 每轮独立团队：上一轮即使异常未关账，也不能把队友/任务板带到新 Run。
     if (entry.teamService && !entry.teamService.closed) {
       try { entry.teamService.close("run_replaced"); } catch {}
@@ -5943,6 +6252,8 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.suppressFinalText = false;
     entry.turnCount = 0;
     entry.runToolCount = 0;
+    // D0-2：技能搜索次数按 Run 计数，避免模型同一轮连续空搜 4–8 次。
+    entry.skillSearchAttempts = new Map();
     entry.runStartedAt = Date.now();
     // 新一轮任务：取消标记与 Run 状态缓存都重置
     entry.cancelRequested = false;
@@ -6078,7 +6389,14 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       // 按 Pi 模型目录归一化推理档位；不支持的 medium 优先降到 low，避免
       // UI 显示标准但 SDK 实际沿用高延迟默认档位。
       // “default”表示跟随模型/运行时默认：不主动改档，只记录用户选择。
-      const requestedThinkingLevel = effort || "default";
+      // 2026-11-08 D4（ADR-0028 §4 第 7 条）：写作一次成稿开关打开、且用户未显式指定档位时，
+      // 写作路由（template/generate/edit）默认 medium；用户显式档位原样保留，不被覆盖。
+      // 判定收敛在 task.mjs 的 resolveWritingThinkingLevel，关闭时返回 effort || "default"（基线逐字一致）。
+      const requestedThinkingLevel = resolveWritingThinkingLevel({
+        effort,
+        route: entry.task?.capabilityPlan?.route,
+        mode: entry.mode,
+      });
       const effectiveThinkingLevel = requestedThinkingLevel === "default"
         ? (entry.effectiveThinkingLevel || null)
         : resolveThinkingLevel(entry.session?.model, requestedThinkingLevel);
@@ -6137,11 +6455,36 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       try {
         const skillsRouting = String(entry.task?.capabilityPlan?.routing?.skills || "catalog");
         if (skillsRouting !== "off") {
+          // D5：写作路由精简上下文——只注入写作相关技能，目录预算 4KB（不足 3 个命中回退全量）。
+          const routeForCatalog = String(entry.task?.capabilityPlan?.route || "");
+          const writingLean = RUNTIME_FLAGS.writingLeanContext
+            && ["template", "generate", "edit"].includes(routeForCatalog)
+            && String(entry.mode || "") !== "chat";
+          let catalogSkills = localSkillCatalog(entry.workspace || workspace);
+          let catalogFiltered = false;
+          if (writingLean) {
+            const selected = selectWritingSkills(catalogSkills);
+            catalogSkills = selected.skills;
+            catalogFiltered = selected.filtered;
+          }
           const built = buildSkillCatalog({
-            skills: localSkillCatalog(entry.workspace || workspace),
+            skills: catalogSkills,
             usage: readSkillUsage(),
+            ...(writingLean ? { budgetBytes: 4 * 1024 } : {}),
           });
           skillsCatalogText = built.text;
+          // D0-9：目录注入可观测性（数量/是否截断/预算），用于回答“模型为什么不知道这个技能”。
+          try {
+            emitChannelSafe(entry, "skill_catalog_injected", {
+              runId: entry.activeRunId || null,
+              count: built.count,
+              included: built.included,
+              nameOnlyCount: built.nameOnlyCount || 0,
+              truncated: built.truncated,
+              bytes: built.bytes,
+              policy: catalogFiltered ? "catalog-writing-lean" : skillsRouting,
+            });
+          } catch {}
         }
       } catch {}
       const recoveredAnswers = consumeRecoveredAnswers(entry.clientId || "");

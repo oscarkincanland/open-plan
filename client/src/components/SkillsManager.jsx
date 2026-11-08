@@ -22,6 +22,14 @@ const CATEGORY_LABELS = {
   other: "其他",
 };
 
+/** D1：技能依赖状态文案（与 server/技能依赖.mjs 的 ready/degraded/blocked 对齐）。 */
+const DEP_STATUS_LABELS = {
+  ready: "依赖就绪",
+  degraded: "依赖待确认",
+  blocked: "缺少依赖",
+  unknown: "依赖未知",
+};
+
 // 面向交通规划工程师的预置技能集合（工作流）
 const WORKFLOWS = [
   {
@@ -71,6 +79,8 @@ export default function SkillsManager({ open, onClose, onAtMention, clientId, wo
   const [chatOpen, setChatOpen] = useState(false);
   const [chatSkill, setChatSkill] = useState(null);
   const [skillLimit, setSkillLimit] = useState(48);
+  // 2026-11-08 D1：技能依赖状态与安装（只装到工作区 .oaw/skill-deps）。
+  const [depsBusy, setDepsBusy] = useState("");
   const fileRef = React.useRef(null);
 
   const refresh = useCallback(async () => {
@@ -111,6 +121,43 @@ export default function SkillsManager({ open, onClose, onAtMention, clientId, wo
       await refresh();
     } catch (error) {
       setMsg(`丢弃失败：${error.message}`);
+    }
+  };
+
+  // 安装技能依赖：只写当前工作区 .oaw/skill-deps，必须二次确认；安装过程轮询 job。
+  const handleInstallDeps = async (skill) => {
+    const target = `.oaw/skill-deps/${skill.name}`;
+    const confirmed = await askConfirm(`把「${skill.name}」的运行依赖安装到当前工作区？\n目标：${target}\n不会写入系统 Python/npm，安装可取消，完成后可随时清理。`);
+    if (!confirmed) return;
+    setDepsBusy(skill.name);
+    setMsg("");
+    try {
+      const res = await fetch(`/api/skills/${encodeURIComponent(skill.name)}/deps/install`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true, workspace }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.error || `安装失败（${res.status}）`);
+      setMsg(`依赖安装已开始（${result.jobId}），完成后自动刷新状态。`);
+      const jobId = result.jobId;
+      for (let attempt = 0; attempt < 240; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const poll = await fetch(`/api/skills/deps/jobs/${encodeURIComponent(jobId)}`);
+        if (!poll.ok) break;
+        const data = await poll.json().catch(() => ({}));
+        const job = data?.job;
+        if (!job || job.status === "running") continue;
+        setMsg(job.status === "completed"
+          ? `「${skill.name}」依赖已安装完成（${target}）`
+          : `依赖安装${job.status === "cancelled" ? "已取消" : "失败"}：${job.error || job.summary || "未知原因"}`);
+        break;
+      }
+      await refresh();
+    } catch (error) {
+      setMsg(`安装失败：${error.message}`);
+    } finally {
+      setDepsBusy("");
     }
   };
 
@@ -312,6 +359,21 @@ export default function SkillsManager({ open, onClose, onAtMention, clientId, wo
                           <span className={`skill-source src-${s.source}`}>{s.source}</span>
                         </div>
                         <div className="skill-desc">{s.description || "(无描述)"}</div>
+                        {(s.requires || (s.depsStatus && s.depsStatus !== "ready")) && (
+                          <div className="skill-deps-row">
+                            <span className={`skill-deps-badge ${s.depsStatus || "unknown"}`} title={s.requires ? "技能声明了运行依赖" : ""}>
+                              {DEP_STATUS_LABELS[s.depsStatus] || "依赖状态未知"}
+                            </span>
+                            {s.requires && s.depsStatus !== "ready" && (
+                              <button
+                                className="btn-xs"
+                                disabled={depsBusy === s.name}
+                                onClick={() => handleInstallDeps(s)}
+                                title="只安装到当前工作区 .oaw/skill-deps，不写系统环境"
+                              >{depsBusy === s.name ? "安装中…" : "安装依赖"}</button>
+                            )}
+                          </div>
+                        )}
                       </div>
                       <div className="skill-actions">
                         <button

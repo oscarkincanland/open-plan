@@ -27,6 +27,7 @@ import { matchTemplate } from "./office规范/模板匹配.mjs";
 import { parseTemplateStructure, assertCoverage } from "./office规范/模板结构.mjs";
 import { runDocxQa } from "./office规范/验收规则.mjs";
 import { collectOfficeCliIssues } from "./office规范/officecli检查.mjs";
+import { RUNTIME_FLAGS } from "./运行开关.mjs";
 
 export const PIPELINE_STAGES = Object.freeze(["planner", "writer", "formatter", "evaluator"]);
 
@@ -193,6 +194,7 @@ export async function evaluateGeneratedFile(file, { format, outline }) {
  *        模型内容生产器（Planner/Writer/Evaluator 复核；调用方接 worker 子代理或主会话）
  * @param {boolean} [input.modelReview=true] Evaluator 是否做模型语义复核
  * @param {boolean} [input.autoClarify=false] 生成前是否执行澄清闸门（缺 ≥2 项时返回 needs_clarification）
+ *        写作一次成稿（writingOneShot）开启时该参数被忽略：默认不澄清，直接成稿。
  * @param {string[]} [input.clarificationAnswers] 已获得的澄清答案（有值则跳过闸门）
  * @param {string} [input.scene] 场景 ID（缺省自动选择）
  * @param {object} [input.template] 模板信息（matchTemplate 的返回值）
@@ -227,6 +229,12 @@ export async function runEditorialPipeline({
 }) {
   const normalizedFormat = format === "pptx" ? "pptx" : "docx";
   const pipelineId = `pipeline_${Date.now().toString(36)}`;
+  // 写作一次成稿（2026-11-08 D4 / ADR-0028）：开关打开时不再执行澄清闸门——
+  // 缺的信息按默认假设补齐并在交付说明中标注，写作直接一次成稿。
+  // 已有 Markdown（sourceMarkdown）时跳过 Planner/Writer 的既有直通路径是默认推荐路径，
+  // 这里不额外改 API，只保证开关打开后不会被 autoClarify 拉回多轮确认。
+  const oneShot = Boolean(RUNTIME_FLAGS.writingOneShot);
+  const effectiveAutoClarify = autoClarify && !oneShot;
   const fileBase = safePipelineName(outputPath ? path.basename(outputPath, path.extname(outputPath)) : goal);
   const deliverableRelative = outputPath || `${fileBase}.${normalizedFormat}`;
   const deliverablePath = path.resolve(workspace, deliverableRelative);
@@ -246,7 +254,8 @@ export async function runEditorialPipeline({
     : null;
 
   // ---- 澄清闸门（O-23 / O-25）：缺 ≥2 项时不产成品，交回父会话提问 ----
-  if (autoClarify && !(Array.isArray(clarificationAnswers) && clarificationAnswers.length)) {
+  // D4：一次成稿开启时 effectiveAutoClarify 恒为 false（见上方 oneShot 说明）。
+  if (effectiveAutoClarify && !(Array.isArray(clarificationAnswers) && clarificationAnswers.length)) {
     const clarification = assessClarification({
       text: `${goal} ${requirements}`,
       route: templateInfo ? "template" : "generate",

@@ -86,6 +86,21 @@ const MIN_INFO_FIELDS = Object.freeze([
     question: "这份文档要写成哪种类型？",
     options: () => sceneLabels().map((item) => item.label),
   },
+  // 2026-11-08 D4（ADR-0028）：一次成稿只保留“真正阻塞写作”的信息。
+  // 产物格式与覆盖范围仅在一次成稿（writingOneShot）下计入缺失集；
+  // 关闭时不会出现在 missing 里，问题顺序与基线逐字一致。
+  {
+    id: "format",
+    label: "产物格式",
+    question: "要输出成什么格式？",
+    options: () => ["Word（.docx）", "PPT（.pptx）", "Markdown（.md）"],
+  },
+  {
+    id: "scope",
+    label: "覆盖范围",
+    question: "文档需要覆盖哪些范围或章节？",
+    options: () => ["按模板骨架", "覆盖全部工作内容", "只写核心结论", "由你按经验决定"],
+  },
   {
     id: "length",
     label: "篇幅",
@@ -296,6 +311,14 @@ export function missingInfoFields({ text = "", route = "read", template = null, 
   const missing = [];
   const hasType = Boolean(template) || Number(scene?.confidence) > 0 || /(文档|报告|汇报|方案|公文|合同|论文|简历|试卷|文案|纪要|通知)/.test(source);
   if (!hasType) missing.push("type");
+  // 写作一次成稿（2026-11-08 D4 / ADR-0028）：只有“文档类型 / 产物格式 / 必须包含的数据 /
+  // 覆盖范围”缺失才算阻塞；篇幅、受众、风格一律给默认假设并在产物中标注，不再进入缺失集。
+  if (RUNTIME_FLAGS.writingOneShot) {
+    if (!template && !/(docx|word|pptx|ppt|excel|xlsx|pdf|markdown|md|html|网页|演示文稿|幻灯片|表格)/i.test(source)) missing.push("format");
+    if (!/(数据|资料|素材|附件|引用|调研|统计|问卷|已有|工作区)/.test(source)) missing.push("source");
+    if (!/(覆盖|范围|章节|目录|结构|包含|包括|不少于|不超过|控制在|大纲|框架|全文|要点)/.test(source)) missing.push("scope");
+    return missing;
+  }
   if (!/(\d+\s*(页|字|章|节)|篇幅|字数|不少于|不超过|控制在)/.test(source)) missing.push("length");
   if (!/(受众|读者|给|面向|领导|专家|群众|客户|投资人|主管部门)/.test(source)) missing.push("audience");
   if (!/(数据|资料|素材|附件|引用|调研|统计|问卷|已有|工作区)/.test(source)) missing.push("source");
@@ -328,6 +351,31 @@ export function assessClarification({ text = "", route = "read", template = null
     question: { field: field.id, label: field.label, text: field.question, options: field.options() },
     assumption: "",
   };
+}
+
+/**
+ * 是否写作路由（D4 / ADR-0028）：template/generate/edit 属于写作；Chat/Review 只读不适用。
+ * 与 agent.mjs 的回合预算、思考档位共用同一判定，避免两处口径分叉。
+ */
+export function isWritingRoute(route = "", mode = "agent") {
+  const r = String(route || "").trim();
+  const m = String(mode || "agent").trim();
+  if (m === "chat" || m === "review") return false;
+  return r === "template" || r === "generate" || r === "edit";
+}
+
+/**
+ * 写作路由推理档位（D4 / ADR-0028 §4 第 7 条）。
+ *
+ * 规则：用户显式指定的档位（非空且非 "default"）原样返回，不覆盖；
+ * 一次成稿开启且是写作路由时默认 medium；其余情况维持基线 "default"（跟随模型/运行时默认）。
+ * 开关关闭时返回 `effort || "default"`，与改动前逐字一致。
+ */
+export function resolveWritingThinkingLevel({ effort, route = "", mode = "agent", oneShot = RUNTIME_FLAGS.writingOneShot } = {}) {
+  const explicit = String(effort == null ? "" : effort).trim();
+  if (explicit && explicit !== "default") return explicit;
+  if (oneShot && isWritingRoute(route, mode)) return "medium";
+  return explicit || "default";
 }
 
 /** 根据输入和引用生成可解释的本轮能力计划，供 Run、前端和 Pi prompt 共用。 */
@@ -559,6 +607,9 @@ function mapCapabilityHint(task = {}) {
  * "预设流程"直接讲清楚，让模型走既定主链而不是自由发挥。
  */
 function officeWritingPlaybook() {
+  // 写作一次成稿（2026-11-08 D4 / ADR-0028）：开关打开时用“一次成稿”替换固定六步；
+  // 关闭时逐字返回基线六步流程，行为与改动前一致。
+  if (RUNTIME_FLAGS.writingOneShot) return officeWritingPlaybookOneShot();
   return [
     "写作流程（按序执行）:",
     "1) 先 read 模板与配套规范，确认章节骨架、必备图表清单和格式规则；",
@@ -581,6 +632,31 @@ function officeWritingPlaybook() {
 }
 
 /**
+ * 一次成稿工具书（D4 / ADR-0028）：直接出终稿，Markdown 直通排版，批处理样式，一次验收。
+ * 只由 officeWritingPlaybook() 在 writingOneShot 开启时调用。
+ */
+function officeWritingPlaybookOneShot() {
+  return [
+    "写作流程（一次成稿，默认路径）:",
+    "1) 预检：read 模板/素材/项目偏好，确定文档类型与产物格式；只在“文档类型/产物格式/必须包含的数据/覆盖范围”缺失时问一次，篇幅/受众/风格一律默认并在交付说明中标注；",
+    "2) 一次成稿：直接写完整 Markdown 正文（不先出独立大纲；仅用户明确要求先看大纲、或预计正文 >8000 字时，才在正文前附可选大纲）；每 500 字至少 3 个可核验事实，无来源写“待核实”；",
+    "3) Markdown 直通：同一份 Markdown 用 editorial_pipeline 的 sourceMarkdown 直通排版（docx/pptx），跳过 Planner/Writer；pptx 按标题分页、段落作要点；",
+    "4) 样式批处理：需要 officecli 精修时，create 已预置 Normal/Heading1-4/Title/TOC/页眉页脚（不要手写 styles.xml）；全部样式用一次 batch 批量下发，禁止逐属性 set；batch 不覆盖的属性按每批 ≤5 条合并；",
+    "5) 预览即终稿：产物生成后直接让用户预览（预览即确认入口）；用户改了就重排一次，不重走流程；",
+    "6) 一次验收：validate <file> + view <file> issues + 规则闸门，只跑一遍；失败自动修一次再交付，不要多轮 revise；",
+    "7) 收尾：直接给用户最终答复（做了什么/产物路径/关键假设与未完成项）；不要问“是否继续/下一步/是否写回”这类收尾确认。",
+    "禁止：不要用 bash 写生成脚本；不要手写 styles.xml；不要把 JSON 塞进命令行参数。",
+    "常用命令速查（覆盖绝大多数文档操作，不要再跑 help / --help 去探索）：",
+    "  create <f>.docx            新建文档（已预置样式）；create <f>.docx --force 覆盖已有文件",
+    "  batch <f> --commands '<JSON 数组>'   一次下发多条样式/结构操作（样式精修优先用它；原子回滚）",
+    "  set <f> /body/p[N] --prop style=Heading2         仅用于 batch 覆盖不到的个别属性",
+    "  view <f> text|outline|stats|issues               回读校验",
+    "  validate <f>                                     一次版式/结构验收",
+    "命令失败时：读错误信息、改同一命令再试一次——不要用 help 代替调整（这最浪费回合）。",
+  ].join("\n");
+}
+
+/**
  * 写作路由提示（O-05）：只从能力计划读取，避免提示词另写一份路由事实。
  * 仅在 template/edit/generate 路由下注入，read 不占上下文。
  */
@@ -590,14 +666,21 @@ function officeWritingHint(task = {}) {
   if (!route || route === "read") return "";
   const scene = plan?.scene?.label || plan?.scene?.id || "";
   const template = plan?.template?.relPath || "";
+  const oneShot = RUNTIME_FLAGS.writingOneShot;
   if (route === "template") {
-    return `写作路由：模板优先（${template}${scene ? `；场景：${scene}` : ""}）。先读取模板，按其章节骨架、必备图表与格式规则写作。\n` + officeWritingPlaybook();
+    const head = oneShot
+      ? `写作路由：模板优先（${template}${scene ? `；场景：${scene}` : ""}）。先读取模板/素材，然后一次成稿：直接写完整 Markdown 正文，不先出独立大纲。`
+      : `写作路由：模板优先（${template}${scene ? `；场景：${scene}` : ""}）。先读取模板，按其章节骨架、必备图表与格式规则写作。`;
+    return `${head}\n${officeWritingPlaybook()}`;
   }
   if (route === "edit") {
     return "写作路由：编辑既有文档。先 view 确认内容，再 get 取真实路径，最后 set/add；保留未触及的格式。";
   }
   if (route === "generate") {
-    return `写作路由：生成新文档（场景：${scene || "report"}）。按场景参数生成，完成后走规则闸门。\n` + officeWritingPlaybook();
+    const head = oneShot
+      ? `写作路由：生成新文档（场景：${scene || "report"}）。一次成稿：直接写完整 Markdown 正文，再 sourceMarkdown 直通排版并一次验收。`
+      : `写作路由：生成新文档（场景：${scene || "report"}）。按场景参数生成，完成后走规则闸门。`;
+    return `${head}\n${officeWritingPlaybook()}`;
   }
   return "";
 }

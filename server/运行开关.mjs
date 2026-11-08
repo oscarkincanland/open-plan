@@ -68,6 +68,30 @@ export const RUNTIME_FLAGS = Object.freeze({
   /** 运行预算：默认无上限（不再按 25/45 回合、80/160 工具、45/90 分钟强制收尾）。
       显式 OAW_RUN_BUDGET_UNLIMITED=0 可恢复旧的限额行为。 */
   runBudgetUnlimited: readFlagDefault("OAW_RUN_BUDGET_UNLIMITED", true),
+  /** 写作路由回合预算（2026-11-08 D0-6，默认关）：开启后写作路由使用软 30 / 硬 60 回合，
+      并关闭每 6 轮进度播报；其它路由行为不变。 */
+  writingBudget: readFlag("OAW_WRITING_BUDGET"),
+  /** ask 默认假设（2026-11-08 D0-7，默认关）：开启后澄清/预览类提问超时缩短为
+      askAssumeTimeoutMs，并按模型给出的 assumption 继续；高风险 confirm 不受影响。 */
+  askAssumption: readFlag("OAW_ASK_ASSUMPTION"),
+  /** ask 默认假设的等待窗口（毫秒，默认 90 秒；仅 askAssumption 开启时生效）。 */
+  askAssumeTimeoutMs: readPositiveInt("OAW_ASK_ASSUME_TIMEOUT_MS", 90_000),
+  /** 技能依赖安装（2026-11-08 D1，默认关）：开启后允许用户在技能广场点击「安装依赖」
+      写入 `<workspace>/.oaw/skill-deps/`；关闭时只读预检仍可用，安装/卸载接口返回 403。
+      Agent 侧任何时候都不得自动安装。 */
+  skillDeps: readFlag("OAW_SKILL_DEPS"),
+  /** 人机协作中枢（2026-11-08 D2，默认关）：开启后前端用 InteractionDock/卡片渲染
+      由 `/api/interactions` 与 interaction_* 事件驱动的统一交互；关闭时走既有 ask 卡/审批卡路径。 */
+  interactionHub: readFlag("OAW_INTERACTION_HUB"),
+  /** 输入区统一面板（2026-11-08 D3，默认关）：开启后 `/ @ # &` 合并为单一候选面板、
+      引用 chip 三态、`/` 命令选中即执行；关闭时保持既有四触发器行为。 */
+  composerUnified: readFlag("OAW_COMPOSER_UNIFIED"),
+  /** 写作一次成稿（2026-11-08 D4，默认关）：开启后写作路由默认「Markdown 直通 → 预览即终稿」，
+      不再要求独立大纲/草稿确认轮，并使用批处理排版与一次验收。 */
+  writingOneShot: readFlag("OAW_WRITING_ONESHOT"),
+  /** 写作路由精简上下文（2026-11-08 D5，默认关）：写作路由只注入写作/文档/排版/图表类技能，
+      目录预算降到 4KB，降低每轮上下文与 TTFT。 */
+  writingLeanContext: readFlag("OAW_WRITING_LEAN_CONTEXT"),
   /** 后台任务：长工具调用超过阈值自动转后台（默认开，OAW_BACKGROUND_JOBS=0 可关）。 */
   backgroundJobs: readFlagDefault("OAW_BACKGROUND_JOBS", true),
   /** U2+U6：Pi 把关扩展（ToolCallEvent 单工具拦截 + 压缩生命周期事件增强） */

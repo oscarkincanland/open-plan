@@ -24,6 +24,23 @@ const MAX_LOG_BYTES = 2 * 1024 * 1024;
 const MAX_RESULT_CHARS = 64 * 1024;
 const JOBS_ROOT = path.resolve(process.env.OAW_JOBS_DIR || path.join(process.cwd(), ".oaw", "jobs"));
 
+/**
+ * 工具转后台时写回主输出流的提示文本（2026-11-08 D0-5）。
+ *
+ * SDK 的 BashOperations.exec 约定 `onData: (data: Buffer) => void`；
+ * 旧实现直接传字符串，触发 `The "input" argument must be an instance of
+ * ArrayBuffer or ArrayBufferView`，模型拿不到 jobId 只能重复执行。
+ * 统一由此函数返回 Buffer，避免再次传错类型。
+ */
+export function backgroundNotice(jobId = "") {
+  const id = String(jobId || "").trim();
+  return Buffer.from(
+    `\n[BACKGROUNDED] jobId=${id || "(unknown)"} 命令已转后台执行；`
+    + "需要结果时调用 job_status（用上面的 jobId），或继续不依赖它的步骤。\n",
+    "utf8",
+  );
+}
+
 const jobs = new Map(); // jobId -> job
 
 function jobDir(runId) {
@@ -47,8 +64,7 @@ function persist(job) {
 }
 
 /** 对外的稳定快照（不暴露 controller / promise）。 */
-export function publicJob(job) {
-  if (!job) return null;
+export function publicJob(job) {  if (!job) return null;
   return {
     jobId: job.jobId,
     runId: job.runId,

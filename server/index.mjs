@@ -7,6 +7,9 @@ import { fileURLToPath } from "node:url";
 import { listWorkspace, searchWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace, isInside } from "./workspace.mjs";
 import { computeChatWindowStart } from "./会话窗口.mjs";
 import { listSkillCatalog } from "./技能目录.mjs";
+import { parseRequires, probeSkillDeps } from "./技能依赖.mjs";
+import { startSkillDepsInstall, cancelSkillDepsInstall, skillInstallJob, uninstallSkillDeps } from "./技能安装.mjs";
+import { listActiveInteractions, getInteraction, settleInteraction, assumeInteraction, expireStaleInteractions, migrateLegacyAsks } from "./交互中枢.mjs";
 import { ACTIVE_SESSION_STATUSES, archiveHeaderPatch, shouldIncludeArchived, sortArchivedSessions } from "./会话归档.mjs";
 import { initializeWorkspace } from "./工作区初始化.mjs";
 import { RUNTIME_CONSTITUTION_VERSION } from "./智能体运行宪法.mjs";
@@ -2878,14 +2881,28 @@ function scanSkills(workspace = getWorkspace()) {
     workspace,
   })
     .filter((item) => path.basename(item.path) === "SKILL.md")
-    .map((item) => ({
-      name: item.name,
-      description: item.description,
-      path: path.dirname(item.path),
-      source: item.source.includes(".agents") ? "agents" : item.source.includes(".pi") ? "pi" : "pi-agent",
-      category: classifySkill(item.name, item.description),
-      scope: item.sourceScope,
-    }))
+    .map((item) => {
+      const requires = parseRequires(item.requiresText || "", item.installText || "");
+      // D1：声明式依赖状态（declared 模式只做平台/解释器探测，不逐包导入，保证 /api/skills 轻量）。
+      let depsStatus = "ready";
+      if (requires) {
+        try {
+          depsStatus = probeSkillDeps({ skill: item, workspace, mode: "declared" }).status;
+        } catch { depsStatus = "unknown"; }
+      }
+      return {
+        name: item.name,
+        description: item.description,
+        descriptionComplete: item.descriptionComplete !== false,
+        aliases: item.aliases || [],
+        path: path.dirname(item.path),
+        source: item.source.includes(".agents") ? "agents" : item.source.includes(".pi") ? "pi" : "pi-agent",
+        category: classifySkill(item.name, item.description),
+        scope: item.sourceScope,
+        requires,
+        depsStatus,
+      };
+    })
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
@@ -2928,6 +2945,77 @@ function preflightSkills({ workflowId = null, requestedSkills = [], skills = sca
 // GET /api/skills - 列出所有 skills
 app.get("/api/skills", (_req, res) => {
   res.json({ skills: scanSkills() });
+});
+
+// ---- 技能依赖（D1，计划 2026-11-08-001 §9）----
+// 只读预检：ready / degraded / blocked + 原因；安装只能由用户显式确认触发。
+function resolveSkillRequestContext(req) {
+  const workspace = String(req.body?.workspace || req.query?.workspace || getWorkspace());
+  const list = scanSkills(workspace);
+  const key = String(req.params?.name || "").trim().toLowerCase();
+  const skill = list.find((item) => item.name.toLowerCase() === key
+    || (Array.isArray(item.aliases) && item.aliases.some((alias) => String(alias).toLowerCase() === key))) || null;
+  return { workspace, skill };
+}
+
+app.get("/api/skills/:name/deps", (req, res) => {
+  const { workspace, skill } = resolveSkillRequestContext(req);
+  if (!skill) return res.status(404).json({ error: "未找到该技能" });
+  try {
+    const deps = probeSkillDeps({ skill, workspace, mode: "full" });
+    return res.json({ skill: skill.name, workspace, deps });
+  } catch (error) {
+    return res.status(500).json({ error: String(error?.message || error) });
+  }
+});
+
+app.get("/api/skills/deps/jobs/:jobId", (req, res) => {
+  const job = skillInstallJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: "安装任务不存在或已结束" });
+  res.json({ job });
+});
+
+app.post("/api/skills/:name/deps/install", (req, res) => {
+  const { workspace, skill } = resolveSkillRequestContext(req);
+  if (!skill) return res.status(404).json({ error: "未找到该技能" });
+  if (!RUNTIME_FLAGS.skillDeps) {
+    return res.status(403).json({
+      error: "技能依赖安装未开启（需服务端设置 OAW_SKILL_DEPS=1）",
+      code: "SKILL_DEPS_DISABLED",
+    });
+  }
+  if (req.body?.confirm !== true) {
+    return res.status(409).json({
+      error: "安装依赖需要用户显式确认",
+      code: "SKILL_DEPS_CONFIRM_REQUIRED",
+      requires: skill.requires || null,
+      target: `.oaw/skill-deps/${skill.name}`,
+    });
+  }
+  const started = startSkillDepsInstall({
+    skill,
+    workspace,
+    runId: String(req.body?.runId || ""),
+    threadId: String(req.body?.threadId || ""),
+    mirror: String(req.body?.mirror || process.env.OAW_SKILL_DEPS_MIRROR || ""),
+  });
+  if (!started.ok) return res.status(started.code === "SKILL_DEPS_NONE" ? 400 : 500).json(started);
+  return res.json({ jobId: started.jobId, dir: started.dir, workspace });
+});
+
+app.post("/api/skills/:name/deps/cancel", (req, res) => {
+  const result = cancelSkillDepsInstall(String(req.body?.jobId || ""));
+  res.status(result.ok ? 200 : 404).json(result);
+});
+
+app.post("/api/skills/:name/deps/uninstall", (req, res) => {
+  const { workspace, skill } = resolveSkillRequestContext(req);
+  if (!skill) return res.status(404).json({ error: "未找到该技能" });
+  if (!RUNTIME_FLAGS.skillDeps) {
+    return res.status(403).json({ error: "技能依赖安装未开启（需服务端设置 OAW_SKILL_DEPS=1）", code: "SKILL_DEPS_DISABLED" });
+  }
+  const result = uninstallSkillDeps({ workspace, name: skill.name, confirm: req.body?.confirm === true });
+  res.status(result.ok ? 200 : 409).json(result);
 });
 
 // POST /api/skills/preflight - 在 Agent 调用前检查工作流依赖和 SKILL.md 可读性
@@ -4860,6 +4948,130 @@ app.post("/api/agent/answer", (req, res) => {
   const result = 执行句柄.响应交互(client, answerText, { thread });
   if (!result.ok) return res.status(404).json({ error: "no pending question" });
   res.json(result);
+});
+
+// ---------- 人机协作中枢（D2，计划 2026-11-08-001 §11） ----------
+// 统一列出 clarify/confirm/review/approval；settle 仍走既有执行句柄续跑，本接口只做统一入口与状态落库。
+let interactionsMigrated = false;
+const ensureInteractionsMigrated = () => {
+  if (interactionsMigrated) return;
+  interactionsMigrated = true;
+  try { expireStaleInteractions(); } catch {}
+  try {
+    const legacyFile = path.join(PROJECT_DIR, ".oaw", "pending-asks.json");
+    if (fs.existsSync(legacyFile)) migrateLegacyAsks(JSON.parse(fs.readFileSync(legacyFile, "utf8")));
+  } catch {}
+};
+app.get("/api/interactions", (req, res) => {
+  ensureInteractionsMigrated();
+  const clientId = String(req.query.client || "");
+  const threadId = String(req.query.thread || "");
+  const asks = listActiveInteractions({ clientId, threadId });
+  // D2：审批并入统一展示（只读投影，结算仍走 /api/agent/approval，保留安全语义）。
+  const approvals = listPendingApprovals()
+    .filter((item) => !clientId || item.clientId === clientId || !item.clientId)
+    .filter((item) => !threadId || item.threadId === threadId)
+    .map((item) => ({
+      interactionId: `itx_ap_${item.id}`,
+      kind: "approval",
+      status: "open",
+      priority: 30,
+      clientId: item.clientId || "",
+      threadId: item.threadId || "",
+      runId: item.runId || null,
+      payload: {
+        tool: item.tool || "",
+        input: item.input || "",
+        action: item.policyDecision?.action || "ask",
+        approvalId: item.id,
+      },
+      owner: null,
+      assumption: "",
+      answer: null,
+      values: null,
+      createdAt: item.createdAt || null,
+      updatedAt: item.createdAt || null,
+      expiresAt: null,
+      settledAt: null,
+      settledReason: null,
+      legacy: { source: "pending-approvals", id: item.id },
+    }));
+  res.json({ interactions: [...approvals, ...asks] });
+});
+app.get("/api/metrics/summary", (_req, res) => {
+  try {
+    const skills = scanSkills(getWorkspace());
+    const active = listActiveInteractions();
+    const byKind = {};
+    for (const item of active) byKind[item.kind] = (byKind[item.kind] || 0) + 1;
+    res.json({
+      generatedAt: new Date().toISOString(),
+      interactions: { open: active.length, byKind },
+      skills: {
+        total: skills.length,
+        withRequires: skills.filter((item) => item.requires).length,
+        blocked: skills.filter((item) => item.depsStatus === "blocked").length,
+        degraded: skills.filter((item) => item.depsStatus === "degraded").length,
+        descriptionIncomplete: skills.filter((item) => item.descriptionComplete === false).length,
+      },
+      flags: {
+        skillDeps: RUNTIME_FLAGS.skillDeps,
+        interactionHub: RUNTIME_FLAGS.interactionHub,
+        composerUnified: RUNTIME_FLAGS.composerUnified,
+        writingOneShot: RUNTIME_FLAGS.writingOneShot,
+        writingLeanContext: RUNTIME_FLAGS.writingLeanContext,
+        askAssumption: RUNTIME_FLAGS.askAssumption,
+        writingBudget: RUNTIME_FLAGS.writingBudget,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error?.message || error) });
+  }
+});
+app.post("/api/interactions/:id/settle", (req, res) => {
+  ensureInteractionsMigrated();
+  const record = getInteraction(req.params.id);
+  if (!record) return res.status(404).json({ error: "interaction not found" });
+  const { answer, values, skip, assumption } = req.body || {};
+  const client = record.clientId;
+  if (!client) return res.status(400).json({ error: "interaction has no client" });
+  let result = null;
+  let answerText = String(answer ?? "").trim();
+  if (skip === true) {
+    result = 执行句柄.跳过问答(client, { thread: record.threadId });
+  } else {
+    if (!answerText && values && typeof values === "object") {
+      answerText = Object.entries(values)
+        .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join("、") : value ?? ""}`)
+        .join("\n")
+        .trim();
+    }
+    if (!answerText) return res.status(400).json({ error: "answer or values required" });
+    result = 执行句柄.响应交互(client, answerText, { thread: record.threadId });
+  }
+  if (!result?.ok) return res.status(409).json({ error: "交互已失效或 Agent 不再等待", detail: result });
+  const settled = settleInteraction(record.interactionId, {
+    reason: skip === true ? "skipped" : "answered",
+    answer: answerText || null,
+    values: values && typeof values === "object" ? values : null,
+    assumption: String(assumption || ""),
+  });
+  res.json({ ok: true, interaction: settled.interaction });
+});
+app.post("/api/interactions/:id/assume", (req, res) => {
+  const outcome = assumeInteraction(req.params.id, req.body?.assumption || "");
+  if (outcome.ok) {
+    try {
+      appendEvent({
+        clientId: outcome.interaction.clientId,
+        threadId: outcome.interaction.threadId,
+        runId: outcome.interaction.runId,
+        type: "interaction_assumption",
+        data: { interactionId: req.params.id, assumption: req.body?.assumption || "" },
+      });
+    } catch {}
+  }
+  res.status(outcome.ok ? 200 : 400).json(outcome);
 });
 
 // P1-1：统一执行句柄的只读自述（可用性三态 + 能力清单）。

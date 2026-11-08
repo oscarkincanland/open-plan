@@ -4,6 +4,11 @@ import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprov
 import MarkdownBody from "./MarkdownBody.jsx";
 import 提及菜单 from "./提及菜单.jsx";
 import { detectMentionTrigger, filterAgentsForMention, buildMentionPrefix } from "./提及逻辑.js";
+// 输入区统一面板（D3，ADR-0029，默认关）：共享引用解析器 + 单一候选面板 + 引用 chip 三态。
+// 关闭时以下模块不参与任何渲染/请求，旧四触发器路径与基线完全一致。
+import { lintReferenceMarkers, parseAgentMentions, parseReferenceMarkers as parseUnifiedReferenceMarkers, REFERENCE_KIND_META, referenceChipLabel, referenceStatusTone, removeReferenceMarker, stripReferenceMarkers } from "../引用标记.js";
+import Composer from "./输入区/Composer.jsx";
+import { applyComposerPick, resolveComposerKey, useComposerState } from "./输入区/useComposerState.js";
 import 欢迎卡片 from "./欢迎卡片.jsx";
 import { ATTACHMENT_SIZE_LIMIT, ATTACHMENT_ALLOWED_EXT, mediaKindFor, formatBytes } from "./媒体工具.js";
 import { clipboardImageFiles, imageDedupeKey, imageContentKey, imageFileName, limitImages, compressImage, compressionSummary } from "../图片处理.js";
@@ -41,6 +46,10 @@ import { assignTimelineTurns, buildRunTimeline, describeRunFold, splitCompletion
 import { applyToolMetadata, toolPresentationOf } from "../工具展示.js";
 import { reduceTeamEvent, teamFromEvents } from "../团队投影.js";
 import { stripAnswerPrefill, stripToolMarkup, hasToolMarkup } from "../工具标签清洗.js";
+// 人机协作中枢（D2，ADR-0026，默认关）：交互坞 / 卡片 / 纯函数模型。
+import InteractionDock from "./交互/InteractionDock.jsx";
+import InteractionCard from "./交互/InteractionCard.jsx";
+import { isActiveInteraction, mergeInteractionEvent, normalizeInteraction, normalizeInteractions, sortInteractions } from "./交互/交互模型.js";
 
 // O-P3：浏览器"写操作类"工具白名单 —— 只有这些会拉起内置浏览器侧栏；
 // browser_close / browser_tabs / browser_snapshot / browser_screenshot 等查看或收尾动作不拉起。
@@ -738,6 +747,29 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       return next;
     });
   }, [threadId]);
+  // ===== 输入区统一面板（D3，ADR-0029）=====
+  // flag("composerUnified") 默认关；关闭时 unified 恒为空、不发起 /api/skills 等请求，行为=基线。
+  const [composerUnified, setComposerUnified] = useState(false);
+  const composerUnifiedRef = useRef(false);
+  composerUnifiedRef.current = composerUnified;
+  useEffect(() => {
+    let active = true;
+    const apply = () => { if (active) setComposerUnified(flag("composerUnified") === true); };
+    apply();
+    flagsReady.then(apply).catch(() => {});
+    return () => { active = false; };
+  }, []);
+  // `#` 组技能来源改为 /api/skills（全量已装技能），首次打开带加载态（审查 C-03/C-08）。
+  const [skillCatalog, setSkillCatalog] = useState([]);
+  const [skillCatalogLoading, setSkillCatalogLoading] = useState(false);
+  const skillCatalogLoadedRef = useRef(false);
+  // 引用组的 知识库 / 模板 候选：首次切到引用组时懒加载，失败降级为空列表（不影响其它组）。
+  const [kbReferenceItems, setKbReferenceItems] = useState([]);
+  const [templateReferenceItems, setTemplateReferenceItems] = useState([]);
+  const [referenceSourceLoading, setReferenceSourceLoading] = useState(false);
+  const referenceSourceLoadedRef = useRef(false);
+  // 发送前未识别标记的提示条（不静默降级为普通文字）。
+  const [composerNotice, setComposerNotice] = useState(null);
   // v0.13.0：切换会话时读取该会话的长期目标（不存在则隐藏 GoalBar）。
   const refreshGoal = useCallback(async () => {
     if (!sessionId) { setGoal(null); return null; }
@@ -1080,6 +1112,63 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const replayBufferRef = useRef([]);
   const replayProbedThreadsRef = useRef(new Set());
   const [replayFlagsTick, setReplayFlagsTick] = useState(0); // 开关快照就绪后重跑一次探测
+  // 人机协作中枢（D2，ADR-0026，默认关）：{ interactions, interactionReceipts } 只做服务端事实的投影。
+  // 开关关闭时以下状态恒为空、不发起任何请求，行为与基线完全一致。
+  const [interactionHub, setInteractionHub] = useState(false);
+  const [interactions, setInteractions] = useState([]);
+  const [interactionReceipts, setInteractionReceipts] = useState([]);
+  const [interactionBusyId, setInteractionBusyId] = useState("");
+  const interactionHubRef = useRef(false);
+  interactionHubRef.current = interactionHub;
+  const interactionBusyRef = useRef(false);
+  const interactionFetchRef = useRef(0);
+  const refreshInteractionsRef = useRef(null);
+  // 读取运行开关：mount 时 /api/status 可能未返回，flagsReady 到达后补一次；关闭时保持基线行为。
+  useEffect(() => {
+    let active = true;
+    const apply = () => { if (active) setInteractionHub(flag("interactionHub") === true); };
+    apply();
+    flagsReady.then(apply).catch(() => {});
+    return () => { active = false; };
+  }, []);
+  // 交互列表对账：进入会话/切线程/开关打开/SSE 重连时用 GET /api/interactions 重建，
+  // 刷新或切换会话不丢、不重复（服务端列表是活动交互的唯一事实源）。
+  const refreshInteractions = useCallback(async () => {
+    if (!interactionHubRef.current) return;
+    const fetchToken = ++interactionFetchRef.current;
+    const query = `client=${encodeURIComponent(clientId || "")}&thread=${encodeURIComponent(threadId || "")}`;
+    try {
+      const response = await fetch(`/api/interactions?${query}`, { cache: "no-store" });
+      if (!response.ok || fetchToken !== interactionFetchRef.current) return;
+      const data = await response.json().catch(() => ({}));
+      if (fetchToken !== interactionFetchRef.current) return;
+      setInteractions(sortInteractions(normalizeInteractions(Array.isArray(data?.interactions) ? data.interactions : [])));
+    } catch {}
+  }, [clientId, threadId]);
+  refreshInteractionsRef.current = refreshInteractions;
+  useEffect(() => {
+    interactionFetchRef.current += 1;
+    // 空列表时返回原引用，避免开关关闭的基线路径多一次无意义渲染。
+    setInteractions((previous) => (previous.length ? [] : previous));
+    setInteractionReceipts((previous) => (previous.length ? [] : previous));
+    if (!interactionHub) return;
+    void refreshInteractions();
+  }, [interactionHub, refreshInteractions]);
+  // hub 开启后清理历史水合/恢复补进来的旧 pending ask 卡：未决交互只由交互坞/卡片渲染，避免双渲染。
+  // 已决（answered/expired）的历史 ask 回执保留，历史回放不受影响。
+  useEffect(() => {
+    if (!interactionHub) return;
+    setMessages((list) => {
+      let changed = false;
+      const next = list.map((message) => {
+        const blocks = message.blocks || [];
+        if (!blocks.some((block) => block?.type === "ask" && !block.answer && !block.expired)) return message;
+        changed = true;
+        return { ...message, blocks: blocks.filter((block) => !(block?.type === "ask" && !block.answer && !block.expired)) };
+      });
+      return changed ? next : list;
+    });
+  }, [interactionHub]);
   // ChatPanel 本身持续挂载时，按 thread 保存界面状态，切换子对话不会把原对话的流式内容丢掉。
   const threadCacheRef = useRef(new Map());
   const previousThreadRef = useRef(threadId);
@@ -1270,14 +1359,16 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   }, [composerMenu, referenceFiles, sessions, project, mcpServers]);
 
   useEffect(() => {
-    if (composerMenu?.symbol !== "#" || mcpServers.length) return undefined;
+    // 旧 `#` 菜单与统一面板的「技能与插件」组共用同一份 MCP 列表（按需拉取一次）。
+    const wantPlugins = composerUnified ? unifiedComposer.menu?.group === "skill" : composerMenu?.symbol === "#";
+    if (!wantPlugins || mcpServers.length) return undefined;
     let cancelled = false;
     fetch("/api/integrations/mcp/servers")
       .then((res) => (res.ok ? res.json() : { servers: [] }))
       .then((data) => { if (!cancelled) setMcpServers(Array.isArray(data?.servers) ? data.servers : []); })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [composerMenu, mcpServers.length]);
+  }, [composerMenu, composerUnified, unifiedComposer.menu?.group, mcpServers.length]);
 
   useEffect(() => {
     if (composerItems.length === 0) setComposerIndex(0);
@@ -1295,6 +1386,103 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     updateInput((value) => value.slice(0, composerMenu.start) + item.insert + " " + value.slice(value.length));
     setComposerMenu(null);
     requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  // ===== 统一面板（flag 开）：单一面板四组，关闭时 hook 恒为空 =====
+  const unifiedComposer = useComposerState({
+    enabled: composerUnified,
+    commands: COMPOSER_COMMANDS,
+    files: referenceFiles,
+    skills: skillCatalog,
+    plugins: mcpServers.map((server) => ({ name: String(server?.name || server?.id || "").trim() })).filter((item) => item.name),
+    sessions,
+    agents,
+    knowledge: kbReferenceItems,
+    templates: templateReferenceItems,
+  });
+
+  // `#` 技能候选：首次打开「技能与插件」组时读 /api/skills（不再只读 project.settings.skills）。
+  useEffect(() => {
+    if (!composerUnified || unifiedComposer.menu?.group !== "skill" || skillCatalogLoadedRef.current) return undefined;
+    let cancelled = false;
+    setSkillCatalogLoading(true);
+    fetch("/api/skills", { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : { skills: [] }))
+      .then((data) => { if (!cancelled) setSkillCatalog(Array.isArray(data?.skills) ? data.skills.filter((item) => item?.name) : []); })
+      .catch(() => {})
+      .finally(() => { skillCatalogLoadedRef.current = true; if (!cancelled) setSkillCatalogLoading(false); });
+    return () => { cancelled = true; };
+  }, [composerUnified, unifiedComposer.menu?.group]);
+
+  // 引用组的知识库 / 模板候选：首次切到引用组时懒加载（各请求失败各自降级为空）。
+  useEffect(() => {
+    if (!composerUnified || unifiedComposer.menu?.group !== "reference" || referenceSourceLoadedRef.current) return undefined;
+    let cancelled = false;
+    referenceSourceLoadedRef.current = true;
+    setReferenceSourceLoading(true);
+    const loadKnowledge = fetch("/api/kb/status", { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : { roots: [] }))
+      .then(async (status) => {
+        const roots = Array.isArray(status?.roots) ? status.roots.slice(0, 3) : [];
+        const trees = await Promise.all(roots.map((root) => fetch(`/api/kb/tree?root=${encodeURIComponent(root.index ?? 0)}`, { cache: "no-store" })
+          .then((response) => (response.ok ? response.json() : {}))
+          .catch(() => ({}))));
+        const items = [];
+        for (const tree of trees) {
+          for (const dir of tree?.dirs || []) items.push({ kind: "knowledge_dir", target: String(dir.path || dir.name || ""), label: String(dir.name || dir.path || "") });
+          for (const file of tree?.files || []) items.push({ kind: "knowledge", target: String(file.relPath || file.name || ""), label: String(file.title || file.name || file.relPath || "") });
+        }
+        return items.filter((item) => item.target);
+      })
+      .catch(() => []);
+    const loadTemplates = fetch("/api/templates", { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : { items: [] }))
+      .then((data) => (Array.isArray(data?.items) ? data.items : [])
+        .map((item) => ({
+          kind: "template",
+          target: String(item.relPath || item.path || item.name || ""),
+          label: String(item.name || item.title || item.relPath || ""),
+        }))
+        .filter((item) => item.target))
+      .catch(() => []);
+    Promise.all([loadKnowledge, loadTemplates])
+      .then(([knowledge, templates]) => {
+        if (cancelled) return;
+        setKbReferenceItems(knowledge.slice(0, 40));
+        setTemplateReferenceItems(templates.slice(0, 40));
+      })
+      .finally(() => { if (!cancelled) setReferenceSourceLoading(false); });
+    return () => { cancelled = true; };
+  }, [composerUnified, unifiedComposer.menu?.group]);
+
+  // 统一面板选中：`/` 命令选中即执行（复用 send() 的命令分支，命令不进消息流）；
+  // 其余项把触发区间替换为引用标记，由 input→references 的同步 effect 生成 chip。
+  const pickUnifiedComposerItem = (item) => {
+    if (!item) return;
+    const menu = unifiedComposer.menu;
+    unifiedComposer.close();
+    if (item.execute === "command") {
+      const command = String(item.command || item.insert || "").trim();
+      if (!command) return;
+      // /goal 仍需参数：插入文本，发送时走既有 goal 命令分支（参数浮层按计划简化为插入）。
+      if (/^\/goal$/i.test(command)) {
+        updateInput((value) => applyComposerPick(value, menu, "/goal"));
+        requestAnimationFrame(() => textareaRef.current?.focus());
+        return;
+      }
+      // 命令分支在 send() 内执行并 clearInput()，不会新增用户消息。
+      void send(command);
+      return;
+    }
+    updateInput((value) => applyComposerPick(value, menu, item.insert));
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  // chip 删除 → 同步删除 textarea 标记（双向同步；文本删除 → chip 由解析 effect 回收）。
+  const removeUnifiedReference = (ref) => {
+    if (!ref) return;
+    setReferences((previous) => previous.filter((item) => item.id !== ref.id));
+    updateInput((value) => removeReferenceMarker(value, ref));
   };
 
   useEffect(() => {
@@ -1355,13 +1543,15 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   }, [embedded, messages, threadId]);
 
   useEffect(() => {
-    const found = parseReferenceMarkers(input);
-    if (!found.length) return;
+    // 统一面板（flag 开）用共享解析器，补齐 #技能/#插件/#文件 等类型；关闭时走基线解析器。
+    // 统一模式即使没有任何标记也继续过滤（删文本/删标记边界时同步移除 chip），基线保持原提前返回。
+    const found = composerUnified ? parseUnifiedReferenceMarkers(input) : parseReferenceMarkers(input);
+    if (!found.length && !composerUnified) return;
     setReferences((prev) => {
       const merged = [...found, ...prev.filter((r) => input.includes(r.source || `@${r.target}`))];
       return merged.filter((r, i, arr) => arr.findIndex((x) => x.id === r.id) === i);
     });
-  }, [input]);
+  }, [input, composerUnified]);
 
   // 组件卸载时标记
   useEffect(() => {
@@ -1531,6 +1721,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   useEffect(() => {
     if (!threadId || !clientId) return undefined;
     if (!historyMessages || historyThreadId !== threadId) return undefined;
+    // 人机协作中枢开启：待处理交互由 GET /api/interactions 统一恢复，不再补旧 ask 卡（避免双渲染）。
+    if (interactionHubRef.current) {
+      refreshInteractionsRef.current?.();
+      return undefined;
+    }
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       try {
@@ -1778,7 +1973,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       requestAnimationFrame(() => textareaRef.current?.focus());
     },
     insertText(text) {
-      const found = parseReferenceMarkers(text);
+      const found = composerUnifiedRef.current ? parseUnifiedReferenceMarkers(text) : parseReferenceMarkers(text);
       if (found.length) setReferences((prev) => [...prev, ...found.filter((r) => !prev.some((p) => p.id === r.id))]);
       updateInput((v) => {
         const sep = v && !v.endsWith(" ") ? " " : "";
@@ -2669,6 +2864,8 @@ case "runtime_connecting":
       case "connected":
         runtimeConnectingEventRef.current = null;
         setConnected(true);
+        // 断线重连可能错过 interaction_* 事件：用服务端列表补一次对账（关闭时是 no-op）。
+        if (interactionHubRef.current) refreshInteractionsRef.current?.();
         if (data.model && data.model !== model) {
           // 只同步本会话显示：这是服务端该 thread 运行时的真实模型，不是全局偏好。
           setModel(data.model);
@@ -3035,8 +3232,57 @@ case "runtime_connecting":
           });
         }
         break;
+      // 人机协作中枢（D2）：interaction_* 统一驱动交互列表；旧 ask_user/审批事件保留（回放兼容）。
+      case "interaction_open":
+      case "interaction_settled":
+      case "interaction_expired":
+      case "interaction_assumption": {
+        if (!interactionHubRef.current) break;
+        const interactionId = String(data?.interactionId || "");
+        if (type === "interaction_open") {
+          // 事件只带最小载荷；补一次 GET 拿到 question/options/fields/previewFile。
+          setInteractions((list) => sortInteractions(mergeInteractionEvent(list, { type, data })));
+          refreshInteractionsRef.current?.();
+        } else if (type === "interaction_settled" || type === "interaction_expired") {
+          // 已决：从待处理列表移除，收一行回执（含假设时提供"改一下"入口）。
+          setInteractions((list) => list.filter((item) => item.interactionId !== interactionId));
+          const receipt = normalizeInteraction({
+            ...data,
+            status: type === "interaction_expired" ? (data?.assumed ? "settled" : "expired") : (data?.reason === "cancelled" ? "cancelled" : "settled"),
+            settledReason: data?.reason || (data?.assumed ? "assumed" : "expired"),
+          });
+          if (receipt.interactionId) {
+            setInteractionReceipts((list) => [...list.filter((item) => item.interactionId !== receipt.interactionId), receipt].slice(-6));
+          }
+        } else if (interactionId) {
+          setInteractions((list) => sortInteractions(mergeInteractionEvent(list, { type, data })));
+          setInteractionReceipts((list) => list.map((item) => (item.interactionId === interactionId ? { ...item, assumption: String(data?.assumption || "") } : item)));
+        }
+        break;
+      }
       // agent 主动提问（ask_user 工具）：追加问题卡片，用户回答后 agent 继续
       case "ask_user": {
+        // 人机协作中枢开启：不插入旧 ask 块（避免与 InteractionCard 双渲染），
+        // 只保留草稿预览打开、等待态与 busy；交互详情由 interaction_* + /api/interactions 驱动。
+        if (interactionHubRef.current) {
+          const hubAskId = data.askId || `${data.runId || "ask"}:${data.question || ""}`;
+          if (liveAskIdsRef.current.has(hubAskId)) break;
+          liveAskIdsRef.current.add(hubAskId);
+          if (!aid) aid = ensureAssistant();
+          if (aid) {
+            // 提问卡会插到文本之前，先把打字机缓冲里未落定的文字并回上一段文本块。
+            flushTextReveal(aid);
+            if (streamBufRef.current) flushNow(aid);
+            setBusy(true);
+            setAgentPhase("等待你的回答");
+            if (data.previewFile) {
+              try { onOpenFile?.(data.previewFile); } catch {}
+            }
+            setRunState((s) => ({ ...s, status: "waiting_user", runId: data.runId || s.runId || null }));
+            refreshInteractionsRef.current?.();
+          }
+          break;
+        }
         const askId = data.askId || `${data.runId || "ask"}:${data.question || ""}`;
         // 服务端握手指发与客户端对账可能同时到达：同线程内按 askId 只渲染一次。
         // 切线程时清空该集合，保证重新进入会话还能恢复提问卡。
@@ -3467,6 +3713,8 @@ case "runtime_connecting":
         setConnectionNotice(null);
         flushToolOutput();
         expireOpenAsks();
+        // 中断后服务端会取消活动交互，补一次对账清掉残留交互坞条目（关闭时是 no-op）。
+        if (interactionHubRef.current) refreshInteractionsRef.current?.();
         finalizeStopped();
         break;
       case "file_changed":
@@ -3519,6 +3767,8 @@ case "runtime_connecting":
         break;
       case "run_finished":
         flushToolOutput();
+        // 一轮结束：交互应已结算或随 Run 取消，补一次对账清理残留（关闭时是 no-op）。
+        if (interactionHubRef.current) refreshInteractionsRef.current?.();
         // 同一个 Run 的 run_finished 只处理一次。重连回放/迟到帧不得再次触发
         // 自动打开、队列冲刷或文本补齐，否则任务结束后界面会被“重新收尾”一次。
         {
@@ -3817,6 +4067,14 @@ case "runtime_connecting":
     }
     const rawText = String(source.rawText ?? overrideText ?? input).trim();
     if (!rawText && sourceImages.length === 0 && sourceAttachments.length === 0) return;
+    // 失败兜底（D3）：统一面板开启时，发送前扫描无法识别的标记并明示，不静默降级为普通文字。
+    if (composerUnified && !options.payload) {
+      const lint = lintReferenceMarkers(rawText);
+      setComposerNotice(lint.ok ? null : {
+        tone: "warning",
+        text: `有 ${lint.issues.length} 个引用无法识别：${lint.issues.slice(0, 3).map((item) => `${item.marker}（${item.message}）`).join("、")}${lint.issues.length > 3 ? " 等" : ""}；将按普通文本发送，可先移除再发送。`,
+      });
+    }
     if (!options.payload && /^\/goal(?:\s|$)/i.test(rawText)) {
       clearInput();
       setComposerMenu(null);
@@ -3846,7 +4104,8 @@ case "runtime_connecting":
     const allAttachments = [...contextAttachments, ...sourceAttachments];
     const imgs = allImages.map((i) => ({ mediaType: i.mediaType, data: i.data }));
     const atts = allAttachments.map((a) => ({ name: a.name, mediaType: a.mediaType, data: a.data }));
-    const sendReferences = [...sourceReferences, ...parseReferenceMarkers(text)].filter((r, i, arr) => arr.findIndex((x) => x.id === r.id) === i);
+    const markerReferences = composerUnified ? parseUnifiedReferenceMarkers(text) : parseReferenceMarkers(text);
+    const sendReferences = [...sourceReferences, ...markerReferences].filter((r, i, arr) => arr.findIndex((x) => x.id === r.id) === i);
 
     // 当前任务执行中：默认排队，另一种选择是只保存为下一轮上下文，不再隐式 steer 打断当前回复。
     // 但“当前有提问待答”是例外：本地队列要等 run_finished 才发，而 run 正卡在 ask 上，
@@ -4377,6 +4636,68 @@ case "runtime_connecting":
     pushSystem("已将当前地图视图加入待注入上下文。", `map_context:${mapContext.updatedAt || text}`);
   };
 
+  // 人机协作中枢（D2）：统一结算/假设入口。开关关闭时不会渲染交互坞/卡片，因此不会被调用。
+  const settleHubInteraction = useCallback(async (target, payload = {}) => {
+    const id = String(target?.interactionId || "");
+    if (!id || interactionBusyRef.current) return { ok: false, ignored: true };
+    interactionBusyRef.current = true;
+    setInteractionBusyId(id);
+    try {
+      const response = await fetch(`/api/interactions/${encodeURIComponent(id)}/settle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload && typeof payload === "object" ? payload : {}),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (response.status === 409) {
+        // 服务端已结算/已超时：从列表移除并提示，避免留下点得动却必然 409 的死卡片。
+        setInteractions((list) => list.filter((item) => item.interactionId !== id));
+        notifyError("该交互已失效（可能已超时或已在别处处理）");
+        return { ok: false, expired: true };
+      }
+      if (!response.ok) {
+        notifyError(result?.error || `交互提交失败（${response.status}）`);
+        return { ok: false };
+      }
+      setInteractions((list) => list.filter((item) => item.interactionId !== id));
+      if (result?.interaction) {
+        const receipt = normalizeInteraction(result.interaction);
+        setInteractionReceipts((list) => [...list.filter((item) => item.interactionId !== receipt.interactionId), receipt].slice(-6));
+      }
+      return { ok: true, interaction: result?.interaction || null };
+    } catch (error) {
+      notifyError(`交互提交失败：${error?.message || "网络错误"}`);
+      return { ok: false };
+    } finally {
+      interactionBusyRef.current = false;
+      setInteractionBusyId("");
+    }
+  }, []);
+  const assumeHubInteraction = useCallback(async (target, assumption) => {
+    const id = String(target?.interactionId || "");
+    const text = String(assumption || "").trim();
+    if (!id || !text) return { ok: false };
+    try {
+      const response = await fetch(`/api/interactions/${encodeURIComponent(id)}/assume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assumption: text }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        notifyError(result?.error || "假设更新失败");
+        return { ok: false };
+      }
+      const patchAssumption = (list) => list.map((item) => (item.interactionId === id ? { ...item, assumption: text } : item));
+      setInteractions(patchAssumption);
+      setInteractionReceipts(patchAssumption);
+      return { ok: true };
+    } catch (error) {
+      notifyError(`假设更新失败：${error?.message || "网络错误"}`);
+      return { ok: false };
+    }
+  }, []);
+
   // 消息列表把这些操作作为稳定回调传入 memo 子项；否则每个 SSE 事件都会
   // 生成一组新函数，抵消长历史消息的 memo 优化。
   const handleMessageAskAnswered = useCallback((messageId, blockId, answer) => {
@@ -4608,6 +4929,32 @@ case "runtime_connecting":
     pending.scrollIntoView({ behavior: motionScrollBehavior(), block: "center" });
     requestAnimationFrame(() => pending.querySelector(".ask-input")?.focus?.());
   }, []);
+  // 人机协作中枢：优先滚到消息流内的交互卡片；卡片尚未渲染时聚焦交互坞内对应条目。
+  const locateHubInteraction = useCallback((target) => {
+    const id = String(target?.interactionId || "");
+    if (!id) return;
+    const container = bodyRef.current;
+    const card = container
+      ? Array.from(container.querySelectorAll("[data-interaction-id]")).find((node) => node.getAttribute("data-interaction-id") === id)
+      : null;
+    if (card) {
+      card.scrollIntoView({ behavior: motionScrollBehavior(), block: "center" });
+      requestAnimationFrame(() => card.querySelector("input, select, textarea, button")?.focus?.());
+      return;
+    }
+    const dockItem = Array.from(document.querySelectorAll(".interaction-item")).find((node) => node.getAttribute("data-interaction-id") === id);
+    dockItem?.scrollIntoView?.({ behavior: motionScrollBehavior(), block: "nearest" });
+    dockItem?.focus?.();
+  }, []);
+  // 活动交互（消息流卡片 + 交互坞摘要共用同一份排序后的投影）。
+  const interactionCards = useMemo(
+    () => (interactionHub ? sortInteractions(normalizeInteractions(interactions).filter(isActiveInteraction)) : []),
+    [interactionHub, interactions],
+  );
+  const interactionReceiptViews = useMemo(
+    () => (interactionHub ? interactionReceipts.slice(-3) : []),
+    [interactionHub, interactionReceipts],
+  );
   // 新审批到达时只在用户本来就跟在底部时自动定位，避免把正在回看历史的用户拽走。
   const locatedApprovalRef = useRef("");
   useEffect(() => {
@@ -4963,10 +5310,32 @@ case "runtime_connecting":
                     <span>模型切换为 <b>{modelDisplayName(roundModel)}</b></span>
                   </div>
                 )}
-                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} clientId={clientId} threadId={threadId} sessionId={sessionId} isLastAssistant={m?.role === "assistant" && m.id === lastAssistantVisibleId} versionSwitching={versionSwitching} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onAskExpired={markAskExpired} onResend={handleMessageResend} onEditMessage={handleEditMessage} onForkMessage={handleForkMessage} onRegenerate={handleRegenerateMessage} onSwitchVersion={handleSwitchVersion} onToggleTool={toggleToolExpanded} expandedToolIds={expandedToolIds} runSummary={runSummary} executionFlow={executionFlow} onOpenSettings={onOpenSettings} />
+                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} clientId={clientId} threadId={threadId} sessionId={sessionId} isLastAssistant={m?.role === "assistant" && m.id === lastAssistantVisibleId} versionSwitching={versionSwitching} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onAskExpired={markAskExpired} onResend={handleMessageResend} onEditMessage={handleEditMessage} onForkMessage={handleForkMessage} onRegenerate={handleRegenerateMessage} onSwitchVersion={handleSwitchVersion} onToggleTool={toggleToolExpanded} expandedToolIds={expandedToolIds} runSummary={runSummary} executionFlow={executionFlow} onOpenSettings={onOpenSettings} unifiedComposer={composerUnified} />
               </React.Fragment>
             );
            }); })()}
+          {/* 人机协作中枢：未决交互卡常驻折叠体外（ADR 0014），已决交互收一行回执。开关关闭时不渲染、不占位。 */}
+          {interactionHub && (interactionCards.length > 0 || interactionReceiptViews.length > 0) && (
+            <div className="interaction-card-list" aria-label="人机协作交互">
+              {interactionCards.map((item) => (
+                <InteractionCard
+                  key={item.interactionId}
+                  interaction={item}
+                  busy={Boolean(interactionBusyId)}
+                  onSettle={settleHubInteraction}
+                  onAssume={assumeHubInteraction}
+                  onOpenFile={onOpenFile}
+                />
+              ))}
+              {interactionReceiptViews.map((item) => (
+                <InteractionCard
+                  key={`receipt:${item.interactionId}`}
+                  interaction={item}
+                  onAssume={assumeHubInteraction}
+                />
+              ))}
+            </div>
+          )}
           </div>
           {showScrollToBottom && (
             <button type="button" className="chat-scroll-latest" onClick={scrollToLatest} title="回到底部" aria-label={unreadBelow > 0 ? `回到底部，${unreadBelow} 条未读` : "回到底部"}>
@@ -5013,7 +5382,7 @@ case "runtime_connecting":
             ))}
           </div>
         )}
-        {references.length > 0 && (
+        {!composerUnified && references.length > 0 && (
           <div className="reference-bar" aria-label="本轮引用">
             <span className="reference-bar-label">引用</span>
             {references.map((ref) => (
@@ -5123,6 +5492,16 @@ case "runtime_connecting":
             onAnswered={(blockId, answer) => handleMessageAskAnswered(pendingAsk?.messageId, blockId, answer)}
             onExpired={(blockId) => markAskExpired(pendingAsk?.messageId, blockId)}
           />
+          {/* 人机协作中枢交互坞：输入栏上方、PendingActionBar 附近；无交互不占位。 */}
+          {interactionHub && (
+            <InteractionDock
+              interactions={interactionCards}
+              busy={Boolean(interactionBusyId)}
+              onSettle={settleHubInteraction}
+              onAssume={assumeHubInteraction}
+              onLocate={locateHubInteraction}
+            />
+          )}
           {runState.capabilityPlan?.hint?.code === "MODE_SWITCH_REQUIRED" && (
             <div className="pending-action-bar mode-switch-hint" role="status" aria-live="polite">
               <span className="pending-action-label">{runState.capabilityPlan.hint.message}</span>
@@ -5131,8 +5510,28 @@ case "runtime_connecting":
               </span>
             </div>
           )}
+          {/* 统一输入区（D3，flag 开）：未识别标记提示 + 引用 chip 条 + 唯一候选面板。
+              flag 关闭时整块不渲染，旧 composer-suggestions / 提及菜单路径保持基线行为。 */}
+          {composerUnified && (
+            <Composer
+              menu={unifiedComposer.menu}
+              items={unifiedComposer.items}
+              counts={unifiedComposer.counts}
+              activeIndex={unifiedComposer.activeIndex}
+              loading={{ reference: referenceSourceLoading, skill: skillCatalogLoading }}
+              onGroupChange={unifiedComposer.switchGroup}
+              onPick={pickUnifiedComposerItem}
+              onHover={unifiedComposer.setActiveIndex}
+              onClose={unifiedComposer.close}
+              references={references}
+              agentMentions={parseAgentMentions(input)}
+              onRemoveReference={removeUnifiedReference}
+              notice={composerNotice}
+              onDismissNotice={() => setComposerNotice(null)}
+            />
+          )}
           <div className="chat-input-row">
-            {composerMenu && composerItems.length > 0 && (
+            {!composerUnified && composerMenu && composerItems.length > 0 && (
               <div className="composer-suggestions" role="listbox" aria-label="输入建议">
                 {composerItems.map((item, index) => (
                   <button
@@ -5150,7 +5549,7 @@ case "runtime_connecting":
                 ))}
               </div>
             )}
-            {mentionState && mentionFiltered.length > 0 && (
+            {!composerUnified && mentionState && mentionFiltered.length > 0 && (
               <提及菜单
                 agents={mentionFiltered}
                 query=""
@@ -5165,6 +5564,25 @@ case "runtime_connecting":
               disabled={frozen || !agentReady}
               placeholder={!agentReady ? "正在恢复会话，请稍候…" : frozen ? "会话已冻结，可新建分支继续分析" : busy ? "输入后可排队执行，或仅注入下一轮上下文…" : "输入消息…"}
               onKeyDown={(e) => {
+                if (composerUnified) {
+                  // 统一键盘分发（ADR-0029 §4.7）：composition 期间全部放行；
+                  // 面板打开时 ↑↓/Tab/Enter/Esc/1–9 只作用于面板；面板关闭时 Enter 发送。
+                  const decision = resolveComposerKey({
+                    key: e.key,
+                    shiftKey: e.shiftKey,
+                    composition: e.nativeEvent?.isComposing === true || e.keyCode === 229,
+                    menuOpen: Boolean(unifiedComposer.menu),
+                    itemCount: unifiedComposer.items.length,
+                    activeIndex: unifiedComposer.activeIndex,
+                  });
+                  if (decision.action === "move") { e.preventDefault(); unifiedComposer.moveActive(decision.delta); return; }
+                  if (decision.action === "switch-group") { e.preventDefault(); unifiedComposer.switchGroupBy(decision.delta); return; }
+                  if (decision.action === "pick") { e.preventDefault(); pickUnifiedComposerItem(unifiedComposer.currentItem(decision.index)); return; }
+                  // Esc 只关一层：面板打开时只关面板（stopPropagation 避免顺带关掉「+」菜单）。
+                  if (decision.action === "close") { e.preventDefault(); e.stopPropagation(); unifiedComposer.close(); return; }
+                  if (decision.action === "send") { e.preventDefault(); send(); return; }
+                  return;
+                }
                 if (mentionState && mentionFiltered.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
                   e.preventDefault();
                   setMentionIndex((index) => (index + (e.key === "ArrowDown" ? 1 : -1) + mentionFiltered.length) % mentionFiltered.length);
@@ -5200,7 +5618,12 @@ case "runtime_connecting":
                   send();
                 }
               }}
-              onCompositionEnd={() => {}}
+              onCompositionEnd={(e) => {
+                if (!composerUnified) return;
+                // IME 组合结束后再重算触发（避免拼音中间态误开面板，审查 C-10）。
+                const target = e.currentTarget;
+                unifiedComposer.openFromText(target.value, target.selectionStart ?? target.value.length);
+              }}
               onPaste={(e) => {
                 handleClipboardPaste(e);
               }}
@@ -5209,6 +5632,13 @@ case "runtime_connecting":
               onChange={(e) => {
                 const value = e.target.value;
                 updateInput(value);
+                if (composerUnified) {
+                  // 单一面板：旧 composer-suggestions 与独立提及弹层一律短路（ADR-0029 §4.1）。
+                  setComposerMenu(null);
+                  setMentionState(null);
+                  unifiedComposer.openFromText(value, e.target.selectionStart ?? value.length);
+                  return;
+                }
                 setComposerMenu(composerTrigger(value));
                 // v0.13.7：@ 智能体提及检测（@@ 转义不触发；与 / 斜杠菜单互不干扰）
                 setMentionState(detectMentionTrigger(value, e.target.selectionStart ?? value.length));
@@ -6004,7 +6434,7 @@ function LiveRunSummaryBar({ m }) {
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onAskExpired, onResend, onEditMessage, onForkMessage, onRegenerate, onSwitchVersion, isLastAssistant = false, versionSwitching = false, index, prevRole, clientId, threadId, sessionId = "", runSummary = null, executionFlow = null, onOpenSettings }) {
+function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onAskExpired, onResend, onEditMessage, onForkMessage, onRegenerate, onSwitchVersion, isLastAssistant = false, versionSwitching = false, index, prevRole, clientId, threadId, sessionId = "", runSummary = null, executionFlow = null, onOpenSettings, unifiedComposer = false }) {
   if (m.role === "system") {
     if (m.summary) {
       const runId = m.runId || null;
@@ -6039,6 +6469,13 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     );
   }
   const isUser = m.role === "user";
+  // 统一输入区（D3，flag 开）：用户气泡用 chip 替代结构化标记原文，并补上 @智能体 提及 chip；
+  // flag 关闭时沿用基线文本与 references，渲染结果不变。
+  const bubbleReferences = isUser && unifiedComposer
+    ? [...(Array.isArray(m.references) ? m.references : []), ...parseAgentMentions(m.text || "")]
+      .filter((item, itemIndex, arr) => arr.findIndex((x) => x.id === item.id) === itemIndex)
+    : (Array.isArray(m.references) ? m.references : []);
+  const bubbleText = isUser && unifiedComposer ? stripReferenceMarkers(m.text || "") : m.text;
   const blocks = m.blocks || [];
   const streaming = m.status === "streaming";
   const authoritativeFinalTextRaw = String(
@@ -6662,8 +7099,8 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
               <div className="msg-images">{m.images.map((src, i) => <img key={i} src={src} alt="" />)}</div>
             )}
             {m.currentDoc && <div className="msg-context">当前文件: {m.currentDoc}</div>}
-            {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
-            {m.text && <div className="msg-text">{m.text}</div>}
+            {bubbleReferences.length > 0 && <ReferenceChips references={bubbleReferences} onOpenFile={onOpenFile} unified={unifiedComposer} />}
+            {bubbleText && <div className="msg-text">{bubbleText}</div>}
           </div>
         ) : timelinePath ? (
           <>
@@ -6736,7 +7173,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                 )}
               </div>
             )}
-            {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
+            {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} unified={unifiedComposer} />}
             {streaming && (
               <div className="msg-streaming-status" role="status" aria-live="off">
                 <StreamingDot />
@@ -6794,7 +7231,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                 onOpenArtifacts={onOpenRunArtifacts ? () => onOpenRunArtifacts(runSummary.runId || m.runId) : undefined}
               />
             )}
-            {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
+            {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} unified={unifiedComposer} />}
             {/* 状态固定在消息内容下方：等待首字和持续生成共用同一组四瓣与状态短句 */}
             {streaming && (
               <div className="msg-streaming-status" role="status" aria-live="off">
@@ -6883,12 +7320,45 @@ const MemoMessage = React.memo(Message, (previous, next) => {
     && previous.onForkMessage === next.onForkMessage
     && previous.onRegenerate === next.onRegenerate
     && previous.onSwitchVersion === next.onSwitchVersion
+    // 统一输入区开关：切换后用户气泡要在“原文”与“chip”之间重渲染。
+    && previous.unifiedComposer === next.unifiedComposer
     // 展开态是工具卡的唯一真源：集合不变才允许跳过重渲染，否则点击「展开」不会有反应。
     && previous.expandedToolIds === next.expandedToolIds;
 });
 
-function ReferenceChips({ references = [], onOpenFile }) {
+const REFERENCE_STATUS_TEXT = { resolved: "已解析", pending: "待解析", missing: "缺失" };
+
+function ReferenceChips({ references = [], onOpenFile, unified = false }) {
   if (!references.length) return null;
+  // 统一输入区（D3，flag 开）：技能/插件/会话/智能体也渲染 chip，并带三态（已解析/待解析/缺失）。
+  if (unified) {
+    return (
+      <div className="msg-references" aria-label="本轮引用">
+        {references.map((r) => {
+          const meta = REFERENCE_KIND_META[r.kind] || REFERENCE_KIND_META.file;
+          const tone = referenceStatusTone(r);
+          const label = referenceChipLabel(r);
+          const canOpen = r.kind === "file" && !!onOpenFile && tone !== "missing";
+          const title = `${meta.label}：${r.target || label} · ${REFERENCE_STATUS_TEXT[tone]}${r.message ? ` · ${r.message}` : ""}`;
+          const content = (
+            <>
+              <Icon name={meta.icon} size={12} />
+              <span className="msg-reference-symbol">{meta.symbol}</span>
+              <span className="msg-reference-label">{label}</span>
+              <span className={`msg-reference-status is-${tone}`} aria-label={REFERENCE_STATUS_TEXT[tone]} title={REFERENCE_STATUS_TEXT[tone]}>
+                <Icon name={tone === "resolved" ? "check" : tone === "missing" ? "warning" : "more"} size={10} />
+              </span>
+            </>
+          );
+          return canOpen ? (
+            <button type="button" className={`msg-reference-chip ${tone}`} key={r.id} onClick={() => onOpenFile(r.metadata?.relativePath || r.target)} title={`打开引用：${label}`}>{content}</button>
+          ) : (
+            <span className={`msg-reference-chip ${tone}`} key={r.id} title={title}>{content}</span>
+          );
+        })}
+      </div>
+    );
+  }
   return (
     <div className="msg-references" aria-label="本轮引用">
       {references.map((r) => {

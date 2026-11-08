@@ -71,28 +71,57 @@ export function buildSkillCatalog({
     "目录被截断或不确定技能是否存在时，先用 skills_search 搜索；不要根据摘要脑补技能正文。",
     "</available_skills>",
   ].join("\n");
-  const lines = [];
-  let bytes = Buffer.byteLength(`${header}\n${footer}`, "utf8");
-  let truncated = false;
-  let included = 0;
-  for (const skill of ranked) {
+  // 2026-11-08 D0-4：预算不足时先保证“所有技能名至少出现一次”，再补描述。
+  // 旧实现按排名逐条丢弃，导致 11/66 个技能（含 powerpoint）整条消失。
+  const describe = (skill) => {
     const name = String(skill?.name || "").trim();
-    if (!name) continue;
+    if (!name) return null;
     const scope = skill?.sourceScope === "workspace" ? "workspace" : skill?.sourceScope === "project" ? "project" : "user";
     const description = String(skill?.description || "").replace(/\s+/g, " ").trim();
     const clipped = description.length > maxDescription ? `${description.slice(0, maxDescription)}…` : description;
-    const full = `- \`${name}\` [${scope}]${clipped ? `：${clipped}` : ""}`;
-    const nameOnly = `- \`${name}\` [${scope}]`;
-    const line = bytes + Buffer.byteLength(`\n${full}`, "utf8") <= limit ? full : nameOnly;
-    if (bytes + Buffer.byteLength(`\n${line}`, "utf8") > limit) { truncated = true; break; }
-    lines.push(line);
-    bytes += Buffer.byteLength(`\n${line}`, "utf8");
-    included += 1;
+    return `- \`${name}\` [${scope}]${clipped ? `：${clipped}` : ""}`;
+  };
+  const nameOnlyLine = (skill) => {
+    const name = String(skill?.name || "").trim();
+    if (!name) return null;
+    const scope = skill?.sourceScope === "workspace" ? "workspace" : skill?.sourceScope === "project" ? "project" : "user";
+    return `- \`${name}\` [${scope}]`;
+  };
+  const entries = ranked.map((skill) => ({ skill, full: describe(skill), short: nameOnlyLine(skill) })).filter((entry) => entry.full);
+  const selected = new Array(entries.length).fill(null);
+  let bytes = Buffer.byteLength(`${header}\n${footer}`, "utf8");
+  let truncated = false;
+  // 第一遍：先保证“所有技能名至少出现一次”（name-only），这是可发现性的底线。
+  const nameCosts = entries.map((entry) => Buffer.byteLength(`\n${entry.short}`, "utf8"));
+  for (let index = 0; index < entries.length; index += 1) {
+    if (bytes + nameCosts[index] > limit) { truncated = true; continue; }
+    selected[index] = entries[index].short;
+    bytes += nameCosts[index];
   }
-  if (included < ranked.length) truncated = true;
+  // 第二遍：用剩余预算把 name-only 逐条升级为“名称 + 描述”，直到预算用尽。
+  let nameOnlyCount = selected.filter((line) => line !== null).length;
+  for (let index = 0; index < entries.length; index += 1) {
+    if (!selected[index]) continue;
+    const extra = Buffer.byteLength(`\n${entries[index].full}`, "utf8") - nameCosts[index];
+    if (extra <= 0) { selected[index] = entries[index].full; nameOnlyCount -= 1; continue; }
+    if (bytes + extra > limit) continue;
+    selected[index] = entries[index].full;
+    bytes += extra;
+    nameOnlyCount -= 1;
+  }
+  if (nameOnlyCount > 0 || selected.some((line) => line === null)) truncated = true;
+  const lines = selected.filter(Boolean);
   const text = `${header}\n${lines.join("\n")}${lines.length ? "\n" : ""}${footer}`;
-  return { text, count: ranked.length, included, truncated, bytes: Buffer.byteLength(text, "utf8") };
+  return {
+    text,
+    count: ranked.length,
+    included: lines.length,
+    nameOnlyCount,
+    truncated,
+    bytes: Buffer.byteLength(text, "utf8"),
+  };
 }
+
 
 export function buildSkillInjection({ name = "", raw = "", maxBytes = DEFAULT_SKILL_MAX_BYTES, source = "" } = {}) {
   const text = String(raw || "");
@@ -109,3 +138,53 @@ export function buildSkillInjection({ name = "", raw = "", maxBytes = DEFAULT_SK
     source: source || null,
   };
 }
+
+/** skills_read 单次全文上限（2026-11-08 D0-3）：≥此值才降级为“结构目录 + 分段提示”。 */
+export const DEFAULT_SKILL_READ_MAX_CHARS = 64 * 1024;
+
+/**
+ * 构造 skills_read 的返回内容。
+ *
+ * PPT master 的 SKILL.md 约 26KB/440 行，旧实现按 16000 字符（头 72% + 尾 28%）
+ * 截断，正好切掉 Step 2–6，模型拿到半份说明书。现在 ≤64KB 一律全文返回；
+ * 超过时才给“名称 + 章节目录 + 头部摘要 + 分段读取提示”。
+ */
+export function buildSkillReadPayload({ name = "", raw = "", maxChars = DEFAULT_SKILL_READ_MAX_CHARS } = {}) {
+  const text = String(raw || "");
+  const limit = Math.max(2000, Number(maxChars) || DEFAULT_SKILL_READ_MAX_CHARS);
+  const hash = crypto.createHash("sha1").update(text).digest("hex").slice(0, 12);
+  const fullBytes = Buffer.byteLength(text, "utf8");
+  const header = `# ${String(name)}\n\n`;
+  if (text.length <= limit) {
+    return {
+      text: `${header}${text}`,
+      truncated: false,
+      outline: [],
+      chars: text.length,
+      bytes: fullBytes,
+      fullBytes,
+      hash,
+    };
+  }
+  const outline = text
+    .split(/\r?\n/)
+    .filter((line) => /^#{1,3} \S/.test(line))
+    .slice(0, 60);
+  const head = text.slice(0, limit);
+  const note = [
+    "",
+    `...[SKILL.md 共 ${text.length} 字符（${fullBytes} 字节），超过单次读取上限 ${limit} 字符。`,
+    "以下先给出章节目录与前半部分；剩余内容请用 read 工具读取该技能目录下的 SKILL.md 分段获取，不要根据摘要脑补步骤。]...",
+    "",
+  ].join("\n");
+  return {
+    text: `${header}## SKILL.md 章节目录\n${outline.length ? outline.join("\n") : "（未检测到 Markdown 标题）"}\n${note}\n${head}`,
+    truncated: true,
+    outline,
+    chars: text.length,
+    bytes: Buffer.byteLength(head, "utf8"),
+    fullBytes,
+    hash,
+  };
+}
+

@@ -36,11 +36,14 @@ export function estimateTaskComplexity({ text = "", task = {}, references = [], 
 
 export function resolveSkillsRouting({ complexity, task = {}, text = "" } = {}) {
   const settings = task?.projectSettings || {};
-  const policy = ["auto", "always", "off"].includes(settings.skillsPolicy) ? settings.skillsPolicy : "auto";
+  // 2026-11-08：策略收敛为 on/off（决策 3：由模型判断是否需要技能）。
+  // 旧值 auto/always 一律视为 on；off/disabled/0 视为关闭。
+  const raw = String(settings.skillsPolicy || "on").trim().toLowerCase();
+  const enabled = !["off", "disabled", "0", "false", "no"].includes(raw);
   const explicit = Boolean(task?.workflowId) || SKILL_REF.test(String(text || ""));
   if (explicit) return "preflight";
-  if (policy === "off") return "off";
-  // 2026-11-04：不再按复杂度裁剪技能目录；catalog=每轮注入目录，由模型判断。
+  if (!enabled) return "off";
+  // catalog = 每轮注入技能目录，由模型按任务与 description 自行判断是否 skills_read/skills_search。
   return "catalog";
 }
 

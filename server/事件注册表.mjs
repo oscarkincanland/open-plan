@@ -227,6 +227,19 @@ const REGISTRY = [
   { type: "context_sections_assembled", lifecycle: true, persist: false, note: "上下文章节组装诊断" },
   { type: "context_files_resolved", lifecycle: true, persist: true, note: "本轮上下文文件解析（L0/L1/记忆，去重后）", schema: { required: ["workspace", "constitutionVersion", "files"], types: { workspace: "string", constitutionVersion: "string", files: "array" } } },
   { type: "skill_injected", lifecycle: true, persist: true, note: "Skill 注入（含预算/哈希）" },
+  // ---- 技能发现可观测性（2026-11-08 D0-9；计划 2026-11-08-001）----
+  // 让“为什么没调用成功”可以定位到：目录没注入 / 搜索没命中 / 读不到 / 被截断。
+  { type: "skill_catalog_injected", lifecycle: true, persist: true, note: "每轮技能目录注入（数量/是否截断/预算）", schema: { required: ["count", "included", "truncated"], types: { count: "number", included: "number", truncated: "boolean", bytes: "number", nameOnlyCount: "number", policy: "string" } } },
+  { type: "skill_search", lifecycle: true, persist: true, note: "技能检索（查询/命中数/Top 名称/是否空搜）", schema: { required: ["query", "hits"], types: { query: "string", hits: "number", topNames: "array", empty: "boolean", stopAutoSearch: "boolean", runId: "string" } } },
+  { type: "skill_read", lifecycle: true, persist: true, note: "读取技能说明（字节/是否截断/哈希，flag 关闭也记录）", schema: { required: ["name", "bytes"], types: { name: "string", bytes: "number", fullBytes: "number", truncated: "boolean", hash: "string", source: "string" } } },
+  { type: "skill_preflight", lifecycle: true, persist: true, note: "技能依赖只读预检（ready/degraded/blocked）", schema: { required: ["name", "status"], types: { name: "string", status: "string", code: "string", missing: "array" } } },
+  { type: "skill_exec_allowed", lifecycle: true, persist: true, note: "显式技能脚本经白名单通道放行（写作路由）", schema: { required: ["tool"], types: { tool: "string", route: "string", command: "string" } } },
+  // ---- 人机协作中枢（2026-11-08 D2；计划 2026-11-08-001 §11）----
+  // 与 legacy ask_user/tool_approval_request 双发；新前端按 interaction_* 渲染，旧回放按旧事件。
+  { type: "interaction_open", lifecycle: true, persist: true, note: "交互创建（clarify/confirm/review/approval）", schema: { required: ["interactionId", "kind"], types: { interactionId: "string", kind: "string", runId: "string", threadId: "string", expiresAt: "string", priority: "number" } } },
+  { type: "interaction_settled", lifecycle: true, persist: true, note: "交互结算（answered/skipped/assumed/denied/cancelled）", schema: { required: ["interactionId", "reason"], types: { interactionId: "string", reason: "string", answer: "string", assumption: "string" } } },
+  { type: "interaction_expired", lifecycle: true, persist: true, note: "交互超时（confirm 不自动继续）", schema: { required: ["interactionId"], types: { interactionId: "string", assumed: "boolean" } } },
+  { type: "interaction_assumption", lifecycle: true, persist: true, note: "用户修改/撤销假设", schema: { required: ["interactionId", "assumption"], types: { interactionId: "string", assumption: "string" } } },
   { type: "skill_draft_created", lifecycle: true, persist: true, note: "技能草稿生成（只写工作区，不安装）", schema: { required: ["name", "path", "bytes"], types: { name: "string", path: "string", bytes: "number" } } },
   { type: "skill_installed", lifecycle: true, persist: true, note: "技能草稿经用户确认安装到技能库", schema: { required: ["name", "path"], types: { name: "string", path: "string" } } },
   { type: "config_source_resolved", lifecycle: true, persist: false, note: "配置来源解析诊断" },

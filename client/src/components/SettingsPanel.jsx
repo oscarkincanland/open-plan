@@ -90,7 +90,7 @@ const SETTINGS_NAV = [
 
 function ProjectSettingsSection({ project, projects = [], currentWorkspace = "", models = [], onProjectUpdated, onProjectSelect }) {
   const [projectDraft, setProjectDraft] = useState({ name: "", type: "综合项目", status: "进行中", description: "" });
-  const [settingsDraft, setSettingsDraft] = useState({ defaultModel: "", agentProfile: "通用 Agent", skills: [], skillsPolicy: "auto", allowSkillDrafts: "on", memoryPolicy: "approval_required", artifactPolicy: "validation_required" });
+  const [settingsDraft, setSettingsDraft] = useState({ defaultModel: "", agentProfile: "通用 Agent", skills: [], skillsPolicy: "on", allowSkillDrafts: "on", memoryPolicy: "approval_required", artifactPolicy: "validation_required" });
   const [projectFilter, setProjectFilter] = useState({ query: "", type: "", status: "", pinned: false, pending: false, sort: "recent" });
   const [createOpen, setCreateOpen] = useState(false);
   const [newProject, setNewProject] = useState({ name: "", rootPath: currentWorkspace, type: "综合项目", status: "进行中", description: "" });
@@ -109,7 +109,7 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
       defaultModel: project?.settings?.defaultModel || "",
       agentProfile: project?.settings?.agentProfile || "通用 Agent",
       skills: Array.isArray(project?.settings?.skills) ? project.settings.skills : [],
-      skillsPolicy: project?.settings?.skillsPolicy || "auto",
+      skillsPolicy: project?.settings?.skillsPolicy || "on",
       allowSkillDrafts: project?.settings?.allowSkillDrafts || "on",
       memoryPolicy: project?.settings?.memoryPolicy || "approval_required",
       artifactPolicy: project?.settings?.artifactPolicy || "validation_required",
@@ -249,9 +249,8 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
           <div className="sp-row">
             <span className="sp-label">技能策略</span>
             <select className="sp-select" value={settingsDraft.skillsPolicy} onChange={(e) => setSettingsDraft((value) => ({ ...value, skillsPolicy: e.target.value }))}>
-              <option value="auto">自动（简单用默认，复杂才检索）</option>
-              <option value="always">总是检索</option>
-              <option value="off">关闭自动检索</option>
+              <option value="on">开启（每轮注入目录，由模型自行判断是否使用）</option>
+              <option value="off">关闭（不注入技能目录，显式点名仍预检）</option>
             </select>
             <span className="sp-label">技能草稿</span>
             <select className="sp-select" value={settingsDraft.allowSkillDrafts} onChange={(e) => setSettingsDraft((value) => ({ ...value, allowSkillDrafts: e.target.value }))}>

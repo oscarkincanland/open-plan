@@ -46,7 +46,7 @@ export function turnNoticeText(kind, turnCount, { interval = TURN_PROGRESS_INTER
     case "turn-progress":
       return `[系统提醒] 本轮已经进行 ${turn} 个模型回合。请先在正文里给用户一段 2-3 行的进度小结：已经完成了什么、当前正在做什么、下一步准备做什么。写完小结后再继续，不要在小结里调用工具。`;
     case "turn-budget":
-      return `[系统提醒] 本轮已经进行 ${turn} 个模型回合。请先给出一段阶段结论（已完成什么、还差什么、下一步计划），并用 ask_user 询问用户是否继续，不要无汇报地继续扩大范围。`;
+      return `[系统提醒] 本轮已经进行 ${turn} 个模型回合。请先给出一段阶段结论（已完成什么、还差什么、下一步计划），然后继续推进到硬预算；不要停下来征求"是否继续"，也不要无汇报地扩大范围。`;
     case "turn-budget-hard":
       return `[系统提醒] 本轮已经进行 ${turn} 个模型回合，已明显超出常规预算。请立即收尾：直接给用户最终答复，写清当前结果与未完成项，结束本轮，剩余工作交给用户决定是否新开一轮。`;
     default:

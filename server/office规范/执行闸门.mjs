@@ -153,20 +153,41 @@ function isInlineReadonlyScript(segment) {
   return false;
 }
 
-/** bash 文档生成特征：命中即视为绕过管线。 */
+/** bash 文档生成特征：命中即视为绕过管线。
+ *  2026-11-08 D1：收窄——不再把任意 `python *.py` / `node *.mjs` 当 Office 生成；
+ *  只有脚本名/参数指向 Office 目标、或同一命令出现 Office 库特征时才拦截。
+ *  这样技能脚本（数据分析、格式转换）与普通 Node 构建不再被误伤。 */
 const DOCX_GENERATION = [
-  /\bnode\b[^\n]*\b[\w./-]+\.(?:mjs|cjs|js)\b/i,
-  /\bpython3?\b[^\n]*\b[\w./-]+\.py\b/i,
+  // 内联脚本 + Office 库
   /\bnode\s+-e\b[\s\S]*(?:pptxgenjs|Packer|Presentation|writeFileSync|createWriteStream)/i,
   /\bpython3?\s+-c\b[\s\S]*(?:from\s+pptx|import\s+pptx|docx\.Document|Presentation\s*\()/i,
-  /\bpython\b[^\n]*\bdocx\b/i,
+  // 脚本文件名里带 Office 关键词（build_ppt.py / make_docx.mjs / report_gen.py）
+  /\bnode\b[^\n]*\b[\w./-]*(?:docx|pptx|ppt|xlsx|excel|word|office|report|slide|deck)[\w./-]*\.(?:mjs|cjs|js)\b/i,
+  /\bpython3?\b[^\n]*\b[\w./-]*(?:docx|pptx|ppt|xlsx|excel|word|office|report|slide)[\w./-]*\.py\b/i,
+  // 脚本命令同一行出现 Office 目标扩展名
+  /\b(?:node|python3?)\b[^\n]*\.(?:mjs|cjs|js|py)\b[^\n]*\.(?:docx|pptx|xlsx)\b/i,
+  // 脚本命令同一行出现 Office 关键词（如 python build.py # docx）
+  /\b(?:node|python3?)\b[^\n]*\.(?:mjs|cjs|js|py)\b[^\n]*\b(?:docx|pptx|xlsx)\b/i,
+  // 脚本 + Office 库特征出现在同一命令
+  /\b(?:node|python3?)\b[^\n]*\.(?:mjs|cjs|js|py)\b[\s\S]*(?:python-docx|pptxgenjs|openpyxl|docx\.Document|Packer)/i,
   /\bpandoc\b[^\n]*\.(?:docx|pptx)/i,
   /\b(?:soffice|libreoffice)\b[^\n]*(?:--convert|--headless)/i,
-  /(?:^|[^|])(?:>|>>)\s*[^\n]*\.(?:docx|pptx)\b/i,
+  /(?:^|[^|])(?:>|>>)\s*[^\n]*\.(?:docx|pptx|xlsx)\b/i,
   // 复制/移动/打包不是“生成 docx”：复制走 review_copy 或普通拷贝，不应被管线闸门拦截。
   /\bunzip\b(?!\s+(?:-p|-l))/i,
   /\bofficecli\b/i,
 ];
+
+/** 命令是否引用了显式技能目录下的脚本（D1 技能白名单通道）。 */
+export function referencesSkillScript(command, roots = []) {
+  const text = String(command || "").replace(/\\/g, "/");
+  if (!text || !Array.isArray(roots) || !roots.length) return false;
+  if (!/\.(?:py|mjs|cjs|js)\b/i.test(text)) return false;
+  return roots.some((root) => {
+    const normalized = String(root || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    return normalized && text.includes(normalized);
+  });
+}
 
 function allow(sanitizedInput) {
   return sanitizedInput ? { blocked: false, sanitizedInput } : { blocked: false };
@@ -274,6 +295,11 @@ export function classifyToolCall({ tool = "", input = {}, context = {} } = {}) {
   if (tool === "bash") {
     const command = String(input.command || "");
     if (hasAllowManual(command)) return allow({ command: stripAllowManual(command) });
+    // D1：显式技能调用时，放行技能目录下的脚本（产物仍走 validate / 规则闸门）。
+    const skillExec = context.skillExec || null;
+    if (skillExec?.allowed && referencesSkillScript(command, skillExec.roots || [])) {
+      return { blocked: false, skillExec: true };
+    }
     if (isDocxGenerationCommand(command)) {
       return block(
         "OFFICE_PIPELINE_REQUIRED",
