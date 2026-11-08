@@ -129,12 +129,11 @@ test("新增三个地图工具并登记到运行时", () => {
   }
   assert.match(src, /mapLayerInfoTool, mapResetTool, mapProjectCreateTool/, "customTools 应注册");
 });
-test("Chat 只读不含写工具，Work 含工程级写工具", () => {
+test("Chat 不含任何地图工具，Work 含工程级写工具", () => {
   const src = read("server/task.mjs");
   const readOnly = src.slice(src.indexOf("const READ_ONLY_TOOLS"), src.indexOf("const OFFICE_TOOLS"));
-  assert.ok(readOnly.includes('"map_layer_info"'), "只读应含 map_layer_info");
-  for (const tool of ["map_reset", "map_project_create"]) {
-    assert.ok(!readOnly.includes(`"${tool}"`), `Chat 不应含 ${tool}`);
+  assert.ok(!readOnly.includes('"map_'), "Chat 不应含地图工具（地图只在 Work）");
+  for (const tool of ["map_reset", "map_project_create", "map_draft_layer", "map_fixate_layer"]) {
     assert.ok(src.includes(`"${tool}"`), `Work 应含 ${tool}`);
   }
 });

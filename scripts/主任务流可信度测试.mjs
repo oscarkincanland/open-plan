@@ -225,37 +225,32 @@ for (const mode of ["chat", "office", "agent", "review"]) {
   // 核心一致性：声明了地图能力 → 必须真的有地图工具可用
   assert.ok(tools.length > 0, `${mode} 声明了地图能力（${mapCap.status}），但工具白名单里没有 map_* 工具`);
 
-  if (mode === "chat") {
-    assert.equal(plan.routing.map, "read_only", "Chat 模式地图应为只读（routing.map=read_only）");
-    assert.ok(!tools.some((t) => ["map_edit", "map_import", "map_save_analysis"].includes(t)),
-      "Chat 模式不得授予地图写工具");
-    assert.ok(tools.includes("map_analyze"), "Chat 模式必须能生成临时可视化（map_analyze）");
-  } else if (mode === "agent") {
+  if (mode === "agent") {
     assert.equal(plan.routing.map, "read_write", "Work 模式地图应为可写（routing.map=read_write）");
-    for (const t of ["map_edit", "map_import", "map_save_analysis"]) {
-      assert.ok(tools.includes(t), `Work 模式应授予写工具 ${t}`);
+    for (const t of ["map_edit", "map_import", "map_save_analysis", "map_draft_layer", "map_fixate_layer"]) {
+      assert.ok(tools.includes(t), `Work 模式应授予地图工具 ${t}`);
     }
   } else {
-    assert.equal(plan.routing.map, "not_needed", `${mode} 模式不应启用地图能力`);
+    assert.equal(plan.routing.map, "not_needed", `${mode} 模式不应启用地图能力（地图只在 Work）`);
     assert.equal(tools.length, 0, `${mode} 模式不应授予地图工具`);
   }
 }
 
-// 能力说明注入提示词：Chat 必须明确"保存图层需切 Work"
+// 能力说明注入提示词：地图只在 Work 说明（2026-11-07 决策：地图不保留 Chat）
 const chatPlan = planTaskCapabilities({ text: mapText, task: { mode: "chat" } });
 const { taskSummary } = await import("../server/task.mjs");
 const chatSummary = taskSummary({
   goal: mapText, mode: "chat", modeLabel: "Chat", capabilityPlan: chatPlan,
 });
-assert.match(chatSummary, /地图能力（只读）/, "Chat 提示词应说明地图只读能力");
-assert.match(chatSummary, /切到 Work 模式/, "Chat 提示词应引导用户切 Work 而不是尝试绕过");
-assert.doesNotMatch(chatSummary, /可保存为正式图层/, "Chat 提示词不得暗示可以保存图层");
+assert.doesNotMatch(chatSummary, /地图能力/, "Chat 不再注入地图能力说明");
+assert.doesNotMatch(chatSummary, /map_|地图草稿/, "Chat 提示词不得提及地图工具");
 
 const workPlan = planTaskCapabilities({ text: mapText, task: { mode: "agent" } });
 const workSummary = taskSummary({
   goal: mapText, mode: "agent", modeLabel: "Work", capabilityPlan: workPlan,
 });
-assert.match(workSummary, /保存为正式图层/, "Work 提示词应说明可将结果保存为正式图层");
+assert.match(workSummary, /草稿层/, "Work 提示词应说明草稿层流程");
+assert.match(workSummary, /固化/, "Work 提示词应说明固化需用户确认");
 assert.doesNotMatch(workSummary, /需要用户切换到 Work 模式/, "Work 提示词不应再要求切换模式");
 
 // 非地图轮次不注入地图说明（避免每轮多占上下文）

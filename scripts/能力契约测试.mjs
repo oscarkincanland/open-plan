@@ -121,9 +121,9 @@ test("editorial_pipeline 仅出现在 agent 模式白名单，且工具真的存
 });
 
 console.log("\n▶ 地图/知识/技能路由回归");
-test("地图只读与读写按模式区分", () => {
+test("地图只在 Work（Chat 不再启用地图能力）", () => {
   const chat = planTaskCapabilities({ text: "画一张 OD 热力图", task: { mode: "chat" } });
-  assert.equal(chat.routing.map, "read_only");
+  assert.equal(chat.routing.map, "not_needed");
   const agent = planTaskCapabilities({ text: "画一张 OD 热力图并保存图层", task: { mode: "agent" } });
   assert.equal(agent.routing.map, "read_write");
 });

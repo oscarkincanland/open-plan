@@ -138,6 +138,7 @@
     "test:map-visual:live": "node scripts/地图可视面板场景测试.mjs",
     "test:traffic-sources": "node scripts/交通数据源与可视化描述符测试.mjs",
     "test:map-chat": "node scripts/地图对话栏适配测试.mjs",
+    "test:map-drafts": "node scripts/地图草稿层与审批边界测试.mjs",
     "test:map-chat:live": "node scripts/地图对话栏场景测试.mjs",
     "map:cleanup-layers": "node scripts/清理地图残留层.mjs",
     "test:search": "node scripts/联网搜索测试.mjs",

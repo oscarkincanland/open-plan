@@ -134,7 +134,7 @@ test("对话面板常驻主槽位，地图模式只做 CSS 定位", () => {
   const app = read("client/src/App.jsx");
   assert.ok(!app.includes('className="app-chat-slot map"'), "不应再把 ChatPanel 搬到第二个父容器");
   assert.match(app, /center-chat-slot\$\{activeModule === "map" \? " map-mode" : ""\}/, "地图模式应给主对话槽位加 map-mode");
-  assert.match(app, /!\["knowledge", "templates"\].includes\(activeModule\)/, "地图模式应保留主布局挂载");
+  assert.match(app, /app-main-shell[\s\S]{0,120}?hidden=\{\["knowledge", "templates"\]\.includes\(activeModule\)\}/, "地图模式应保留主布局挂载（仅知识库/模板库隐藏主壳）");
   const styles = read("client/src/styles.css");
   assert.match(styles, /\.center-chat-slot\.map-mode \{[\s\S]{0,240}?position: fixed/, "地图模式对话栏应 fixed 定位");
   assert.doesNotMatch(styles, /\.center-chat-slot\.map-mode \.msg > \.avatar/, "消息头像已移除，地图紧凑栏无需单独隐藏头像");

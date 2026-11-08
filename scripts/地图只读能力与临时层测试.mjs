@@ -40,7 +40,7 @@ function test(name, fn) {
   catch (e) { failed += 1; console.log("  ✗ " + name + "\n      " + (e.message || e)); }
 }
 
-console.log("\n▶ 0.1 Chat 模式开放只读地图工具（解 X1 断链）");
+console.log("\n▶ 0.1 Chat 不再持有任何地图工具（地图只在 Work）");
 
 // 白名单一律走真实 API（toolPolicyForMode），不再从源码里正则解析数组：
 // 数组里加一行注释就会把朴素的 split(",") 解析打乱（map_read 曾因此误判为缺失）。
@@ -50,12 +50,11 @@ function toolArray(name) {
   return toolPolicyForMode(mode).tools;
 }
 
-test("READ_ONLY_TOOLS 含只读五件套", () => {
+test("Chat 模式不含任何地图工具", () => {
   const tools = toolArray("READ_ONLY_TOOLS");
   assert.ok(tools, "READ_ONLY_TOOLS 应可解析");
-  for (const name of ["map_read", "map_analyze", "map_clear_analysis", "map_datasets", "map_layer_info"]) {
-    assert.ok(tools.includes(name), `只读工具应含 ${name}`);
-  }
+  const maps = tools.filter((name) => name.startsWith("map_"));
+  assert.equal(maps.length, 0, `Chat 模式不应含地图工具，实际：${maps.join(",")}`);
 });
 
 test("READ_ONLY_TOOLS 不得含写工具", () => {
@@ -65,10 +64,10 @@ test("READ_ONLY_TOOLS 不得含写工具", () => {
   }
 });
 
-test("AGENT_TOOLS 含全部地图工具", () => {
+test("AGENT_TOOLS 含全部地图工具（含草稿与固化）", () => {
   const tools = toolArray("AGENT_TOOLS");
   assert.ok(tools, "AGENT_TOOLS 应可解析");
-  for (const name of ["map_read", "map_datasets", "map_layer_info", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "map_reset", "map_project_create"]) {
+  for (const name of ["map_read", "map_datasets", "map_layer_info", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "map_reset", "map_project_create", "map_draft_layer", "map_fixate_layer"]) {
     assert.ok(tools.includes(name), `Work 模式应显式列出 ${name}`);
   }
 });
@@ -128,23 +127,23 @@ test("细分规则位于 catch-all 之后（最后匹配生效）", () => {
   assert.ok(catchAll > 0 && shared > catchAll && workspace > shared, "细分规则必须排在 catch-all 之后才生效");
 });
 
-console.log("\n▶ 0.4 地图内模式切换（修 X2）");
+console.log("\n▶ 0.4 地图模块仅 Work（2026-11-07 决策：地图不保留 Chat）");
 
-test("MapPanel 接受模式 props 并渲染切换控件", () => {
-  assert.match(mapPanelSrc, /conversationMode = "chat",\s*onModeChange/, "应接受 conversationMode / onModeChange");
-  assert.match(mapPanelSrc, /className="mp-mode-switch"/, "应渲染地图内模式切换容器");
-  assert.match(mapPanelSrc, /mp-mode-option work/, "应有 Work 选项");
+test("MapPanel 不再渲染 Chat/Work 切换控件", () => {
+  assert.doesNotMatch(mapPanelSrc, /className="mp-mode-switch"/, "地图内不应再有 Chat/Work 切换容器");
+  assert.doesNotMatch(mapPanelSrc, /mp-mode-option/, "不应再有 Chat/Work 选项按钮");
+  assert.match(mapPanelSrc, /mp-mode-badge/, "应显示固定的 Work 标识");
 });
 
-test("App 把模式传给 MapPanel 且切换走 ChatPanel 的 setMode", () => {
-  assert.match(appSrc, /conversationMode=\{conversationMode\}/, "应传入当前模式");
-  assert.match(appSrc, /chatInputRef\.current\?\.setMode\?\.\(next\)/, "切换应作用于 ChatPanel 实例");
+test("App 进入地图前自动切到 Work", () => {
+  assert.match(appSrc, /module === "map" && conversationMode !== "agent"/, "进入地图前应判断模式");
+  assert.match(appSrc, /chatInputRef\.current\?\.setMode\?\.\("agent"\)/, "应把 ChatPanel 切到 Work");
 });
 
-test("模式切换有样式", () => {
-  assert.match(stylesSrc, /\.mp-mode-switch \{/, "应有容器样式");
-  assert.match(stylesSrc, /\.mp-mode-option\.active \{/, "应有激活态样式");
+test("Work 标识有样式", () => {
+  assert.match(stylesSrc, /\.mp-mode-badge \{/, "应有 Work 标识样式");
 });
+
 
 console.log("\n▶ 0.6 临时层注册表（修 X5）");
 

@@ -116,6 +116,7 @@ test("内置工具清单全部映射到确定图标（无遗漏、无异常）",
     job_status: "history", job_cancel: "history",
     map_read: "map", map_datasets: "map", map_edit: "map", map_import: "map", map_analyze: "map", map_template: "map", map_save_analysis: "map", map_clear_analysis: "map",
     map_layer_info: "map", map_reset: "map", map_project_create: "map",
+    map_draft_layer: "map", map_fixate_layer: "map",
     review_copy: "shield", ask_user: "comment", todo: "list", run_subagent: "flow",
     // 团队协作与子代理同属编排类
     team_list: "flow", team_spawn: "flow", team_send: "flow", team_wait: "flow", team_task: "flow",

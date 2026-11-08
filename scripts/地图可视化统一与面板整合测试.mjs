@@ -115,7 +115,7 @@ test("顶栏为 9 个一级控件（不再逐个平铺）", () => {
   assert.ok(end > start, "应能找到顶栏结束位置");
   const bar = mapPanelSrc.slice(start, end);
   // 一级控件：模式切换组、任务中心、项目菜单、底图、区域菜单、图层、可视化、数据、视图、导出、返回
-  for (const need of ["mp-mode-switch", "mp-menu-btn", "mp-basemap-select", "可视化", "图层", "导出", "mp-exit"]) {
+  for (const need of ["mp-mode-badge", "mp-menu-btn", "mp-basemap-select", "可视化", "图层", "导出", "mp-exit"]) {
     assert.ok(bar.includes(need), `顶栏应含 ${need}`);
   }
   // 被收敛的旧控件：只允许出现在下拉菜单容器内部。
