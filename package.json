@@ -22,9 +22,16 @@
     "url": "https://github.com/oscarkincanland/open-plan/issues"
   },
   "type": "module",
+  "bin": {
+    "guiju": "scripts/open-plan.mjs",
+    "open-plan": "scripts/open-plan.mjs"
+  },
   "scripts": {
     "start": "node scripts/服务监督.mjs --background",
     "dev": "node scripts/服务监督.mjs --background",
+    "open": "node scripts/open-plan.mjs",
+    "status": "node scripts/open-plan.mjs --status",
+    "stop": "node scripts/open-plan.mjs --stop",
     "start:foreground": "node scripts/服务监督.mjs --foreground",
     "service:status": "node scripts/服务监督.mjs --status",
     "build": "cd client && npm run build",
