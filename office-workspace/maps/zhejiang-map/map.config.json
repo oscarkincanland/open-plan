@@ -1,12 +1,37 @@
 {
+  "schemaVersion": 2,
+  "kind": "project",
   "name": "浙江省交通路网与区划图",
   "project": "zhejiang-map",
+  "description": "",
+  "archived": false,
+  "baseProject": null,
+  "crs": "EPSG:4326",
   "center": [
     120.1,
     29.15
   ],
   "zoom": 7.2,
-  "basemap": "osm-standard",
+  "basemap": "esri-sat",
+  "groups": [
+    {
+      "name": "行政区划",
+      "collapsed": false
+    },
+    {
+      "name": "公路网",
+      "collapsed": false
+    },
+    {
+      "name": "设施点",
+      "collapsed": false
+    }
+  ],
+  "sharedLayers": [
+    "roads-province",
+    "gis_osm_roads_free_1",
+    "gis_osm_railways_free_1"
+  ],
   "layers": [
     {
       "id": "boundary-city",
@@ -16,7 +41,15 @@
       "minzoom": 0,
       "maxzoom": 9,
       "group": "行政区划",
-      "origin": "shared"
+      "origin": "shared",
+      "opacity": 1,
+      "locked": false,
+      "source": {
+        "kind": "builtin",
+        "path": "",
+        "format": "geojson",
+        "importedAt": "2026-11-01T09:11:07.785Z"
+      }
     },
     {
       "id": "boundary-county",
@@ -26,7 +59,15 @@
       "minzoom": 0,
       "maxzoom": 11,
       "group": "行政区划",
-      "origin": "shared"
+      "origin": "shared",
+      "opacity": 1,
+      "locked": false,
+      "source": {
+        "kind": "builtin",
+        "path": "",
+        "format": "geojson",
+        "importedAt": "2026-11-01T09:11:07.785Z"
+      }
     },
     {
       "id": "highways",
@@ -36,7 +77,15 @@
       "minzoom": 5,
       "maxzoom": 13,
       "group": "公路网",
-      "origin": "shared"
+      "origin": "shared",
+      "opacity": 1,
+      "locked": false,
+      "source": {
+        "kind": "builtin",
+        "path": "",
+        "format": "geojson",
+        "importedAt": "2026-11-01T09:11:07.785Z"
+      }
     },
     {
       "id": "roads-trunk",
@@ -46,7 +95,15 @@
       "minzoom": 5,
       "maxzoom": 13,
       "group": "公路网",
-      "origin": "shared"
+      "origin": "shared",
+      "opacity": 1,
+      "locked": false,
+      "source": {
+        "kind": "builtin",
+        "path": "",
+        "format": "geojson",
+        "importedAt": "2026-11-01T09:11:07.785Z"
+      }
     },
     {
       "id": "toll-stations",
@@ -56,7 +113,15 @@
       "minzoom": 5,
       "maxzoom": 14,
       "group": "设施点",
-      "origin": "shared"
+      "origin": "shared",
+      "opacity": 1,
+      "locked": false,
+      "source": {
+        "kind": "builtin",
+        "path": "",
+        "format": "geojson",
+        "importedAt": "2026-11-01T09:11:07.785Z"
+      }
     },
     {
       "id": "junctions",
@@ -66,7 +131,15 @@
       "minzoom": 5,
       "maxzoom": 14,
       "group": "设施点",
-      "origin": "shared"
+      "origin": "shared",
+      "opacity": 1,
+      "locked": false,
+      "source": {
+        "kind": "builtin",
+        "path": "",
+        "format": "geojson",
+        "importedAt": "2026-11-01T09:11:07.785Z"
+      }
     },
     {
       "id": "roads-province",
@@ -76,7 +149,15 @@
       "visible": true,
       "minzoom": 5,
       "maxzoom": 13,
-      "origin": "shared"
+      "origin": "shared",
+      "opacity": 1,
+      "locked": false,
+      "source": {
+        "kind": "import",
+        "path": "layers/roads-province.geojson",
+        "format": "geojson",
+        "importedAt": "2026-11-01T09:11:07.785Z"
+      }
     },
     {
       "id": "gis_osm_railways_free_1",
@@ -86,7 +167,15 @@
       "visible": true,
       "minzoom": 5,
       "maxzoom": 13,
-      "origin": "shared"
+      "origin": "shared",
+      "opacity": 1,
+      "locked": false,
+      "source": {
+        "kind": "import",
+        "path": "layers/gis_osm_railways_free_1.geojson",
+        "format": "geojson",
+        "importedAt": "2026-11-01T09:11:07.785Z"
+      }
     },
     {
       "id": "gis_osm_roads_free_1",
@@ -96,18 +185,15 @@
       "visible": true,
       "minzoom": 5,
       "maxzoom": 13,
-      "origin": "shared"
-    },
-    {
-      "id": "taizhou_od",
-      "name": "taizhou_od",
-      "type": "road",
-      "group": "公路网",
-      "visible": true,
-      "minzoom": 5,
-      "maxzoom": 13,
-      "origin": "workspace",
-      "owner": "F:\\Claude code本地文件\\office-agent-web\\office-workspace"
+      "origin": "shared",
+      "opacity": 1,
+      "locked": false,
+      "source": {
+        "kind": "import",
+        "path": "layers/gis_osm_roads_free_1.geojson",
+        "format": "geojson",
+        "importedAt": "2026-11-01T09:11:07.785Z"
+      }
     },
     {
       "id": "ningbo-zhoushan-port-areas",
@@ -118,51 +204,32 @@
       "minzoom": 5,
       "maxzoom": 13,
       "origin": "workspace",
-      "owner": "F:\\Claude code本地文件\\office-agent-web\\office-workspace"
-    },
-    {
-      "id": "yiwu_od_demo",
-      "name": "yiwu_od_demo",
-      "type": "point",
-      "group": "设施点",
-      "visible": true,
-      "minzoom": 5,
-      "maxzoom": 13,
-      "origin": "workspace",
-      "owner": "G:\\opencode文件夹"
-    },
-    {
-      "id": "yiwu_od_demo-lines",
-      "name": "yiwu_od_demo-lines",
-      "type": "road",
-      "group": "公路网",
-      "visible": true,
-      "minzoom": 5,
-      "maxzoom": 13,
-      "origin": "workspace",
-      "owner": "G:\\opencode文件夹"
-    },
-    {
-      "id": "yiwu-od-lines",
-      "name": "OD期望线（市际客流）",
-      "type": "road",
-      "group": "OD分析",
-      "visible": true,
-      "minzoom": 0,
-      "maxzoom": 14,
-      "origin": "workspace",
-      "owner": "D:\\Claude code文件\\office-agent-web\\office-workspace"
+      "owner": "F:\\Claude code本地文件\\office-agent-web\\office-workspace",
+      "opacity": 1,
+      "locked": false,
+      "source": {
+        "kind": "import",
+        "path": "layers/ningbo-zhoushan-port-areas.geojson",
+        "format": "geojson",
+        "importedAt": "2026-11-01T09:11:07.785Z"
+      }
     }
   ],
-  "groups": [
-    "测试demo",
-    "OD分析"
+  "bookmarks": [
+    {
+      "id": "bm-1793784953027",
+      "name": "视角 2",
+      "center": [
+        120,
+        29.2
+      ],
+      "zoom": 7,
+      "bearing": 0,
+      "pitch": 0,
+      "createdAt": "2026-11-04T09:35:53.027Z"
+    }
   ],
-  "sharedLayers": [
-    "roads-province",
-    "gis_osm_roads_free_1",
-    "gis_osm_railways_free_1"
-  ],
-  "archived": false,
+  "createdAt": "2026-11-01T09:11:07.785Z",
+  "updatedAt": "2026-11-07T15:14:21.753Z",
   "archivedAt": null
 }
