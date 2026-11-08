@@ -392,21 +392,30 @@ const MapViewer = forwardRef(function MapViewer(
       if (!payload) continue;
       const visible = draft.visible !== false;
       const family = draft.geometryType || payload.features?.[0]?.geometry?.type || "point";
+      // 每个草稿有自己的样式（颜色/线宽/半径/透明度/描边），由用户或 Agent 调整。
+      const st = draft.style && typeof draft.style === "object" ? draft.style : {};
+      const color = String(st.color || "#2563eb");
+      const opacity = Number.isFinite(Number(st.opacity)) ? Math.min(1, Math.max(0, Number(st.opacity))) : 0.85;
+      const width = Number.isFinite(Number(st.width)) ? Math.max(0.2, Math.min(20, Number(st.width))) : 2.2;
+      const radius = Number.isFinite(Number(st.radius)) ? Math.max(1, Math.min(40, Number(st.radius))) : 6;
+      const fillOpacity = Number.isFinite(Number(st.fillOpacity)) ? Math.min(1, Math.max(0, Number(st.fillOpacity))) : 0.18;
+      const stroke = String(st.stroke || "#ffffff");
+      const dashed = st.dashed !== false;
       try {
         m.addSource(`${id}-src`, { type: "geojson", data: payload });
         draftLayerIdsRef.current.add(id);
         if (family === "line" || family === "LineString" || family === "MultiLineString") {
           m.addLayer({ id, type: "line", source: `${id}-src`, layout: { visibility: visible ? "visible" : "none" },
-            paint: { "line-color": "#2563eb", "line-width": 2.2, "line-opacity": 0.85, "line-dasharray": [2, 1] } });
+            paint: { "line-color": color, "line-width": width, "line-opacity": opacity, ...(dashed ? { "line-dasharray": [2, 1] } : {}) } });
         } else if (family === "polygon" || family === "Polygon" || family === "MultiPolygon") {
           m.addLayer({ id, type: "fill", source: `${id}-src`, layout: { visibility: visible ? "visible" : "none" },
-            paint: { "fill-color": "#2563eb", "fill-opacity": 0.18 } });
+            paint: { "fill-color": color, "fill-opacity": fillOpacity } });
           m.addLayer({ id: `${id}-line`, type: "line", source: `${id}-src`, layout: { visibility: visible ? "visible" : "none" },
-            paint: { "line-color": "#1d4ed8", "line-width": 1.6, "line-opacity": 0.9, "line-dasharray": [2, 1] } });
+            paint: { "line-color": color, "line-width": width * 0.7, "line-opacity": Math.min(1, opacity + 0.1), ...(dashed ? { "line-dasharray": [2, 1] } : {}) } });
           draftLayerIdsRef.current.add(`${id}-line`);
         } else {
           m.addLayer({ id, type: "circle", source: `${id}-src`, layout: { visibility: visible ? "visible" : "none" },
-            paint: { "circle-radius": 6, "circle-color": "#2563eb", "circle-opacity": 0.75, "circle-stroke-color": "#fff", "circle-stroke-width": 1.5 } });
+            paint: { "circle-radius": radius, "circle-color": color, "circle-opacity": opacity, "circle-stroke-color": stroke, "circle-stroke-width": 1.5 } });
         }
       } catch { /* 单个草稿渲染失败不影响其它草稿 */ }
     }
@@ -419,7 +428,7 @@ const MapViewer = forwardRef(function MapViewer(
   const draftRenderedRef = useRef(false);
   useEffect(() => {
     const list = Array.isArray(drafts) ? drafts : [];
-    const signature = JSON.stringify(list.map((d) => ({ id: d.id, v: d.visible !== false, r: d.revision })));
+    const signature = JSON.stringify(list.map((d) => ({ id: d.id, v: d.visible !== false, r: d.revision, s: d.style || {} })));
     if (signature === draftSignatureRef.current && draftRenderedRef.current) return;
     draftSignatureRef.current = signature;
     if (!loaded) return;

@@ -13,6 +13,7 @@ import 可视面板 from "./可视面板.jsx";
 import 重置对话框 from "./重置对话框.jsx";
 import 图层属性对话框 from "./图层属性对话框.jsx";
 import 临时层转正对话框 from "./临时层转正对话框.jsx";
+import 草稿样式对话框 from "./草稿样式对话框.jsx";
 import AI画布向导 from "./AI画布向导.jsx";
 import 地图文件树 from "./地图文件树.jsx";
 import { parseCsvPoints } from "../地图/CSV解析.js";
@@ -25,7 +26,7 @@ import {
   mapDuplicateProject, mapRenameProject, mapArchiveProject, mapDeleteProject,
   mapExportBatch, mapExportStatus,
   mapLayerRegistry, mapUpdateLayerMeta, mapLayerReplace, mapSetBaseline, mapReset,
-  mapDrafts, mapDraft, mapDraftConfirm, mapDraftDiscard,
+  mapDrafts, mapDraft, mapDraftConfirm, mapDraftDiscard, mapDraftUpdate,
 } from "../api.js";
 import { flag } from "../运行开关.js";
 
@@ -258,6 +259,7 @@ export default function MapPanel({
   // 草稿层（2026-11-07）：Agent 生成、等待用户确认固化的点/线/面图层。
   const [drafts, setDrafts] = useState([]);
   const [draftFixate, setDraftFixate] = useState(null);
+  const [draftStyleTarget, setDraftStyleTarget] = useState(null);
   const [aiCanvasOpen, setAiCanvasOpen] = useState(false);
   const [impTab, setImpTab] = useState("files");
   const [impDir, setImpDir] = useState("data");
@@ -409,7 +411,7 @@ export default function MapPanel({
       const detailed = await Promise.all(list.map(async (item) => {
         try {
           const full = await mapDraft(target, item.id);
-          return { ...item, geojson: full?.draft?.geojson || null };
+          return { ...item, geojson: full?.draft?.geojson || null, style: full?.draft?.style || item.style || {} };
         } catch {
           return item;
         }
@@ -1976,6 +1978,19 @@ export default function MapPanel({
     setDraftFixate(draft);
   }, []);
 
+  // 调整草稿样式（颜色/线宽/半径/透明度）：只写草稿自身 style，不碰正式图层。
+  const handleDraftStyleSave = useCallback(async (draft, style) => {
+    if (!draft?.id) return;
+    try {
+      await mapDraftUpdate(project, draft.id, { style });
+      await loadDrafts(project);
+      flash("草稿样式已更新");
+    } catch (e) {
+      notifyError(`草稿样式保存失败：${e.message}`);
+      throw e;
+    }
+  }, [project, loadDrafts, flash]);
+
   useEffect(() => {
     if (!bridgeRef) return undefined;
     bridgeRef.current = {
@@ -2301,6 +2316,7 @@ export default function MapPanel({
             onDiscardDraft={handleDiscardDraft}
             onToggleDraft={handleToggleDraft}
             onLocateDraft={handleLocateDraft}
+            onEditDraftStyle={setDraftStyleTarget}
             onToggleTempLayer={toggleTempLayer}
             onClearTempLayer={removeTempLayer}
             onSaveTempLayer={saveTempLayer}
@@ -2873,6 +2889,13 @@ export default function MapPanel({
             await handleConfirmDraft(draftFixate, { name, group });
             setDraftFixate(null);
           }}
+        />
+      )}
+      {draftStyleTarget && (
+        <草稿样式对话框
+          draft={draftStyleTarget}
+          onClose={() => setDraftStyleTarget(null)}
+          onSave={(style) => handleDraftStyleSave(draftStyleTarget, style)}
         />
       )}
       {aiCanvasOpen && (

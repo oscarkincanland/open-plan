@@ -1,4 +1,4 @@
-﻿import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import Icon from "./Icon.jsx";
 import 提示气泡 from "./提示气泡.jsx";
 import OverlayPortal from "./OverlayPortal.jsx";
@@ -64,7 +64,7 @@ export default function LayerPanel({
   layerViews = [], tempLayers = [],
   onToggleTempLayer, onClearTempLayer, onSaveTempLayer, onClearAllTemp,
   drafts = [],
-  onConfirmDraft, onDiscardDraft, onToggleDraft, onLocateDraft,
+  onConfirmDraft, onDiscardDraft, onToggleDraft, onLocateDraft, onEditDraftStyle,
   onOpenLayerProps,
 }) {
   const [collapsed, setCollapsed] = useState({});          // 组折叠
@@ -471,6 +471,18 @@ export default function LayerPanel({
                     {draft.demo && <span className="lp-row-type">演示数据</span>}
                     <span className="lp-row-type">{draft.features} 要素 · 未固化</span>
                   </span>
+                  <span
+                    className="lp-draft-color"
+                    style={{ background: (draft.style && draft.style.color) || "#2563eb" }}
+                    title={`草稿颜色 ${(draft.style && draft.style.color) || "#2563eb"}`}
+                  />
+                  {onEditDraftStyle && (
+                    <提示气泡 label="调整草稿颜色 / 粗细">
+                      <button className="lp-op" type="button" aria-label="调整草稿颜色与粗细" onClick={(e) => { e.stopPropagation(); onEditDraftStyle(draft); }}>
+                        <Icon name="tool" size={12} />
+                      </button>
+                    </提示气泡>
+                  )}
                   {onLocateDraft && (
                     <提示气泡 label="定位草稿">
                       <button className="lp-op" type="button" aria-label="定位草稿" onClick={(e) => { e.stopPropagation(); onLocateDraft(draft); }}>

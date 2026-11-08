@@ -1712,6 +1712,8 @@ export function draftSummary(draft = {}) {
     bbox: Array.isArray(stats.bbox) ? stats.bbox : null,
     demo: Boolean(draft.provenance?.demo),
     source: String(draft.provenance?.source || ""),
+    // 草稿样式（颜色/线宽/透明度等）：前端图层树与地图渲染共用。
+    style: draft.style && typeof draft.style === "object" ? draft.style : {},
     status: String(draft.status || "pending"),
     visible: draft.visible !== false,
     revision: Number(draft.revision || 1),

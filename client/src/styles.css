@@ -4917,6 +4917,23 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   margin-bottom: 10px;
 }
 .mp-iso-label { font-size: 11px; color: var(--muted); width: 52px; flex-shrink: 0; }
+/* 草稿样式对话框：色块、数值、滑杆 */
+.mp-iso-color {
+  width: 44px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel2-bg);
+  cursor: pointer;
+}
+.mp-iso-val {
+  min-width: 44px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
 .mp-iso-modes { display: flex; gap: 4px; flex-wrap: wrap; }
 .mp-iso-mode {
   background: var(--panel2-bg);
@@ -5388,6 +5405,15 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .lp-legend-loading { color: var(--dim); }
 
 /* 右键菜单 */
+.lp-draft-color {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--panel-bg) 60%, transparent);
+  margin-left: 2px;
+}
 .lp-ctx {
   /* 右键菜单 portal 到 body，使用视口坐标定位（ctx.x/y 来自 clientX/clientY）。 */
   position: fixed;
