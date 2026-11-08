@@ -90,7 +90,8 @@ import { builtinProviderDetail, builtinProviderList, buildBuiltinImport, findBui
 import { fetchModelsDevCatalog, readModelsDevCache, writeModelsDevCache } from "./模型目录dev.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+// 容错读取 package.json：历史文件可能带 UTF-8 BOM，JSON.parse 会直接抛错（导致服务无法启动）。
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8").replace(/^\uFEFF/, ""));
 const app = express();
 // P1-1 统一执行句柄：把事件广播、诊断落盘与会话键注入句柄，
 // 句柄因此不必反向依赖 index.mjs（避免模块环）。
