@@ -93,6 +93,9 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 - Agent 工具：文档、知识库、地图、联网搜索、内置浏览器、子代理、专家团队、编辑流水线等按模式开放。
 - 专家团队（Agent Teams）：Work / Review 可由 Agent 创建 Lead + 最多 2 名具名队友（总人数上限 3），共享任务板与消息；Chat 只能只读查看历史团队，不创建。团队绑定当前 Run，Run 结束即关闭；队友写文件仍走现有审批，Review 的 worker 自动降级为只读。
 - 主动询问（ask_user）：任务不明确时弹窗提问，带快捷选项与超时回执。
+- 人机协作中枢：提问、确认、预览、审批统一为可追踪的交互；同一会话允许多个待处理交互按优先级展示；未决交互在消息流折叠体外常驻。
+- 提问预算：仅当关键信息缺失且不猜会做错时提问；篇幅/受众/风格等非阻塞项一律给默认假设并注明；禁止“是否继续/下一步/是否写回”类收尾提问。
+- 默认假设 + 可撤销：澄清类交互超时（默认 90 秒）按假设继续，回执必须写明假设；用户可点击“改一下”撤销假设并发起修正；高风险确认类不得自动继续。
 - 中断排空：中断先进入排空窗口，再收束，不把半句话吞到下一轮。
 - 审批：写操作、危险操作按策略请求确认；自动批准不覆盖显式 deny。
 - 会话切换：历史首屏先展示，不等待 Agent resume；无缓存显示加载态；resume 失败时历史只读、输入与发送禁用并提供重试；快速 A→B→C 切换不串会话。
@@ -102,6 +105,9 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 - 模型/思考强度切换在下一轮或本轮生效符合预期；失败可重试且有错误态。
 - 粘贴截图自动压缩并显示前后大小；第 9 张明确提示上限；重复图片不重复加入；文本粘贴不受影响；非视觉模型发送前有确认。
 - ask_user 回答后任务继续；超时有回执。
+- 交互中枢：同一会话多个待处理交互按 approval > confirm > clarify > review 排序展示；未决交互在折叠体外常驻，刷新/切会话可恢复且不重复；同一交互重复提交只生效一次。
+- 提问预算：写作 Run 中“是否继续/下一步/是否写回”类收尾提问 = 0；关键信息缺失时一次只问一张卡（必填字段 ≤3），非阻塞项给默认假设。
+- 超时假设：clarify/review 超时默认 90 秒后按假设继续，回执写明假设并可撤销；confirm 高风险超时（默认 30 分钟）不自动继续，提示用户回来再处理。
 - 中断后时间线完整、可恢复；不出现“假完成”。
 - 审批归属清晰，子代理写回带来源标签。
 - 团队：Work/Review 能创建最多 3 人（含 Lead）的团队；Chat 无创建入口但可查看历史团队；顶栏 chip 与画布“团队”标签同步显示成员/任务/失败状态；关闭标签不终止团队，Run 结束团队关闭；面板只读。
@@ -139,7 +145,9 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 
 - 当前打开文件自动注入上下文；用户消息显示当前文件标签。
 - 支持 `@文件`、`@知识库[路径@根目录]`、`@模板[路径]`、`&会话[标题]` 引用。
+- 统一引用模型：`@文件`、`@知识库`、`@模板`、`&会话`、`@智能体`、`#技能`、`#插件` 共用同一解析契约；服务端与客户端使用同一组 fixture 保证解析一致。
 - 引用解析有状态：已解析/缺失/超出工作区；无法读取必须明示。
+- 引用 chip 三态：已解析/待解析/缺失；输入栏与气泡渲染同一 chip；删除 chip 与删除文本标记双向同步。
 - 生成类回复必须给出来源；不得编造未读取的文件内容。
 
 **验收**
@@ -147,6 +155,8 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 - 引用在发送前可见、可删除；解析失败有提示。
 - Agent 回复能引用实际读取的文件/知识库内容；来源不可伪造。
 - 切换工作区后旧引用不误用。
+- `@文件/@知识库/@模板/&会话/@智能体/#技能/#插件` 在发送前、发送后、服务端解析后三态一致；解析失败必须明示，不得静默显示为普通文字。
+- 引用 chip 可点击查看解析状态与来源；删除 chip 与删除文本标记双向同步。
 
 ### R5 会话管理
 
@@ -172,6 +182,10 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 - 智能体广场：面向交通规划的预置助手，一键 @ 注入角色与依赖技能。
 - 技能广场：分类展示、@ 调用、导入/导出、管理与搜索。
 - 技能策略：每轮注入当前可用技能目录（workspace/project 优先，按预算截断），模型按任务与 description 判断是否 `skills_read`；目录被截断或不确定时用 `skills_search`，不再按简单/复杂任务硬性禁用。技能草稿只写工作区 `.oaw/skill-drafts`，安装到技能库必须由用户确认；运行宪法（L0）内置只读，工作区 `AGENTS.md`（L1）只加载一次，记忆（L2）不重复规则。
+- 技能目录质量：frontmatter 支持 `description: >`/`|` 块标量；所有本地技能的名称与描述必须完整出现在 `/api/skills` 与每轮目录注入中（预算不足时截断描述而不是删除条目）。
+- 技能策略只有“开/关”两档：开启时每轮注入目录，由模型按任务与 description 自行判断是否 `skills_read`/`skills_search`；关闭时不注入目录（显式 `@技能` 仍可预检）；旧值 `auto/always` 读取映射为开。
+- 技能依赖：技能必须用 `requires` 声明运行时/包/平台/网络需求；缺失时返回 `ready/degraded/blocked` 与可执行替代方案；未获用户确认不得执行任何安装命令；确认后只允许安装到当前工作区 `.oaw/skill-deps/`。
+- 技能搜索：自然语言查询（含中文别名）必须命中并返回命中理由；同一 Run 搜索次数受限，无命中时直接执行主任务，不换词反复空搜。
 - 结构化工作流：服务端注册表声明依赖，启动前 preflight 校验，缺失依赖可解释拦截。
 - 支持创建/编辑/删除自定义 Agent，配置持久化。
 - 工作流包含领域硬约束（坐标、记录数、写回、产物根）。
@@ -182,6 +196,12 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 - 缺失工作流/技能时返回可解释错误，不“声明了却调不到”。
 - 归档会话默认不出现；设置「归档历史」可恢复/批量恢复/永久删除；运行中归档返回可解释拒绝。
 - 技能目录每轮可见且支持 workspace 级技能热更新；草稿未确认前技能库不变。
+- 技能目录注入覆盖全部可用技能名称至少一次；预算不足时截断描述而非整条丢弃；块标量描述完整解析。
+- 中文自然语言查询（`PPT 演示`、`生成PPT`、`幻灯片` 等 17 个查询）≥14 个有合理 top3 且带命中理由。
+- `/api/skills` 返回 `requires/depsStatus/aliases/descriptionComplete` 等字段；`skills_read` 不因字符截断丢失技能步骤（≤64KB 全文返回，更大返回目录 + 分段提示）。
+- 未获用户确认时 Run 内安装命令 = 0；确认后只安装到 `office-workspace/.oaw/skill-deps/`，manifest 与锁文件生成。
+- 技能依赖状态 ready/degraded/blocked 三态可解释；blocked 时给出替代方案且不自动安装。
+- workspace 级技能热更新后缓存正确失效，无需重启。
 - 自定义 Agent 重启后仍在；工作流依赖校验有测试。
 - 领域硬约束不通过时阻断执行并给出事件/原因。
 
@@ -317,6 +337,9 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 - 显式回滚、成果验收台、成果固定；未验收不得标记成功。
 - 任务中心：并行任务、状态筛选、取消/恢复/重试、打开会话。
 - 运行预算与执行轨迹可归约展示。
+- 写作回合预算：写作 Run 默认受回合预算约束（软 30 / 硬 60）；命中后先收尾并如实记录。
+- 写作一次成稿：Markdown 正文直接生成 docx/pptx；预览即终稿；仅在用户显式要求或预计正文 >8000 字时提供可选大纲。
+- 版式精修使用 officecli 批处理（一次 `batch`），禁止逐属性 `set`。
 
 **验收**
 
@@ -326,6 +349,9 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 - 任务中心筛选/操作不产生重复运行或幽灵任务。
 - 文档类产物必须进入产物台账并通过规则闸门（9 项）才算交付；未过闸门的产物如实标为待改进，不报“已完成”。
 - 写作类任务的工具失败率与回合数受预算约束（硬预算后进入受限收尾，禁止继续改文件）；超限须如实记入运行轨迹。
+- 写作 Run 默认受回合预算约束（软 30 / 硬 60）；命中后先收尾并如实记录，不伪装完成。
+- 写作默认一次成稿：不产生独立大纲轮；Markdown 直通产出 docx/pptx；预览自动打开即终稿入口，修改后重排一次不重走流程。
+- 版式精修使用 officecli 批处理（一次 `batch`），officecli 调用/文档 p90 ≤40（max ≤80），不再逐属性 `set`。
 
 ### R14 记忆治理
 
@@ -422,18 +448,18 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 | 需求 | 主要落点 | 主要验证 |
 |---|---|---|
 | R1 文档办公 | `client/src/components/DocViewer.jsx`、`DocxViewer.jsx`、`PptxViewer.jsx`、`ExcelGrid.jsx`、`server/文档引擎.mjs` | `test:doc-engine`、`test:preview-identity`、`npm run verify` |
-| R2 Agent 协作 | `server/agent.mjs`、`server/团队编排器.mjs`、`server/Pi运行时管理.mjs`、`client/src/components/ChatPanel.jsx`、`TeamPanel.jsx`、`client/src/团队投影.js` | `test:capability-contract`、`test:team`、`test:team-panel`、`test:pi-config`、`test:abort-drain` |
+| R2 Agent 协作 | `server/agent.mjs`、`server/团队编排器.mjs`、`server/Pi运行时管理.mjs`、`server/交互中枢.mjs`、`client/src/components/ChatPanel.jsx`、`client/src/components/交互/*`、`TeamPanel.jsx`、`client/src/团队投影.js` | `test:capability-contract`、`test:team`、`test:team-panel`、`test:pi-config`、`test:abort-drain`、`test:interaction-hub`、`test:ava-question` |
 | R3 对话流/运行 | `client/src/运行展示投影.js`、`ChatPanel.jsx`、`server/runs.mjs` | `test:chat-flow`、`test:conclusion`、`test:run-trace` |
-| R4 上下文引用 | `server/context.mjs`、`client/src/App.jsx` | `test:main-flow`、`npm run verify` |
+| R4 上下文引用 | `server/context.mjs`、`client/src/引用标记.js`、`client/src/components/输入区/*`、`client/src/App.jsx` | `test:main-flow`、`test:composer-refs`、`test:ref-parser`、`npm run verify` |
 | R5 会话管理 | `server/index.mjs` 会话路由、`SessionSidebar.jsx` | `test:startup`、`test:interaction-owner` |
-| R6 智能体/工作流 | `server/工作流注册表.mjs`、`server/工作流校验.mjs`、`AgentMarket.jsx` | `test:workflow-contract`、`test:capability-contract` |
+| R6 智能体/工作流 | `server/工作流注册表.mjs`、`server/工作流校验.mjs`、`server/技能目录.mjs`、`server/Skill注入.mjs`、`server/技能依赖.mjs`、`server/技能安装.mjs`、`server/技能别名.mjs`、`AgentMarket.jsx` | `test:workflow-contract`、`test:capability-contract`、`test:skill-discovery`、`test:skill-deps`、`test:skill-injection` |
 | R7 批注修订 | `client/src/components/CommentMarker.jsx`、`server/文档引擎.mjs` | `test:doc-engine`、手工验收 |
 | R8 主题/视觉 | `client/src/styles.css`、`theme.jsx`、`Icon.jsx`、`DESIGN.md` | `test:design-tokens`、`test:a11y`、`test:motion` |
 | R9 知识库 | `server/kb.mjs`、`KnowledgeBase.jsx`、`KnowledgeGraph.jsx`、`MindMap.jsx` | `npm run verify`、手工验收 |
 | R10 地图/GIS | `server/map.mjs`、`map-analysis.mjs`、`MapPanel.jsx`、`LayerPanel.jsx`、`AttributeTable.jsx` | `test:map-readonly`、`test:map-layers`、`test:map-visual`、`test:map-chat`、`test:spatial` |
 | R11 模板库 | `server/tpl.mjs`、`TemplateLibrary.jsx` | `npm run verify`、手工验收 |
 | R12 工作区/项目 | `server/workspace.mjs`、`项目管理.mjs`、`项目信任.mjs` | `test:workspace-isolation`、`npm run verify` |
-| R13 任务/产物 | `server/runs.mjs`、`执行句柄.mjs`、`写入协调.mjs`、`成果管理.mjs` | `test:artifacts`、`test:run-budget`、`test:write-lock` |
+| R13 任务/产物 | `server/runs.mjs`、`执行句柄.mjs`、`写入协调.mjs`、`成果管理.mjs`、`server/编辑流水线.mjs`、`server/轮次预算.mjs`、`server/运行预算.mjs` | `test:artifacts`、`test:run-budget`、`test:write-lock`、`test:writing-oneshot`、`test:writing-style` |
 | R14 记忆治理 | `server/记忆管理.mjs`、`记忆准入.mjs` | `test:memory-admission`、`test:workflow-contract` |
 | R15 供应商/配置 | `server/供应商目录.mjs`、`Pi配置管理.mjs`、`供应商库.jsx` | `test:provider-catalog`、`test:pi-config-api` |
 | R16 系统集成 | `server/内置浏览器.mjs`、`联网搜索.mjs`、`client/src/长连接预算.js` | `test:browser`、`test:search`、`test:stream-budget` |
