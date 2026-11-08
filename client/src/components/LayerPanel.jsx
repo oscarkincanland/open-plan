@@ -1,6 +1,7 @@
-import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
+﻿import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import Icon from "./Icon.jsx";
 import 提示气泡 from "./提示气泡.jsx";
+import OverlayPortal from "./OverlayPortal.jsx";
 import { mapGetLayer } from "../api.js";
 
 const GROUP_ORDER = ["行政区划", "公路网", "设施点", "其他"];
@@ -595,8 +596,9 @@ export default function LayerPanel({
         );
       })}
 
-      {/* 右键菜单 */}
+      {/* 右键菜单：portal 到 body，避免被地图容器层叠上下文裁剪/遮挡 */}
       {ctx && (
+        <OverlayPortal>
         <div className="lp-ctx" style={{ left: ctx.x, top: ctx.y }} onClick={(e) => e.stopPropagation()}>
           <button onClick={ctxAction(() => onOpenLayerProps?.(ctx.layerId))}><Icon name="info" size={12} /> 图层属性 / 元数据</button>
           <button onClick={ctxAction(() => onOpenAttribute(ctx.layerId))}><Icon name="list" size={12} /> 属性表</button>
@@ -618,6 +620,7 @@ export default function LayerPanel({
           <div className="lp-ctx-sep" />
           <button className="danger" onClick={ctxAction(() => onDeleteLayer(ctx.layerId))}><Icon name="trash" size={12} /> 删除图层</button>
         </div>
+        </OverlayPortal>
       )}
 
       {/* 样式编辑器（选中图层） */}

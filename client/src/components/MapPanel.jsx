@@ -3,6 +3,7 @@ import MapViewer from "./MapViewer.jsx";
 import ChatPanel from "./ChatPanel.jsx";
 import LayerPanel from "./LayerPanel.jsx";
 import AttributeTable from "./AttributeTable.jsx";
+import OverlayPortal from "./OverlayPortal.jsx";
 import Icon from "./Icon.jsx";
 import 提示气泡 from "./提示气泡.jsx";
 import TaskCenter from "./任务中心.jsx";
@@ -24,7 +25,7 @@ import {
   mapDuplicateProject, mapRenameProject, mapArchiveProject, mapDeleteProject,
   mapExportBatch, mapExportStatus,
   mapLayerRegistry, mapUpdateLayerMeta, mapLayerReplace, mapSetBaseline, mapReset,
-  mapDrafts, mapDraftConfirm, mapDraftDiscard,
+  mapDrafts, mapDraft, mapDraftConfirm, mapDraftDiscard,
 } from "../api.js";
 import { flag } from "../运行开关.js";
 
@@ -404,9 +405,18 @@ export default function MapPanel({
     try {
       const r = await mapDrafts(target);
       const list = Array.isArray(r?.drafts) ? r.drafts : [];
-      setDrafts(list);
-      mapRef.current?.showDrafts?.(list);
-      return list;
+      // 列表接口只返回摘要（不含 GeoJSON）；地图渲染需要几何，按 id 拉取详情后合并。
+      const detailed = await Promise.all(list.map(async (item) => {
+        try {
+          const full = await mapDraft(target, item.id);
+          return { ...item, geojson: full?.draft?.geojson || null };
+        } catch {
+          return item;
+        }
+      }));
+      setDrafts(detailed);
+      mapRef.current?.showDrafts?.(detailed);
+      return detailed;
     } catch {
       setDrafts([]);
       mapRef.current?.showDrafts?.([]);
@@ -2322,6 +2332,7 @@ export default function MapPanel({
             ref={mapRef}
             project={project}
             config={cfg}
+            drafts={drafts}
             onBasemapResolved={(id) => setCfg((prev) => (prev && prev.basemap === id ? prev : { ...(prev || {}), basemap: id }))}
             onViewportChange={(context) => {
               // 视口上报时带上当前下钻区域名：对话栏的"地图状态行"与 Agent 上下文
@@ -2682,7 +2693,8 @@ export default function MapPanel({
         </div>
       )}
 
-      {/* 属性表弹窗 */}
+      {/* 属性表弹窗 —— 以下所有弹层统一 portal 到 body，避免被右侧对话栏（z-index 更高）遮挡 */}
+      <OverlayPortal>
       {attrLayer && (
         <AttributeTable
           project={project}
@@ -2886,6 +2898,7 @@ export default function MapPanel({
           onClose={() => setFileTreeOpen(false)}
         />
       )}
+      </OverlayPortal>
     </div>
   );
 }

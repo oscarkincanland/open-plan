@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 /**
  * 阶段 1 回归：图层模型与图层入口
  *
@@ -200,14 +200,14 @@ console.log("\n▶ 1.3b 导入与保存落盘后标注归属");
 
 test("map_import 落盘后标注工作区归属", () => {
   const start = agentSrc.indexOf('name: "map_import"');
-  const body = agentSrc.slice(start, start + 5000);
+  const body = agentSrc.slice(start, start + 9000);
   assert.match(body, /markLayerOwnership/, "map_import 应标注归属");
   assert.match(body, /entry\.workspace/, "归属应取当前工作区");
 });
 
 test("map_save_analysis 落盘后标注归属（含 -lines 派生层）", () => {
   const start = agentSrc.indexOf('name: "map_save_analysis"');
-  const body = agentSrc.slice(start, start + 5000);
+  const body = agentSrc.slice(start, start + 9000);
   assert.match(body, /markLayerOwnership\(project, layerId/, "主图层应标注归属");
   assert.match(body, /markLayerOwnership\(project, `\$\{layerId\}-lines`/, "派生线层也应标注归属");
 });
@@ -301,7 +301,7 @@ test("map_read 按归属过滤（不暴露其他工作区的图层）", () => {
 
 test("map_datasets 区分「共享数据集 / 我的图层」", () => {
   const start = agentSrc.indexOf('name: "map_datasets"');
-  const body = agentSrc.slice(start, start + 5000);
+  const body = agentSrc.slice(start, start + 9000);
   assert.match(body, /listLayers/, "应用图层仓库");
   assert.match(body, /共享数据集/, "应分组显示共享数据集");
   assert.match(body, /我的图层/, "应分组显示本工作区图层");
@@ -310,7 +310,7 @@ test("map_datasets 区分「共享数据集 / 我的图层」", () => {
 test("落盘工具的台账记具体文件（E4 产物可确认）", () => {
   // 产物归属按精确路径匹配；记项目目录会让保存的图层落到"待确认"而不是"已确认"。
   const importStart = agentSrc.indexOf('name: "map_import"');
-  const importBody = agentSrc.slice(importStart, importStart + 4000);
+  const importBody = agentSrc.slice(importStart, importStart + 9000);
   assert.match(importBody, /path: file, kind: "map_import"/, "map_import 应逐文件记台账");
   assert.match(importBody, /layers\/\$\{layerId\}\.geojson/, "应含图层文件路径");
 

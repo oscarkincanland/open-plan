@@ -4882,7 +4882,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .mp-iso-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 120;
+  z-index: 260;
   background: rgba(0, 0, 0, 0.35);
   display: flex;
   align-items: flex-start;
@@ -5389,8 +5389,9 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 
 /* 右键菜单 */
 .lp-ctx {
-  position: absolute;
-  z-index: 130;
+  /* 右键菜单 portal 到 body，使用视口坐标定位（ctx.x/y 来自 clientX/clientY）。 */
+  position: fixed;
+  z-index: 250;
   min-width: 150px;
   background: var(--panel-bg);
   border: 1px solid var(--border);
@@ -5500,7 +5501,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .lp-attr-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 140;
+  z-index: 270;
   background: rgba(0, 0, 0, 0.4);
   display: flex;
   align-items: center;
@@ -6801,7 +6802,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .mp-tool-btn.active { background: var(--accent); color: var(--on-accent); }
 .mp-toolmenu {
   position: absolute;
-  z-index: 130;
+  z-index: 250;
   top: 40px;
   left: 12px;
   min-width: 140px;

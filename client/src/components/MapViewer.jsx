@@ -57,7 +57,7 @@ function setBasemapVisibility(map, ids, desired) {
  * - 导出 PNG / 导入 GeoJSON+SHP（外部 ref API）
  */
 const MapViewer = forwardRef(function MapViewer(
-  { project = "zhejiang-map", config, onConfigChange, onBasemapResolved, onLayerTilesChanged, onDrillDown, onViewportChange, readOnly = false, initialView = null, reloadToken = 0 },
+  { project = "zhejiang-map", config, onConfigChange, onBasemapResolved, onLayerTilesChanged, onDrillDown, onViewportChange, readOnly = false, initialView = null, reloadToken = 0, drafts = [] },
   ref
 ) {
   const containerRef = useRef(null);
@@ -381,12 +381,13 @@ const MapViewer = forwardRef(function MapViewer(
   }, []);
 
   const showDraftLayers = useCallback((map, drafts = []) => {
+    // 先记录列表：地图可能尚未完成 style 加载，等 markReady/applyStyle 时再重放。
+    draftListRef.current = Array.isArray(drafts) ? drafts : [];
     const m = map || mapRef.current;
     if (!m || !m.isStyleLoaded?.()) return false;
-    draftListRef.current = Array.isArray(drafts) ? drafts : [];
     clearDraftLayers(m);
     for (const draft of draftListRef.current) {
-      const id = `draft-${String(draft.id || "x").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+      const id = `draft-${String(draft.id || "x").replace(/^draft-/, "").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
       const payload = draft.geojson;
       if (!payload) continue;
       const visible = draft.visible !== false;
@@ -411,6 +412,35 @@ const MapViewer = forwardRef(function MapViewer(
     }
     return true;
   }, [clearDraftLayers]);
+
+  // 草稿层随 props 同步渲染：MapPanel 在 MapViewer 懒加载完成前可能已经拿到草稿列表，
+  // 因此不能只依赖命令式 showDrafts；这里按 id/可见性/版本签名变化重放，并在样式就绪前短重试。
+  const draftSignatureRef = useRef("");
+  const draftRenderedRef = useRef(false);
+  useEffect(() => {
+    const list = Array.isArray(drafts) ? drafts : [];
+    const signature = JSON.stringify(list.map((d) => ({ id: d.id, v: d.visible !== false, r: d.revision })));
+    if (signature === draftSignatureRef.current && draftRenderedRef.current) return;
+    draftSignatureRef.current = signature;
+    if (!loaded) return;
+    let cancelled = false;
+    let tries = 0;
+    let timer = null;
+    const attempt = () => {
+      if (cancelled) return;
+      const ok = showDraftLayers(mapRef.current, list);
+      draftRenderedRef.current = ok === true;
+      if (!ok && tries < 12) {
+        tries += 1;
+        timer = window.setTimeout(attempt, 300);
+      }
+    };
+    attempt();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [loaded, drafts, showDraftLayers]);
 
   const showAnalysisLayer = (map, payload = {}, options = {}) => {
     if (!map || !payload.geojson || !map.isStyleLoaded?.()) return false;
@@ -514,6 +544,8 @@ const MapViewer = forwardRef(function MapViewer(
       setLoadError("");
       setLoaded(true);
       ensureRuntimeLayers(map);
+      // 首屏恢复草稿层（可能早于地图就绪加载）。
+      if (draftListRef.current.length) showDraftLayers(map, draftListRef.current);
       ensureBoundaryLabelSources(map).then(() => {
         ensureRuntimeLayers(map);
         if (drillRef.current) applyDrillState(map, drillRef.current);
