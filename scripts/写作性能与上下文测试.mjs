@@ -80,6 +80,13 @@ test("运行开关：writingLeanContext / writingBudget / writingOneShot 均存�
   assert.match(flags, /writingBudget: readFlag\("OAW_WRITING_BUDGET"\)/);
 });
 
+test("/api/status 快照包含全部 2026-11-08 新开关（否则前端 flag() 永远读不到）", () => {
+  const flags = read("server/运行开关.mjs");
+  for (const key of ["skillDeps", "interactionHub", "composerUnified", "writingOneShot", "writingLeanContext", "askAssumption", "writingBudget"]) {
+    assert.match(flags, new RegExp(`\\b${key}: RUNTIME_FLAGS\\.${key}`), `快照缺少 ${key}`);
+  }
+});
+
 test("写作路由预算/播报/思考档位仍按 D0/D4 接好", () => {
   const agent = read("server/agent.mjs");
   assert.match(agent, /soft: 30, hard: 60, interval: 0/);
