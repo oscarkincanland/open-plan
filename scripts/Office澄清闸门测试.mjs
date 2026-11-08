@@ -74,10 +74,12 @@ console.log("\n▶ 编辑追问与流水线回传（6 例）");
 await test("编辑意图 + 有文件 → edit", () => {
   assert.equal(routeTaskIntent({ text: "改一下", task: { mode: "agent", currentFile: "a.docx" } }).route, "edit");
 });
-await test("提示词包含“改哪一段/改成什么/是否保留原格式”", () => {
-  assert.ok(AGENT_SOURCE.includes("改哪一段"));
-  assert.ok(AGENT_SOURCE.includes("改成什么"));
-  assert.ok(AGENT_SOURCE.includes("是否保留原格式"));
+await test("提示词包含写作提问预算（只问阻塞项、非阻塞项默认并标注）", () => {
+  // 2026-11-08 提问预算（计划 2026-11-08-001 §10；D4 一次成稿沿用）：不再要求“改哪一段/改成什么”
+  // 这类编辑追问，只保留阻塞项（文档类型/产物格式/必须包含的数据/覆盖范围）并禁止收尾确认提问。
+  assert.ok(AGENT_SOURCE.includes("文档类型/产物格式/必须包含的数据/覆盖范围"));
+  assert.ok(AGENT_SOURCE.includes("禁止提问"));
+  assert.ok(AGENT_SOURCE.includes("篇幅、受众、风格"));
 });
 await test("流水线缺信息 → needs_clarification，不产成品", async () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "oaw-clarify-"));

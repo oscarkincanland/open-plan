@@ -174,12 +174,19 @@ await test("sourceMarkdown 的表格保留", async () => {
   const view = await runNativeOfficeCommand(["view", result.deliverable, "text"], { cwd: workspace });
   assert.ok(String(view.text).includes("A"));
 });
-await test("sourceMarkdown 仅支持 docx", async () => {
+await test("sourceMarkdown 直通同时支持 docx 与 pptx（一次成稿默认路径）", async () => {
+  // 2026-11-08 D4（ADR-0028）：Markdown 直通排版是写作一次成稿的默认路径，
+  // pptx 按标题分页（旧断言“仅支持 docx”与一次成稿直接冲突，已最小更新）。
   const workspace = fs.mkdtempSync(path.join(tmp, "md-"));
-  await assert.rejects(
-    () => runEditorialPipeline({ format: "pptx", goal: "x", workspace, sourceMarkdown: "# x", modelReview: false, runModelTask: async () => "" }),
-    /sourceMarkdown 仅支持 docx/,
-  );
+  const md = "# 测试汇报\n\n## 第一章 进展\n\n- 要点一\n\n## 第二章 计划\n\n正文段落。";
+  const result = await runEditorialPipeline({
+    format: "pptx", goal: "写一份汇报", workspace, sourceMarkdown: md, modelReview: false,
+    runModelTask: async () => { throw new Error("不应调用模型"); },
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(result.source, "markdown");
+  assert.ok(result.deliverable && result.deliverable.endsWith(".pptx"));
+  assert.ok(fs.existsSync(path.join(workspace, result.deliverable)), "pptx 产物应存在");
 });
 
 try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {}

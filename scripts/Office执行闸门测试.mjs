@@ -41,13 +41,24 @@ test("编辑路由 → officecli 写放行", () => assert.equal(call("officecli"
 test("Chat 模式 → 放行", () => assert.equal(call("bash", { command: "node build/build.mjs" }, { mode: "chat" }).blocked, false));
 test("Review 模式 → 放行", () => assert.equal(call("bash", { command: "node build/build.mjs" }, { mode: "review" }).blocked, false));
 
-console.log("\n▶ bash 生成拦截（8 例）");
-test("node 生成脚本 → 拦截", () => {
+console.log("\n▶ bash 生成拦截（D1 收窄后）");
+test("普通 node 构建脚本 → 放行（不再一律当 Office 生成）", () => {
   const r = call("bash", { command: "node build/build.mjs" });
-  assert.equal(r.blocked, true);
-  assert.equal(r.code, "OFFICE_PIPELINE_REQUIRED");
+  assert.equal(r.blocked, false);
 });
 test("python-docx → 拦截", () => assert.equal(call("bash", { command: "python build.py # docx" }).blocked, true));
+test("文件名含 ppt 的脚本 → 拦截", () => assert.equal(call("bash", { command: "python build_ppt.py" }).blocked, true));
+test("普通 python 数据分析脚本 → 放行", () => assert.equal(call("bash", { command: "python tools/analyze_data.py --input a.csv" }).blocked, false));
+test("技能白名单通道：显式技能目录下的 Office 脚本 → 放行", () => {
+  const root = "/proj/.claude/skills/ultimate-ppt-master-skill";
+  const r = call("bash", { command: `python ${root}/scripts/svg_to_pptx.py` }, { skillExec: { allowed: true, roots: [root] } });
+  assert.equal(r.blocked, false);
+  assert.equal(r.skillExec, true);
+});
+test("未显式调用技能时，同名脚本仍按 Office 生成拦截", () => {
+  const r = call("bash", { command: "python /proj/.claude/skills/ultimate-ppt-master-skill/scripts/svg_to_pptx.py" });
+  assert.equal(r.blocked, true);
+});
 test("pandoc 转 docx → 拦截", () => assert.equal(call("bash", { command: "pandoc a.md -o a.docx" }).blocked, true));
 test("重定向写 docx → 拦截", () => assert.equal(call("bash", { command: "echo x > 报告.docx" }).blocked, true));
 test("officecli via bash → 拦截", () => assert.equal(call("bash", { command: "officecli create a.docx --type docx" }).blocked, true));
@@ -118,7 +129,8 @@ test("officecli --allow-manual → 放行并剥离", () => {
   assert.equal(r.sanitizedInput.args.includes("--allow-manual"), false);
 });
 test("isDocxGenerationCommand 识别生成、放过只读", () => {
-  assert.equal(isDocxGenerationCommand("node build/build.mjs"), true);
+  assert.equal(isDocxGenerationCommand("node make_ppt.mjs"), true);
+  assert.equal(isDocxGenerationCommand("node build/build.mjs"), false);
   assert.equal(isDocxGenerationCommand("unzip -p a.docx word/document.xml"), false);
 });
 test("isReadonlyBash 识别只读", () => {

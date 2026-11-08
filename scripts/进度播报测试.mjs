@@ -151,7 +151,7 @@ const chatSource = fs.readFileSync(path.join(ROOT, "client/src/components/ChatPa
 test("周期播报间隔可配置且默认 6 轮", () => {
   assert.match(budgetSource, /OAW_TURN_PROGRESS_INTERVAL \|\| "6"/);
   assert.match(budgetSource, /interval > 0 && turn >= minTurns && turn % interval === 0/);
-  assert.match(agentSource, /turnNoticeKind\(entry\.turnCount\)/);
+  assert.match(agentSource, /turnNoticeKind\(entry\.turnCount,\s*writingBudget/);
 });
 
 test("周期播报通过 steer 下发并要求写进正文", () => {
@@ -203,7 +203,9 @@ test("自定义间隔与最小回合数生效", () => {
 test("提醒文案包含轮次数与行为要求", () => {
   assert.match(turnNoticeText("turn-progress", 12), /本轮已经进行 12 个模型回合/);
   assert.match(turnNoticeText("turn-progress", 12), /不要在小结里调用工具/);
-  assert.match(turnNoticeText("turn-budget", 25), /ask_user/);
+  assert.match(turnNoticeText("turn-budget", 25), /阶段结论/);
+  assert.match(turnNoticeText("turn-budget", 25), /不要停下来征求/);
+  assert.doesNotMatch(turnNoticeText("turn-budget", 25), /ask_user/);
   assert.match(turnNoticeText("turn-budget-hard", 45), /最终答复/);
   assert.equal(turnNoticeText("unknown", 1), "");
 });

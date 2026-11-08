@@ -77,5 +77,26 @@ test("样式包含回执与跳过按钮", () => {
   assert.match(styles, /\.ask-skip \{/, "缺少 .ask-skip");
 });
 
-console.log(failed ? "\nask 超时与跳过测试：存在失败项" : "\nask 超时与跳过测试：全部通过（7 例）");
+// ---- 2026-11-08 D0-7：默认假设 + 可撤销的契约 ----
+test("ask_user 支持 intent 与 assumption", () => {
+  assert.match(agent, /intent: Type\.Optional\(Type\.Union\(/, "工具 schema 缺少 intent");
+  assert.match(agent, /assumption: Type\.Optional\(Type\.String/, "工具 schema 缺少 assumption");
+  assert.match(agent, /intent === "confirm" \? "" : "按专业判断继续/, "clarify/review 应有默认假设兜底");
+});
+
+test("澄清类短超时按假设继续，确认类不自动继续", () => {
+  const runFlags = read("server/运行开关.mjs");
+  assert.match(runFlags, /askAssumption: readFlag\("OAW_ASK_ASSUMPTION"\)/, "缺少 askAssumption 开关");
+  assert.match(runFlags, /askAssumeTimeoutMs: readPositiveInt\("OAW_ASK_ASSUME_TIMEOUT_MS", 90_000\)/, "默认 90 秒");
+  assert.match(agent, /const assumeEnabled = RUNTIME_FLAGS\.askAssumption && intent !== "confirm"/, "confirm 不应走假设继续");
+  assert.match(agent, /已按假设继续：\$\{assumption\}/, "超时工具结果应写明假设");
+  assert.match(agent, /resolvePendingAsk\(clientId, null, "assumed"\)/, "应记录 assumed 状态");
+});
+
+test("按 Run 限制技能搜索次数（防连续空搜）", () => {
+  assert.match(agent, /entry\.skillSearchAttempts = new Map\(\)/, "缺少 Run 级搜索计数");
+  assert.match(agent, /attempts > 3/, "缺少搜索次数上限");
+});
+
+console.log(failed ? "\nask 超时与跳过测试：存在失败项" : "\nask 超时与跳过测试：全部通过（10 例）");
 process.exit(failed ? 1 : 0);

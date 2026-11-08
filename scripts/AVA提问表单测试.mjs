@@ -38,7 +38,8 @@ test("ask_user 声明 fields 参数与五种字段类型", () => {
 
 test("ask_user 事件与持久化携带 fields", () => {
   assert.match(agent, /\.\.\.\(fields\.length \? \{ fields \} : \{\}\)/);
-  assert.match(agent, /options: opts,\n\s+(?:previewFile: previewFile \|\| null,\n\s+)?\.\.\.\(fields\.length \? \{ fields \} : \{\}\),\n\s+status: "pending"/);
+  // D2 起持久化字段顺序加入 intent/assumption，断言只要求 fields 在 pending 记录内可见。
+  assert.match(agent, /fields\.length \? \{ fields \} : \{\}\)[\s\S]{0,240}?status: "pending"/);
 });
 
 test("回答接口支持 values 并序列化", () => {

@@ -52,19 +52,22 @@ test("多材料/批量/工作流/审查升级为 complex", () => {
   assert.ok(result.reasons.length >= 2);
 });
 
-test("auto：简单/复杂都注入 catalog；显式技能 preflight", () => {
+test("on（默认，旧 auto/always 迁移为 on）：简单/复杂都注入 catalog；显式技能 preflight", () => {
   const simple = estimateTaskComplexity({ text: "读一下文件" });
   const complex = estimateTaskComplexity({ text: "汇总三份材料成完整报告" });
   assert.equal(resolveSkillsRouting({ complexity: simple, task: {} }), "catalog");
   assert.equal(resolveSkillsRouting({ complexity: complex, task: {} }), "catalog");
+  assert.equal(resolveSkillsRouting({ complexity: simple, task: { projectSettings: { skillsPolicy: "on" } } }), "catalog");
+  assert.equal(resolveSkillsRouting({ complexity: simple, task: { projectSettings: { skillsPolicy: "auto" } } }), "catalog");
+  assert.equal(resolveSkillsRouting({ complexity: simple, task: { projectSettings: { skillsPolicy: "always" } } }), "catalog");
   assert.equal(resolveSkillsRouting({ complexity: simple, task: { workflowId: "wf" } }), "preflight");
   assert.equal(resolveSkillsRouting({ complexity: simple, text: "@技能[docx]" }), "preflight");
 });
 
-test("off 关闭目录注入，always 仍走 catalog", () => {
+test("off 关闭目录注入；显式技能仍 preflight", () => {
   const simple = estimateTaskComplexity({ text: "读一下文件" });
   assert.equal(resolveSkillsRouting({ complexity: simple, task: { projectSettings: { skillsPolicy: "off" } } }), "off");
-  assert.equal(resolveSkillsRouting({ complexity: simple, task: { projectSettings: { skillsPolicy: "always" } } }), "catalog");
+  assert.equal(resolveSkillsRouting({ complexity: simple, task: { projectSettings: { skillsPolicy: "off" } }, text: "#技能[docx]" }), "preflight");
 });
 
 test("草稿默认允许；complex 仅复杂任务；off 关闭", () => {
@@ -136,6 +139,17 @@ test("SkillsManager 有草稿区与安装/丢弃；设置里有技能策略与�
   assert.match(settings, /skillsPolicy/);
   assert.match(settings, /allowSkillDrafts/);
   assert.match(settings, /技能草稿只写工作区/);
+});
+
+test("D1：技能策略 UI 只有开/关，依赖状态与安装入口可见", () => {
+  const skills = read("client/src/components/SkillsManager.jsx");
+  const settings = read("client/src/components/SettingsPanel.jsx");
+  assert.match(settings, /<option value="on">开启（每轮注入目录，由模型自行判断是否使用）<\/option>/);
+  assert.match(settings, /<option value="off">关闭（不注入技能目录，显式点名仍预检）<\/option>/);
+  assert.doesNotMatch(settings, /value="auto"/);
+  assert.match(skills, /安装依赖/);
+  assert.match(skills, /\/api\/skills\/\$\{encodeURIComponent\(skill\.name\)\}\/deps\/install/);
+  assert.match(skills, /\.oaw\/skill-deps/);
 });
 
 test("@技能 与 #技能 两个解析器都归一", () => {
