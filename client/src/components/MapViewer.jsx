@@ -362,6 +362,56 @@ const MapViewer = forwardRef(function MapViewer(
     analysisKindsRef.current.delete(id);
   };
 
+  // ---- 草稿层渲染（2026-11-07）：Agent 生成、等待用户确认固化的点/线/面 ----
+  // 只画在运行时，不写 style.json；样式重载后按 draftListRef 重放。
+  const draftListRef = useRef([]);
+  const draftLayerIdsRef = useRef(new Set());
+
+  const clearDraftLayers = useCallback((map) => {
+    const m = map || mapRef.current;
+    if (!m) return;
+    for (const id of draftLayerIdsRef.current) {
+      try { if (m.getLayer(id)) m.removeLayer(id); } catch {}
+      try { if (m.getSource(id)) m.removeSource(id); } catch {}
+    }
+    for (const id of draftLayerIdsRef.current) {
+      try { if (m.getSource(`${id}-src`)) m.removeSource(`${id}-src`); } catch {}
+    }
+    draftLayerIdsRef.current.clear();
+  }, []);
+
+  const showDraftLayers = useCallback((map, drafts = []) => {
+    const m = map || mapRef.current;
+    if (!m || !m.isStyleLoaded?.()) return false;
+    draftListRef.current = Array.isArray(drafts) ? drafts : [];
+    clearDraftLayers(m);
+    for (const draft of draftListRef.current) {
+      const id = `draft-${String(draft.id || "x").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+      const payload = draft.geojson;
+      if (!payload) continue;
+      const visible = draft.visible !== false;
+      const family = draft.geometryType || payload.features?.[0]?.geometry?.type || "point";
+      try {
+        m.addSource(`${id}-src`, { type: "geojson", data: payload });
+        draftLayerIdsRef.current.add(id);
+        if (family === "line" || family === "LineString" || family === "MultiLineString") {
+          m.addLayer({ id, type: "line", source: `${id}-src`, layout: { visibility: visible ? "visible" : "none" },
+            paint: { "line-color": "#2563eb", "line-width": 2.2, "line-opacity": 0.85, "line-dasharray": [2, 1] } });
+        } else if (family === "polygon" || family === "Polygon" || family === "MultiPolygon") {
+          m.addLayer({ id, type: "fill", source: `${id}-src`, layout: { visibility: visible ? "visible" : "none" },
+            paint: { "fill-color": "#2563eb", "fill-opacity": 0.18 } });
+          m.addLayer({ id: `${id}-line`, type: "line", source: `${id}-src`, layout: { visibility: visible ? "visible" : "none" },
+            paint: { "line-color": "#1d4ed8", "line-width": 1.6, "line-opacity": 0.9, "line-dasharray": [2, 1] } });
+          draftLayerIdsRef.current.add(`${id}-line`);
+        } else {
+          m.addLayer({ id, type: "circle", source: `${id}-src`, layout: { visibility: visible ? "visible" : "none" },
+            paint: { "circle-radius": 6, "circle-color": "#2563eb", "circle-opacity": 0.75, "circle-stroke-color": "#fff", "circle-stroke-width": 1.5 } });
+        }
+      } catch { /* 单个草稿渲染失败不影响其它草稿 */ }
+    }
+    return true;
+  }, [clearDraftLayers]);
+
   const showAnalysisLayer = (map, payload = {}, options = {}) => {
     if (!map || !payload.geojson || !map.isStyleLoaded?.()) return false;
     const id = String(payload.id || "agent-analysis").replace(/[^a-zA-Z0-9_-]/g, "-");
@@ -701,6 +751,8 @@ const MapViewer = forwardRef(function MapViewer(
       // 重放注册在图层注册表里的其它临时层（OD / 等时圈 / 路径 / 测量绘制）。
       // setStyle 会把它们一并清掉，这里统一画回来，避免"改个样式颜色，分析结果就没了"。
       replayTemporaryLayers(map);
+      // 草稿层同样在样式重载后重放（草稿只在运行时渲染，不写 style.json）。
+      if (draftListRef.current.length) showDraftLayers(map, draftListRef.current);
     });
   }, []);
 
@@ -821,6 +873,9 @@ const MapViewer = forwardRef(function MapViewer(
     },
     /** Agent 或仪表盘生成的分析结果：只更新临时图层，不重载完整 style。 */
     showAnalysis: (payload) => showAnalysisLayer(mapRef.current, payload),
+    /** 草稿层：渲染/刷新全部待确认草稿（点/线/面），不写 style.json。 */
+    showDrafts: (drafts = []) => showDraftLayers(mapRef.current, drafts),
+    clearDrafts: () => { draftListRef.current = []; clearDraftLayers(mapRef.current); },
     clearAnalysis: (id = "agent-analysis") => removeAnalysisLayers(mapRef.current, id),
     clearAllAnalysis: () => [...analysisIdsRef.current].forEach((id) => removeAnalysisLayers(mapRef.current, id)),
     undoAnalysis: (id = "agent-analysis") => {

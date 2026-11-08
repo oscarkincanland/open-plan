@@ -87,6 +87,8 @@ function meta(name, options = {}) {
     sideEffectScope: options.sideEffectScope || (options.readOnly ? "none" : "workspace"),
     riskLevel: options.riskLevel || (options.readOnly ? "low" : "medium"),
     needsApproval: options.needsApproval === true,
+    // 强制确认：即使审批模式为 auto，也不得自动提升为 allow（正式写/破坏性操作）。
+    forceConfirm: options.forceConfirm === true,
     permission: {
       patternSource: options.patternSource || (options.needsApproval ? "input" : "none"),
       denyPriority: Number(options.denyPriority || 0),
@@ -167,6 +169,33 @@ add([
   meta("map_datasets", { ...READ }),
   // 图层工程信息：只读（读图层注册表与工程元数据）。
   meta("map_layer_info", { ...READ, resultBudget: budget(30 * KB, "head", "artifact") }),
+
+  // ---- 地图草稿层（2026-11-07 新流程）----
+  // 草稿不进入正式库（layers/style/tiles/config），可随项目草稿目录丢弃，免审批。
+  meta("map_draft_layer", {
+    readOnly: false,
+    destructive: false,
+    sideEffectScope: "session",
+    riskLevel: "low",
+    needsApproval: false,
+    forceConfirm: false,
+    patternSource: "input",
+    resultBudget: budget(8 * KB, "head", "truncate"),
+    notes: "生成/更新/删除草稿图层；只写 agent/drafts，不落正式库；正式固化需 map_fixate_layer",
+  }),
+  // 固化：草稿转正式图层（写 layers/tiles/config/style + 日志），必须逐次确认。
+  meta("map_fixate_layer", {
+    readOnly: false,
+    destructive: false,
+    sideEffectScope: "workspace",
+    riskLevel: "high",
+    needsApproval: true,
+    forceConfirm: true,
+    patternSource: "input",
+    denyPriority: 90,
+    resultBudget: budget(8 * KB, "head", "truncate"),
+    notes: "草稿固化为正式图层；auto 模式不得自动批准；共享数据集禁止写入",
+  }),
 
   // ---- CAD（cadAgent 开关，默认关；关闭时不在任何模式白名单中）----
   meta("cad_read", { ...READ, resultBudget: budget(30 * KB, "head", "truncate") }),
@@ -250,7 +279,17 @@ add([
     notes: "无沙箱；删除/破坏类命令默认 ask",
   }),
 
-  meta("map_template", { readOnly: false, destructive: false, sideEffectScope: "session", riskLevel: "low", resultBudget: budget(16 * KB, "head", "truncate") }),
+  meta("map_template", {
+    readOnly: false,
+    destructive: false,
+    sideEffectScope: "workspace",
+    riskLevel: "medium",
+    needsApproval: true,
+    forceConfirm: true,
+    patternSource: "input",
+    resultBudget: budget(16 * KB, "head", "truncate"),
+    notes: "生成 Word 报告并落盘，与 officecli create 同级需确认",
+  }),
 
   // ---- 地图写入 ----
   meta("map_edit", {
@@ -259,9 +298,11 @@ add([
     sideEffectScope: "workspace",
     riskLevel: "medium",
     needsApproval: true,
+    forceConfirm: true,
     patternSource: "input",
     denyPriority: 80,
     resultBudget: budget(8 * KB, "head", "truncate"),
+    notes: "共享数据集改样式需确认；auto 模式不自动批准共享写入",
   }),
   meta("map_import", {
     readOnly: false,
@@ -269,6 +310,7 @@ add([
     sideEffectScope: "workspace",
     riskLevel: "high",
     needsApproval: true,
+    forceConfirm: true,
     patternSource: "path",
     denyPriority: 90,
     resultBudget: budget(8 * KB, "head", "truncate"),
@@ -279,9 +321,11 @@ add([
     sideEffectScope: "workspace",
     riskLevel: "high",
     needsApproval: true,
+    forceConfirm: true,
     patternSource: "input",
     denyPriority: 90,
     resultBudget: budget(8 * KB, "head", "truncate"),
+    notes: "兼容工具：保存分析为正式图层；新流程推荐 map_fixate_layer",
   }),
   // 重置图层树：level=baseline 会把基线后新增的正式层移入回收站，属破坏性写操作。
   meta("map_reset", {
@@ -290,6 +334,7 @@ add([
     sideEffectScope: "workspace",
     riskLevel: "high",
     needsApproval: true,
+    forceConfirm: true,
     patternSource: "input",
     denyPriority: 90,
     resultBudget: budget(8 * KB, "head", "truncate"),
@@ -301,6 +346,7 @@ add([
     sideEffectScope: "workspace",
     riskLevel: "medium",
     needsApproval: true,
+    forceConfirm: true,
     patternSource: "input",
     denyPriority: 70,
     resultBudget: budget(8 * KB, "head", "truncate"),

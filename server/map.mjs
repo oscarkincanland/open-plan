@@ -14,7 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WORKSPACE_DIR } from "./workspace.mjs";
 import { LAYER_DEFS, GROUP_BY_TYPE, buildProjectTiles } from "../scripts/lib/tiler.mjs";
-import { atomicWriteJson, appendJsonLine } from "./持久化工具.mjs";
+import { atomicWriteJson, atomicWriteFile, appendJsonLine } from "./持久化工具.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MAPS_ROOT = path.join(WORKSPACE_DIR, "maps");
@@ -906,9 +906,9 @@ export function updateLayerMeta(name, layerId, patch = {}) {
   if (!layer) return null;
   const before = pickBaselineLayer(layer);
   const next = { ...layer };
-  for (const key of ["name", "group", "locked", "visible", "opacity"]) {
+  for (const key of ["name", "group", "locked", "visible", "opacity", "demo"]) {
     if (!(key in patch)) continue;
-    if (key === "locked" || key === "visible") next[key] = Boolean(patch[key]);
+    if (key === "locked" || key === "visible" || key === "demo") next[key] = Boolean(patch[key]);
     else if (key === "opacity") next.opacity = Math.min(1, Math.max(0, Number(patch[key]) || 0));
     else next[key] = String(patch[key] || "").trim();
   }
@@ -1013,6 +1013,8 @@ export function listProjectFiles(name = DEFAULT_PROJECT, { q = "", maxDepth = 4,
       if (entry.name.startsWith(".")) continue;
       if (entry.isDirectory()) {
         if (PROJECT_TREE_SKIP_DIRS.has(entry.name.toLowerCase())) continue;
+        // 草稿层是运行时中间态，不作为项目文件树条目暴露（避免被 @ 成正式数据）。
+        if (entry.name.toLowerCase() === DRAFTS_DIR && /(^|\/)agent$/.test(prefix)) continue;
         walk(path.join(current, entry.name), prefix ? `${prefix}/${entry.name}` : entry.name, depth + 1);
         continue;
       }
@@ -1453,84 +1455,184 @@ export function rebuildBasemapStyle(name = DEFAULT_PROJECT) {
   return true;
 }
 
-/** 导入/覆盖一个 GeoJSON 图层并重建其瓦片 */
-export async function importLayer(name, layerId, geojson, { actor = "user", format = "geojson" } = {}) {
+/** 导入/覆盖一个 GeoJSON 图层并重建其瓦片（事务化：失败回滚，不破坏现有项目）。 */
+export async function importLayer(name, layerId, geojson, { actor = "user", format = "geojson", validation = {} } = {}) {
   const dir = ensureProject(name);
   const safeId = String(layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
   if (!dir || !safeId) return null;
-  const stats = validateGeoJSON(geojson);
-  const target = path.join(dir, "layers", `${safeId}.geojson`);
+  // 先校验，再动磁盘：非法数据不得让旧图层消失（P1-4）。
+  const stats = validateGeoJSON(geojson, validation);
+  const layersDir = path.join(dir, "layers");
+  fs.mkdirSync(layersDir, { recursive: true });
+  const target = path.join(layersDir, `${safeId}.geojson`);
   const existed = fs.existsSync(target);
-  fs.writeFileSync(target, typeof geojson === "string" ? geojson : JSON.stringify(geojson));
-  // 把新图层加入 config（若不存在）；已存在则补齐来源与统计。
-  const { config } = normalizeConfig(name, readJson(path.join(dir, "map.config.json"), null));
-  const source = { kind: "import", path: `layers/${safeId}.geojson`, format, importedAt: isoNow() };
-  const existing = (config.layers || []).find((l) => String(l.id) === safeId);
-  if (existing) {
-    existing.source = source;
-    existing.stats = { features: stats.features, bbox: stats.bbox };
-    existing.updatedAt = isoNow();
-  } else {
-    const type = guessType(geojson);
-    config.layers.push({
-      id: safeId,
-      name: safeId,
-      type,
-      group: GROUP_BY_TYPE[type] || "其他",
-      visible: true,
-      opacity: 1,
-      minzoom: 5,
-      maxzoom: 13,
-      locked: false,
-      source,
-      stats: { features: stats.features, bbox: stats.bbox },
-      createdAt: isoNow(),
-      updatedAt: isoNow(),
+  const backup = existed ? `${target}.pre-import` : "";
+  if (existed) fs.copyFileSync(target, backup);
+
+  const configPath = path.join(dir, "map.config.json");
+  const configBackup = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : null;
+
+  const restore = () => {
+    try {
+      if (backup && fs.existsSync(backup)) {
+        fs.copyFileSync(backup, target);
+        fs.rmSync(backup, { force: true });
+      } else if (!existed && fs.existsSync(target)) {
+        fs.rmSync(target, { force: true });
+      }
+      if (configBackup !== null) fs.writeFileSync(configPath, configBackup);
+      else if (fs.existsSync(configPath)) fs.rmSync(configPath, { force: true });
+    } catch { /* 回滚尽力而为，不掩盖原始错误 */ }
+  };
+
+  try {
+    atomicWriteFile(target, typeof geojson === "string" ? geojson : JSON.stringify(geojson));
+    // 把新图层加入 config（若不存在）；已存在则补齐来源与统计。
+    const { config } = normalizeConfig(name, readJson(configPath, null));
+    const source = { kind: "import", path: `layers/${safeId}.geojson`, format, importedAt: isoNow() };
+    const existing = (config.layers || []).find((l) => String(l.id) === safeId);
+    if (existing) {
+      existing.source = source;
+      existing.stats = { features: stats.features, bbox: stats.bbox };
+      existing.updatedAt = isoNow();
+    } else {
+      const type = guessType(geojson);
+      config.layers.push({
+        id: safeId,
+        name: safeId,
+        type,
+        group: GROUP_BY_TYPE[type] || "其他",
+        visible: true,
+        opacity: 1,
+        minzoom: 5,
+        maxzoom: 13,
+        locked: false,
+        source,
+        stats: { features: stats.features, bbox: stats.bbox },
+        createdAt: isoNow(),
+        updatedAt: isoNow(),
+      });
+    }
+    writeConfig(name, config);
+    // 重建该图层瓦片（缺 def 时按通用参数）
+    const def = LAYER_DEFS.find((d) => d.id === safeId) || { id: safeId, minzoom: 5, maxzoom: 13, tolerance: 0.0001 };
+    const r = buildProjectTiles(dir, { layerIds: [safeId], force: true, defs: [def] });
+    // 导入后立即把新图层注册到 style，确保前端可见性复选框和 Agent 产物都能正常显示/隐藏。
+    rebuildBasemapStyle(name);
+    logOperation(name, {
+      action: existed ? "layer.overwrite" : "layer.import",
+      actor,
+      layerId: safeId,
+      detail: { features: stats.features, bbox: stats.bbox, format },
     });
+    if (backup) fs.rmSync(backup, { force: true });
+    return { ok: true, layer: safeId, features: stats.features, bbox: stats.bbox, tiles: r[safeId] };
+  } catch (error) {
+    restore();
+    throw error;
   }
-  writeConfig(name, config);
-  // 重建该图层瓦片（缺 def 时按通用参数）
-  const def = LAYER_DEFS.find((d) => d.id === safeId) || { id: safeId, minzoom: 5, maxzoom: 13, tolerance: 0.0001 };
-  const r = buildProjectTiles(dir, { layerIds: [safeId], force: true, defs: [def] });
-  // 导入后立即把新图层注册到 style，确保前端可见性复选框和 Agent 产物都能正常显示/隐藏。
-  rebuildBasemapStyle(name);
-  logOperation(name, {
-    action: existed ? "layer.overwrite" : "layer.import",
-    actor,
-    layerId: safeId,
-    detail: { features: stats.features, bbox: stats.bbox, format },
-  });
-  return { ok: true, layer: safeId, features: stats.features, bbox: stats.bbox, tiles: r[safeId] };
 }
 
-/** 替换图层数据：旧数据与瓦片先入回收站，再按同 id 导入并重建。 */
-export async function replaceLayer(name, layerId, geojson, { actor = "user", format = "geojson" } = {}) {
+/** 替换图层数据：先校验新数据，成功后再把旧数据与瓦片移入回收站，失败自动回滚。 */
+export async function replaceLayer(name, layerId, geojson, { actor = "user", format = "geojson", validation = {} } = {}) {
   const dir = projectDir(name);
   const safeId = String(layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
   if (!dir || !safeId) return { ok: false, error: "invalid layer" };
   const { config } = normalizeConfig(name, readJson(path.join(dir, "map.config.json"), null));
   if (!(config.layers || []).some((l) => String(l.id) === safeId)) return { ok: false, error: "layer not found" };
+  // 先校验：非法新数据不得把旧图层移走（P1-4 的核心）。
+  validateGeoJSON(geojson, validation);
   const discarded = moveLayerToTrash(name, safeId, "replace");
-  const imported = await importLayer(name, safeId, geojson, { actor, format });
+  let imported;
+  try {
+    imported = await importLayer(name, safeId, geojson, { actor, format, validation });
+  } catch (error) {
+    // 新数据写失败：把旧数据从回收站恢复回来，保证项目不丢图层。
+    restoreLayerFromTrash(name, safeId, discarded);
+    logOperation(name, { action: "layer.replace.failed", actor, layerId: safeId, detail: { error: String(error?.message || error) } });
+    throw error;
+  }
   logOperation(name, { action: "layer.replace", actor, layerId: safeId, detail: { discarded } });
   return { ...imported, discarded };
 }
 
-function validateGeoJSON(geojson) {
+/** 从回收站恢复图层数据与瓦片（替换失败回滚用）。 */
+function restoreLayerFromTrash(name, layerId, trashDir) {
+  if (!trashDir || !fs.existsSync(trashDir)) return false;
+  const dir = projectDir(name);
+  if (!dir) return false;
+  try {
+    const dataFile = path.join(trashDir, `${layerId}.geojson`);
+    if (fs.existsSync(dataFile)) {
+      fs.mkdirSync(path.join(dir, "layers"), { recursive: true });
+      fs.copyFileSync(dataFile, path.join(dir, "layers", `${layerId}.geojson`));
+    }
+    const tilesDir = path.join(trashDir, "tiles");
+    if (fs.existsSync(tilesDir)) {
+      const dest = path.join(dir, "tiles", layerId);
+      fs.rmSync(dest, { recursive: true, force: true });
+      fs.cpSync(tilesDir, dest, { recursive: true });
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// 中国范围硬约束（AGENTS §6）：经度 73–135°E、纬度 18–54°N
+export const CHINA_LNG_RANGE = Object.freeze([73, 135]);
+export const CHINA_LAT_RANGE = Object.freeze([18, 54]);
+const GEOMETRY_FAMILY = Object.freeze({
+  Point: "point", MultiPoint: "point",
+  LineString: "line", MultiLineString: "line",
+  Polygon: "polygon", MultiPolygon: "polygon",
+});
+const FAMILY_LABEL = Object.freeze({ point: "点", line: "线", polygon: "面" });
+
+function geometryFamilyOf(type) {
+  return GEOMETRY_FAMILY[String(type || "")] || "";
+}
+
+/**
+ * GeoJSON 校验（导入 / 草稿 / 固化共用）。
+ * options:
+ *   geometryType  期望几何族 point|line|polygon（混用/不符直接拒绝）
+ *   expectedCount 期望记录数（OD/客流等，必须与实际一致）
+ *   maxFeatures   要素数上限
+ *   allowOutsideChina 显式放行域外坐标（默认 false：按 AGENTS §6 阻断）
+ */
+export function validateGeoJSON(geojson, options = {}) {
   let fc = geojson;
-  if (typeof fc === "string") fc = JSON.parse(fc);
+  if (typeof fc === "string") {
+    try { fc = JSON.parse(fc); } catch { throw mapError("GeoJSON 不是合法 JSON", "MAP_GEOJSON_INVALID"); }
+  }
   if (fc?.type === "Feature") fc = { type: "FeatureCollection", features: [fc] };
   if (fc?.type !== "FeatureCollection" || !Array.isArray(fc.features) || !fc.features.length) {
-    throw new Error("没有可导入的要素（需要非空 FeatureCollection）");
+    throw mapError("没有可导入的要素（需要非空 FeatureCollection）", "MAP_GEOJSON_EMPTY");
   }
+  if (options.maxFeatures && fc.features.length > Number(options.maxFeatures)) {
+    throw mapError(`要素数超过上限（${fc.features.length} > ${options.maxFeatures}）`, "MAP_GEOJSON_TOO_LARGE");
+  }
+  const expected = Number(options.expectedCount);
+  if (Number.isFinite(expected) && expected !== fc.features.length) {
+    throw mapError(`记录数不一致：声明 ${expected} / 实际 ${fc.features.length}`, "DATA_INTEGRITY_FAILED");
+  }
+  const wantFamily = String(options.geometryType || "").trim();
+  const families = new Set();
   const bbox = [Infinity, Infinity, -Infinity, -Infinity];
   let coordinates = 0;
+  const outsideChina = [];
   const walk = (value) => {
     if (!Array.isArray(value)) return;
     if (typeof value[0] === "number" && typeof value[1] === "number") {
       const [lng, lat] = value;
-      if (!Number.isFinite(lng) || !Number.isFinite(lat)) throw new Error("图层包含无效坐标");
-      if (Math.abs(lng) > 180 || Math.abs(lat) > 90) throw new Error("坐标不在经纬度范围内，请先转换为 WGS84/EPSG:4326");
+      if (!Number.isFinite(lng) || !Number.isFinite(lat)) throw mapError("图层包含无效坐标", "MAP_GEOJSON_INVALID");
+      if (Math.abs(lng) > 180 || Math.abs(lat) > 90) throw mapError("坐标不在经纬度范围内，请先转换为 WGS84/EPSG:4326", "MAP_GEOJSON_INVALID");
+      if (!options.allowOutsideChina
+        && (lng < CHINA_LNG_RANGE[0] || lng > CHINA_LNG_RANGE[1] || lat < CHINA_LAT_RANGE[0] || lat > CHINA_LAT_RANGE[1])
+        && outsideChina.length < 5) {
+        outsideChina.push([lng, lat]);
+      }
       bbox[0] = Math.min(bbox[0], lng); bbox[1] = Math.min(bbox[1], lat);
       bbox[2] = Math.max(bbox[2], lng); bbox[3] = Math.max(bbox[3], lat);
       coordinates += 1;
@@ -1538,10 +1640,327 @@ function validateGeoJSON(geojson) {
     }
     value.forEach(walk);
   };
-  for (const feature of fc.features) walk(feature?.geometry?.coordinates);
-  if (!coordinates || bbox[0] === Infinity) throw new Error("要素没有有效几何坐标");
-  return { features: fc.features.length, bbox };
+  for (const feature of fc.features) {
+    const type = feature?.geometry?.type;
+    const family = geometryFamilyOf(type);
+    if (!family) throw mapError(`不支持的几何类型：${type || "（缺失）"}`, "MAP_GEOMETRY_UNSUPPORTED");
+    families.add(family);
+    walk(feature?.geometry?.coordinates);
+  }
+  if (!coordinates || bbox[0] === Infinity) throw mapError("要素没有有效几何坐标", "MAP_GEOJSON_INVALID");
+  if (families.size > 1) throw mapError(`一个图层内不允许混用几何类型（${[...families].join("/")}）`, "MAP_GEOMETRY_MIXED");
+  if (wantFamily) {
+    if (!FAMILY_LABEL[wantFamily]) throw mapError(`未知几何类型：${wantFamily}`, "MAP_GEOMETRY_UNSUPPORTED");
+    const actual = [...families][0];
+    if (actual !== wantFamily) {
+      throw mapError(`几何类型不符：声明为${FAMILY_LABEL[wantFamily]}，实际为${FAMILY_LABEL[actual] || actual}`, "MAP_GEOMETRY_MISMATCH");
+    }
+  }
+  if (outsideChina.length) {
+    const [lng, lat] = outsideChina[0];
+    throw mapError(`坐标越出中国范围（经度 73–135°E / 纬度 18–54°N）：${lng},${lat}`, "GEO_OUT_OF_RANGE");
+  }
+  return { features: fc.features.length, bbox, geometryType: [...families][0] };
 }
+
+/** 带 code 的地图错误：调用方据此返回状态码并发射领域事件。 */
+function mapError(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+// ---------- 草稿层（2026-11-07 新流程）----------
+// 草稿 = Agent 生成但用户尚未确认固化的点/线/面图层。
+// 只写 agent/drafts/*.json，不进入 layers/style/tiles/config；固化后才转正式图层。
+const DRAFTS_DIR = "drafts";
+export const MAP_DRAFT_MAX_BYTES = 20 * 1024 * 1024;
+export const MAP_DRAFT_MAX_FEATURES = 50000;
+export const MAP_DRAFT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function draftsDir(name) {
+  const dir = projectDir(name);
+  return dir ? path.join(dir, AGENT_DIR, DRAFTS_DIR) : null;
+}
+
+function sanitizeDraftId(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const safe = raw.replace(/[^A-Za-z0-9_-]/g, "");
+  return safe.length >= 6 ? safe.slice(0, 64) : "";
+}
+
+function newDraftId() {
+  return `draft-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function draftFile(name, id) {
+  const dir = draftsDir(name);
+  const safeId = sanitizeDraftId(id);
+  return dir && safeId ? path.join(dir, `${safeId}.json`) : null;
+}
+
+/** 草稿摘要（列表/事件用，不含完整 GeoJSON）。 */
+export function draftSummary(draft = {}) {
+  const stats = draft.stats || {};
+  return {
+    id: String(draft.id || ""),
+    project: String(draft.project || ""),
+    name: String(draft.name || ""),
+    geometryType: String(draft.geometryType || ""),
+    features: Number(stats.features || 0),
+    bbox: Array.isArray(stats.bbox) ? stats.bbox : null,
+    demo: Boolean(draft.provenance?.demo),
+    source: String(draft.provenance?.source || ""),
+    status: String(draft.status || "pending"),
+    visible: draft.visible !== false,
+    revision: Number(draft.revision || 1),
+    createdAt: String(draft.createdAt || ""),
+    updatedAt: String(draft.updatedAt || ""),
+  };
+}
+
+/** 列出项目草稿（按更新时间倒序）。 */
+export function listDrafts(name = DEFAULT_PROJECT) {
+  const dir = draftsDir(name);
+  if (!dir || !fs.existsSync(dir)) return [];
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    try {
+      const draft = JSON.parse(fs.readFileSync(path.join(dir, entry.name), "utf8"));
+      if (draft && draft.id) out.push(draft);
+    } catch { /* 跳过损坏草稿 */ }
+  }
+  out.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+  return out.map(draftSummary);
+}
+
+/** 读取单个草稿全文。 */
+export function readDraft(name = DEFAULT_PROJECT, id = "") {
+  const file = draftFile(name, id);
+  if (!file || !fs.existsSync(file)) return null;
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
+}
+
+function writeDraftFile(name, draft) {
+  const file = draftFile(name, draft.id);
+  if (!file) throw mapError("草稿 id 不合法", "MAP_DRAFT_INVALID");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const payload = JSON.stringify(draft);
+  if (Buffer.byteLength(payload, "utf8") > MAP_DRAFT_MAX_BYTES) {
+    throw mapError(`草稿超过体积上限（${MAP_DRAFT_MAX_BYTES} 字节）`, "MAP_DRAFT_TOO_LARGE");
+  }
+  atomicWriteFile(file, JSON.stringify(draft, null, 2));
+  return draft;
+}
+
+function normalizeDraftInput(input = {}) {
+  const geometryType = String(input.geometryType || "").trim();
+  return {
+    name: String(input.name || "").trim().slice(0, 80) || "未命名草稿",
+    geometryType,
+    style: input.style && typeof input.style === "object" ? input.style : {},
+    visible: input.visible !== false,
+    provenance: {
+      source: String(input.provenance?.source || input.source || "agent"),
+      demo: Boolean(input.provenance?.demo ?? input.demo),
+      runId: String(input.provenance?.runId || "").slice(0, 80),
+      sessionId: String(input.provenance?.sessionId || "").slice(0, 80),
+      threadId: String(input.provenance?.threadId || "").slice(0, 80),
+    },
+  };
+}
+
+/** 创建草稿：校验几何族/中国范围/记录数后写 agent/drafts。 */
+export function createDraft(name = DEFAULT_PROJECT, input = {}) {
+  const dir = ensureProject(name);
+  if (!dir) throw mapError("项目不存在", "MAP_PROJECT_NOT_FOUND");
+  const normalized = normalizeDraftInput(input);
+  if (!normalized.geometryType) throw mapError("缺少 geometryType（point/line/polygon）", "MAP_DRAFT_INVALID");
+  const stats = validateGeoJSON(input.geojson, {
+    geometryType: normalized.geometryType,
+    expectedCount: input.expectedCount,
+    maxFeatures: MAP_DRAFT_MAX_FEATURES,
+    allowOutsideChina: input.allowOutsideChina === true,
+  });
+  const now = isoNow();
+  const draft = {
+    v: 1,
+    id: sanitizeDraftId(input.id) || newDraftId(),
+    project: String(name),
+    name: normalized.name,
+    geometryType: stats.geometryType || normalized.geometryType,
+    geojson: typeof input.geojson === "string" ? JSON.parse(input.geojson) : input.geojson,
+    style: normalized.style,
+    visible: normalized.visible,
+    stats: { features: stats.features, bbox: stats.bbox },
+    provenance: { ...normalized.provenance, createdAt: now, updatedAt: now },
+    status: "pending",
+    revision: 1,
+    createdAt: now,
+    updatedAt: now,
+  };
+  writeDraftFile(name, draft);
+  logOperation(name, {
+    action: "draft.create",
+    actor: String(input.actor || "agent"),
+    layerId: draft.id,
+    detail: { geometryType: draft.geometryType, features: stats.features, demo: draft.provenance.demo },
+  });
+  return draft;
+}
+
+/** 更新草稿（名称/样式/数据/可见性）；支持 revision CAS。 */
+export function updateDraft(name = DEFAULT_PROJECT, id = "", patch = {}) {
+  const current = readDraft(name, id);
+  if (!current) throw mapError("草稿不存在", "MAP_DRAFT_NOT_FOUND");
+  const expected = Number(patch.expectedRevision);
+  if (patch.expectedRevision !== undefined && Number.isFinite(expected) && expected !== Number(current.revision || 1)) {
+    throw mapError(`草稿已被修改（期望 revision=${expected}，当前 ${current.revision}）`, "MAP_DRAFT_CONFLICT");
+  }
+  const next = { ...current };
+  if (patch.name !== undefined) next.name = String(patch.name || "").trim().slice(0, 80) || current.name;
+  if (patch.visible !== undefined) next.visible = Boolean(patch.visible);
+  if (patch.style !== undefined) next.style = patch.style && typeof patch.style === "object" ? patch.style : current.style;
+  if (patch.demo !== undefined) next.provenance = { ...next.provenance, demo: Boolean(patch.demo) };
+  if (patch.geojson !== undefined) {
+    const stats = validateGeoJSON(patch.geojson, {
+      geometryType: patch.geometryType || current.geometryType,
+      expectedCount: patch.expectedCount,
+      maxFeatures: MAP_DRAFT_MAX_FEATURES,
+      allowOutsideChina: patch.allowOutsideChina === true,
+    });
+    next.geojson = typeof patch.geojson === "string" ? JSON.parse(patch.geojson) : patch.geojson;
+    next.stats = { features: stats.features, bbox: stats.bbox };
+    next.geometryType = stats.geometryType || current.geometryType;
+  }
+  const now = isoNow();
+  next.revision = Number(current.revision || 1) + 1;
+  next.updatedAt = now;
+  next.provenance = { ...(next.provenance || {}), updatedAt: now };
+  writeDraftFile(name, next);
+  logOperation(name, { action: "draft.update", actor: String(patch.actor || "agent"), layerId: next.id, detail: { revision: next.revision } });
+  return next;
+}
+
+/** 丢弃草稿（不落正式库）。 */
+export function deleteDraft(name = DEFAULT_PROJECT, id = "", { actor = "user", reason = "user" } = {}) {
+  const file = draftFile(name, id);
+  if (!file || !fs.existsSync(file)) return { ok: false, error: "draft not found", code: "MAP_DRAFT_NOT_FOUND" };
+  fs.rmSync(file, { force: true });
+  logOperation(name, { action: "draft.discard", actor, layerId: sanitizeDraftId(id), detail: { reason } });
+  return { ok: true, id: sanitizeDraftId(id) };
+}
+
+/** 清理过期草稿（TTL）。 */
+export function cleanupDrafts(name = DEFAULT_PROJECT, { maxAgeMs = MAP_DRAFT_TTL_MS, now = Date.now() } = {}) {
+  const dir = draftsDir(name);
+  if (!dir || !fs.existsSync(dir)) return { removed: [] };
+  const removed = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const file = path.join(dir, entry.name);
+    try {
+      const draft = JSON.parse(fs.readFileSync(file, "utf8"));
+      const updated = Date.parse(draft.updatedAt || draft.createdAt || "");
+      if (Number.isFinite(updated) && now - updated > maxAgeMs) {
+        fs.rmSync(file, { force: true });
+        removed.push(String(draft.id || entry.name));
+      }
+    } catch { /* 损坏草稿留给人工处理 */ }
+  }
+  if (removed.length) logOperation(name, { action: "draft.cleanup", actor: "system", detail: { removed: removed.length } });
+  return { removed };
+}
+
+/**
+ * 固化草稿 → 正式图层。
+ * 顺序：校验归属/锁定 → 校验数据 → importLayer（事务化）→ 删除草稿 → 日志/manifest。
+ * 失败时草稿保留，可重试；不产生半成品正式层。
+ */
+export async function confirmDraft(name = DEFAULT_PROJECT, id = "", {
+  layerId = "", layerName = "", group = "", visible = true, actor = "user", confirmedBy = "user",
+} = {}) {
+  const draft = readDraft(name, id);
+  if (!draft) throw mapError("草稿不存在", "MAP_DRAFT_NOT_FOUND");
+  const dir = projectDir(name);
+  if (!dir) throw mapError("项目不存在", "MAP_PROJECT_NOT_FOUND");
+  const targetId = String(layerId || draft.id || "").replace(/[^a-zA-Z0-9_-]/g, "");
+  if (!targetId) throw mapError("图层 id 不合法", "MAP_LAYER_INVALID");
+  const { config } = normalizeConfig(name, readJson(path.join(dir, "map.config.json"), null));
+  // 共享数据集禁止固化；锁定图层禁止覆盖。
+  const repoShared = new Set([...(config.sharedLayers || []), ...(config.layers || []).filter((l) => l.origin === "shared").map((l) => l.id)]);
+  const builtinShared = ["boundary-city", "boundary-county", "highways", "roads-trunk", "toll-stations", "junctions"];
+  if (repoShared.has(targetId) || builtinShared.includes(targetId)) {
+    throw mapError(`目标图层 ${targetId} 属于共享数据集，不能固化到此 id`, "MAP_SHARED_DENIED");
+  }
+  const existing = (config.layers || []).find((l) => String(l.id) === targetId);
+  if (existing?.locked) {
+    throw mapError(`图层 ${targetId} 已锁定，不能覆盖`, "MAP_LAYER_LOCKED");
+  }
+  const demo = Boolean(draft.provenance?.demo);
+  const finalName = String(layerName || draft.name || targetId).trim().slice(0, 80)
+    + (demo && !/演示/.test(String(layerName || draft.name || "")) ? "（演示数据）" : "");
+  const stats = validateGeoJSON(draft.geojson, {
+    geometryType: draft.geometryType,
+    maxFeatures: MAP_DRAFT_MAX_FEATURES,
+  });
+  const imported = await importLayer(name, targetId, draft.geojson, { actor, format: "geojson", validation: { geometryType: draft.geometryType } });
+  if (!imported?.ok) throw mapError("固化写入失败", "MAP_FIXATE_FAILED");
+  // 名称/分组/显隐/来源元数据
+  try {
+    updateLayerMeta(name, targetId, {
+      name: finalName,
+      ...(group ? { group } : {}),
+      visible: visible !== false,
+      ...(demo ? { demo: true } : {}),
+    });
+  } catch { /* 元数据失败不阻断固化结果 */ }
+  // demo 来源写入 config.source，便于追溯
+  try {
+    const { config: latest } = normalizeConfig(name, readJson(path.join(dir, "map.config.json"), null));
+    const layer = (latest.layers || []).find((l) => String(l.id) === targetId);
+    if (layer) {
+      layer.source = {
+        ...(layer.source || {}),
+        kind: "draft",
+        draftId: draft.id,
+        geometryType: draft.geometryType,
+        demo,
+        confirmedBy,
+        confirmedAt: isoNow(),
+      };
+      writeConfig(name, latest);
+    }
+  } catch { /* 忽略 */ }
+  appendAgentManifest(name, {
+    action: "fixate",
+    runId: String(draft.provenance?.runId || ""),
+    sessionId: String(draft.provenance?.sessionId || ""),
+    layerId: targetId,
+    title: finalName,
+    paths: [`maps/${name}/layers/${targetId}.geojson`],
+  });
+  logOperation(name, {
+    action: "draft.confirm",
+    actor,
+    layerId: targetId,
+    detail: { draftId: draft.id, demo, confirmedBy, features: stats.features },
+  });
+  // 固化成功后删除草稿；失败会先抛出，草稿保留。
+  fs.rmSync(draftFile(name, draft.id), { force: true });
+  return {
+    ok: true,
+    draftId: draft.id,
+    layerId: targetId,
+    name: finalName,
+    group: group || existing?.group || "",
+    features: stats.features,
+    demo,
+  };
+}
+
 
 function guessType(geojson) {
   const fc = typeof geojson === "string" ? JSON.parse(geojson) : geojson;

@@ -1411,8 +1411,8 @@ class AgentManager extends EventEmitter {
               "- **Word 批注**: 先用 `officecli get <file> /body --depth 3 --json` 或 `query <file> paragraph --json` 找到真实段落路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"批注内容\\\" --json` 写入；一次 get 只传一个 DOM 路径，完成后用 `query <file> comment --json` 回读校验。若错误明确为 sharing violation 或另一个进程占用，再提示关闭 WPS/Word/OfficeCLI 预览；若是 Access denied、is denied、EPERM 或 EACCES，应说明服务进程缺少系统写权限，不要尝试绕过沙箱。",
               "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入 `.agent-context.md` 中的「当前工作区」绝对路径，禁止写入项目目录。否则产物不会被前端检测到。",
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
-              "- **地图（GIS）**: 地图项目位于 `当前工作区/maps/{project}/`（当前任务指定 `mapProject` 时一律使用任务项目；缺省才回退 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。若改了 layers/*.geojson 数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
-              "- **地图分析**: 用户说“在义乌生成热力图/等时圈”、要求 OD 期望线或公交分析时，优先使用 map_analyze 生成并显示临时结果；结果明确标记演示数据，用户确认后再保存为正式图层。",
+              "- **地图（GIS，仅 Work）**: 地图项目位于 `当前工作区/maps/{project}/`（当前任务指定 `mapProject` 时一律使用任务项目；缺省才回退 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。生成/修改地图数据时按“草稿层 → 用户确认 → 固化”流程：用 map_draft_layer 生成点/线/面草稿（只写 agent/drafts，不落正式库、免审批），把草稿 id 与摘要告诉用户，请用户在地图面板确认；用户明确要求固化/保存正式图层时，用 map_fixate_layer（需审批）。用 map_read 查看项目状态与图层清单；用 map_edit 修改正式图层样式（需审批）。**不要用 write/edit 直接改 style.json / map.config.json / layers/*.geojson 或 agent/drafts/*.json**——那会绕过锁定、审批、备份、操作日志与瓦片重建；也不要用 bash 重建瓦片，地图工具会处理。底图源：gaode/osm/carto/esri 等运行时配置。",
+              "- **地图分析**: 用户说“在义乌生成热力图/等时圈”、要求 OD 期望线或公交分析时，优先使用 map_analyze；结果作为草稿层呈现，没有真实数据时必须明确标注演示数据，固化后仍保留演示标记。",
               "- **主动询问（重要）**: 当用户要求撰写/生成/修改文字内容，但关键信息不明确（文档类型、篇幅、受众、数据来源、风格、范围；修改类还包括改哪一段、改成什么、是否保留原格式）时，**必须调用 ask_user 主动提问**，等待回答后再继续，不要猜测。**只在缺失 ≥2 项时提问，每次只问一个最阻塞的问题**；只缺 1 项时按默认值继续，并在结果中注明假设。",
               "- **模板优先（重要）**: 用户要求写工可/可研/规划/汇报/交评/预可/选址/物流园区/年度报告等交通规划文体时，先用 read 读取 `" + PROJECT_DIR + "/templates/traffic-material/` 下对应模板（14 个），按其章节骨架、必备图表与格式规则写作；不要凭记忆自造结构。注意模板在项目目录而不在当前工作区，必须用这个绝对路径。",
               "- **改文档先读后改**: 修改既有 Office 文档时，先 `officecli view <file> text|outline` 确认内容，再 `get` 取真实路径，最后 `set/add`；禁止直接 set 未知路径。",
@@ -3401,16 +3401,244 @@ execute: async (_toolCallId, params, signal) => {
         });
         const result = await withPathWriteLock(ctx, "map_reset", path.join(ctx.workspace, "maps", name), async () => map.resetProject(name, level, { actor: "agent" }));
         if (!result?.ok) return { content: [{ type: "text", text: `重置失败：${result?.error || "未知错误"}` }], details: {} };
+        if (level === "temp") {
+          // level=temp 只影响前端运行时临时层：必须发 clear_analysis，否则 reloadStyle 会把图层重放回来（P1-6）。
+          emitChannelSafe(entry, "map_action", { action: "clear_analysis", id: "agent-analysis", updatedAt: Date.now() });
+          return {
+            content: [{ type: "text", text: "已清除画布上的临时可视化（分析 / OD / 等时圈 / 绘制）。草稿层与正式图层不受影响。" }],
+            details: { level, removed: 0 },
+          };
+        }
         emitChannelSafe(entry, "file_changed", { files: [`maps/${name}/map.config.json`, `maps/${name}/style.json`] });
         const removed = Array.isArray(result.removed) ? result.removed.length : 0;
         return {
-          content: [{ type: "text", text: level === "temp"
-            ? "已清空临时层（前端同时移除画布临时可视化），正式图层未受影响。"
-            : `已执行 ${level} 重置：恢复 ${result.restored ?? 0} 个基线图层${removed ? `，移除 ${removed} 个新增层（已入 .trash）` : ""}。` }],
+          content: [{ type: "text", text: `已执行 ${level} 重置：恢复 ${result.restored ?? 0} 个基线图层${removed ? `，移除 ${removed} 个新增层（已入 .trash）` : ""}。` }],
           details: { level, restored: result.restored, removed },
         };
       },
     });
+
+    // ---- 地图草稿层（2026-11-07 新流程）----
+    // 草稿 = Agent 生成、等待用户确认固化的点/线/面图层；只写 agent/drafts，不落正式库。
+    const mapDomainErrorEvent = (error) => {
+      const code = String(error?.code || "");
+      if (code === "GEO_OUT_OF_RANGE") writeEvent("geo_out_of_range", { code, message: String(error?.message || "") });
+      else if (code === "DATA_INTEGRITY_FAILED") writeEvent("data_integrity_failed", { code, message: String(error?.message || "") });
+    };
+
+    const mapDraftLayerTool = defineTool({
+      name: "map_draft_layer",
+      label: "地图草稿图层",
+      description:
+        "生成/更新/删除地图草稿图层（点/线/面）。草稿只写项目 agent/drafts 目录，不进入正式图层、不改 style、不建瓦片，因此无需审批；用户在地图面板确认后才会固化为正式图层。"
+        + "action=create：新建草稿（name、geometryType、geojson 必填；可带 style/visible/expectedCount/demo）；"
+        + "action=update：更新草稿（draftId 必填，可改 name/geojson/style/visible，带 expectedRevision 做并发校验）；"
+        + "action=delete：丢弃草稿（draftId 必填）；action=list：列出草稿。",
+      parameters: Type.Object({
+        action: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("delete"), Type.Literal("list")]),
+        project: Type.Optional(Type.String({ description: "项目名；缺省使用当前任务的地图项目" })),
+        draftId: Type.Optional(Type.String({ description: "草稿 id（update/delete 必填）" })),
+        name: Type.Optional(Type.String({ description: "草稿名称（create 建议填写）" })),
+        geometryType: Type.Optional(Type.String({ description: "几何类型：point / line / polygon" })),
+        geojson: Type.Optional(Type.String({ description: "GeoJSON FeatureCollection 字符串（WGS84，中国范围内）" })),
+        style: Type.Optional(Type.String({ description: "可选样式 JSON 字符串，如 {\"line-color\":\"#2563eb\"}" })),
+        visible: Type.Optional(Type.Boolean({ description: "草稿是否可见，默认 true" })),
+        expectedCount: Type.Optional(Type.Number({ description: "期望记录数；与实际要素数不一致时拒绝（OD/客流导入用）" })),
+        demo: Type.Optional(Type.Boolean({ description: "是否为演示数据；固化后会保留演示标记" })),
+        expectedRevision: Type.Optional(Type.Number({ description: "update 时的草稿版本号" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const map = await import("./map.mjs");
+        const name = String(params.project || entry.task?.mapProject || map.DEFAULT_PROJECT);
+        const action = String(params.action || "create");
+        try {
+          if (action === "list") {
+            const drafts = map.listDrafts(name);
+            const text = drafts.length
+              ? drafts.map((d) => `- ${d.id}（${d.name || "未命名"}·${d.geometryType}·${d.features} 要素${d.demo ? "·演示数据" : ""}${d.visible === false ? "·隐藏" : ""}）`).join("\n")
+              : "（当前没有草稿层）";
+            return { content: [{ type: "text", text: `项目 ${name} 草稿层（${drafts.length}）：\n${text}` }], details: { drafts } };
+          }
+          if (action === "delete") {
+            const id = String(params.draftId || "");
+            if (!id) return { content: [{ type: "text", text: "delete 需要 draftId" }], details: {} };
+            const r = map.deleteDraft(name, id, { actor: "agent", reason: "agent" });
+            if (!r.ok) return { content: [{ type: "text", text: "草稿不存在或已丢弃" }], details: r };
+            emitChannelSafe(entry, "map_draft_changed", { project: name, draftId: r.id, action: "remove" });
+            return { content: [{ type: "text", text: `已丢弃草稿 ${r.id}（正式图层未受影响）。` }], details: r };
+          }
+          if (action === "update") {
+            const id = String(params.draftId || "");
+            if (!id) return { content: [{ type: "text", text: "update 需要 draftId" }], details: {} };
+            let style;
+            if (params.style) {
+              try { style = JSON.parse(params.style); } catch { return { content: [{ type: "text", text: `style 不是合法 JSON：${params.style}` }], details: {} }; }
+            }
+            const draft = map.updateDraft(name, id, {
+              name: params.name,
+              geojson: params.geojson,
+              geometryType: params.geometryType,
+              style,
+              visible: params.visible,
+              demo: params.demo,
+              expectedCount: params.expectedCount,
+              expectedRevision: params.expectedRevision,
+              actor: "agent",
+            });
+            const summary = map.draftSummary(draft);
+            emitChannelSafe(entry, "map_draft_changed", { project: name, draftId: summary.id, action: "update", ...summary });
+            return { content: [{ type: "text", text: `已更新草稿「${summary.name}」（${summary.features} 要素，版本 ${summary.revision}）。正式图层未改变，用户确认后才固化。` }], details: summary };
+          }
+          // create
+          if (!params.geojson) return { content: [{ type: "text", text: "create 需要 geojson（FeatureCollection 字符串）" }], details: {} };
+          let style;
+          if (params.style) {
+            try { style = JSON.parse(params.style); } catch { return { content: [{ type: "text", text: `style 不是合法 JSON：${params.style}` }], details: {} }; }
+          }
+          const draft = map.createDraft(name, {
+            name: params.name,
+            geometryType: params.geometryType,
+            geojson: params.geojson,
+            style,
+            visible: params.visible,
+            expectedCount: params.expectedCount,
+            actor: "agent",
+            provenance: {
+              source: "agent",
+              demo: params.demo === true,
+              runId: entry.activeRunId || "",
+              sessionId: entry.sessionId || "",
+              threadId: entry.threadId || "",
+            },
+          });
+          const summary = map.draftSummary(draft);
+          emitChannelSafe(entry, "map_draft_changed", { project: name, draftId: summary.id, action: "create", ...summary });
+          return {
+            content: [{ type: "text", text: `已生成草稿「${summary.name}」（${summary.geometryType}·${summary.features} 要素${summary.demo ? "·演示数据" : ""}），只存在于草稿层。请在地图面板确认后再固化；需要我发起固化请告诉我。` }],
+            details: summary,
+          };
+        } catch (error) {
+          mapDomainErrorEvent(error);
+          return { content: [{ type: "text", text: `草稿操作失败：${error?.message || error}` }], details: { code: error?.code || null } };
+        }
+      },
+    });
+
+    const mapFixateLayerTool = defineTool({
+      name: "map_fixate_layer",
+      label: "固化地图草稿",
+      description:
+        "把地图草稿层固化为正式图层（写 layers/tiles/config/style 并记录日志）。这是正式写入，需要用户审批；共享数据集与锁定图层禁止固化。用户说“固化 / 确认保存 / 把这个草稿变成正式图层”时使用。",
+      parameters: Type.Object({
+        draftId: Type.String({ description: "要固化的草稿 id" }),
+        project: Type.Optional(Type.String({ description: "项目名；缺省使用当前任务的地图项目" })),
+        name: Type.Optional(Type.String({ description: "正式图层显示名，默认沿用草稿名" })),
+        group: Type.Optional(Type.String({ description: "正式图层分组，默认沿用类型分组" })),
+        layerId: Type.Optional(Type.String({ description: "正式图层 id，默认沿用草稿 id" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const map = await import("./map.mjs");
+        const name = String(params.project || entry.task?.mapProject || map.DEFAULT_PROJECT);
+        const draftId = String(params.draftId || "");
+        if (!draftId) return { content: [{ type: "text", text: "需要 draftId" }], details: {} };
+        const draft = map.readDraft(name, draftId);
+        if (!draft) return { content: [{ type: "text", text: "草稿不存在或已被固化/丢弃" }], details: {} };
+        const summary = map.draftSummary(draft);
+        const ctx = activeWriteContext("map_fixate_layer");
+        await requireToolApproval({
+          entry,
+          tool: "map_fixate_layer",
+          input: `${name}/${params.layerId || summary.id}`,
+          runId: ctx.runId,
+          threadId: ctx.threadId,
+          workspace: ctx.workspace,
+          emit: writeEvent,
+        });
+        try {
+          const result = await withPathWriteLock(ctx, "map_fixate_layer", path.join(ctx.workspace, "maps", name), async () => {
+            for (const file of [
+              `maps/${name}/layers/${params.layerId || summary.id}.geojson`,
+              `maps/${name}/style.json`,
+              `maps/${name}/map.config.json`,
+            ]) {
+              writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: file, kind: "map_fixate_layer" });
+            }
+            writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}`, kind: "map_fixate_layer" });
+            return map.confirmDraft(name, draftId, {
+              layerId: params.layerId,
+              layerName: params.name,
+              group: params.group,
+              actor: "agent",
+              confirmedBy: "agent-approval",
+            });
+          });
+          emitChannelSafe(entry, "map_draft_confirmed", {
+            project: name,
+            draftId: result.draftId,
+            layerId: result.layerId,
+            layerName: result.name,
+            features: result.features,
+            demo: result.demo,
+            runId: ctx.runId,
+          });
+          emitChannelSafe(entry, "map_draft_changed", { project: name, draftId: result.draftId, action: "remove" });
+          emitChannelSafe(entry, "file_changed", {
+            files: [`maps/${name}/layers/${result.layerId}.geojson`, `maps/${name}/map.config.json`, `maps/${name}/style.json`],
+          });
+          return {
+            content: [{ type: "text", text: `已固化草稿为正式图层「${result.name}」（${result.features} 要素${result.demo ? "·演示数据" : ""}）。` }],
+            details: result,
+          };
+        } catch (error) {
+          mapDomainErrorEvent(error);
+          return { content: [{ type: "text", text: `固化失败：${error?.message || error}（草稿已保留，可修正后重试）` }], details: { code: error?.code || null } };
+        }
+      },
+    });
+
+    // 把 map_action 分析结果同步为草稿层：让用户可以在图层树里确认固化，
+    // 而不是只能看一个刷新即消失的运行时图层。失败不影响可视化本身。
+    const draftFromMapAction = async (projectName, action) => {
+      try {
+        const map = await import("./map.mjs");
+        const target = String(projectName || action?.project || entry.task?.mapProject || map.DEFAULT_PROJECT);
+        const demo = action?.source === "demo";
+        const provenance = {
+          source: demo ? "demo-analysis" : "analysis",
+          demo,
+          runId: entry.activeRunId || "",
+          sessionId: entry.sessionId || "",
+          threadId: entry.threadId || "",
+        };
+        const push = (draft) => {
+          const summary = map.draftSummary(draft);
+          emitChannelSafe(entry, "map_draft_changed", { project: target, draftId: summary.id, action: "create", ...summary });
+        };
+        const polygon = ["isochrone", "buffer", "spatial_filter", "bbox_clip"].includes(String(action?.analysis));
+        const firstGeom = String(action?.geojson?.features?.[0]?.geometry?.type || "");
+        const family = polygon || /Polygon/.test(firstGeom) ? "polygon" : /LineString/.test(firstGeom) ? "line" : "point";
+        if (action?.geojson?.features?.length) {
+          push(map.createDraft(target, {
+            name: `${action.title || "地图分析"}${demo ? "（演示数据）" : ""}`,
+            geometryType: family,
+            geojson: action.geojson,
+            demo,
+            provenance,
+            actor: "agent",
+          }));
+        }
+        if (action?.lines?.features?.length) {
+          push(map.createDraft(target, {
+            name: `${action.title || "OD"}·流向`,
+            geometryType: "line",
+            geojson: action.lines,
+            demo,
+            provenance,
+            actor: "agent",
+          }));
+        }
+      } catch { /* 草稿生成失败不阻断可视化 */ }
+    };
 
     // 创建空白/复制项目（Work，需审批）。
     const mapProjectCreateTool = defineTool({
@@ -3522,6 +3750,7 @@ execute: async (_toolCallId, params, signal) => {
             };
             entry.lastMapAnalysis = action;
             emitChannelSafe(entry, "map_action", action);
+            await draftFromMapAction(action.project, action);
             const statText = result.stats.totalAreaKm2 ? `，合计面积 ≈${result.stats.totalAreaKm2}km²` : "";
             return {
               content: [{ type: "text", text: `空间分析完成：${params.analysis}，${result.stats.count}/${result.stats.inputCount} 个要素${statText}，耗时 ${result.stats.elapsedMs}ms。结果为平面近似口径，已发送到地图。` }],
@@ -3563,6 +3792,7 @@ execute: async (_toolCallId, params, signal) => {
             };
             entry.lastMapAnalysis = action;
             emitChannelSafe(entry, "map_action", action);
+            await draftFromMapAction(action.project, action);
             const count = descriptor.stats?.count ?? descriptor.geojson?.features?.length ?? 0;
             return {
               content: [{ type: "text", text: `已用数据源 ${params.dataSource} 生成「${descriptor.title}」（${count} 个要素）${descriptor.provenance?.demo ? "，使用演示数据" : ""}。结果已发送到中间地图；保存为正式图层需切到 Work 模式。` }],
@@ -3576,8 +3806,9 @@ execute: async (_toolCallId, params, signal) => {
         action.updatedAt = Date.now();
         entry.lastMapAnalysis = action;
         emitChannelSafe(entry, "map_action", action);
+        await draftFromMapAction(action.project, action);
         return {
-          content: [{ type: "text", text: `已生成${action.title}，使用演示数据，结果已发送到中间地图。用户确认后再保存为正式图层。` }],
+          content: [{ type: "text", text: `已生成${action.title}，使用演示数据，草稿层已同步（演示标记保留）。请在地图面板确认后再固化，不要直接写成正式图层。` }],
           details: { mapAction: action },
         };
       },
@@ -3628,6 +3859,11 @@ execute: async (_toolCallId, params, signal) => {
             };
             entry.lastMapAnalysis = action;
             emitChannelSafe(entry, "map_action", action);
+            await draftFromMapAction(action.project, action);
+          }
+          // 模板会写 Word 报告落盘：补 file_changed，前端/产物面板才能即时感知（P2-7）。
+          if (result?.report?.fileName) {
+            emitChannelSafe(entry, "file_changed", { files: [String(result.report.fileName)] });
           }
           const top = result.bands.topFlows[0];
           return {
@@ -3655,16 +3891,30 @@ execute: async (_toolCallId, params, signal) => {
         const action = entry.lastMapAnalysis;
         if (!action?.geojson) return { content: [{ type: "text", text: "当前没有可保存的地图分析结果，请先生成热力图或等时圈。" }], details: {} };
         const map = await import("./map.mjs");
+        const fs = (await import("node:fs")).default;
         const ctx = activeWriteContext("map_save_analysis");
         const project = params.project || action.project || entry.task?.mapProject || map.DEFAULT_PROJECT;
         const layerId = String(params.layerId || action.id || `analysis-${action.analysis || "result"}`).replace(/[^a-zA-Z0-9_-]/g, "-");
+        // 锁定与共享归属校验（P2-8 / P1-2）：覆盖既有正式层前必须拒绝锁定层、拒绝写入共享数据集。
+        try {
+          const repo = await import("./图层仓库.mjs");
+          const cfgPath = path.join(map.projectDir(project), "map.config.json");
+          const cfg = map.normalizeConfig(project, JSON.parse(fs.readFileSync(cfgPath, "utf8"))).config;
+          if (repo.isSharedLayerId(layerId, cfg)) {
+            return { content: [{ type: "text", text: `图层 ${layerId} 属于共享数据集，不能保存分析结果。请换一个图层 id。` }], details: { code: "MAP_SHARED_DENIED" } };
+          }
+          const locked = (cfg.layers || []).find((l) => String(l.id) === layerId && l.locked);
+          if (locked) {
+            return { content: [{ type: "text", text: `图层 ${layerId} 已锁定，Agent 不得覆盖。请让用户在图层属性中解除锁定。` }], details: { locked: layerId } };
+          }
+        } catch { /* 配置/归属不可读时按未锁定处理，后续写盘仍走审批 */ }
         // 保存会把 GeoJSON 落进项目 layers/ 并重建瓦片，属于写操作：与 map_import 一样先申请审批。
         // 此前只做了写入锁、漏了审批门，等于把"落盘新图层"变成了免审批操作。
         await requireToolApproval({
           entry, tool: "map_save_analysis", input: `${project}/${layerId}`,
           runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
         });
-        await withPathWriteLock(ctx, "map_save_analysis", path.join(ctx.workspace, "maps", name), async () => {
+        await withPathWriteLock(ctx, "map_save_analysis", path.join(ctx.workspace, "maps", project), async () => {
           // 台账记具体文件（含 -lines 派生层）：产物归属按精确路径匹配，
           // 记目录会让保存的图层只落到"待确认"而不是"已确认"。
           const wrote = [
@@ -4862,7 +5112,7 @@ execute: async (_toolCallId, params, signal) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, jobStatusTool, jobCancelTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, skillDraftTool, contextReadTool, mapReadTool, mapDatasetsTool, mapLayerInfoTool, mapResetTool, mapProjectCreateTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, cadReadTool, cadEditTool, memoryUpdateTool, webSearchTool, webFetchTool, wrapBrowserStepTool("open", browserOpenTool), wrapBrowserStepTool("snapshot", browserSnapshotTool), wrapBrowserStepTool("click", browserClickTool), wrapBrowserStepTool("type", browserTypeTool), wrapBrowserStepTool("press", browserPressTool), wrapBrowserStepTool("scroll", browserScrollTool), wrapBrowserStepTool("screenshot", browserScreenshotTool), wrapBrowserStepTool("tabs", browserTabsTool), wrapBrowserStepTool("back", browserBackTool), wrapBrowserStepTool("close", browserCloseTool), wrapBrowserStepTool("wait", browserWaitForTool), wrapBrowserStepTool("act", browserActTool), wrapBrowserStepTool("extract", browserExtractTool), wrapBrowserStepTool("select", browserSelectOptionTool), subagentTool, ...teamTools, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
+        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, jobStatusTool, jobCancelTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, skillDraftTool, contextReadTool, mapReadTool, mapDatasetsTool, mapLayerInfoTool, mapResetTool, mapProjectCreateTool, mapDraftLayerTool, mapFixateLayerTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, cadReadTool, cadEditTool, memoryUpdateTool, webSearchTool, webFetchTool, wrapBrowserStepTool("open", browserOpenTool), wrapBrowserStepTool("snapshot", browserSnapshotTool), wrapBrowserStepTool("click", browserClickTool), wrapBrowserStepTool("type", browserTypeTool), wrapBrowserStepTool("press", browserPressTool), wrapBrowserStepTool("scroll", browserScrollTool), wrapBrowserStepTool("screenshot", browserScreenshotTool), wrapBrowserStepTool("tabs", browserTabsTool), wrapBrowserStepTool("back", browserBackTool), wrapBrowserStepTool("close", browserCloseTool), wrapBrowserStepTool("wait", browserWaitForTool), wrapBrowserStepTool("act", browserActTool), wrapBrowserStepTool("extract", browserExtractTool), wrapBrowserStepTool("select", browserSelectOptionTool), subagentTool, ...teamTools, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
         tools: sessionToolNames,
       }));
     } catch (error) {
@@ -6522,7 +6772,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         bashWorkspaceRule(),
         "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区（绝对路径见上），禁止写入项目目录。否则产物不会被前端检测到。",
         "- **临时文件**: 中间工作文件（脚本、JSON 片段、解包目录、备份等）请集中放在工作区内以点开头的临时目录（如 `.work/`），并在任务收尾时删除；不要把中间文件留在用户的工作区里（用户目录只应留交付产物）。",
-        "- **地图（GIS）**: 地图项目位于 `" + ws + "/maps/{project}/`（当前任务指定 mapProject 时一律使用任务项目；缺省才回退 zhejiang-map 浙江省交通地图）。用户在地图模式下对话时用 map_read/map_edit/map_import 工具。",
+        "- **地图（GIS，仅 Work）**: 地图项目位于 `" + ws + "/maps/{project}/`（当前任务指定 mapProject 时一律使用任务项目；缺省才回退 zhejiang-map 浙江省交通地图）。生成数据用 map_draft_layer（草稿层，免审批），用户确认后用 map_fixate_layer 固化；用 map_read/map_edit/map_import 处理正式层读写，不要直接 write 地图 JSON。",
         "",
         "## 当前工作文件（用户正在查看/编辑的文档）",
         file ? `- 当前工作文件: ${file}` : "- 当前没有打开文档",

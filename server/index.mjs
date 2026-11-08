@@ -724,8 +724,23 @@ app.get(/^\/api\/map\/data\/([^/]+)\/style\.json$/, (req, res) => {
   }
 });
 
-// 静态文件（style.json / 矢量瓦片 / 图层数据）
-app.use("/api/map/data", express.static(map.STATIC_ROOT));
+// 静态文件（矢量瓦片 / 图层数据）：白名单路由。
+// 安全约束：STATIC_ROOT 指向整个 maps/ 目录，直接 express.static 会把
+// settings.local.json（明文地图服务 Key）、operations.jsonl、map.baseline.json、
+// agent/reports 等内部文件一并暴露给同源页面。这里只放行可公开的地图资源。
+const MAP_DATA_ALLOW = /^\/(?:[A-Za-z0-9][A-Za-z0-9_-]{0,63})\/(?:tiles\/[A-Za-z0-9_-]+\/[^{}]+|layers\/[^/]+\.(?:geojson|json))$/;
+app.use("/api/map/data", (req, res, next) => {
+  const pathname = decodeURIComponent(String(req.path || "").split("?")[0]);
+  if (!MAP_DATA_ALLOW.test(pathname)) {
+    return res.status(404).json({ error: "map data not found" });
+  }
+  return express.static(map.STATIC_ROOT, {
+    // 只读静态资源，禁止目录列表与隐藏文件。
+    dotfiles: "deny",
+    fallthrough: false,
+    index: false,
+  })(req, res, next);
+});
 // 缺失的地图资源必须明确返回 404，不能继续落入 SPA 首页回退。
 app.use("/api/map/data", (_req, res) => res.status(404).json({ error: "map data not found" }));
 
@@ -768,20 +783,116 @@ app.get("/api/map/project/:name/tree", (req, res) => {
   res.json(tree);
 });
 
+// ---------- 地图草稿层（2026-11-07 新流程）----------
+// 草稿 = Agent 生成、等待用户确认固化的点/线/面图层；只写 agent/drafts，不落正式库。
+const MAP_DRAFT_ERROR_STATUS = {
+  MAP_PROJECT_NOT_FOUND: 404,
+  MAP_DRAFT_NOT_FOUND: 404,
+  MAP_DRAFT_INVALID: 400,
+  MAP_DRAFT_CONFLICT: 409,
+  MAP_DRAFT_TOO_LARGE: 413,
+  MAP_GEOJSON_EMPTY: 400,
+  MAP_GEOJSON_INVALID: 400,
+  MAP_GEOJSON_TOO_LARGE: 413,
+  MAP_GEOMETRY_UNSUPPORTED: 400,
+  MAP_GEOMETRY_MIXED: 400,
+  MAP_GEOMETRY_MISMATCH: 400,
+  MAP_LAYER_INVALID: 400,
+  MAP_LAYER_LOCKED: 409,
+  MAP_SHARED_DENIED: 403,
+  MAP_CONFIRM_REQUIRED: 409,
+  MAP_FIXATE_FAILED: 500,
+  GEO_OUT_OF_RANGE: 400,
+  DATA_INTEGRITY_FAILED: 400,
+};
+function mapDraftError(res, error) {
+  const code = String(error?.code || "MAP_DRAFT_FAILED");
+  const status = MAP_DRAFT_ERROR_STATUS[code] || 500;
+  res.status(status).json({ ok: false, error: String(error?.message || error), code });
+}
+
+app.get("/api/map/project/:name/drafts", (req, res) => {
+  if (!map.projectDir(req.params.name)) return res.status(400).json({ ok: false, error: "项目名不合法", code: "MAP_PROJECT_INVALID" });
+  res.json({ ok: true, drafts: map.listDrafts(req.params.name) });
+});
+
+app.get("/api/map/project/:name/drafts/:id", (req, res) => {
+  const draft = map.readDraft(req.params.name, req.params.id);
+  if (!draft) return res.status(404).json({ ok: false, error: "草稿不存在", code: "MAP_DRAFT_NOT_FOUND" });
+  res.json({ ok: true, draft });
+});
+
+app.post("/api/map/project/:name/drafts", (req, res) => {
+  try {
+    const draft = map.createDraft(req.params.name, {
+      ...(req.body || {}),
+      actor: "user",
+      provenance: { source: "ui", demo: false, ...(req.body?.provenance || {}) },
+    });
+    res.status(201).json({ ok: true, draft: map.draftSummary(draft) });
+  } catch (error) {
+    mapDraftError(res, error);
+  }
+});
+
+app.patch("/api/map/project/:name/drafts/:id", (req, res) => {
+  try {
+    const draft = map.updateDraft(req.params.name, req.params.id, { ...(req.body || {}), actor: "user" });
+    res.json({ ok: true, draft: map.draftSummary(draft) });
+  } catch (error) {
+    mapDraftError(res, error);
+  }
+});
+
+app.delete("/api/map/project/:name/drafts/:id", (req, res) => {
+  const result = map.deleteDraft(req.params.name, req.params.id, { actor: "user", reason: "user" });
+  if (!result.ok) return res.status(404).json(result);
+  res.json(result);
+});
+
+app.post("/api/map/project/:name/drafts/cleanup", (req, res) => {
+  const result = map.cleanupDrafts(req.params.name, { maxAgeMs: Number(req.body?.maxAgeMs) || undefined });
+  res.json({ ok: true, ...result });
+});
+
+// 固化：破坏性正式写入，必须带 confirmed:true（防止脚本/误调用直接落盘）。
+app.post("/api/map/project/:name/drafts/:id/confirm", async (req, res) => {
+  if (req.body?.confirmed !== true) {
+    return res.status(409).json({ ok: false, error: "固化需要用户显式确认（confirmed:true）", code: "MAP_CONFIRM_REQUIRED" });
+  }
+  try {
+    const result = await map.confirmDraft(req.params.name, req.params.id, {
+      layerId: String(req.body?.layerId || ""),
+      layerName: String(req.body?.name || ""),
+      group: String(req.body?.group || ""),
+      visible: req.body?.visible !== false,
+      actor: "user",
+      confirmedBy: "user",
+    });
+    res.json(result);
+  } catch (error) {
+    mapDraftError(res, error);
+  }
+});
+
 app.patch("/api/map/project/:name/layer/:layerId", (req, res) => {
   const result = map.updateLayerMeta(req.params.name, req.params.layerId, req.body || {});
   if (!result) return res.status(404).json({ error: "layer not found" });
   res.json(result);
 });
 
-app.post("/api/map/project/:name/layer/:layerId/export", (req, res) => {
+// 单层导出：前端（图层属性对话框）用 GET 下载，旧调用方可能用 POST；两者共用同一处理。
+// 仅导出磁盘上真实存在的 GeoJSON 数据文件，不返回任意路径内容。
+function exportLayerHandler(req, res) {
   const geojson = map.getLayer(req.params.name, req.params.layerId);
-  if (!geojson) return res.status(404).json({ error: "layer not found" });
+  if (!geojson) return res.status(404).json({ error: "layer not found", code: "MAP_LAYER_NOT_FOUND" });
   const safeId = String(req.params.layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
   res.setHeader("Content-Type", "application/geo+json; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(safeId)}.geojson"`);
   res.send(JSON.stringify(geojson));
-});
+}
+app.get("/api/map/project/:name/layer/:layerId/export", exportLayerHandler);
+app.post("/api/map/project/:name/layer/:layerId/export", exportLayerHandler);
 
 app.post("/api/map/project/:name/layer/:layerId/replace", async (req, res) => {
   try {

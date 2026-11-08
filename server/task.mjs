@@ -15,17 +15,15 @@ const CAD_EXTENSIONS = /\.(?:dxf|dwg)$/i;
 export const TASK_MODES = Object.freeze(["chat", "office", "agent", "review"]);
 
 // Chat 只读能力：只做查询、读取、分析总结，不落盘。
-// 地图的只读四件套也在此列——查询数据集、生成临时可视化、清除临时结果、
-// 列出可用数据。写操作（map_edit / map_import / map_save_analysis）只在 Work，
-// 用户明确要求"新增图层"时切到 Work 模式执行。
+// 地图能力已收敛到 Work（用户决策 2026-11-07）：Chat 不再持有任何地图工具，
+// 地图编辑/草稿/固化只在 Work 完成（模块入口也只在 Work 开放）。
 const READ_ONLY_TOOLS = Object.freeze([
   "read", "grep", "find", "ls", "ask_user", "kb_search", "kb_read", "context_read", "skills_search", "skills_read",
   "web_search", "web_fetch",
-  "map_read", "map_analyze", "map_clear_analysis", "map_datasets", "map_layer_info",
   // CAD 读取（cadAgent 开关，默认关）：Chat/Office 只读查看图纸，不声明修改工具。
   ...(RUNTIME_FLAGS.cadAgent ? ["cad_read"] : []),
 ]);
-// Office 模式专注文档处理，不暴露地图工具（地图能力只在 Chat 与 Work 出现）。
+// Office 模式专注文档处理，不暴露地图工具（地图能力只在 Work 出现）。
 const OFFICE_TOOLS = Object.freeze([
   ...READ_ONLY_TOOLS.filter((name) => !name.startsWith("map_")), "officecli",
 ]);
@@ -40,8 +38,10 @@ const REVIEW_TOOLS = Object.freeze([
 const AGENT_TOOLS = Object.freeze([
   ...OFFICE_TOOLS,
   "bash", "write", "edit",
-  // Work 模式持有全部地图工具（含只读四件套与写工具）。
+  // Work 模式持有全部地图工具：只读查询 + 草稿层 + 正式写。
+  // 草稿层（map_draft_layer）不落正式库、免审批；固化/导入/改样式/删除/重置需审批。
   "map_read", "map_analyze", "map_clear_analysis", "map_datasets", "map_layer_info",
+  "map_draft_layer", "map_fixate_layer",
   "map_edit", "map_import", "map_save_analysis", "map_reset", "map_project_create",
   "memory_update", "todo",
   // 2026-11-04：后台任务（转后台的工具结果用 job_status 等待/读取，job_cancel 取消）
@@ -420,11 +420,11 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
         : "可创建 Lead + 最多 2 名队友的专家小组，共享任务板与消息；写操作仍逐次审批",
     });
   }
-  // 地图能力只在 Chat（只读）与 Work（可写）声明；Office 专注文档、Review 依赖本地材料，
-  // 两者的工具白名单里都没有地图工具，声明了就成了"说得到做不到"（X1 的同类问题）。
-  const mapAvailable = map && (mode === "chat" || mode === "agent");
+  // 地图能力只在 Work 声明（用户决策 2026-11-07：地图模块不保留 Chat）。
+  // Chat/Office/Review 的工具白名单里都没有地图工具，声明了就成了"说得到做不到"。
+  const mapAvailable = map && mode === "agent";
   if (mapAvailable) {
-    const mapWritable = mode !== "chat" && mode !== "review";
+    const mapWritable = mode === "agent";
     capabilities.push({
       id: "map",
       label: "地图工具",
@@ -432,8 +432,8 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
       required: false,
       provider: "native",
       reason: mapWritable
-        ? "地图查询、分析与图层写入（写操作需审批）"
-        : "地图只读查询与临时可视化（不落盘；保存图层需切到 Work 模式）",
+        ? "地图草稿层生成、查询、分析与用户确认后固化（正式写需审批）"
+        : "地图仅在 Work 模式可用",
     });
   }
   // CAD 能力（cadAgent 开关，默认关）：关闭时不声明，编排/遥测与基线一致。
@@ -473,7 +473,7 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
       knowledge: knowledge ? "enabled" : "not_needed",
       // read_only / read_write：让前端与提示词都能区分"能不能落盘"。
       // 仅当上面真的声明了地图能力时才启用（与 capabilities 严格一致）。
-      map: mapAvailable ? (mode === "chat" ? "read_only" : "read_write") : "not_needed",
+      map: mapAvailable ? "read_write" : "not_needed",
       skills: skillsRouting,
       skillDrafts: skillDraftsRouting,
     },
@@ -536,20 +536,18 @@ export function taskSummary(task) {
 }
 
 /**
- * 地图能力边界（阶段 3）：只在"本轮确实涉及地图"时注入，避免每轮都占用上下文。
- * 目的是让模型知道当前模式能做什么、不能做什么——而不是等到失败后才发现权限不足。
+ * 地图能力边界（2026-11-07 修订）：地图只在 Work 模式可用。
+ * 目的是让模型知道草稿层与固化的边界——而不是等到失败后才发现权限不足。
  */
 function mapCapabilityHint(task = {}) {
   const plan = task.capabilityPlan;
   const routing = plan?.routing?.map;
-  if (routing !== "read_only" && routing !== "read_write") return "";
-  if (routing === "read_write") {
-    return "地图能力：可查询数据集与图层、生成临时可视化，并可将结果保存为正式图层（写操作需用户审批）。";
-  }
+  if (routing !== "read_write") return "";
   return [
-    "地图能力（只读）：可查询数据集与图层、生成临时可视化（如热力图 / OD 流向 / 等时圈）、清除临时结果。",
-    "不可执行：新增、修改、删除图层，或把分析结果保存为正式图层——这些需要用户切换到 Work 模式。",
-    "当用户要求写操作时，明确说明需要切到 Work 模式，不要尝试绕过，也不要假装已完成。",
+    "地图能力（Work）：可查询数据集与图层、生成点/线/面草稿层（不落正式库、免审批）、分析出图。",
+    "草稿层由 map_draft_layer 生成，用户在地图面板确认后才固化；固走 map_fixate_layer（需用户审批）。",
+    "正式写入（固化 / 导入 / 改样式 / 删除 / 重置 / 新建项目）都需要审批；共享数据集只读，锁定图层禁止写入。",
+    "演示数据必须在结果中明确标注，不得静默写成正式图层。",
   ].join("\n");
 }
 

@@ -7,8 +7,10 @@ const TOOL_CATEGORY = {
   read: "读取", grep: "读取", find: "读取", ls: "读取",
   kb_search: "读取", kb_read: "读取", skills_search: "读取", skills_read: "读取", context_read: "读取", map_read: "读取", map_datasets: "读取",
   write: "写入", edit: "写入", officecli: "写入", map_edit: "写入", map_import: "写入",
+  map_fixate_layer: "写入", map_reset: "写入", map_project_create: "写入",
   bash: "命令",
   map_analyze: "分析", map_save_analysis: "分析", map_clear_analysis: "分析",
+  map_draft_layer: "分析", map_template: "分析", map_layer_info: "读取",
   ask_user: "协作", todo: "协作", memory_update: "协作",
 };
 const CATEGORY_ORDER = ["读取", "写入", "命令", "分析", "协作"];

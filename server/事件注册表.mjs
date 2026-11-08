@@ -166,6 +166,10 @@ const REGISTRY = [
 
   // ---- Review 证据链 ----
   { type: "map_action", lifecycle: true, persist: false, note: "地图分析/样式动作（前端实时更新，不落盘）" },
+  // 地图草稿层（2026-11-07）：草稿不落正式库，事件只用于前端实时刷新。
+  { type: "map_draft_changed", lifecycle: true, persist: false, note: "地图草稿层新增/更新/删除（前端实时刷新草稿列表，不落盘）", schema: { required: ["project", "draftId", "action"], types: { project: "string", draftId: "string", action: "string", name: "string", geometryType: "string", features: "number", demo: "boolean", revision: "number" } } },
+  { type: "map_draft_confirmed", lifecycle: true, persist: true, note: "地图草稿固化为正式图层（审计）", schema: { required: ["project", "draftId", "layerId"], types: { project: "string", draftId: "string", layerId: "string", layerName: "string", features: "number", demo: "boolean", runId: "string" } } },
+  { type: "map_draft_discarded", lifecycle: true, persist: true, note: "地图草稿被丢弃（审计）", schema: { required: ["project", "draftId"], types: { project: "string", draftId: "string", reason: "string" } } },
   { type: "review_material_classified", lifecycle: true, persist: true, note: "审查材料识别" },
   { type: "review_source_search_started", lifecycle: true, persist: true, note: "规范检索开始" },
   { type: "review_source_search_result", lifecycle: true, persist: true, note: "规范候选返回" },

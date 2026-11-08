@@ -62,6 +62,8 @@ export default function LayerPanel({
   onSetLabel, onCreateGroup, onMoveLayerToGroup,
   layerViews = [], tempLayers = [],
   onToggleTempLayer, onClearTempLayer, onSaveTempLayer, onClearAllTemp,
+  drafts = [],
+  onConfirmDraft, onDiscardDraft, onToggleDraft, onLocateDraft,
   onOpenLayerProps,
 }) {
   const [collapsed, setCollapsed] = useState({});          // 组折叠
@@ -445,6 +447,55 @@ export default function LayerPanel({
             </div>
           );
         })}
+
+        {/* 草稿层（Agent 生成、等待用户确认固化；不落正式库） */}
+        {Array.isArray(drafts) && drafts.length > 0 && (
+          <div className="lp-group lp-group-draft">
+            <div className="lp-group-head" title="Agent 生成的草稿层：不写入正式图层，确认后才固化">
+              <span className="lp-caret-spacer" />
+              <span className="lp-group-name"><Icon name="star" size={12} /> 草稿层（待确认）</span>
+              <span className="lp-group-count">{drafts.length}</span>
+            </div>
+            <div className="lp-group-body">
+              {drafts.map((draft) => (
+                <div key={draft.id} className="lp-row lp-row-draft" title={`${draft.geometryType} · ${draft.features} 要素${draft.demo ? " · 演示数据" : ""}`}>
+                  <label className="lp-eye" onClick={(e) => e.stopPropagation()} title={draft.visible === false ? "显示草稿" : "隐藏草稿"}>
+                    <input type="checkbox" checked={draft.visible !== false} onChange={() => onToggleDraft?.(draft)} />
+                  </label>
+                  <span className="lp-symbol lp-symbol-temp">
+                    <Icon name={draft.geometryType === "line" ? "route" : draft.geometryType === "polygon" ? "layers" : "locate"} size={12} />
+                  </span>
+                  <span className="lp-row-name">
+                    {draft.name || "未命名草稿"}
+                    {draft.demo && <span className="lp-row-type">演示数据</span>}
+                    <span className="lp-row-type">{draft.features} 要素 · 未固化</span>
+                  </span>
+                  {onLocateDraft && (
+                    <提示气泡 label="定位草稿">
+                      <button className="lp-op" type="button" aria-label="定位草稿" onClick={(e) => { e.stopPropagation(); onLocateDraft(draft); }}>
+                        <Icon name="locate" size={12} />
+                      </button>
+                    </提示气泡>
+                  )}
+                  {onConfirmDraft && (
+                    <提示气泡 label="确认固化为正式图层">
+                      <button className="lp-op" type="button" aria-label="确认固化为正式图层" onClick={(e) => { e.stopPropagation(); onConfirmDraft(draft); }}>
+                        <Icon name="check" size={12} />
+                      </button>
+                    </提示气泡>
+                  )}
+                  {onDiscardDraft && (
+                    <提示气泡 label="丢弃草稿（不影响正式图层）">
+                      <button className="lp-op danger" type="button" aria-label="丢弃草稿" onClick={(e) => { e.stopPropagation(); onDiscardDraft(draft); }}>
+                        <Icon name="trash" size={12} />
+                      </button>
+                    </提示气泡>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* 临时层（本次会话的临时可视化，不落盘） */}
         {tempLayers.length > 0 && (

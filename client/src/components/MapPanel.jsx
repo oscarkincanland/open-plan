@@ -24,6 +24,7 @@ import {
   mapDuplicateProject, mapRenameProject, mapArchiveProject, mapDeleteProject,
   mapExportBatch, mapExportStatus,
   mapLayerRegistry, mapUpdateLayerMeta, mapLayerReplace, mapSetBaseline, mapReset,
+  mapDrafts, mapDraftConfirm, mapDraftDiscard,
 } from "../api.js";
 import { flag } from "../运行开关.js";
 
@@ -253,6 +254,9 @@ export default function MapPanel({
   const [resetOpen, setResetOpen] = useState(false);
   const [layerPropsId, setLayerPropsId] = useState(null);
   const [persistItem, setPersistItem] = useState(null);
+  // 草稿层（2026-11-07）：Agent 生成、等待用户确认固化的点/线/面图层。
+  const [drafts, setDrafts] = useState([]);
+  const [draftFixate, setDraftFixate] = useState(null);
   const [aiCanvasOpen, setAiCanvasOpen] = useState(false);
   const [impTab, setImpTab] = useState("files");
   const [impDir, setImpDir] = useState("data");
@@ -393,6 +397,23 @@ export default function MapPanel({
   }, []);
 
   // 加载项目详情（config + style + 图层文件清单 + 归属视图）
+  // 草稿层：列表 + 地图渲染。Agent 生成后由 map_draft_changed 事件触发刷新。
+  const loadDrafts = useCallback(async (name) => {
+    const target = String(name || project || "").trim();
+    if (!target) return [];
+    try {
+      const r = await mapDrafts(target);
+      const list = Array.isArray(r?.drafts) ? r.drafts : [];
+      setDrafts(list);
+      mapRef.current?.showDrafts?.(list);
+      return list;
+    } catch {
+      setDrafts([]);
+      mapRef.current?.showDrafts?.([]);
+      return [];
+    }
+  }, [project]);
+
   const loadProject = useCallback(async (name) => {
     try {
       // 归属视图随工作区变化：共享数据集 + 本工作区自有图层（阶段 1）。
@@ -404,6 +425,8 @@ export default function MapPanel({
       setBasemapMeta(Array.isArray(p.basemapMeta) && p.basemapMeta.length ? p.basemapMeta : BASEMAP_FALLBACK);
       // 工程注册表（要素数/锁定/基线归属）用于属性对话框与重置影响清单。
       try { setRegistry(await mapLayerRegistry(name)); } catch { setRegistry(null); }
+      // 草稿层随项目恢复（刷新/重启后可继续确认固化）。
+      void loadDrafts(name);
     } catch (e) {
       flash("加载项目失败: " + e.message);
     }
@@ -1890,9 +1913,68 @@ export default function MapPanel({
     onOpenFile?.(name);
   }, [onExit, onOpenFile]);
 
+  // 草稿层事件：Agent 生成/更新/丢弃草稿后刷新列表与地图渲染。
+  const handleDraftChanged = useCallback((payload) => {
+    if (!payload) return;
+    if (payload.project && payload.project !== project) return;
+    void loadDrafts(project);
+  }, [project, loadDrafts]);
+
+  // 用户确认固化：写正式图层（服务端已做锁定/共享/坐标/记录数校验）。
+  const handleConfirmDraft = useCallback(async (draft, { name, group } = {}) => {
+    if (!draft?.id) return;
+    try {
+      const result = await mapDraftConfirm(project, draft.id, { name, group });
+      await loadProject(project);
+      await mapRef.current?.reloadStyle?.();
+      flash(`已固化草稿为正式图层「${result?.name || name || draft.name}」${result?.demo ? "（演示数据）" : ""}`);
+      onMapChanged?.(project);
+    } catch (e) {
+      notifyError(`固化失败：${e.message}`);
+      throw e;
+    }
+  }, [project, loadProject, flash, onMapChanged]);
+
+  // 丢弃草稿：只删草稿文件，正式图层不受影响。
+  const handleDiscardDraft = useCallback(async (draft) => {
+    if (!draft?.id) return;
+    if (!(await askConfirm(`丢弃草稿「${draft.name || "未命名"}」？正式图层不受影响。`))) return;
+    try {
+      await mapDraftDiscard(project, draft.id);
+      await loadDrafts(project);
+      flash("已丢弃草稿");
+    } catch (e) {
+      notifyError(`丢弃失败：${e.message}`);
+    }
+  }, [project, loadDrafts, flash]);
+
+  // 草稿显隐：只改运行时渲染，不回写服务端（草稿 visible 由 Agent/用户创建时决定）。
+  const handleToggleDraft = useCallback((draft) => {
+    const next = drafts.map((item) => (item.id === draft.id ? { ...item, visible: !item.visible } : item));
+    setDrafts(next);
+    mapRef.current?.showDrafts?.(next);
+  }, [drafts]);
+
+  const handleLocateDraft = useCallback((draft) => {
+    if (Array.isArray(draft?.bbox) && draft.bbox.length === 4) {
+      mapRef.current?.focusBounds?.(draft.bbox, { maxZoom: 14 });
+    }
+  }, []);
+
+  // 发起固化（打开名称/分组确认对话框）。
+  const handleRequestFixate = useCallback((draft) => {
+    setDraftFixate(draft);
+  }, []);
+
   useEffect(() => {
     if (!bridgeRef) return undefined;
-    bridgeRef.current = { onMapAction: handleMapAction, onFileChanged: handleFileChanged, onAgentEnd: handleAgentEnd, onOpenFile: handleOpenFile };
+    bridgeRef.current = {
+      onMapAction: handleMapAction,
+      onFileChanged: handleFileChanged,
+      onAgentEnd: handleAgentEnd,
+      onOpenFile: handleOpenFile,
+      onDraftChanged: handleDraftChanged,
+    };
     // 测试钩子：把同一套处理器暴露到 window，供 L3 场景在真实事件路径上触发
     // （与 MapViewer 的 window.__oawMap 同类：只读引用，不参与业务逻辑）。
     try {
@@ -1900,13 +1982,14 @@ export default function MapPanel({
         mapAction: handleMapAction,
         fileChanged: handleFileChanged,
         agentEnd: handleAgentEnd,
+        draftChanged: handleDraftChanged,
       };
     } catch {}
     return () => {
       if (bridgeRef.current?.onMapAction === handleMapAction) bridgeRef.current = null;
       try { if (window.__oawMapBridge?.mapAction === handleMapAction) window.__oawMapBridge = null; } catch {}
     };
-  }, [bridgeRef, handleMapAction, handleFileChanged, handleAgentEnd, handleOpenFile]);
+  }, [bridgeRef, handleMapAction, handleFileChanged, handleAgentEnd, handleOpenFile, handleDraftChanged]);
 
   return (
     <div className={`mp ${hideChat ? "mp-shared-chat" : ""} ${hideChat && !chatVisible ? "mp-chat-hidden" : ""}`}>
@@ -1916,26 +1999,9 @@ export default function MapPanel({
       <div className="mp-topbar">
         <Icon name="map" size={14} />
         <span className="mp-title">地图</span>
-
-        {/* 模式切换：地图内直接切，不必返回主对话。 */}
-        {onModeChange && (
-          <div className="mp-mode-switch" role="group" aria-label="对话工作模式">
-            <button
-              type="button"
-              className={`mp-mode-option ${conversationMode === "chat" ? "active" : ""}`}
-              aria-pressed={conversationMode === "chat"}
-              title="Chat：查询地图数据、生成临时可视化（刷新后不保留）"
-              onClick={() => onModeChange("chat")}
-            >Chat</button>
-            <button
-              type="button"
-              className={`mp-mode-option work ${conversationMode === "agent" ? "active" : ""}`}
-              aria-pressed={conversationMode === "agent"}
-              title="Work：可新增/修改图层并保存为正式图层（写操作需审批）"
-              onClick={() => onModeChange("agent")}
-            >Work</button>
-          </div>
-        )}
+        <span className="mp-mode-badge" title="地图模块仅在 Work 模式使用：Agent 生成草稿层，用户确认后固化">
+          <Icon name="robot" size={12} /> Work
+        </span>
         <TaskCenter
           sessions={sessions}
           currentThreadId={threadId}
@@ -2220,6 +2286,11 @@ export default function MapPanel({
             files={files}
             layerViews={layerViews}
             tempLayers={tempLayers}
+            drafts={drafts}
+            onConfirmDraft={handleRequestFixate}
+            onDiscardDraft={handleDiscardDraft}
+            onToggleDraft={handleToggleDraft}
+            onLocateDraft={handleLocateDraft}
             onToggleTempLayer={toggleTempLayer}
             onClearTempLayer={removeTempLayer}
             onSaveTempLayer={saveTempLayer}
@@ -2778,6 +2849,17 @@ export default function MapPanel({
           onConfirm={async ({ name, group }) => {
             await saveAnalysis(activeAnalysis, { name, group });
             setPersistItem(null);
+          }}
+        />
+      )}
+      {draftFixate && (
+        <临时层转正对话框
+          item={{ label: draftFixate.name || "草稿图层", demo: draftFixate.demo }}
+          groups={cfg?.groups || []}
+          onClose={() => setDraftFixate(null)}
+          onConfirm={async ({ name, group }) => {
+            await handleConfirmDraft(draftFixate, { name, group });
+            setDraftFixate(null);
           }}
         />
       )}

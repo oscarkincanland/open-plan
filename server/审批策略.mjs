@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { PROJECT_DIR } from "./workspace.mjs";
 import { atomicWriteJson } from "./持久化工具.mjs";
 import { RUNTIME_FLAGS } from "./运行开关.mjs";
+import { getToolMetadata } from "./工具元数据.mjs";
 
 // 工具级审批策略：参考 opencode 的 permission 模型（allow / ask / deny 三值，
 // 通配符匹配、最后匹配生效）。规则可持久化到 .oaw/permissions.json，
@@ -14,6 +15,31 @@ const PENDING_APPROVALS_FILE = path.join(PROJECT_DIR, ".oaw", "pending-approvals
 const APPROVAL_TIMEOUT_MS = 300000; // 5 分钟，超时视为拒绝（比 ask_user 更保守）
 
 export const APPROVAL_ACTIONS = Object.freeze(["allow", "ask", "deny"]);
+
+/**
+ * 审批边界：这些工具即使用户开启"自动批准"也必须逐次确认
+ * （正式写/破坏性/项目生命周期）。事实来源是工具元数据 forceConfirm，
+ * 这里保留一个兜底集合，避免元数据缺失时 auto 模式静默放行。
+ */
+const AUTO_APPROVE_BLOCKED_FALLBACK = Object.freeze(new Set([
+  "map_fixate_layer",
+  "map_save_analysis",
+  "map_import",
+  "map_reset",
+  "map_project_create",
+  "map_template",
+  "map_edit",
+  "editorial_pipeline",
+]));
+
+/** 该工具是否禁止被 auto 模式自动批准。 */
+function mustConfirmExplicitly(toolName) {
+  const name = String(toolName || "").trim().toLowerCase();
+  if (!name) return false;
+  if (AUTO_APPROVE_BLOCKED_FALLBACK.has(name)) return true;
+  const meta = getToolMetadata(name);
+  return Boolean(meta?.forceConfirm || meta?.destructive);
+}
 
 // 默认规则：catch-all allow 在前，具体 ask/deny 在后（最后匹配生效）。
 const DEFAULT_RULES = [
@@ -45,6 +71,12 @@ const DEFAULT_RULES = [
   // 地图样式/数据修改默认先问
   { tool: "map_edit", pattern: "*", action: "ask" },
   { tool: "map_import", pattern: "*", action: "ask" },
+  // 草稿层：不落正式库、可丢弃，免审批；固化是正式写入，必须审批。
+  { tool: "map_draft_layer", pattern: "*", action: "allow" },
+  { tool: "map_fixate_layer", pattern: "*", action: "ask" },
+  { tool: "map_save_analysis", pattern: "*", action: "ask" },
+  // 场景化模板会写 Word 报告落盘，与 officecli create 同级先问
+  { tool: "map_template", pattern: "*", action: "ask" },
   // 工程级写操作（重置 / 新建项目）会改变整个图层树，同样逐次确认
   { tool: "map_reset", pattern: "*", action: "ask" },
   { tool: "map_project_create", pattern: "*", action: "ask" },
@@ -55,6 +87,7 @@ const DEFAULT_RULES = [
   // target 前缀由图层仓库 resolveLayer() 生成（阶段 1 落地）。
   { tool: "map_import", pattern: "shared/*", action: "deny" },
   { tool: "map_save_analysis", pattern: "shared/*", action: "deny" },
+  { tool: "map_fixate_layer", pattern: "shared/*", action: "deny" },
   { tool: "map_edit", pattern: "shared/*", action: "ask" },
   { tool: "map_edit", pattern: "workspace/*", action: "allow" },
   // 敏感文件禁止写入
@@ -150,7 +183,9 @@ export function matchToolDecision(tool, input) {
     }
   }
   // 自动批准只放行默认的 ask；显式 deny 永远不能被自动批准绕过。
-  if (config.mode === "auto" && matched.action === "ask") {
+  // 2026-11-07 审批边界（ADR-0025）：固化 / 导入 / 保存分析 / 模板 / 重置 / 项目变更等
+  // 正式写与破坏性操作即使 auto 模式也必须由用户显式确认，不能自动提升为 allow。
+  if (config.mode === "auto" && matched.action === "ask" && !mustConfirmExplicitly(toolName)) {
     return {
       ...matched,
       action: "allow",

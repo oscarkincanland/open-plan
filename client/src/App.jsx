@@ -881,8 +881,14 @@ export default function App() {
     setActiveModule(null);
   }, []);
   const openExternalModule = useCallback((module) => {
+    // 地图模块只在 Work 模式开放（2026-11-07 决策：地图不再保留 Chat）。
+    // 进入地图前若不是 Work，先切到 Work，避免出现"地图只读/不可写"的分裂边界。
+    if (module === "map" && conversationMode !== "agent") {
+      const switched = chatInputRef.current?.setMode?.("agent");
+      if (switched !== false) setConversationMode("agent");
+    }
     setActiveModule(module);
-  }, []);
+  }, [conversationMode]);
 
   // 外部模块打开时主 ChatPanel 会卸载；先暂存 @ 引用，待回到对话后再写入，
   // 避免“点击调用但输入框没有任何内容”的竞态。
@@ -2374,6 +2380,7 @@ export default function App() {
         mapBridgeRef.current?.onFileChanged?.(changed);
       }}
       onMapAction={(action) => mapBridgeRef.current?.onMapAction?.(action)}
+      onDraftChanged={(payload) => mapBridgeRef.current?.onDraftChanged?.(payload)}
        // 地图项目不是“打开的文件”；不要再把「地图项目:x」塞进 currentDoc，
        // 否则提示词会同时出现伪文件与地图上下文，模型可能先尝试读取不存在的文件。
        // 地图模式下也不把画布里恰好打开的业务文档带进地图任务。

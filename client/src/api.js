@@ -470,6 +470,18 @@ export const mapUpdateLayerMeta = (name, layerId, patch) =>
   api(`/api/map/project/${encodeURIComponent(name)}/layer/${encodeURIComponent(layerId)}`, { method: "PATCH", body: JSON.stringify(patch || {}) });
 export const mapLayerExport = (name, layerId) =>
   api(`/api/map/project/${encodeURIComponent(name)}/layer/${encodeURIComponent(layerId)}/export`);
+// 地图草稿层（2026-11-07）：Agent 生成、等待用户确认固化的点/线/面图层。
+export const mapDrafts = (name) => api(`/api/map/project/${encodeURIComponent(name)}/drafts`);
+export const mapDraft = (name, id) => api(`/api/map/project/${encodeURIComponent(name)}/drafts/${encodeURIComponent(id)}`);
+export const mapDraftConfirm = (name, id, payload = {}) =>
+  api(`/api/map/project/${encodeURIComponent(name)}/drafts/${encodeURIComponent(id)}/confirm`, {
+    method: "POST",
+    body: JSON.stringify({ confirmed: true, ...payload }),
+  });
+export const mapDraftDiscard = (name, id) =>
+  api(`/api/map/project/${encodeURIComponent(name)}/drafts/${encodeURIComponent(id)}`, { method: "DELETE" });
+export const mapDraftUpdate = (name, id, patch = {}) =>
+  api(`/api/map/project/${encodeURIComponent(name)}/drafts/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) });
 export const mapLayerReplace = (name, layerId, geojson, format = "geojson") =>
   api(`/api/map/project/${encodeURIComponent(name)}/layer/${encodeURIComponent(layerId)}/replace`, { method: "POST", body: JSON.stringify({ geojson, format }) });
 export const mapBaseline = (name) => api(`/api/map/project/${encodeURIComponent(name)}/baseline`);
