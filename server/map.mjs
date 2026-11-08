@@ -1881,6 +1881,51 @@ export function cleanupDrafts(name = DEFAULT_PROJECT, { maxAgeMs = MAP_DRAFT_TTL
  * 顺序：校验归属/锁定 → 校验数据 → importLayer（事务化）→ 删除草稿 → 日志/manifest。
  * 失败时草稿保留，可重试；不产生半成品正式层。
  */
+/** 把草稿 style 映射到正式图层的 MapLibre paint（线/面/点），固化时调用。 */
+function applyDraftStyleToLayer(name, layerId, style = {}) {
+  const dir = projectDir(name);
+  if (!dir) return false;
+  const stylePath = path.join(dir, "style.json");
+  const doc = readJson(stylePath, null);
+  if (!doc || !Array.isArray(doc.layers)) return false;
+  const color = String(style.color || "").trim();
+  const opacity = Number(style.opacity);
+  const width = Number(style.width);
+  const radius = Number(style.radius);
+  const fillOpacity = Number(style.fillOpacity);
+  const stroke = String(style.stroke || "").trim();
+  const dashed = style.dashed !== false;
+  let touched = 0;
+  doc.layers = doc.layers.map((layer) => {
+    const id = String(layer?.id || "");
+    if (id !== layerId && !id.startsWith(`${layerId}-`)) return layer;
+    if (layer.type === "symbol" || layer.type === "raster" || layer.type === "background") return layer;
+    const next = { ...layer, paint: { ...(layer.paint || {}) } };
+    if (layer.type === "line") {
+      if (color) next.paint["line-color"] = color;
+      if (Number.isFinite(width)) next.paint["line-width"] = width;
+      if (Number.isFinite(opacity)) next.paint["line-opacity"] = opacity;
+      if (dashed) next.paint["line-dasharray"] = next.paint["line-dasharray"] || [2, 1];
+      else delete next.paint["line-dasharray"];
+    } else if (layer.type === "fill") {
+      if (color) next.paint["fill-color"] = color;
+      if (Number.isFinite(fillOpacity)) next.paint["fill-opacity"] = fillOpacity;
+    } else if (layer.type === "circle") {
+      if (color) next.paint["circle-color"] = color;
+      if (Number.isFinite(radius)) next.paint["circle-radius"] = radius;
+      if (Number.isFinite(opacity)) next.paint["circle-opacity"] = opacity;
+      if (stroke) next.paint["circle-stroke-color"] = stroke;
+    } else {
+      return layer;
+    }
+    touched += 1;
+    return next;
+  });
+  if (!touched) return false;
+  writeStyle(name, doc);
+  return true;
+}
+
 export async function confirmDraft(name = DEFAULT_PROJECT, id = "", {
   layerId = "", layerName = "", group = "", visible = true, actor = "user", confirmedBy = "user",
 } = {}) {
@@ -1919,6 +1964,10 @@ export async function confirmDraft(name = DEFAULT_PROJECT, id = "", {
       ...(demo ? { demo: true } : {}),
     });
   } catch { /* 元数据失败不阻断固化结果 */ }
+  // 草稿自定义样式带到正式图层（颜色/线宽/半径/透明度/描边/虚线）。
+  try {
+    applyDraftStyleToLayer(name, targetId, draft.style || {});
+  } catch { /* 样式失败不阻断固化结果 */ }
   // demo 来源写入 config.source，便于追溯
   try {
     const { config: latest } = normalizeConfig(name, readJson(path.join(dir, "map.config.json"), null));
