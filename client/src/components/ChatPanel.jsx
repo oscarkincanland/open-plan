@@ -1359,18 +1359,6 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   }, [composerMenu, referenceFiles, sessions, project, mcpServers]);
 
   useEffect(() => {
-    // 旧 `#` 菜单与统一面板的「技能与插件」组共用同一份 MCP 列表（按需拉取一次）。
-    const wantPlugins = composerUnified ? unifiedComposer.menu?.group === "skill" : composerMenu?.symbol === "#";
-    if (!wantPlugins || mcpServers.length) return undefined;
-    let cancelled = false;
-    fetch("/api/integrations/mcp/servers")
-      .then((res) => (res.ok ? res.json() : { servers: [] }))
-      .then((data) => { if (!cancelled) setMcpServers(Array.isArray(data?.servers) ? data.servers : []); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [composerMenu, composerUnified, unifiedComposer.menu?.group, mcpServers.length]);
-
-  useEffect(() => {
     if (composerItems.length === 0) setComposerIndex(0);
     else setComposerIndex((index) => Math.min(index, composerItems.length - 1));
   }, [composerItems]);
@@ -1400,6 +1388,19 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     knowledge: kbReferenceItems,
     templates: templateReferenceItems,
   });
+
+  // 旧 `#` 菜单与统一面板的「技能与插件」组共用同一份 MCP 列表（按需拉取一次）。
+  // 必须放在 unifiedComposer 声明之后：依赖数组会在 render 期求值，提前引用会触发 TDZ。
+  useEffect(() => {
+    const wantPlugins = composerUnified ? unifiedComposer.menu?.group === "skill" : composerMenu?.symbol === "#";
+    if (!wantPlugins || mcpServers.length) return undefined;
+    let cancelled = false;
+    fetch("/api/integrations/mcp/servers")
+      .then((res) => (res.ok ? res.json() : { servers: [] }))
+      .then((data) => { if (!cancelled) setMcpServers(Array.isArray(data?.servers) ? data.servers : []); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [composerMenu, composerUnified, unifiedComposer.menu?.group, mcpServers.length]);
 
   // `#` 技能候选：首次打开「技能与插件」组时读 /api/skills（不再只读 project.settings.skills）。
   useEffect(() => {

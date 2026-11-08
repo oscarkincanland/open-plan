@@ -257,7 +257,7 @@ try {
   assert.match(widthStyles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,240}?max-width: var\(--msg-content-max\)/, "消息列应改用统一内容宽度令牌并按令牌居中");
   assert.doesNotMatch(widthStyles, /\.msg-main > \.message-process-fold \{ order: -1; \}/, "执行过程顺序应由 DOM 表达，不再用 flex order 制造视觉/阅读顺序错位");
   assert.match(chatPanelSource, /\{renderMessageBlocks\(\)\}[\s\S]{0,300}?<div className="msg-blocks">|className="msg-blocks">[\s\S]{0,60}?\{renderMessageBlocks\(\)\}/, "过程折叠与正文按输出顺序同列渲染");
-  assert.match(widthStyles, /\.msg-main > \.msg-header \{ margin-bottom: 2px; order: -2; \}/, "标题应保持在最上方");
+  assert.match(widthStyles, /\.msg-main > \.msg-header \{ margin-bottom: 1px; order: -2; \}/, "标题应保持在最上方");
   // 规范 v2.0 §4：对话正文 14px / 行高 1.75（与 ZCode 同口径），不再压到 1.65。
   assert.match(widthStyles, /\.msg \.markdown-body \{ font-size: 14px; line-height: 1\.75; \}/, "对话正文应为 14px / 1.75");
   assert.match(chatPanelSource, /待审批：\{approvalLabel\}/, "待审批应显示在输入栏");
@@ -273,6 +273,12 @@ try {
   assert.match(chatPanelSource, /isLastProcess && messageExecutionFlow && <ExecutionFlow \{\.\.\.messageExecutionFlow\} embedded \/>/, "SSE 轨迹只挂在最后一个过程片段里");
   assert.doesNotMatch(chatPanelSource.slice(chatPanelSource.indexOf("const renderProcessBlock ="), chatPanelSource.indexOf("className=\"msg-blocks\"")), /RunSummary/, "结果卡不得再渲染进过程折叠容器");
   assert.match(chatPanelSource, /className="msg-blocks">[\s\S]{0,120}?\{renderMessageBlocks\(\)\}[\s\S]{0,900}?assistant-final-answer[\s\S]{0,1500}?\{runSummary && \(\s*<RunSummary/, "DOM 顺序应为：过程与正文 → 答案 → 结果与产物");
+  // 2026-11-08：统一输入面板的 hook 必须先声明；依赖数组在 render 期求值，提前引用会 TDZ 崩页。
+  {
+    const decl = chatPanelSource.indexOf("const unifiedComposer = useComposerState");
+    const firstUse = chatPanelSource.indexOf("unifiedComposer.menu");
+    assert.ok(decl > 0 && firstUse > decl, "unifiedComposer 必须先声明后使用（避免 render 期 TDZ）");
+  }
   assert.match(chatPanelSource, /authoritativeFinalText[\s\S]{0,220}assistant-final-answer/, "简洁的权威最终答复仍保持可见");
   // 结论内嵌产物：正文里提到的产物名与本地文件链接渲染为可点击文件条（点击打开预览）。
   assert.match(chatPanelSource, /artifacts=\{answerArtifacts\}/, "结论正文应带本轮产物索引");
