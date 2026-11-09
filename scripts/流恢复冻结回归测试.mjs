@@ -201,9 +201,12 @@ test("切会话清掉上一会话的当前动作/上一轮提示", () => {
 
 test("模型隔离：会话上报的模型不写全局偏好、不回推 onModelChange", () => {
   assert.match(chat, /function applyModelForSession\(id, list\)/);
-  const connected = chat.slice(chat.indexOf('case "connected":'));
-  assert.match(connected.slice(0, 400), /applyModelForSession\(data\.model\)/);
-  assert.doesNotMatch(connected.slice(0, 400), /onModelChange\?\.\(data\.model\)/);
+  // 取整个 connected 分支（到下一个 case 为止），避免新增代码把窗口挤出去。
+  const start = chat.indexOf('case "connected":');
+  const nextCase = chat.indexOf('case "', start + 10);
+  const connected = chat.slice(start, nextCase > start ? nextCase : start + 1200);
+  assert.match(connected, /applyModelForSession\(data\.model\)/);
+  assert.doesNotMatch(connected, /onModelChange\?\.\(data\.model\)/);
   assert.match(chat, /const lastSelectedModelRef = useRef\(selectedModel\);/);
   assert.match(chat, /if \(selectedModel === previous\) return;/);
 });
