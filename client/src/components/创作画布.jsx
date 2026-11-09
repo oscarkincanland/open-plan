@@ -32,6 +32,8 @@ import {
   调整矩形,
   重排板,
   清洗SVG,
+  页分组,
+  板所属页,
 } from "../画布/画布模型.js";
 
 /**
@@ -62,6 +64,10 @@ const 接口别名 = Object.freeze({
   getCanvas: ["getCanvas", "canvasGet", "readCanvas"],
   getCanvasBoard: ["getCanvasBoard", "canvasBoard", "readCanvasBoard"],
   saveCanvasBoard: ["saveCanvasBoard", "canvasSaveBoard", "putCanvasBoard", "writeCanvasBoard"],
+  createCanvasBoard: ["createCanvasBoard", "canvasCreateBoard"],
+  duplicateCanvasBoard: ["duplicateCanvasBoard", "canvasDuplicateBoard"],
+  deleteCanvasBoard: ["deleteCanvasBoard", "canvasDeleteBoard"],
+  updateCanvasPages: ["updateCanvasPages", "canvasUpdatePages", "patchCanvasPages"],
   patchCanvas: ["patchCanvas", "canvasPatch", "updateCanvas"],
   createCanvas: ["createCanvas", "canvasCreate"],
   deleteCanvas: ["deleteCanvas", "canvasDelete"],
@@ -70,6 +76,11 @@ const 接口别名 = Object.freeze({
   getCanvasExport: ["getCanvasExport", "canvasExportStatus", "getCanvasExportStatus"],
   listCanvasHistory: ["listCanvasHistory", "canvasHistory", "listCanvasVersions"],
   restoreCanvasHistory: ["restoreCanvasHistory", "canvasRestore", "restoreCanvasVersion"],
+  listCanvasVersions: ["listCanvasVersions", "canvasVersions"],
+  getCanvasVersion: ["getCanvasVersion", "canvasVersion"],
+  diffCanvasVersions: ["diffCanvasVersions", "canvasVersionDiff"],
+  restoreCanvasVersion: ["restoreCanvasVersion", "canvasRestoreVersion"],
+  listCanvasOperations: ["listCanvasOperations", "canvasOperations"],
 });
 
 function 取接口(名) {
@@ -103,7 +114,7 @@ function 错误文本(错误, 兜底 = "操作失败") {
 /** 冲突判定：api() 会把服务端 code 透传出来，没有 code 时兜底看 409 文案。 */
 function 是冲突(错误) {
   const 码 = String(错误?.code || "");
-  if (码 === "CANVAS_CONFLICT" || 码 === "REVISION_CONFLICT" || 码 === "CONFLICT") return true;
+  if (码 === "CANVAS_CONFLICT" || 码 === "REVISION_CONFLICT" || 码 === "CONFLICT" || 码 === "CANVAS_REV_CONFLICT") return true;
   return /409|冲突|revision|expectedRev/i.test(String(错误?.message || ""));
 }
 
@@ -359,6 +370,14 @@ export default function 创作画布({
   const [历史载入中, set历史载入中] = useState(false);
   const [历史错误, set历史错误] = useState("");
   const [历史恢复中, set历史恢复中] = useState("");
+  const [版本恢复范围, set版本恢复范围] = useState("canvas"); // canvas | board
+  const [版本差异, set版本差异] = useState(null);
+  const [版本差异中, set版本差异中] = useState("");
+  const [刷新时间, set刷新时间] = useState("");
+  // 画板/页（2026-11-09-004）：页分组与新建板。
+  const [当前页, set当前页] = useState("");
+  const [页面面板, set页面面板] = useState(false);
+  const [新建板中, set新建板中] = useState(false);
 
   // ── 无 slug 时的入口表单 ──
   const [新建标题, set新建标题] = useState("");
@@ -393,6 +412,8 @@ export default function 创作画布({
   const 卸载 = useRef(false);
 
   const 只读 = Boolean(只读原因) || Boolean(画布?.readOnly);
+  const agent活动 = agentBusy && typeof agentBusy === "object" ? agentBusy : { active: Boolean(agentBusy) };
+  const agent编辑板 = String(agent活动?.boardPath || "");
 
   /** 素材受控地址前缀：`/api/canvas/:slug/asset?workspace=<abs>&path=`。 */
   const 素材前缀 = useMemo(() => {
@@ -404,7 +425,17 @@ export default function 创作画布({
 
   const 板列表 = useMemo(() => (画布 ? 板条目(画布) : []), [画布]);
   const 幻灯列表 = useMemo(() => (画布 ? deck序列(画布) : []), [画布]);
+  const 页列表 = useMemo(() => (画布 ? 页分组(画布) : []), [画布]);
+  const 显示板列表 = useMemo(() => {
+    if (!画布 || !当前页) return 板列表;
+    return 板列表.filter((项) => 板所属页(画布, 项.path) === 当前页);
+  }, [画布, 板列表, 当前页]);
   const deck模式 = 画布?.kind === "deck";
+  // refreshToken 兼容两种形态：数字（旧）或 { rev, scope, boardPath, changedPaths, slug, at }（新）。
+  const 刷新数据 = typeof refreshToken === "object" && refreshToken ? refreshToken : null;
+  const 刷新键 = 刷新数据
+    ? `${刷新数据.slug || ""}:${Number(刷新数据.rev) || 0}:${(刷新数据.changedPaths || []).join(",")}:${刷新数据.at || ""}`
+    : String(refreshToken ?? "");
 
   /* ── 脏状态（唯一来源：板内容与基线序列化比较） ── */
 
@@ -465,7 +496,10 @@ export default function 创作画布({
       set选中元素("");
       set编辑元素("");
       set当前板路径(归一.order[0] || "");
+      set当前页(归一.pages[0]?.id || "");
+      set刷新时间(new Date().toLocaleTimeString());
       set加载态("就绪");
+      载入画布列表();
     } catch (错误) {
       set加载错误(错误文本(错误, "读取画布失败"));
       set加载态("失败");
@@ -477,24 +511,7 @@ export default function 创作画布({
     载入画布();
   }, [载入画布]);
 
-  // Agent 写入（canvas_changed）后的刷新：干净时自动重读并保留镜头；有脏时只提示。
-  const 上次刷新令牌 = useRef(refreshToken);
-  useEffect(() => {
-    if (refreshToken === 上次刷新令牌.current) return;
-    上次刷新令牌.current = refreshToken;
-    if (卸载.current) return;
-    if (!画布键) {
-      载入画布列表();
-      return;
-    }
-    if (有脏) {
-      set远端更新(true);
-      return;
-    }
-    set远端更新(false);
-    载入画布();
-    载入画布列表();
-  }, [refreshToken, 画布键, 有脏, 载入画布, 载入画布列表]);
+  // Agent/其他标签页写入后的增量刷新在 载入板 之后接线（需要按 changedPaths 只拉变化的板）。
 
   /* ── 板按需取数（仅视口内板 + 当前板） ── */
 
@@ -534,6 +551,71 @@ export default function 创作画布({
     },
     [板载入, 画布键, 工作区],
   );
+
+  /* ── 增量刷新（Agent / 其他标签页写入） ── */
+
+  const 软刷新画布 = useCallback(async (信息 = {}) => {
+    if (!画布键) { 载入画布列表(); return; }
+    try {
+      const 应答 = await 调用("getCanvas", 工作区, 画布键);
+      const 归一 = normalizeCanvas(取字段(应答, ["canvas", "data", "index"]));
+      const 现存 = new Set(归一.order);
+      set画布(归一);
+      set基线((prev) => ({ ...prev, 画布: 稳定序列化(归一) }));
+      set板数据((prev) => {
+        const 下一 = { ...prev };
+        for (const 路径 of Object.keys(下一)) if (!现存.has(路径)) delete 下一[路径];
+        return 下一;
+      });
+      set板载入((prev) => {
+        const 下一 = { ...prev };
+        for (const 路径 of Object.keys(下一)) if (!现存.has(路径)) delete 下一[路径];
+        return 下一;
+      });
+      set当前板路径((prev) => (现存.has(prev) ? prev : (归一.order[0] || "")));
+      set当前页((prev) => (归一.pages.some((项) => 项.id === prev) ? prev : (归一.pages[0]?.id || "")));
+      const 变化 = (Array.isArray(信息?.changedPaths) && 信息.changedPaths.length ? 信息.changedPaths : 归一.order)
+        .map(String)
+        .filter((路径) => 路径.endsWith(".board.json") && 现存.has(路径));
+      for (const 路径 of 变化) {
+        const 本地rev = Number(板数据引用.current[路径]?.rev) || 0;
+        const 事件rev = Number(信息?.revision) || 0;
+        // 自己的保存也会回环到全局事件：本地 rev 已追上时跳过，避免清空撤销栈。
+        if (信息?.scope === "board" && 信息?.boardPath === 路径 && 本地rev > 0 && 本地rev >= 事件rev) continue;
+        在途引用.current.delete(路径);
+        历史引用.current.delete(路径);
+        await 载入板(路径, { 强制: true });
+      }
+      set远端更新(false);
+      set刷新时间(new Date().toLocaleTimeString());
+    } catch (错误) {
+      set保存错误(`刷新画布失败：${错误文本(错误)}`);
+    }
+  }, [画布键, 工作区, 载入板, 载入画布列表]);
+
+  const 手动刷新 = useCallback(() => {
+    set远端更新(false);
+    软刷新画布({ changedPaths: [] });
+    载入画布列表();
+  }, [软刷新画布, 载入画布列表]);
+
+  const 上次刷新令牌 = useRef(刷新键);
+  useEffect(() => {
+    if (刷新键 === 上次刷新令牌.current) return;
+    上次刷新令牌.current = 刷新键;
+    if (卸载.current) return;
+    if (!画布键) {
+      载入画布列表();
+      return;
+    }
+    if (刷新数据?.slug && 刷新数据.slug !== 画布键) return;
+    if (有脏) {
+      set远端更新(true);
+      return;
+    }
+    软刷新画布(刷新数据 || {});
+    载入画布列表();
+  }, [刷新键, 画布键, 有脏, 刷新数据, 软刷新画布, 载入画布列表]);
 
   /* ── 视口尺寸与适配 ── */
 
@@ -652,7 +734,11 @@ export default function 创作画布({
       set保存中(true);
       set保存错误("");
       try {
-        const 应答 = await 调用("patchCanvas", 工作区, 画布键, 补丁);
+        const 发送补丁 = { ...补丁 };
+        if (发送补丁.expectedRev === undefined && 画布引用.current?.rev !== undefined) {
+          发送补丁.expectedRev = Number(画布引用.current.rev) || 0;
+        }
+        const 应答 = await 调用("patchCanvas", 工作区, 画布键, 发送补丁);
         const 回写 = 取字段(应答, ["canvas"]);
         const 合并 = 回写 && typeof 回写 === "object" && 回写 !== 应答
           ? normalizeCanvas({ ...画布引用.current, ...回写 })
@@ -796,6 +882,110 @@ export default function 创作画布({
     调度板保存(路径);
   }, [板列表, 应用板变更, 记快照, 调度板保存]);
 
+  /* ── 画板 / 页（2026-11-09-004） ── */
+
+  const 新建画板 = useCallback(async () => {
+    if (!画布键 || 只读引用.current || 新建板中) return;
+    const 标题 = await askText("新画板标题", "画板");
+    if (标题 === null) return;
+    set新建板中(true);
+    try {
+      const 应答 = await 调用("createCanvasBoard", 工作区, 画布键, {
+        title: String(标题 || "").trim() || "画板",
+        page: 当前页 || undefined,
+      });
+      const 新路径 = String(取字段(应答, ["boardPath", "path"]) || "");
+      await 软刷新画布({ changedPaths: 新路径 ? [新路径] : [] });
+      if (新路径) {
+        set当前板路径(新路径);
+        set选中元素("");
+        set编辑元素("");
+      }
+      notifySuccess("已新建画板");
+    } catch (错误) {
+      notifyError(`新建画板失败：${错误文本(错误)}`);
+    } finally {
+      set新建板中(false);
+    }
+  }, [画布键, 工作区, 当前页, 新建板中, 软刷新画布]);
+
+  const 复制当前板 = useCallback(async () => {
+    const 路径 = 当前板引用.current;
+    if (!画布键 || !路径 || 只读引用.current) return;
+    try {
+      const 应答 = await 调用("duplicateCanvasBoard", 工作区, 画布键, { path: 路径 });
+      const 新路径 = String(取字段(应答, ["boardPath", "path"]) || "");
+      await 软刷新画布({ changedPaths: 新路径 ? [新路径] : [] });
+      if (新路径) set当前板路径(新路径);
+      notifySuccess("已复制画板");
+    } catch (错误) {
+      notifyError(`复制画板失败：${错误文本(错误)}`);
+    }
+  }, [画布键, 工作区, 软刷新画布]);
+
+  const 删除当前板 = useCallback(async () => {
+    const 路径 = 当前板引用.current;
+    if (!画布键 || !路径 || 只读引用.current) return;
+    const 确认 = await askConfirm(`删除画板「${默认板标题(路径)}」？文件会移入 .trash，可从版本历史恢复。`);
+    if (!确认) return;
+    try {
+      await 调用("deleteCanvasBoard", 工作区, 画布键, 路径, { confirmed: true });
+      await 软刷新画布({ changedPaths: [路径] });
+      notifySuccess("已删除画板（软删到 .trash）");
+    } catch (错误) {
+      notifyError(`删除画板失败：${错误文本(错误)}`);
+    }
+  }, [画布键, 工作区, 软刷新画布]);
+
+  const 更新页列表 = useCallback(async (pages, moveTo = "") => {
+    if (!画布键 || 只读引用.current) return false;
+    try {
+      await 调用("updateCanvasPages", 工作区, 画布键, { pages, moveTo: moveTo || undefined, expectedRev: 画布引用.current?.rev });
+      await 软刷新画布({ changedPaths: [] });
+      notifySuccess("页面已更新");
+      return true;
+    } catch (错误) {
+      notifyError(`更新页面失败：${错误文本(错误)}`);
+      return false;
+    }
+  }, [画布键, 工作区, 软刷新画布]);
+
+  const 新建页 = useCallback(async () => {
+    const 名称 = await askText("新页名称", `第 ${(画布引用.current?.pages?.length || 0) + 1} 页`);
+    if (名称 === null) return;
+    const 现有 = Array.isArray(画布引用.current?.pages) ? 画布引用.current.pages : [];
+    const 已用 = new Set(现有.map((项) => String(项?.id || "")));
+    let 序号 = 现有.length + 1;
+    let id = `p${序号}`;
+    while (已用.has(id)) { 序号 += 1; id = `p${序号}`; }
+    await 更新页列表([...现有, { id, name: String(名称 || "").trim() || `第 ${序号} 页` }]);
+    set当前页(id);
+  }, [更新页列表]);
+
+  const 重命名页 = useCallback(async (页) => {
+    const 名称 = await askText("页名称", 页?.name || "");
+    if (名称 === null) return;
+    const 现有 = Array.isArray(画布引用.current?.pages) ? 画布引用.current.pages : [];
+    await 更新页列表(现有.map((项) => (项.id === 页.id ? { ...项, name: String(名称 || "").trim() || 项.name } : 项)));
+  }, [更新页列表]);
+
+  const 删除页 = useCallback(async (页) => {
+    const 现有 = Array.isArray(画布引用.current?.pages) ? 画布引用.current.pages : [];
+    if (现有.length <= 1) { notifyWarn("至少保留一页"); return; }
+    const 确认 = await askConfirm(`删除页「${页?.name || 页?.id}」？该页画板会移动到第一页，不会删除。`);
+    if (!确认) return;
+    const 剩余 = 现有.filter((项) => 项.id !== 页.id);
+    await 更新页列表(剩余, 剩余[0]?.id || "");
+    set当前页(剩余[0]?.id || "");
+  }, [更新页列表]);
+
+  const 切换画布 = useCallback((slug) => {
+    const 目标 = String(slug || "");
+    if (!目标 || 目标 === 画布键) return;
+    if (typeof onOpenCanvas === "function") onOpenCanvas(目标, "");
+    else notifyWarn("请从画布标签栏打开目标画布");
+  }, [画布键, onOpenCanvas]);
+
   /* ── 验收反馈补齐：页面主题与间距 / 播放 / 添加到对话 / 版本历史 ── */
 
   // 页面设置（本机偏好）：网格/板距/安全边距；画板背景（主题）写入画板本身。
@@ -910,26 +1100,27 @@ export default function 创作画布({
     if (播放中 && 路径) 载入板(路径);
   }, [播放中, 播放项?.path, 载入板]);
 
-  // 添加到对话：把画布索引作为 @ 引用插入输入框（App 通过 onAddToChat 接线）。
+  // 添加到对话：优先当前选中元素，其次当前画板，最后退回整画布索引。
   const 添加到对话 = useCallback(() => {
     if (!画布键) return;
-    const 引用 = `@designs/${画布键}/project/canvas.json`;
+    const 引用 = 当前板路径
+      ? `@画布[designs/${画布键}/project/${当前板路径}${选中元素 ? `#element=${选中元素}` : ""}]`
+      : `@designs/${画布键}/project/canvas.json`;
     if (typeof onAddToChat === "function") {
       onAddToChat(引用);
-      notifySuccess("画布引用已加入对话输入框");
+      notifySuccess(选中元素 ? "选中元素已加入对话" : 当前板路径 ? "当前画板已加入对话" : "画布引用已加入对话输入框");
       return;
     }
     notifyWarn(`请在对话中手动引用 ${引用}`);
-  }, [画布键, onAddToChat]);
+  }, [画布键, 当前板路径, 选中元素, onAddToChat]);
 
-  // 版本历史：保存在服务端 `.history/`（每次保存前留存上一版），这里只读列表并支持恢复。
+  // 版本历史：画布级时间线（.history/index.json + objects/），支持整画布或当前板恢复。
   const 载入历史 = useCallback(async () => {
-    const 路径 = 当前板引用.current;
-    if (!画布键 || !路径) { set历史列表([]); return; }
+    if (!画布键) { set历史列表([]); return; }
     set历史载入中(true);
     set历史错误("");
     try {
-      const 应答 = await 调用("listCanvasHistory", 工作区, 画布键, 路径, "board");
+      const 应答 = await 调用("listCanvasVersions", 工作区, 画布键, { limit: 100 });
       const 原始 = 取字段(应答, ["items", "history", "versions"]) || [];
       set历史列表(Array.isArray(原始) ? 原始 : []);
     } catch (错误) {
@@ -941,32 +1132,39 @@ export default function 创作画布({
   }, [画布键, 工作区]);
 
   const 打开历史 = useCallback(() => {
-    if (!当前板路径) { notifyWarn("请先在画布中选择一块画板"); return; }
     set历史面板(true);
+    set版本差异(null);
     载入历史();
-  }, [当前板路径, 载入历史]);
+  }, [载入历史]);
 
   useEffect(() => {
     if (历史面板) 载入历史();
-  }, [历史面板, 当前板路径, 载入历史]);
+  }, [历史面板, 画布键, 载入历史]);
+
+  const 查看版本差异 = useCallback(async (项) => {
+    if (!画布键 || !项?.n) return;
+    set版本差异中(`diff-${项.n}`);
+    try {
+      const 应答 = await 调用("diffCanvasVersions", 工作区, 画布键, 项.n, "");
+      set版本差异({ ...取字段(应答, ["diff"]), n: 项.n });
+    } catch (错误) {
+      notifyError(`读取差异失败：${错误文本(错误)}`);
+    } finally {
+      set版本差异中("");
+    }
+  }, [画布键, 工作区]);
 
   const 恢复历史 = useCallback(async (项) => {
-    if (!画布键 || !当前板路径 || !项?.id || 只读引用.current) return;
-    const 确认 = await askConfirm(`恢复到 ${项.at ? new Date(项.at).toLocaleString() : "该版本"} 的画板内容？当前内容会先被留存为新历史。`);
+    if (!画布键 || !项?.n || 只读引用.current) return;
+    const 仅当前板 = 版本恢复范围 === "board" && Boolean(当前板路径);
+    const 范围 = 仅当前板 ? `当前板「${默认板标题(当前板路径)}」` : "整张画布";
+    const 确认 = await askConfirm(`恢复到版本 #${项.n}（${项.at ? new Date(项.at).toLocaleString() : "未知时间"}）的${范围}？当前内容会先被留存为新版本。`);
     if (!确认) return;
-    set历史恢复中(项.id);
+    set历史恢复中(`v-${项.n}`);
     set历史错误("");
     try {
-      await 调用("restoreCanvasHistory", 工作区, 画布键, {
-        board: 当前板路径,
-        id: 项.id,
-        scope: "board",
-        expectedRev: Number(板数据引用.current[当前板路径]?.rev) || undefined,
-      });
-      const 路径 = 当前板路径;
-      在途引用.current.delete(路径);
-      历史引用.current.delete(路径);
-      await 载入板(路径, { 强制: true });
+      await 调用("restoreCanvasVersion", 工作区, 画布键, 项.n, 仅当前板 ? [当前板路径] : null);
+      await 软刷新画布({ changedPaths: 仅当前板 ? [当前板路径] : [] });
       await 载入历史();
       notifySuccess("已恢复该版本");
     } catch (错误) {
@@ -974,7 +1172,7 @@ export default function 创作画布({
     } finally {
       set历史恢复中("");
     }
-  }, [画布键, 当前板路径, 工作区, 载入板, 载入历史]);
+  }, [画布键, 当前板路径, 版本恢复范围, 工作区, 软刷新画布, 载入历史]);
 
   /* ── 冲突处理 ── */
 
@@ -1451,6 +1649,22 @@ export default function 创作画布({
         )}
         {有脏 && <i className="oaw-canvas-dirty-dot" aria-label="有未保存修改" title="有未保存修改" />}
       </div>
+      {画布 && 列表.length > 0 && (
+        <label className="oaw-canvas-switcher" title="切换当前工作区的其他画布">
+          <Icon name="grid" size={12} />
+          <select
+            className="oaw-canvas-switcher-select"
+            value={画布键}
+            onChange={(事件) => 切换画布(事件.target.value)}
+            aria-label="切换画布"
+          >
+            {列表.map((项) => {
+              const 标识 = String(项?.slug || "");
+              return <option key={标识} value={标识}>{项?.title || 标识}</option>;
+            })}
+          </select>
+        </label>
+      )}
       {画布 && (
         <>
           <span className="oaw-canvas-divider" aria-hidden="true" />
@@ -1478,6 +1692,18 @@ export default function 创作画布({
           </button>
           <button type="button" className="oaw-canvas-tool" onClick={添加文本} disabled={只读} aria-label="添加文本" title="添加文本">
             <Icon name="wrap" size={14} />
+          </button>
+          <button type="button" className="oaw-canvas-tool" onClick={新建画板} disabled={只读 || 新建板中} aria-label="新建画板" title="在当前页新建一块画板">
+            <Icon name="plus" size={14} /> 画板
+          </button>
+          <button type="button" className={`oaw-canvas-tool ${页面面板 ? "active" : ""}`} onClick={() => set页面面板(true)} aria-pressed={页面面板} aria-label="页管理" title="页：分组、重命名、删除">
+            <Icon name="folder" size={14} /> 页
+          </button>
+          <button type="button" className="oaw-canvas-tool" onClick={复制当前板} disabled={只读 || !当前板路径} aria-label="复制当前画板" title="复制当前画板（元素 id 重新生成）">
+            <Icon name="copy" size={14} />
+          </button>
+          <button type="button" className="oaw-canvas-tool" onClick={删除当前板} disabled={只读 || !当前板路径} aria-label="删除当前画板" title="删除当前画板（软删到 .trash，可从版本恢复）">
+            <Icon name="trash" size={14} />
           </button>
           <span className="oaw-canvas-divider" aria-hidden="true" />
           <button type="button" className="oaw-canvas-tool" onClick={() => 以点缩放(1 / 1.2)} aria-label="缩小画布" title="缩小">
@@ -1525,8 +1751,8 @@ export default function 创作画布({
           <button type="button" className="oaw-canvas-tool" onClick={打开播放} disabled={!板列表.length} aria-label="播放画布" title="全屏播放（←/→ 或空格翻页，Esc 退出）">
             <Icon name="play" size={14} /> 播放
           </button>
-          <button type="button" className="oaw-canvas-tool" onClick={打开历史} disabled={!当前板路径} aria-label="版本历史" title="查看当前画板的版本历史并恢复">
-            <Icon name="history" size={14} /> 历史
+          <button type="button" className="oaw-canvas-tool" onClick={打开历史} aria-label="版本历史" title="查看画布级版本时间线并恢复">
+            <Icon name="history" size={14} /> 版本
           </button>
           <button type="button" className={`oaw-canvas-tool ${设置面板 ? "active" : ""}`} onClick={() => set设置面板(true)} aria-pressed={设置面板} aria-label="页面主题与间距" title="页面主题、网格与板间距">
             <Icon name="palette" size={14} /> 页面
@@ -1535,9 +1761,12 @@ export default function 创作画布({
             <Icon name="chatPlus" size={14} /> 对话
           </button>
           <span className="oaw-canvas-spacer" />
-          {agentBusy ? (
-            <span className="oaw-canvas-status saving" role="status" title="Agent 正在通过 canvas_* 工具编辑画布，完成后自动刷新">
-              <Icon name="loading" size={12} /> Agent 正在编辑…
+          <button type="button" className="oaw-canvas-tool" onClick={手动刷新} aria-label="刷新画布" title={`重新读取画布（最后更新 ${刷新时间 || "—"}）`}>
+            <Icon name="refresh" size={14} />
+          </button>
+          {agent活动.active ? (
+            <span className="oaw-canvas-status saving" role="status" title="Agent 正在通过 canvas_* 工具编辑画布，完成后自动增量刷新">
+              <Icon name="loading" size={12} /> Agent 正在编辑{agent编辑板 ? `《${默认板标题(agent编辑板)}》` : ""}…
             </span>
           ) : 只读 ? (
             <span className="oaw-canvas-status readonly" role="status" title={只读原因}>
@@ -1682,10 +1911,11 @@ export default function 创作画布({
       {远端更新 && (
         <div className="oaw-canvas-banner warn" role="alert">
           <Icon name="refresh" size={13} />
-          <span>Agent 已更新画布内容；当前有未保存修改，刷新会丢弃本地改动。</span>
+          <span>画布已有远端更新；当前有未保存修改，刷新会丢弃本地改动。</span>
           <div className="oaw-canvas-banner-actions">
-            <button type="button" className="btn-xs" onClick={() => { set远端更新(false); 载入画布(); 载入画布列表(); }}>刷新</button>
-            <button type="button" className="btn-xs" onClick={() => set远端更新(false)}>稍后</button>
+            <button type="button" className="btn-xs" onClick={() => { set远端更新(false); 打开历史(); }}>查看版本</button>
+            <button type="button" className="btn-xs" onClick={() => { set远端更新(false); 载入画布(); 载入画布列表(); }}>刷新（丢弃本地）</button>
+            <button type="button" className="btn-xs" onClick={() => set远端更新(false)}>保留我的</button>
           </div>
         </div>
       )}
@@ -1701,10 +1931,12 @@ export default function 创作画布({
         <div className="oaw-canvas-empty">
           <h3>这个画布还没有画板</h3>
           <p className="oaw-canvas-empty-text">
-            画板由 Agent（canvas_write）或服务端模板写入 project/boards/*.board.json；兼容画布用 .dc.html
-            放在 project/legacy/ 并在 canvas.json 的 boards 里登记。也可以把已有 claude-design 画布目录交给 Agent 导入。
+            可以直接新建一块空白画板开始编辑；也可以让 Agent 用 canvas_write 生成，或导入已有
+            claude-design / baoyu-design 兼容画布（.dc.html 只读）。
           </p>
           <div className="oaw-canvas-state-actions">
+            <button type="button" className="btn-xs" onClick={新建画板} disabled={只读 || 新建板中}><Icon name="plus" size={12} /> 新建画板</button>
+            <button type="button" className="btn-xs" onClick={新建页} disabled={只读}><Icon name="folder" size={12} /> 新建页</button>
             <button type="button" className="btn-xs" onClick={载入画布}><Icon name="refresh" size={12} /> 重新读取画布</button>
             <button type="button" className="btn-xs" onClick={请求关闭}>关闭标签</button>
           </div>
@@ -1889,8 +2121,29 @@ export default function 创作画布({
               })}
             </div>
 
+            {页列表.length > 1 && (
+              <div className="oaw-canvas-page-tabs" role="tablist" aria-label="页筛选">
+                <button type="button" role="tab" aria-selected={!当前页} className={!当前页 ? "active" : ""} onClick={() => set当前页("")}>全部</button>
+                {页列表.map((页) => (
+                  <button
+                    key={页.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={当前页 === 页.id}
+                    className={当前页 === 页.id ? "active" : ""}
+                    onClick={() => {
+                      set当前页(页.id);
+                      if (页.boards[0]) set当前板路径(页.boards[0].path);
+                    }}
+                  >
+                    {页.name || 页.id}
+                  </button>
+                ))}
+              </div>
+            )}
+
             <div className={`oaw-canvas-deck ${deck模式 ? "" : "boards"}`} role="list" aria-label={deck模式 ? "幻灯片缩略条" : "画板列表"}>
-              {(deck模式 ? 幻灯列表 : 板列表).map((项, 序号) => {
+              {(deck模式 ? 幻灯列表 : 显示板列表).map((项, 序号) => {
                 const 是当前 = 项.path === 当前板路径;
                 const 板 = 板数据[项.path];
                 return (
@@ -2239,33 +2492,97 @@ export default function 创作画布({
         </div>
       )}
 
+      {页面面板 && (
+        <div className="oaw-canvas-export" role="dialog" aria-modal="true" aria-label="页管理">
+          <div className="oaw-canvas-export-card oaw-canvas-dialog-card">
+            <div className="oaw-canvas-export-head">
+              <Icon name="folder" size={14} />
+              <strong>页</strong>
+              <span className="oaw-canvas-export-sub">页是画板分组；删除页不会删除画板</span>
+              <button type="button" className="btn-xs" onClick={() => set页面面板(false)} aria-label="关闭页管理"><Icon name="close" size={12} /></button>
+            </div>
+            <div className="oaw-canvas-export-body">
+              {!页列表.length ? (
+                <div className="oaw-canvas-history-empty">这张画布还没有页；新建页后可以把画板分到不同章节。</div>
+              ) : 页列表.map((页) => (
+                <div className="oaw-canvas-history-item" key={页.id || "all"}>
+                  <div className="oaw-canvas-history-item-main">
+                    <span className="oaw-canvas-history-time">{页.name || 页.id}</span>
+                    <span className="oaw-canvas-history-meta">{页.boards.length} 块板{当前页 === 页.id ? " · 当前页" : ""}</span>
+                  </div>
+                  <div className="oaw-canvas-page-actions">
+                    <button type="button" className="btn-xs" onClick={() => { set当前页(页.id); if (页.boards[0]) set当前板路径(页.boards[0].path); }}>切换</button>
+                    <button type="button" className="btn-xs" onClick={() => 重命名页(页)} disabled={只读}>重命名</button>
+                    <button type="button" className="btn-xs" onClick={() => 删除页(页)} disabled={只读 || 页列表.length <= 1}>删除</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="oaw-canvas-export-actions">
+              <button type="button" className="btn-xs" onClick={新建页} disabled={只读}><Icon name="plus" size={12} /> 新建页</button>
+              <button type="button" className="btn-xs" onClick={() => set页面面板(false)}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {历史面板 && (
         <div className="oaw-canvas-export" role="dialog" aria-modal="true" aria-label="版本历史">
           <div className="oaw-canvas-export-card oaw-canvas-dialog-card">
             <div className="oaw-canvas-export-head">
               <Icon name="history" size={14} />
-              <strong>版本历史</strong>
-              <span className="oaw-canvas-export-sub">{当前板路径 ? 默认板标题(当前板路径) : "未选择画板"}</span>
+              <strong>版本时间线</strong>
+              <span className="oaw-canvas-export-sub">画布级版本 · {历史列表.length} 条</span>
               <button type="button" className="btn-xs" onClick={() => set历史面板(false)} aria-label="关闭版本历史"><Icon name="close" size={12} /></button>
             </div>
             <div className="oaw-canvas-export-body">
+              <div className="oaw-canvas-history-scope">
+                <span>恢复范围</span>
+                <select className="oaw-canvas-field" value={版本恢复范围} onChange={(事件) => set版本恢复范围(事件.target.value)} aria-label="恢复范围">
+                  <option value="canvas">整张画布</option>
+                  <option value="board" disabled={!当前板路径}>当前板{当前板路径 ? `（${默认板标题(当前板路径)}）` : "（未选择）"}</option>
+                </select>
+              </div>
+              {版本差异 && (
+                <div className="oaw-canvas-history-diff">
+                  <div className="oaw-canvas-history-diff-head">
+                    <strong>版本 #{版本差异.n} → 当前</strong>
+                    <button type="button" className="btn-xs" onClick={() => set版本差异(null)}>收起</button>
+                  </div>
+                  <div className="oaw-canvas-history-diff-body">
+                    {版本差异.added?.length ? <div>新增：{版本差异.added.join("、")}</div> : null}
+                    {版本差异.modified?.length ? <div>修改：{版本差异.modified.join("、")}</div> : null}
+                    {版本差异.removed?.length ? <div>删除：{版本差异.removed.join("、")}</div> : null}
+                    {!版本差异.added?.length && !版本差异.modified?.length && !版本差异.removed?.length ? <div>与当前内容一致。</div> : null}
+                  </div>
+                </div>
+              )}
               {历史载入中 ? (
-                <div className="oaw-canvas-history-empty">正在读取版本历史…</div>
+                <div className="oaw-canvas-history-empty">正在读取版本时间线…</div>
               ) : 历史错误 ? (
                 <div className="oaw-canvas-history-empty" style={{ color: "var(--error)" }}>{历史错误}</div>
-              ) : !当前板路径 ? (
-                <div className="oaw-canvas-history-empty">请先在画布中选择一块对象板；兼容板只读，也没有版本历史。</div>
               ) : !历史列表.length ? (
-                <div className="oaw-canvas-history-empty">还没有历史版本。每次保存画板前会保留一份快照（最多 20 份）。</div>
+                <div className="oaw-canvas-history-empty">还没有画布级版本。每次保存/Agent 写入会按批次合并成一条版本（最近 20 条不清理）。</div>
               ) : 历史列表.map((项) => (
-                <div className="oaw-canvas-history-item" key={项.id}>
+                <div className="oaw-canvas-history-item" key={项.n}>
                   <div className="oaw-canvas-history-item-main">
-                    <span className="oaw-canvas-history-time">{项.at ? new Date(项.at).toLocaleString() : "未知时间"}</span>
-                    <span className="oaw-canvas-history-meta">rev {Number(项.rev) || 0} · {项.actor === "agent" ? "Agent" : "用户"}{Number(项.bytes) > 0 ? ` · ${Math.round(Number(项.bytes) / 1024)} KB` : ""}</span>
+                    <span className="oaw-canvas-history-time">#{项.n} · {项.at ? new Date(项.at).toLocaleString() : "未知时间"}</span>
+                    <span className="oaw-canvas-history-meta">
+                      {项.by === "agent" ? "Agent" : 项.by === "system" ? "系统" : "用户"}
+                      {项.runId ? ` · ${String(项.runId).slice(0, 12)}` : ""}
+                      {` · ${项.changes?.length || 0} 个文件`}
+                      {项.restoredFrom ? ` · 恢复自 #${项.restoredFrom}` : ""}
+                      {项.summary ? ` · ${项.summary}` : ""}
+                    </span>
                   </div>
-                  <button type="button" className="btn-xs" onClick={() => 恢复历史(项)} disabled={只读 || 历史恢复中 === 项.id}>
-                    {历史恢复中 === 项.id ? "恢复中…" : "恢复"}
-                  </button>
+                  <div className="oaw-canvas-page-actions">
+                    <button type="button" className="btn-xs" onClick={() => 查看版本差异(项)} disabled={版本差异中 === `diff-${项.n}`}>
+                      {版本差异中 === `diff-${项.n}` ? "对比中…" : "对比当前"}
+                    </button>
+                    <button type="button" className="btn-xs" onClick={() => 恢复历史(项)} disabled={只读 || 历史恢复中 === `v-${项.n}`}>
+                      {历史恢复中 === `v-${项.n}` ? "恢复中…" : "恢复"}
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>

@@ -21,7 +21,7 @@
 /** 引用类型全集（ADR-0029 §4）。 */
 export const REFERENCE_KINDS = Object.freeze([
   "file", "knowledge", "knowledge_dir", "template", "template_dir",
-  "skill", "plugin", "session", "agent",
+  "skill", "plugin", "session", "agent", "canvas",
 ]);
 
 /** 类型展示元数据：标签 / 图标（Icon.jsx 已注册名）/ 符号。 */
@@ -35,6 +35,7 @@ export const REFERENCE_KIND_META = Object.freeze({
   plugin: { label: "插件", icon: "plug", symbol: "#" },
   session: { label: "会话", icon: "history", symbol: "&" },
   agent: { label: "智能体", icon: "robot", symbol: "@" },
+  canvas: { label: "画布", icon: "grid", symbol: "@" },
 });
 
 /** 默认标记写法：插入输入框的文本（kind → marker）。 */
@@ -48,6 +49,7 @@ const MARKER_BUILDERS = Object.freeze({
   plugin: (target) => `#插件[${target}]`,
   session: (target) => `&会话[${target}]`,
   agent: (target) => `@智能体[${target}]`,
+  canvas: (target) => `@画布[${target}]`,
 });
 
 /** 构造某一类型的默认标记文本；未知类型返回空串（不猜）。 */
@@ -74,13 +76,18 @@ function normalizeFileRef(kind, target, extra = {}) {
   let cleanTarget = String(target || "").trim();
   const cell = kind === "file" ? cleanTarget.match(/^(.*?)#([^!]+)!([A-Z]+\d+(?::[A-Z]+\d+)?)$/i) : null;
   const locator = kind === "file" ? cleanTarget.match(/^(.*?)#(page|p|slide|paragraph)=(\d+)(?:-(\d+))?$/i) : null;
+  // 画布引用：`...board.json#element=el-title` → range.element（单元素）；无后缀表示整板。
+  const element = kind === "canvas" ? cleanTarget.match(/^(.*?)#element=([A-Za-z0-9_-]{1,64})$/) : null;
   const range = cell
     ? { ...(extra.range || {}), sheet: cell[2], cell: cell[3] }
     : locator
       ? { ...(extra.range || {}), [locator[2].toLowerCase() === "p" ? "page" : locator[2].toLowerCase()]: Number(locator[3]), ...(locator[4] ? { end: Number(locator[4]) } : {}) }
-      : extra.range;
+      : element
+        ? { ...(extra.range || {}), element: element[2] }
+        : extra.range;
   if (cell) cleanTarget = cell[1];
   if (locator) cleanTarget = locator[1];
+  if (element) cleanTarget = element[1];
   const ref = { kind, target: cleanTarget, ...extra };
   if (range) ref.range = range;
   return ref;
@@ -100,10 +107,11 @@ const STRUCTURED_MARKERS = [
   ["plugin", /#插件\[([^\]]+)\]/g],
   ["file", /#文件\[([^\]]+)\]/g],
   ["session", /&会话\[([^\]]+)\]/g],
+  ["canvas", /@画布\[([^\]]+)\]/g],
 ];
 
 /** 已知结构化标记的类型名（用于裸 @ 排除与 lint）。 */
-const KNOWN_MARKER_TYPES = ["知识库目录", "模板目录", "知识库", "模板", "文件", "技能", "插件", "会话", "智能体"];
+const KNOWN_MARKER_TYPES = ["知识库目录", "模板目录", "知识库", "模板", "文件", "技能", "插件", "会话", "智能体", "画布"];
 
 /**
  * 解析引用标记（与服务端 parseReferences parity）。
@@ -168,7 +176,7 @@ export function parseAgentMentions(text = "") {
   return out;
 }
 
-const STRUCTURED_SOURCE_RE = /^[@#&](知识库目录|模板目录|知识库|模板|文件|技能|插件|会话|智能体)\[/;
+const STRUCTURED_SOURCE_RE = /^[@#&](知识库目录|模板目录|知识库|模板|文件|技能|插件|会话|智能体|画布)\[/;
 
 /**
  * 去掉文本中的结构化标记（气泡展示用：chip 替代原文）。
@@ -250,7 +258,7 @@ export function lintReferenceMarkers(text = "") {
     if (!String(target || "").trim()) push(marker, "empty-target", `引用「${type}」没有目标`);
   }
   // 未闭合：`@文件[abc` 这类残缺标记不会被上面的正则匹配到，单独扫描一次。
-  const opener = /([@#&])(知识库目录|模板目录|知识库|模板|文件|技能|插件|会话|智能体)\[/g;
+  const opener = /([@#&])(知识库目录|模板目录|知识库|模板|文件|技能|插件|会话|智能体|画布)\[/g;
   for (const match of source.matchAll(opener)) {
     const start = match.index ?? 0;
     const close = source.indexOf("]", start);
@@ -274,6 +282,13 @@ export function referenceChipLabel(ref = {}) {
     if (metadata.name) return metadata.name;
     if (metadata.relativePath) return metadata.relativePath;
     return String(ref.target || "").split(/[\\/]/).filter(Boolean).pop() || String(ref.target || "");
+  }
+  if (ref.kind === "canvas") {
+    if (metadata.name) return ref.range?.element ? `${metadata.name} · ${ref.range.element}` : metadata.name;
+    const target = String(ref.target || "");
+    const base = target.split(/[\\/]/).filter(Boolean).pop() || target;
+    const label = /^canvas\.json$/i.test(base) ? "整画布" : base.replace(/\.board\.json$/i, "");
+    return ref.range?.element ? `${label} · ${ref.range.element}` : label;
   }
   return String(metadata.name || metadata.relativePath || ref.target || "");
 }

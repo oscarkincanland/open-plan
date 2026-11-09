@@ -500,9 +500,12 @@ export default function App() {
   const mapPreviewTab = canvasTabs.find((tab) => tab.kind === "mapPreview") || null;
   // 地图文件（agent 写入/用户保存）变更时递增；只影响预览刷新，不重挂 MapViewer。
   const [mapPreviewRevision, setMapPreviewRevision] = useState(0);
-  // 创作画布：Agent 写入（canvas_changed）后递增；agentBusy 用于“Agent 正在编辑…”指示。
-  const [canvasRevision, setCanvasRevision] = useState(0);
-  const [canvasAgentBusy, setCanvasAgentBusy] = useState(false);
+  // 创作画布实时：按 slug 保存增量刷新信息与 Agent 活动（不再用全局标量）。
+  const [canvasRefresh, setCanvasRefresh] = useState({}); // slug -> { rev, scope, boardPath, changedPaths, at }
+  const [canvasActivity, setCanvasActivity] = useState({}); // slug -> { active, boardPath, action }
+  const [pendingCanvasOpen, setPendingCanvasOpen] = useState(null); // { slug, title, workspace }
+  const canvasRefreshPendingRef = useRef(new Map()); // 150ms 合并窗口：slug -> 刷新信息
+  const canvasRefreshTimerRef = useRef(null);
   // 文件树抽屉只服务文档/产物/改动；切到浏览器/对象/工作流/地图预览时自动收起，切回允许的标签再恢复。
   const canvasSideVisible = canvasSideOpen && sideDrawerAllowed(activeCanvasTab?.kind);
   const canvasSideOpenRef = useRef(canvasSideOpen);
@@ -844,6 +847,16 @@ export default function App() {
   const handleDesignTitle = useCallback((tabId, title) => {
     setCanvasTabs((prev) => prev.map((tab) => (tab.id === tabId ? { ...tab, title: title || "创作画布" } : tab)));
   }, []);
+
+  // Agent 在当前会话新建画布：全局事件先落 pending，再按当前工作区打开标签（避免闭包旧工作区）。
+  useEffect(() => {
+    if (!pendingCanvasOpen) return;
+    const { slug, title, workspace } = pendingCanvasOpen;
+    setPendingCanvasOpen(null);
+    if (!slug) return;
+    if (workspace && workspace !== currentWorkspace) return;
+    openDesignCanvas(slug, title || slug);
+  }, [pendingCanvasOpen, openDesignCanvas, currentWorkspace]);
 
   // 当前会话 id（用于界面恢复）。必须声明在使用它的回调/effect 之前：
   // 2026-11-09 空白页事故——下方 useCallback / useEffect 的依赖数组在渲染期读取该变量，
@@ -1278,6 +1291,64 @@ export default function App() {
         if (!seq || seq <= eventCursorRef.current) return;
         eventCursorRef.current = seq;
         localStorage.setItem(cursorKey, String(seq));
+        // 创作画布：全局流是唯一刷新入口（ChatPanel 不再转发 canvas_changed）。
+        // 按 slug 累积 changedPaths，画布组件只增量拉变化的板。
+        if (event.type === "canvas_changed") {
+          const data = event.data || {};
+          const sameWorkspace = !data.workspace || data.workspace === currentWorkspaceRef.current;
+          if (data.slug && sameWorkspace) {
+            const pending = canvasRefreshPendingRef.current;
+            const old = pending.get(data.slug) || {};
+            pending.set(data.slug, {
+              rev: Number(data.revision) || (Number(old.rev) || 0) + 1,
+              scope: String(data.scope || "board"),
+              boardPath: String(data.boardPath || ""),
+              changedPaths: [...new Set([
+                ...(Array.isArray(old.changedPaths) ? old.changedPaths : []),
+                ...(Array.isArray(data.changedPaths) ? data.changedPaths.map(String) : []),
+              ])],
+              action: String(data.action || ""),
+              at: new Date().toISOString(),
+            });
+            if (!canvasRefreshTimerRef.current) {
+              canvasRefreshTimerRef.current = window.setTimeout(() => {
+                canvasRefreshTimerRef.current = null;
+                const batch = new Map(pending);
+                pending.clear();
+                setCanvasRefresh((prev) => {
+                  const next = { ...prev };
+                  for (const [slug, info] of batch) {
+                    const before = next[slug] || {};
+                    next[slug] = {
+                      ...info,
+                      changedPaths: [...new Set([
+                        ...(Array.isArray(before.changedPaths) ? before.changedPaths : []),
+                        ...(info.changedPaths || []),
+                      ])],
+                    };
+                  }
+                  return next;
+                });
+              }, 150);
+            }
+            setCanvasActivity((prev) => ({
+              ...prev,
+              [data.slug]: { active: false, boardPath: String(data.boardPath || ""), action: String(data.action || "") },
+            }));
+          }
+        }
+        if (event.type === "canvas_created") {
+          const data = event.data || {};
+          const sameWorkspace = !data.workspace || data.workspace === currentWorkspaceRef.current;
+          // 只对当前会话自动开标签；UI 新建走组件 onCreated，不依赖事件。
+          const sameThread = Boolean(event.threadId) && event.threadId === currentThreadRef.current;
+          if (data.slug && sameWorkspace && sameThread) {
+            setPendingCanvasOpen({ slug: data.slug, title: data.title || "", workspace: data.workspace || currentWorkspaceRef.current });
+          }
+        }
+        if (event.type === "canvas_exported") {
+          setArtifactVersion((value) => value + 1);
+        }
         const isCurrentThread = !event.threadId || event.threadId === currentThreadRef.current;
         scheduleEventBatch(isCurrentThread && ["run_finished", "file_changed", "artifact_published", ...(flag("stagedVisible") ? ["artifact_staged"] : [])].includes(event.type));
         const thread = event.threadId || "";
@@ -1386,6 +1457,11 @@ export default function App() {
         clearTimeout(eventRefreshTimerRef.current);
         eventRefreshTimerRef.current = null;
       }
+      if (canvasRefreshTimerRef.current) {
+        clearTimeout(canvasRefreshTimerRef.current);
+        canvasRefreshTimerRef.current = null;
+      }
+      canvasRefreshPendingRef.current.clear();
       slot?.release();
     };
   }, [clientId, refreshSessions]);
@@ -2479,8 +2555,13 @@ export default function App() {
         // 草稿变更也驱动只读预览刷新（2026-11-09：预览回放未固化草稿）。
         setMapPreviewRevision((value) => value + 1);
       }}
-      onCanvasChanged={() => setCanvasRevision((value) => value + 1)}
-      onCanvasActivity={({ active }) => setCanvasAgentBusy(Boolean(active))}
+      onCanvasActivity={({ active, slug, boardPath, action }) => {
+        if (!slug) return;
+        setCanvasActivity((prev) => ({
+          ...prev,
+          [slug]: { active: Boolean(active), boardPath: String(boardPath || ""), action: String(action || "") },
+        }));
+      }}
        // 地图项目不是“打开的文件”；不要再把「地图项目:x」塞进 currentDoc，
        // 否则提示词会同时出现伪文件与地图上下文，模型可能先尝试读取不存在的文件。
        // 地图模式下也不把画布里恰好打开的业务文档带进地图任务。
@@ -3070,8 +3151,8 @@ export default function App() {
                       <创作画布
                         slug={tab.payload?.slug || ""}
                         workspace={tab.payload?.workspace || currentWorkspace}
-                        refreshToken={canvasRevision}
-                        agentBusy={canvasAgentBusy}
+                        refreshToken={canvasRefresh[tab.payload?.slug] || 0}
+                        agentBusy={canvasActivity[tab.payload?.slug] || false}
                         onDirtyChange={(dirty) => handleDesignDirty(tab.id, dirty)}
                         onTitleChange={(title) => handleDesignTitle(tab.id, title)}
                         onCreated={(slug, title) => handleDesignCreated(tab.id, slug, title)}

@@ -6373,7 +6373,9 @@ function canvasFeature(res) {
 function canvasError(res, error) {
   const code = String(error?.code || "");
   const message = String(error?.message || error || "创作画布操作失败");
-  if (code === "CANVAS_NOT_FOUND" || code === "CANVAS_HISTORY_NOT_FOUND") return res.status(404).json({ ok: false, error: message, code });
+  if (["CANVAS_NOT_FOUND", "CANVAS_HISTORY_NOT_FOUND", "CANVAS_VERSION_NOT_FOUND", "CANVAS_PAGE_NOT_FOUND"].includes(code)) {
+    return res.status(404).json({ ok: false, error: message, code });
+  }
   if (code === "CANVAS_REV_CONFLICT" || code === "CANVAS_BUSY") return res.status(409).json({ ok: false, error: message, code });
   if (["CANVAS_PATH_DENIED", "CANVAS_INVALID", "CANVAS_LIMIT", "CANVAS_UNSUPPORTED"].includes(code)) {
     return res.status(400).json({ ok: false, error: message, code });
@@ -6383,6 +6385,15 @@ function canvasError(res, error) {
 
 function canvasWorkspaceFrom(req) {
   return normalizeWorkspace(String(req.body?.workspace || req.query?.workspace || "")) || getWorkspace();
+}
+
+/** HTTP 写路径统一广播：App 的 /api/agent/events 全局流按 slug/boardPath 增量刷新。 */
+function canvasEvent(type, data) {
+  try {
+    appendEvent({ type, data });
+  } catch {
+    // 事件失败不影响已成功的文件写入；页面可手动刷新兜底。
+  }
 }
 
 app.get("/api/canvas/list", async (req, res) => {
@@ -6409,6 +6420,24 @@ app.post("/api/canvas", async (req, res) => {
       title: req.body?.title,
       kind: req.body?.kind === "deck" ? "deck" : "board",
       template: req.body?.template,
+      actor: "ui",
+    });
+    canvasEvent("canvas_created", {
+      slug: created.slug,
+      title: created.title,
+      kind: created.kind,
+      workspace: canvasWorkspaceFrom(req),
+      actor: "ui",
+    });
+    canvasEvent("canvas_changed", {
+      slug: created.slug,
+      action: "create_canvas",
+      scope: "canvas",
+      boardPath: "",
+      changedPaths: ["canvas.json"],
+      revision: created.rev,
+      actor: "ui",
+      workspace: canvasWorkspaceFrom(req),
     });
     // 前端按 `{ canvas: { slug, title } }` 取新建结果（其余字段保留）。
     res.json({ ok: true, ...created, canvas: { slug: created.slug, title: created.title || req.body?.title || created.slug, path: created.path } });
@@ -6468,7 +6497,17 @@ app.patch("/api/canvas/:slug", async (req, res) => {
   if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
   try {
     const cvs = await import("./创作画布.mjs");
-    const updated = cvs.updateCanvas(canvasWorkspaceFrom(req), req.params.slug, req.body?.patch || req.body || {});
+    const updated = cvs.updateCanvas(canvasWorkspaceFrom(req), req.params.slug, { ...(req.body?.patch || req.body || {}), actor: "ui" });
+    canvasEvent("canvas_changed", {
+      slug: req.params.slug,
+      action: "update_canvas",
+      scope: "canvas",
+      boardPath: "",
+      changedPaths: ["canvas.json"],
+      revision: Number(updated?.rev) || 0,
+      actor: "ui",
+      workspace: canvasWorkspaceFrom(req),
+    });
     res.json({ ok: true, ...updated });
   } catch (e) { canvasError(res, e); }
 });
@@ -6480,7 +6519,18 @@ app.delete("/api/canvas/:slug", async (req, res) => {
   }
   try {
     const cvs = await import("./创作画布.mjs");
-    res.json({ ok: true, ...cvs.deleteCanvas(canvasWorkspaceFrom(req), req.params.slug, { confirmed: true }) });
+    const deleted = cvs.deleteCanvas(canvasWorkspaceFrom(req), req.params.slug, { confirmed: true, actor: "ui" });
+    canvasEvent("canvas_changed", {
+      slug: req.params.slug,
+      action: "delete_canvas",
+      scope: "list",
+      boardPath: "",
+      changedPaths: [],
+      revision: 0,
+      actor: "ui",
+      workspace: canvasWorkspaceFrom(req),
+    });
+    res.json({ ok: true, ...deleted });
   } catch (e) { canvasError(res, e); }
 });
 
@@ -6499,23 +6549,170 @@ app.put("/api/canvas/:slug/board", async (req, res) => {
     const boardPath = String(req.body?.path || req.query?.path || "");
     const saved = cvs.writeBoard(canvasWorkspaceFrom(req), req.params.slug, boardPath, req.body?.board || {}, {
       expectedRev: Number.isFinite(Number(req.body?.expectedRev)) ? Number(req.body.expectedRev) : undefined,
+      actor: "ui",
+    });
+    canvasEvent("canvas_changed", {
+      slug: req.params.slug,
+      action: saved.created ? "add_board" : "patch_board",
+      scope: "board",
+      boardPath: saved.path,
+      changedPaths: [saved.path, ...(saved.created ? ["canvas.json"] : [])],
+      revision: Number(saved.rev) || 0,
+      actor: "ui",
+      workspace: canvasWorkspaceFrom(req),
     });
     res.json({ ok: true, ...saved });
   } catch (e) { canvasError(res, e); }
 });
 
-// 版本历史（2026-11-09 验收反馈）：列快照元数据 + 恢复某条快照为当前板。
+// 新建画板（画布内“子画布”）：空画布也能从 UI 直接创建。
+app.post("/api/canvas/:slug/board", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    const created = cvs.createBoard(canvasWorkspaceFrom(req), req.params.slug, {
+      path: req.body?.path,
+      title: req.body?.title,
+      template: req.body?.template,
+      page: req.body?.page,
+      layout: req.body?.layout,
+      role: req.body?.role,
+      actor: "ui",
+    });
+    canvasEvent("canvas_changed", {
+      slug: req.params.slug,
+      action: "add_board",
+      scope: "board",
+      boardPath: created.boardPath,
+      pageId: created.page || "",
+      changedPaths: [created.boardPath, "canvas.json"],
+      revision: Number(created.rev) || 0,
+      actor: "ui",
+      workspace: canvasWorkspaceFrom(req),
+    });
+    res.json({ ok: true, ...created });
+  } catch (e) { canvasError(res, e); }
+});
+
+app.post("/api/canvas/:slug/board/duplicate", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    const copied = cvs.duplicateBoard(canvasWorkspaceFrom(req), req.params.slug, String(req.body?.path || req.body?.board || ""), {
+      path: req.body?.newPath,
+      title: req.body?.title,
+      page: req.body?.page,
+      actor: "ui",
+    });
+    canvasEvent("canvas_changed", {
+      slug: req.params.slug,
+      action: "duplicate_board",
+      scope: "board",
+      boardPath: copied.boardPath,
+      pageId: copied.page || "",
+      changedPaths: [copied.boardPath, "canvas.json"],
+      revision: Number(copied.rev) || 0,
+      actor: "ui",
+      workspace: canvasWorkspaceFrom(req),
+    });
+    res.json({ ok: true, ...copied });
+  } catch (e) { canvasError(res, e); }
+});
+
+app.delete("/api/canvas/:slug/board", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  if (req.body?.confirmed !== true) {
+    return res.status(409).json({ ok: false, error: "删除画板需要 confirmed:true", code: "CANVAS_CONFIRM_REQUIRED" });
+  }
+  try {
+    const cvs = await import("./创作画布.mjs");
+    const boardPath = String(req.body?.path || req.query?.path || "");
+    const deleted = cvs.deleteBoard(canvasWorkspaceFrom(req), req.params.slug, boardPath, { confirmed: true, actor: "ui" });
+    canvasEvent("canvas_changed", {
+      slug: req.params.slug,
+      action: "delete_board",
+      scope: "board",
+      boardPath: deleted.boardPath,
+      changedPaths: [deleted.boardPath, "canvas.json"],
+      revision: Number(deleted.rev) || 0,
+      actor: "ui",
+      workspace: canvasWorkspaceFrom(req),
+    });
+    res.json({ ok: true, ...deleted });
+  } catch (e) { canvasError(res, e); }
+});
+
+// 页管理：新建/重命名/排序/删除（删除页时把板移动到 moveTo 或第一页）。
+app.patch("/api/canvas/:slug/pages", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    const updated = cvs.updatePages(canvasWorkspaceFrom(req), req.params.slug, {
+      pages: req.body?.pages,
+      moveTo: req.body?.moveTo,
+      expectedRev: Number.isFinite(Number(req.body?.expectedRev)) ? Number(req.body.expectedRev) : undefined,
+      actor: "ui",
+    });
+    canvasEvent("canvas_changed", {
+      slug: req.params.slug,
+      action: "update_pages",
+      scope: "canvas",
+      boardPath: "",
+      changedPaths: ["canvas.json"],
+      revision: Number(updated?.rev) || 0,
+      actor: "ui",
+      workspace: canvasWorkspaceFrom(req),
+    });
+    res.json({ ok: true, ...updated });
+  } catch (e) { canvasError(res, e); }
+});
+
+app.get("/api/canvas/:slug/operations", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    res.json({ ok: true, items: cvs.listOperations(canvasWorkspaceFrom(req), req.params.slug, { limit: req.query?.limit }) });
+  } catch (e) { canvasError(res, e); }
+});
+
+// 版本历史：scope=canvas 返回画布级版本时间线；scope=board 保留旧板级快照（兼容）。
 app.get("/api/canvas/:slug/history", async (req, res) => {
   if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
   try {
     const cvs = await import("./创作画布.mjs");
+    const scope = String(req.query.scope || "board") === "canvas" ? "canvas" : "board";
+    if (scope === "canvas") {
+      res.json({ ok: true, scope, ...cvs.listCanvasVersions(canvasWorkspaceFrom(req), req.params.slug, { limit: req.query?.limit }) });
+      return;
+    }
     res.json({
       ok: true,
+      scope,
       ...cvs.listCanvasHistory(canvasWorkspaceFrom(req), req.params.slug, {
         boardPath: String(req.query.board || ""),
-        scope: String(req.query.scope || "board") === "canvas" ? "canvas" : "board",
+        scope,
       }),
     });
+  } catch (e) { canvasError(res, e); }
+});
+
+app.get("/api/canvas/:slug/history/diff", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    const diff = cvs.diffCanvasVersions(canvasWorkspaceFrom(req), req.params.slug, {
+      from: Number(req.query.from) || 1,
+      to: req.query.to === undefined || req.query.to === "" ? null : Number(req.query.to),
+    });
+    res.json({ ok: true, ...diff });
+  } catch (e) { canvasError(res, e); }
+});
+
+app.get("/api/canvas/:slug/history/:n", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    res.json({ ok: true, ...cvs.readCanvasVersion(canvasWorkspaceFrom(req), req.params.slug, Number(req.params.n)) });
   } catch (e) { canvasError(res, e); }
 });
 
@@ -6523,11 +6720,40 @@ app.post("/api/canvas/:slug/history/restore", async (req, res) => {
   if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
   try {
     const cvs = await import("./创作画布.mjs");
+    if (req.body?.version !== undefined) {
+      const restored = cvs.restoreCanvasVersion(canvasWorkspaceFrom(req), req.params.slug, {
+        version: Number(req.body.version),
+        paths: Array.isArray(req.body?.paths) ? req.body.paths : null,
+        actor: "ui",
+      });
+      canvasEvent("canvas_changed", {
+        slug: req.params.slug,
+        action: "restore_version",
+        scope: "canvas",
+        boardPath: "",
+        changedPaths: Array.isArray(req.body?.paths) ? req.body.paths.map(String) : [],
+        revision: 0,
+        actor: "ui",
+        workspace: canvasWorkspaceFrom(req),
+      });
+      res.json({ ok: true, ...restored });
+      return;
+    }
     const restored = cvs.restoreBoardHistory(canvasWorkspaceFrom(req), req.params.slug, {
       boardPath: String(req.body?.board || req.body?.path || ""),
       id: String(req.body?.id || ""),
       expectedRev: Number.isFinite(Number(req.body?.expectedRev)) ? Number(req.body.expectedRev) : null,
       actor: "ui",
+    });
+    canvasEvent("canvas_changed", {
+      slug: req.params.slug,
+      action: "restore_board",
+      scope: "board",
+      boardPath: restored.path,
+      changedPaths: [restored.path],
+      revision: Number(restored.rev) || 0,
+      actor: "ui",
+      workspace: canvasWorkspaceFrom(req),
     });
     res.json({ ok: true, ...restored });
   } catch (e) { canvasError(res, e); }
@@ -6542,6 +6768,24 @@ app.post("/api/canvas/import", async (req, res) => {
       sourcePath: req.body?.sourcePath,
       slug: req.body?.slug,
       title: req.body?.title,
+      actor: "ui",
+    });
+    canvasEvent("canvas_created", {
+      slug: imported.slug,
+      title: imported.title,
+      kind: imported.compatible ? "board" : "board",
+      workspace: canvasWorkspaceFrom(req),
+      actor: "ui",
+    });
+    canvasEvent("canvas_changed", {
+      slug: imported.slug,
+      action: "import",
+      scope: "canvas",
+      boardPath: "",
+      changedPaths: ["canvas.json"],
+      revision: 1,
+      actor: "ui",
+      workspace: canvasWorkspaceFrom(req),
     });
     res.json({
       ok: true,
@@ -6559,6 +6803,24 @@ app.post("/api/canvas/:slug/import", async (req, res) => {
       sourcePath: req.body?.sourcePath,
       slug: req.body?.slug || req.params.slug,
       title: req.body?.title,
+      actor: "ui",
+    });
+    canvasEvent("canvas_created", {
+      slug: imported.slug,
+      title: imported.title,
+      kind: "board",
+      workspace: canvasWorkspaceFrom(req),
+      actor: "ui",
+    });
+    canvasEvent("canvas_changed", {
+      slug: imported.slug,
+      action: "import",
+      scope: "canvas",
+      boardPath: "",
+      changedPaths: ["canvas.json"],
+      revision: 1,
+      actor: "ui",
+      workspace: canvasWorkspaceFrom(req),
     });
     res.json({
       ok: true,
@@ -6594,6 +6856,14 @@ app.post("/api/canvas/:slug/export", async (req, res) => {
         job.status = "completed";
         job.files = result?.files || [];
         job.finishedAt = new Date().toISOString();
+        canvasEvent("canvas_exported", {
+          slug,
+          format,
+          files: job.files,
+          jobId: result?.jobId || jobId,
+          workspace,
+          actor: "ui",
+        });
       })
       .catch((e) => {
         job.status = "failed";

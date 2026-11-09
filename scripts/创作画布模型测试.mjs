@@ -12,18 +12,25 @@ import os from "node:os";
 import path from "node:path";
 import {
   CANVAS_LIMITS,
+  createBoard,
   createCanvas,
   deleteBoard,
   deleteCanvas,
+  diffCanvasVersions,
+  duplicateBoard,
   importCanvas,
   listCanvases,
   listCanvasHistory,
+  listCanvasVersions,
   listOperations,
   readBoard,
   readCanvas,
   readCanvasAsset,
+  readCanvasVersion,
   restoreBoardHistory,
+  restoreCanvasVersion,
   updateCanvas,
+  updatePages,
   writeBoard,
 } from "../server/创作画布.mjs";
 
@@ -570,6 +577,85 @@ try {
       () => restoreBoardHistory(workspace, "history-canvas", { boardPath: "boards/h.board.json", id: "nope" }),
       "CANVAS_HISTORY_NOT_FOUND",
     );
+  });
+
+  // ---------- 画板/页与画布级版本（2026-11-09-004） ----------
+  console.log("▶ 画板/页与画布级版本");
+
+  check("createBoard/duplicateBoard/deleteBoard：页归属、元素 id 重生成、软删", () => {
+    const created = createCanvas(workspace, { title: "画板 CRUD", slug: "board-crud", kind: "deck", template: "deck" });
+    assert.equal(created.kind, "deck");
+    const pageId = readCanvas(workspace, "board-crud").canvas.pages[0].id;
+    const first = createBoard(workspace, "board-crud", { title: "内容页", page: pageId, template: "cover" });
+    assert.equal(first.page, pageId);
+    assert.ok(fs.existsSync(path.join(workspace, "designs", "board-crud", "project", first.boardPath)));
+    const copied = duplicateBoard(workspace, "board-crud", first.boardPath, { title: "内容页副本" });
+    assert.notEqual(copied.boardPath, first.boardPath);
+    const copy = readBoard(workspace, "board-crud", copied.boardPath).board;
+    const source = readBoard(workspace, "board-crud", first.boardPath).board;
+    assert.equal(copy.elements.length, source.elements.length);
+    assert.notEqual(copy.elements[0].id, source.elements[0].id, "复制板必须重新生成元素 id");
+    const deleted = deleteBoard(workspace, "board-crud", copied.boardPath, { confirmed: true });
+    assert.ok(deleted.trash.includes(".trash/"));
+    assert.ok(!fs.existsSync(path.join(workspace, "designs", "board-crud", "project", copied.boardPath)));
+    assert.ok(!readCanvas(workspace, "board-crud").boards.some((item) => item.path === copied.boardPath));
+  });
+
+  check("updatePages：新增页、删除页时板移动到 moveTo/第一页、至少保留一页", () => {
+    createCanvas(workspace, { title: "页管理", slug: "page-canvas", kind: "deck", template: "deck" });
+    const p1 = readCanvas(workspace, "page-canvas").canvas.pages[0].id;
+    const board = createBoard(workspace, "page-canvas", { title: "归属测试", page: p1 });
+    const updated = updatePages(workspace, "page-canvas", {
+      pages: [{ id: p1, name: "第一页" }, { id: "p2", name: "第二页" }],
+    });
+    assert.equal(updated.pages.length, 2);
+    const moved = updatePages(workspace, "page-canvas", {
+      pages: [{ id: p1, name: "第一页" }, { id: "p2", name: "第二页" }],
+      moveTo: "p2",
+    });
+    assert.equal(moved.removedPages.length, 0);
+    const movedBoard = readCanvas(workspace, "page-canvas").boards.find((item) => item.path === board.boardPath);
+    assert.equal(movedBoard.page, p1, "未删除页时不应移动板");
+    const afterDelete = updatePages(workspace, "page-canvas", {
+      pages: [{ id: "p2", name: "第二页" }],
+    });
+    assert.deepEqual(afterDelete.removedPages, [p1]);
+    assert.equal(readCanvas(workspace, "page-canvas").boards.find((item) => item.path === board.boardPath).page, "p2");
+    expectCode(() => updatePages(workspace, "page-canvas", { pages: [] }), "CANVAS_INVALID");
+  });
+
+  check("画布级版本：同 runId 合并、diff、恢复、删除可回滚", () => {
+    createCanvas(workspace, { title: "版本画布", slug: "version-canvas", template: "blank" });
+    const v1 = listCanvasVersions(workspace, "version-canvas").items;
+    assert.equal(v1.length, 1);
+    assert.equal(v1[0].n, 1);
+    assert.ok(v1[0].changes.length >= 2, "新建版本应包含 canvas.json 与首块板");
+
+    const first = createBoard(workspace, "version-canvas", { title: "A", actor: "agent", runId: "run_same" });
+    const second = createBoard(workspace, "version-canvas", { title: "B", actor: "agent", runId: "run_same" });
+    const merged = listCanvasVersions(workspace, "version-canvas").items;
+    const agentVersions = merged.filter((item) => item.by === "agent");
+    assert.equal(agentVersions.length, 1, "同一 runId 的连续写板应合并为一条版本");
+    assert.equal(agentVersions[0].n, 2);
+    assert.ok(agentVersions[0].changes.some((item) => item.path === first.boardPath));
+
+    const beforeDelete = listCanvasVersions(workspace, "version-canvas").items[0].n;
+    deleteBoard(workspace, "version-canvas", second.boardPath, { confirmed: true, actor: "ui" });
+    const afterDelete = listCanvasVersions(workspace, "version-canvas").items[0];
+    assert.equal(afterDelete.by, "human");
+    assert.ok(afterDelete.changes.some((item) => item.path === second.boardPath && item.status === "deleted"), "删除板必须进入版本 changes(null)");
+
+    const restored = restoreCanvasVersion(workspace, "version-canvas", { version: beforeDelete, actor: "ui" });
+    assert.ok(restored.restored.includes(second.boardPath));
+    assert.ok(readCanvas(workspace, "version-canvas").boards.some((item) => item.path === second.boardPath), "恢复版本应把删除的板带回来");
+    const latest = listCanvasVersions(workspace, "version-canvas").items[0];
+    assert.equal(latest.restoredFrom, beforeDelete);
+
+    const version = readCanvasVersion(workspace, "version-canvas", beforeDelete);
+    assert.ok(version.files >= 3);
+    const diff = diffCanvasVersions(workspace, "version-canvas", { from: 1, to: null });
+    assert.ok(diff.added.includes(first.boardPath));
+    expectCode(() => restoreCanvasVersion(workspace, "version-canvas", { version: 999 }), "CANVAS_VERSION_NOT_FOUND");
   });
 
   // ---------- 工作区校验 ----------

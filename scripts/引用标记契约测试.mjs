@@ -6,13 +6,15 @@
  *   1) 客户端解析器 `client/src/引用标记.js` 与服务端 `server/context.mjs` 的
  *      `parseReferences` 在同一组 fixture 上 parity（同输入 → 同 kind/target/range/顺序/去重）；
  *   2) 覆盖全部类型：file / knowledge / knowledge_dir / template / template_dir /
- *      skill / plugin / session；`@智能体` 只做前端展示（服务端不解析）；
+ *      skill / plugin / session / canvas；`@智能体` 只做前端展示（服务端不解析）；
  *   3) 裸 @ 文件、去重、非法/空目标、定位后缀；
  *   4) chip 三态映射、chip 删除 → 文本同步删除、气泡文本剥离标记、发送前 lint 兜底。
  *
  * 用法: node scripts/引用标记契约测试.mjs（npm run test:ref-parser）
  */
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -60,6 +62,7 @@ test("全类型结构化标记：kind/target/顺序一致", () => {
     "#插件[mcp-files]",
     "#文件[数据.xlsx]",
     "&会话[ses-001]",
+    "@画布[designs/demo/project/boards/page-1.board.json#element=el-title]",
   ].join(" ");
   const refs = assertParity(text);
   assert.deepEqual(refs.map((ref) => `${ref.kind}:${ref.target}`), [
@@ -73,9 +76,12 @@ test("全类型结构化标记：kind/target/顺序一致", () => {
     "plugin:mcp-files",
     "file:数据.xlsx",
     "session:ses-001",
+    "canvas:designs/demo/project/boards/page-1.board.json",
   ]);
+  const canvasRef = refs.find((ref) => ref.kind === "canvas");
+  assert.equal(canvasRef?.range?.element, "el-title", "画布引用必须保留 #element 定位");
   // 每类都覆盖到
-  for (const kind of ["file", "knowledge", "knowledge_dir", "template", "template_dir", "skill", "plugin", "session"]) {
+  for (const kind of ["file", "knowledge", "knowledge_dir", "template", "template_dir", "skill", "plugin", "session", "canvas"]) {
     assert.ok(refs.some((ref) => ref.kind === kind), `缺少类型 ${kind}`);
   }
 });
@@ -194,6 +200,7 @@ test("标记构造：与解析器互逆（插入即可被解析回同 kind/targe
     ["file", "a.docx"], ["knowledge", "k.md"], ["knowledge_dir", "kdir"],
     ["template", "t.docx"], ["template_dir", "tdir"], ["skill", "ppt"],
     ["plugin", "mcp"], ["session", "s1"], ["agent", "公文助手"],
+    ["canvas", "designs/demo/project/boards/page-1.board.json"],
   ]) {
     const marker = referenceMarker(kind, target);
     assert.ok(marker, `${kind} 标记构造失败`);
@@ -201,7 +208,40 @@ test("标记构造：与解析器互逆（插入即可被解析回同 kind/targe
     assert.equal(parsed[0]?.kind, kind, `${kind} 解析 kind 不一致`);
     assert.equal(parsed[0]?.target, target, `${kind} 解析 target 不一致`);
   }
+  assert.equal(referenceChipLabel({ kind: "canvas", target: "designs/demo/project/boards/page-1.board.json" }), "page-1");
+  assert.equal(
+    referenceChipLabel({ kind: "canvas", target: "designs/demo/project/boards/page-1.board.json", range: { element: "el-title" } }),
+    "page-1 · el-title",
+  );
+  assert.equal(referenceChipLabel({ kind: "canvas", target: "designs/demo/project/canvas.json" }), "整画布");
 });
+
+console.log("\n▶ 画布引用解析（真实临时工作区）");
+
+{
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "oaw-ref-canvas-"));
+  try {
+    const cvs = await importLocal("server/创作画布.mjs");
+    cvs.createCanvas(ws, { title: "引用画布", slug: "ref-canvas", template: "blank" });
+    const board = cvs.createBoard(ws, "ref-canvas", { title: "目标板", template: "cover" });
+    const element = cvs.readBoard(ws, "ref-canvas", board.boardPath).board.elements[0];
+    const ref = parseReferenceMarkers(`@画布[designs/ref-canvas/project/${board.boardPath}#element=${element.id}]`)[0];
+    const resolved = server.resolveReference(ref, ws);
+    assert.equal(resolved.status, "resolved", "画布引用必须解析成功");
+    assert.equal(resolved.metadata.canvasSlug, "ref-canvas");
+    assert.equal(resolved.metadata.boardPath, board.boardPath);
+    const read = await server.readReference(ref, "", null, ws);
+    assert.equal(read.status, "resolved");
+    assert.ok(read.text.includes("选中元素"), "上下文必须包含选中元素");
+    assert.ok(read.text.includes(element.id), "上下文必须包含元素 id");
+    assert.ok(read.text.includes("只改引用范围"), "上下文必须约束修改范围");
+    const missing = server.resolveReference({ ...ref, target: "designs/ref-canvas/project/boards/nope.board.json" }, ws);
+    assert.equal(missing.status, "missing");
+    console.log("  ✓ @画布 解析、选中元素上下文、缺失路径提示");
+  } finally {
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+}
 
 console.log(failed ? "\n引用标记契约测试：存在失败项" : "\n引用标记契约测试：全部通过");
 process.exit(failed ? 1 : 0);

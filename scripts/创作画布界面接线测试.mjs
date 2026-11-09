@@ -294,6 +294,22 @@ test("画布布局：重排 order、更新板坐标/标题、deck 出片序列",
   const 条目 = 模型.板条目(画布);
   assert.equal(条目.find((项) => 项.path === "boards/a.board.json").type, "object");
   assert.equal(条目.find((项) => 项.path === "boards/c.board.json").title, "c", "缺省标题取文件名");
+
+  // 页分组：缺省/未知页归第一页，不丢板
+  const 分组画布 = 模型.normalizeCanvas({
+    pages: [{ id: "p1", name: "第一页" }, { id: "p2", name: "第二页" }],
+    boards: {
+      "boards/a.board.json": { page: "p1" },
+      "boards/b.board.json": { page: "p2" },
+      "boards/c.board.json": { page: "missing" },
+    },
+    order: ["boards/a.board.json", "boards/b.board.json", "boards/c.board.json"],
+  });
+  const 分组 = 模型.页分组(分组画布);
+  assert.equal(分组.length, 2);
+  assert.deepEqual(分组[0].boards.map((项) => 项.path), ["boards/a.board.json", "boards/c.board.json"], "缺省/未知页必须归第一页");
+  assert.deepEqual(分组[1].boards.map((项) => 项.path), ["boards/b.board.json"]);
+  assert.equal(模型.板所属页(分组画布, "boards/c.board.json"), "p1");
 });
 
 /* ───────────────────── 2) 源码接线断言 ───────────────────── */
@@ -504,22 +520,31 @@ test("无障碍：纯图标按钮都有 aria-label，弹层有 dialog 语义", (
   assert.match(导出视图源码, /role="status"/, "导出视图加载态需要 status");
 });
 
-test("Agent 实时刷新接线：canvas_changed → App 递增令牌 → 画布重读（有脏只提示）", () => {
+test("Agent 实时刷新接线：全局事件按 slug/board 增量刷新（有脏只提示）", () => {
   const app源码 = read("client/src/App.jsx");
   const chat源码 = read("client/src/components/ChatPanel.jsx");
-  // ChatPanel：事件与工具活动都接出来
-  assert.match(chat源码, /case "canvas_changed":[\s\S]{0,200}?onCanvasChanged\?\.\(data\)/, "ChatPanel 必须把 canvas_changed 交给外层");
-  assert.match(chat源码, /startsWith\("canvas_"\)[\s\S]{0,120}?onCanvasActivity\?\.\(\{ active: true/, "canvas_* 工具开始要上报活动");
-  assert.match(chat源码, /startsWith\("canvas_"\)[\s\S]{0,120}?onCanvasActivity\?\.\(\{ active: false/, "canvas_* 工具结束要清除活动");
-  // App：收到事件递增 revision，并把 busy/令牌传给组件
-  assert.match(app源码, /onCanvasChanged=\{\(\) => setCanvasRevision/, "App 必须接收 canvas_changed 并递增令牌");
-  assert.match(app源码, /onCanvasActivity=\{\(\{ active \}\) => setCanvasAgentBusy/, "App 必须把 Agent 活动传给画布");
-  assert.match(app源码, /refreshToken=\{canvasRevision\}/, "画布组件必须收到刷新令牌");
-  assert.match(app源码, /agentBusy=\{canvasAgentBusy\}/, "画布组件必须收到 Agent 活动指示");
-  // 组件：令牌变化时干净才自动重读；有脏只提示不丢改动
+  // ChatPanel：canvas_changed 不再转发（App 全局流统一消费），工具活动仍上报
+  assert.match(chat源码, /case "canvas_changed":[\s\S]{0,220}?break;/, "canvas_changed 应由 App 全局流消费，ChatPanel 只保留占位分支");
+  assert.doesNotMatch(chat源码, /case "canvas_changed":[\s\S]{0,160}?onCanvasChanged\?\.\(data\)/, "ChatPanel 不得再转发 canvas_changed，避免双重刷新");
+  assert.match(chat源码, /startsWith\("canvas_"\)[\s\S]{0,160}?onCanvasActivity\?\.\(\{ active: true/, "canvas_* 工具开始要上报活动");
+  assert.match(chat源码, /startsWith\("canvas_"\)[\s\S]{0,160}?onCanvasActivity\?\.\(\{ active: false/, "canvas_* 工具结束要清除活动");
+  // App：全局 /api/agent/events 消费 canvas_changed / created / exported，并按 slug 路由
+  assert.match(app源码, /event\.type === "canvas_changed"[\s\S]{0,600}?canvasRefreshPendingRef/, "App 必须在全局事件里累积 canvas_changed");
+  assert.match(app源码, /canvasRefreshTimerRef[\s\S]{0,220}?window\.setTimeout/, "canvas 事件必须走定时合并");
+  assert.match(app源码, /\}, 150\);/, "canvas 事件合并窗口必须是 150ms");
+  assert.match(app源码, /changedPaths[\s\S]{0,200}?new Set/, "App 必须合并 changedPaths，避免连续事件重复重读");
+  assert.match(app源码, /event\.type === "canvas_created"[\s\S]{0,500}?setPendingCanvasOpen/, "Agent 新建画布要进入待打开队列");
+  assert.match(app源码, /event\.type === "canvas_exported"[\s\S]{0,200}?setArtifactVersion/, "导出完成要刷新产物面板");
+  assert.match(app源码, /refreshToken=\{canvasRefresh\[tab\.payload\?\.slug\] \|\| 0\}/, "画布组件必须收到按 slug 的刷新信息");
+  assert.match(app源码, /agentBusy=\{canvasActivity\[tab\.payload\?\.slug\] \|\| false\}/, "画布组件必须收到按 slug 的 Agent 活动");
+  // 组件：token 变化时干净才自动增量刷新；有脏只提示不丢改动
   assert.match(画布源码, /refreshToken = 0/, "组件必须接受 refreshToken");
+  assert.match(画布源码, /const 刷新键 =/, "组件必须把刷新信息归一成稳定键");
   assert.match(画布源码, /上次刷新令牌/, "组件必须记录上次令牌，避免挂载即重读");
-  assert.match(画布源码, /if \(有脏\) \{[\s\S]{0,120}?set远端更新\(true\)/, "有未保存修改时只提示，不自动刷新");
+  assert.match(画布源码, /if \(有脏\) \{[\s\S]{0,160}?set远端更新\(true\)/, "有未保存修改时只提示，不自动刷新");
+  assert.match(画布源码, /软刷新画布/, "组件必须支持保留当前板/选中的增量刷新");
+  assert.match(画布源码, /changedPaths/, "组件必须按 changedPaths 只拉变化的板");
+  assert.match(画布源码, /手动刷新/, "工具条必须有手动刷新兜底");
   assert.match(画布源码, /Agent 正在编辑/, "Agent 活动时工具条必须有可见状态");
   assert.match(画布源码, /远端更新 &&/, "远端更新提示横幅必须渲染");
 });
@@ -549,22 +574,34 @@ test("验收反馈补齐：抓手 / 播放 / 版本历史 / 页面设置 / 添�
   assert.match(画布源码, /oaw-canvas-play/, "必须有播放覆盖层");
   assert.match(样式源码, /\.oaw-canvas-play\b/, "播放样式必须存在");
 
+  // 画布切换器
+  assert.match(画布源码, /oaw-canvas-switcher/, "工具条必须有画布切换器");
+  assert.match(画布源码, /const 切换画布/, "切换器必须调用 onOpenCanvas");
+  assert.match(样式源码, /\.oaw-canvas-switcher/, "切换器样式必须存在");
+
   // 添加到对话
   assert.match(画布源码, /onAddToChat/, "组件必须接受 onAddToChat 回调");
-  assert.match(画布源码, /designs\/\$\{画布键\}\/project\/canvas\.json/, "必须把画布索引作为 @ 引用");
+  assert.match(画布源码, /@画布\[/, "必须支持选中元素/当前板的 @画布 引用");
+  assert.match(画布源码, /#element=/, "选中元素引用必须带 #element 定位");
+  assert.match(画布源码, /designs\/\$\{画布键\}\/project\/canvas\.json/, "未选板时必须回退到整画布引用");
   assert.match(app源码, /onAddToChat=\{\(text\)/, "App 必须接线 onAddToChat");
+  assert.match(read("client/src/components/ChatPanel.jsx"), /@画布\\\[/, "ChatPanel 旧解析路径也必须识别 @画布");
 
   // 页面主题与间距
   assert.match(画布源码, /页面设置/, "必须有页面设置状态");
   assert.match(画布源码, /整理画板/, "必须能按板间距整理画板");
   assert.match(样式源码, /oaw-canvas-safe-area/, "安全边距辅助线样式必须存在");
 
-  // 版本历史
-  assert.match(画布源码, /listCanvasHistory/, "前端必须读取版本历史 API");
-  assert.match(画布源码, /restoreCanvasHistory/, "前端必须调用恢复 API");
-  assert.match(server源码, /export function listCanvasHistory/, "服务端必须导出历史列表");
-  assert.match(server源码, /export function restoreBoardHistory/, "服务端必须导出历史恢复");
-  assert.match(server源码, /HISTORY_DIR/, "历史快照必须落在 .history/");
+  // 版本历史（画布级时间线；旧板级 API 保留兼容）
+  assert.match(画布源码, /listCanvasVersions/, "前端必须读取画布级版本 API");
+  assert.match(画布源码, /restoreCanvasVersion/, "前端必须调用画布级恢复 API");
+  assert.match(画布源码, /diffCanvasVersions/, "前端必须支持文件级 diff");
+  assert.match(server源码, /export function listCanvasVersions/, "服务端必须导出版本列表");
+  assert.match(server源码, /export function restoreCanvasVersion/, "服务端必须导出版本恢复");
+  assert.match(server源码, /HISTORY_DIR = "\.history"/, "版本必须落在 .history/");
+  assert.match(server源码, /VERSION_OBJECTS_DIR|objects/, "版本内容必须内容寻址存储");
+  assert.match(server源码, /export function listCanvasHistory/, "旧板级历史列表必须保留兼容");
+  assert.match(server源码, /export function restoreBoardHistory/, "旧板级历史恢复必须保留兼容");
   assert.match(routes源码, /\/api\/canvas\/:slug\/history/, "必须注册历史路由");
 
   // 最大化画布：隐藏对话区与拖动条

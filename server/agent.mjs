@@ -4333,15 +4333,17 @@ execute: async (_toolCallId, params, signal) => {
       description:
         "创建/修改创作画布（写工作区 designs/<slug>，不覆盖用户正在编辑的板除非显式传 expectedRev）。action：\n"
         + "create_canvas：新建画布（title 必填，slug 可省略；kind=board|deck）；\n"
-        + "add_board：新增对象板（slug、title、board 可选路径；元素为空，后续用 patch_board 写入）；\n"
+        + "add_board：新增对象板（slug、title、board 可选路径、page 可选页；元素为空，后续用 patch_board 写入）；\n"
+        + "duplicate_board：复制一块对象板（slug、board 源路径；newPath/title/page 可选）；\n"
         + "patch_board：整板写入（slug、board、elements JSON 数组 或 完整 board JSON；expectedRev 做并发校验）；\n"
-        + "update_canvas：改标题/页面/顺序/板坐标（slug + title/pages/order/boards JSON）；\n"
+        + "update_canvas：改标题/页面/顺序/板坐标（slug + title/pages/order/boards JSON；expectedRev 可选）；\n"
         + "delete_element：从板删除指定元素（slug、board、elementId）。\n"
         + "元素类型：text（text/style/x/y/w/h）、rect、line、image（src 为 project 内相对路径）、svg（src 或 markup）。画布文件属于工作区产物。",
       parameters: Type.Object({
         action: Type.Union([
           Type.Literal("create_canvas"),
           Type.Literal("add_board"),
+          Type.Literal("duplicate_board"),
           Type.Literal("patch_board"),
           Type.Literal("update_canvas"),
           Type.Literal("delete_element"),
@@ -4350,6 +4352,10 @@ execute: async (_toolCallId, params, signal) => {
         title: Type.Optional(Type.String({ description: "画布/画板标题" })),
         kind: Type.Optional(Type.String({ description: "create_canvas：board（普通画板）或 deck（幻灯片）" })),
         board: Type.Optional(Type.String({ description: "板路径（相对 project/），如 boards/cover.board.json" })),
+        newPath: Type.Optional(Type.String({ description: "duplicate_board：新板路径（可选）" })),
+        page: Type.Optional(Type.String({ description: "add_board/duplicate_board：目标页 id（可选；缺省第一页）" })),
+        template: Type.Optional(Type.String({ description: "add_board：blank/cover/onepager（可选）" })),
+        role: Type.Optional(Type.String({ description: "add_board：board/slide（可选；deck 默认 slide）" })),
         elements: Type.Optional(Type.String({ description: "patch_board：元素数组 JSON 字符串（整板替换）" })),
         elementId: Type.Optional(Type.String({ description: "delete_element：要删除的元素 id" })),
         boardJson: Type.Optional(Type.String({ description: "patch_board：完整板 JSON 字符串（含 w/h/background/elements）" })),
@@ -4374,7 +4380,7 @@ execute: async (_toolCallId, params, signal) => {
             if (value === undefined || value === null || value === "") return fallback;
             try { return JSON.parse(String(value)); } catch { throw Object.assign(new Error("JSON 参数解析失败"), { code: "CANVAS_INVALID" }); }
           };
-          if (!["create_canvas", "add_board", "patch_board", "update_canvas", "delete_element"].includes(action)) {
+          if (!["create_canvas", "add_board", "duplicate_board", "patch_board", "update_canvas", "delete_element"].includes(action)) {
             return { content: [{ type: "text", text: `未知 action：${action}` }], details: { code: "CANVAS_INVALID" } };
           }
           await requireToolApproval({
@@ -4383,22 +4389,58 @@ execute: async (_toolCallId, params, signal) => {
           });
           if (action === "create_canvas") {
             if (!String(params.title || "").trim()) return { content: [{ type: "text", text: "create_canvas 需要 title" }], details: { code: "CANVAS_INVALID" } };
-            const created = cvs.createCanvas(ws, { slug, title: String(params.title).trim(), kind: params.kind === "deck" ? "deck" : "board" });
-            writeEvent("canvas_created", { slug: created.slug, title: String(params.title).trim(), kind: params.kind === "deck" ? "deck" : "board", workspace: ws });
-            writeEvent("canvas_changed", { slug: created.slug, action: "create_canvas", boardPath: "", revision: 1, actor: "agent", workspace: ws });
+            const created = cvs.createCanvas(ws, { slug, title: String(params.title).trim(), kind: params.kind === "deck" ? "deck" : "board", actor: "agent" });            writeEvent("canvas_created", { slug: created.slug, title: String(params.title).trim(), kind: params.kind === "deck" ? "deck" : "board", workspace: ws, actor: "agent", runId: ctx.runId || "" });
+            writeEvent("canvas_changed", { slug: created.slug, action: "create_canvas", scope: "canvas", boardPath: "", changedPaths: ["canvas.json"], revision: 1, actor: "agent", runId: ctx.runId || "", workspace: ws });
             return { content: [{ type: "text", text: `已创建创作画布「${params.title}」（${created.slug}）。可用 add_board 加板，patch_board 写内容。` }], details: { slug: created.slug, path: created.path } };
           }
           if (action === "add_board") {
-            const boardPath = String(params.board || `boards/board-${Date.now().toString(36)}.board.json`);
             const layout = parse(params.layout, { x: 0, y: 0, w: 1280, h: 720 });
-            const index = cvs.readCanvas(ws, slug);
-            const board = { v: 1, w: Number(layout.w) || 1280, h: Number(layout.h) || 720, background: "#ffffff", rev: 1, elements: [] };
-            const savedBoard = cvs.writeBoard(ws, slug, boardPath, board, {});
-            const order = [...(index.canvas.order || []), boardPath];
-            const boards = { ...(index.canvas.boards || {}), [boardPath]: { ...layout, title: String(params.title || "画板"), role: index.canvas.kind === "deck" ? "slide" : "board" } };
-            const updated = cvs.updateCanvas(ws, slug, { order, boards });
-            writeEvent("canvas_changed", { slug, action: "add_board", boardPath, revision: Number(updated?.rev) || Number(savedBoard?.canvasRev) || index.canvas.rev + 1, actor: "agent", workspace: ws });
-            return { content: [{ type: "text", text: `已新增画板 ${boardPath}（${board.w}×${board.h}）。` }], details: { slug, boardPath } };
+            const created = cvs.createBoard(ws, slug, {
+              path: params.board,
+              title: String(params.title || "画板"),
+              template: params.template,
+              page: params.page,
+              layout,
+              role: params.role,
+              actor: "agent",
+              runId: ctx.runId,
+            });
+            writeEvent("canvas_changed", {
+              slug,
+              action: "add_board",
+              scope: "board",
+              boardPath: created.boardPath,
+              pageId: created.page || "",
+              changedPaths: [created.boardPath, "canvas.json"],
+              revision: Number(created.rev) || 0,
+              actor: "agent",
+              runId: ctx.runId || "",
+              workspace: ws,
+            });
+            return { content: [{ type: "text", text: `已新增画板 ${created.boardPath}（${created.board?.w}×${created.board?.h}）。` }], details: { slug, boardPath: created.boardPath, page: created.page, rev: created.rev } };
+          }
+          if (action === "duplicate_board") {
+            if (!params.board) return { content: [{ type: "text", text: "duplicate_board 需要 board 源路径" }], details: { code: "CANVAS_INVALID" } };
+            const copied = cvs.duplicateBoard(ws, slug, params.board, {
+              path: params.newPath,
+              title: params.title,
+              page: params.page,
+              actor: "agent",
+              runId: ctx.runId,
+            });
+            writeEvent("canvas_changed", {
+              slug,
+              action: "duplicate_board",
+              scope: "board",
+              boardPath: copied.boardPath,
+              pageId: copied.page || "",
+              changedPaths: [copied.boardPath, "canvas.json"],
+              revision: Number(copied.rev) || 0,
+              actor: "agent",
+              runId: ctx.runId || "",
+              workspace: ws,
+            });
+            return { content: [{ type: "text", text: `已复制画板 ${params.board} → ${copied.boardPath}。` }], details: { slug, boardPath: copied.boardPath, page: copied.page, rev: copied.rev } };
           }
           if (action === "patch_board") {
             if (!params.board) return { content: [{ type: "text", text: "patch_board 需要 board 路径" }], details: { code: "CANVAS_INVALID" } };
@@ -4411,16 +4453,16 @@ execute: async (_toolCallId, params, signal) => {
               ...(elements ? { elements } : {}),
               rev: existing.rev + 1,
             };
-            const saved = cvs.writeBoard(ws, slug, params.board, next, { expectedRev: Number.isFinite(params.expectedRev) ? params.expectedRev : existing.rev });
-            writeEvent("canvas_changed", { slug, action: "patch_board", boardPath: params.board, revision: saved.rev, actor: "agent", workspace: ws });
+            const saved = cvs.writeBoard(ws, slug, params.board, next, { expectedRev: Number.isFinite(params.expectedRev) ? params.expectedRev : existing.rev, actor: "agent", runId: ctx.runId, summary: `Agent 写入画板 ${params.board}` });
+            writeEvent("canvas_changed", { slug, action: "patch_board", scope: "board", boardPath: params.board, changedPaths: [params.board], revision: saved.rev, actor: "agent", runId: ctx.runId || "", workspace: ws });
             return { content: [{ type: "text", text: `已写入画板 ${params.board}（${(next.elements || []).length} 个元素，rev ${saved.rev}）。` }], details: { slug, boardPath: params.board, rev: saved.rev } };
           }
           if (action === "delete_element") {
             if (!params.board || !params.elementId) return { content: [{ type: "text", text: "delete_element 需要 board 与 elementId" }], details: { code: "CANVAS_INVALID" } };
             const existing = cvs.readBoard(ws, slug, params.board);
             const elements = (existing.board.elements || []).filter((el) => String(el.id) !== String(params.elementId));
-            const saved = cvs.writeBoard(ws, slug, params.board, { ...existing.board, elements, rev: existing.rev + 1 }, {});
-            writeEvent("canvas_changed", { slug, action: "delete_element", boardPath: params.board, revision: saved.rev, actor: "agent", workspace: ws });
+            const saved = cvs.writeBoard(ws, slug, params.board, { ...existing.board, elements, rev: existing.rev + 1 }, { actor: "agent", runId: ctx.runId, summary: `Agent 删除元素 ${params.elementId}` });
+            writeEvent("canvas_changed", { slug, action: "delete_element", scope: "board", boardPath: params.board, changedPaths: [params.board], revision: saved.rev, actor: "agent", runId: ctx.runId || "", workspace: ws });
             return { content: [{ type: "text", text: `已删除元素 ${params.elementId}（剩 ${elements.length} 个）。` }], details: { slug, boardPath: params.board, rev: saved.rev } };
           }
           // update_canvas
@@ -4432,8 +4474,12 @@ execute: async (_toolCallId, params, signal) => {
           if (order) patch.order = order;
           if (pages) patch.pages = pages;
           if (boards) patch.boards = boards;
+          if (Number.isFinite(params.expectedRev)) patch.expectedRev = params.expectedRev;
+          patch.actor = "agent";
+          patch.runId = ctx.runId;
+          patch.summary = "Agent 更新画布索引";
           const updated = cvs.updateCanvas(ws, slug, patch);
-          writeEvent("canvas_changed", { slug, action: "update_canvas", boardPath: "", revision: updated.rev, actor: "agent", workspace: ws });
+          writeEvent("canvas_changed", { slug, action: "update_canvas", scope: "canvas", boardPath: "", changedPaths: ["canvas.json"], revision: updated.rev, actor: "agent", runId: ctx.runId || "", workspace: ws });
           return { content: [{ type: "text", text: `已更新画布 ${slug}（rev ${updated.rev}）。` }], details: { slug, rev: updated.rev } };
         } catch (e) {
           return { content: [{ type: "text", text: `创作画布写入失败：${e?.message || e}` }], details: { code: e?.code || "" } };
@@ -4462,18 +4508,14 @@ execute: async (_toolCallId, params, signal) => {
             runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
           });
           if (params.action === "delete_canvas") {
-            cvs.deleteCanvas(ws, params.slug, { confirmed: true });
-            writeEvent("canvas_changed", { slug: params.slug, action: "delete_canvas", boardPath: "", revision: 0, actor: "agent", workspace: ws });
+            cvs.deleteCanvas(ws, params.slug, { confirmed: true, actor: "agent" });
+            writeEvent("canvas_changed", { slug: params.slug, action: "delete_canvas", scope: "list", boardPath: "", changedPaths: [], revision: 0, actor: "agent", runId: ctx.runId || "", workspace: ws });
             return { content: [{ type: "text", text: `已删除创作画布 ${params.slug}（已移入 .trash，可人工恢复）。` }], details: { slug: params.slug } };
           }
           if (!params.board) return { content: [{ type: "text", text: "delete_board 需要 board 路径" }], details: { code: "CANVAS_INVALID" } };
-          const index = cvs.readCanvas(ws, params.slug);
-          const order = (index.canvas.order || []).filter((p) => p !== params.board);
-          const boards = { ...(index.canvas.boards || {}) };
-          delete boards[params.board];
-          cvs.updateCanvas(ws, params.slug, { order, boards });
-          writeEvent("canvas_changed", { slug: params.slug, action: "delete_board", boardPath: params.board, revision: index.canvas.rev + 1, actor: "agent", workspace: ws });
-          return { content: [{ type: "text", text: `已从画布移除画板 ${params.board}（文件保留在 project 内，可再加入 order）。` }], details: { slug: params.slug, boardPath: params.board } };
+          const deleted = cvs.deleteBoard(ws, params.slug, params.board, { confirmed: true, actor: "agent", runId: ctx.runId });
+          writeEvent("canvas_changed", { slug: params.slug, action: "delete_board", scope: "board", boardPath: params.board, changedPaths: [params.board, "canvas.json"], revision: Number(deleted.rev) || 0, actor: "agent", runId: ctx.runId || "", workspace: ws });
+          return { content: [{ type: "text", text: `已删除画板 ${params.board}（已移入 .trash，可从版本历史恢复）。` }], details: { slug: params.slug, boardPath: params.board, trash: deleted.trash } };
         } catch (e) {
           return { content: [{ type: "text", text: `创作画布删除失败：${e?.message || e}` }], details: { code: e?.code || "" } };
         }
@@ -4503,9 +4545,9 @@ execute: async (_toolCallId, params, signal) => {
             runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
           });
           const slug = String(params.slug || "").trim() || canvasSlugify(path.basename(sourcePath));
-          const imported = cvs.importCanvas(ws, { sourcePath, slug, title: String(params.title || path.basename(sourcePath)) });
-          writeEvent("canvas_created", { slug, title: String(params.title || path.basename(sourcePath)), kind: "board", workspace: ws });
-          writeEvent("canvas_changed", { slug, action: "import", boardPath: "", revision: 1, actor: "agent", workspace: ws });
+          const imported = cvs.importCanvas(ws, { sourcePath, slug, title: String(params.title || path.basename(sourcePath)), actor: "agent" });
+          writeEvent("canvas_created", { slug, title: String(params.title || path.basename(sourcePath)), kind: "board", workspace: ws, actor: "agent", runId: ctx.runId || "" });
+          writeEvent("canvas_changed", { slug, action: "import", scope: "canvas", boardPath: "", changedPaths: ["canvas.json"], revision: 1, actor: "agent", runId: ctx.runId || "", workspace: ws });
           const importedBoards = Number(imported?.boardCount) || (Array.isArray(imported?.boards) ? imported.boards.length : 0);
           return { content: [{ type: "text", text: `已导入画布「${params.title || slug}」（${importedBoards} 块板）。兼容板为只读渲染。` }], details: { slug, boards: imported?.boards || [] } };
         } catch (e) {
@@ -4542,7 +4584,7 @@ execute: async (_toolCallId, params, signal) => {
           const plan = cvs.planExport(ws, params.slug, { format: params.format, boards });
           if (plan.errors?.length) return { content: [{ type: "text", text: `导出无法执行：${plan.errors.join("；")}` }], details: { errors: plan.errors } };
           const result = await cvs.runExport(ws, params.slug, { format: params.format, boards, outputName: params.outputName });
-          writeEvent("canvas_exported", { slug: params.slug, format: params.format, files: result.files, jobId: result.jobId });
+          writeEvent("canvas_exported", { slug: params.slug, format: params.format, files: result.files, jobId: result.jobId, workspace: ws, actor: "agent", runId: ctx.runId || "" });
           const lines = (result.files || []).map((f) => `- ${f.path}（${Math.round((f.bytes || 0) / 1024)} KB）`).join("\n");
           return { content: [{ type: "text", text: `已导出 ${params.format.toUpperCase()}：\n${lines}` }], details: { slug: params.slug, format: params.format, files: result.files } };
         } catch (e) {

@@ -252,9 +252,9 @@ const REGISTRY = [
 
   // ---- 创作画布（2026-11-09 计划 2026-11-09-003，默认关）----
   // 画布由工作区文件承载；事件只表达“哪块板变了/导出完成”，消费方按 revision 重读。
-  { type: "canvas_created", lifecycle: true, persist: true, note: "创作画布创建", schema: { required: ["slug", "workspace"], types: { slug: "string", title: "string", kind: "string", workspace: "string" } } },
-  { type: "canvas_changed", lifecycle: true, persist: true, note: "创作画布内容变更（索引/板）", schema: { required: ["slug", "action"], types: { slug: "string", boardPath: "string", action: "string", revision: "number", actor: "string", workspace: "string" } } },
-  { type: "canvas_exported", lifecycle: true, persist: true, note: "创作画布导出完成", schema: { required: ["slug", "format", "files"], types: { slug: "string", format: "string", files: "array", jobId: "string" } } },
+  { type: "canvas_created", lifecycle: true, persist: true, note: "创作画布创建", schema: { required: ["slug", "workspace"], types: { slug: "string", title: "string", kind: "string", workspace: "string", actor: "string", runId: "string" } } },
+  { type: "canvas_changed", lifecycle: true, persist: true, note: "创作画布内容变更（索引/板）", schema: { required: ["slug", "action"], types: { slug: "string", boardPath: "string", action: "string", revision: "number", actor: "string", workspace: "string", scope: "string", pageId: "string", changedPaths: "array", runId: "string" } } },
+  { type: "canvas_exported", lifecycle: true, persist: true, note: "创作画布导出完成", schema: { required: ["slug", "format", "files"], types: { slug: "string", format: "string", files: "array", jobId: "string", workspace: "string", actor: "string", runId: "string" } } },
 
   // ---- 高频增量（只走实时 SSE，可优先淘汰）----
   { type: "token", lifecycle: false, persist: false, note: "回答流式文本" },

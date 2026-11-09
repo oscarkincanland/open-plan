@@ -59,13 +59,17 @@ function makeRef(kind, target, extra = {}) {
   let cleanTarget = String(target || "").trim();
   const cell = kind === "file" ? cleanTarget.match(/^(.*?)#([^!]+)!([A-Z]+\d+(?::[A-Z]+\d+)?)$/i) : null;
   const locator = kind === "file" ? cleanTarget.match(/^(.*?)#(page|p|slide|paragraph)=(\d+)(?:-(\d+))?$/i) : null;
+  const element = kind === "canvas" ? cleanTarget.match(/^(.*?)#element=([A-Za-z0-9_-]{1,64})$/) : null;
   const range = cell
     ? { ...(extra.range || {}), sheet: cell[2], cell: cell[3] }
     : locator
       ? { ...(extra.range || {}), [locator[2].toLowerCase() === "p" ? "page" : locator[2].toLowerCase()]: Number(locator[3]), ...(locator[4] ? { end: Number(locator[4]) } : {}) }
-      : extra.range;
+      : element
+        ? { ...(extra.range || {}), element: element[2] }
+        : extra.range;
   if (cell) cleanTarget = cell[1];
   if (locator) cleanTarget = locator[1];
+  if (element) cleanTarget = element[1];
   const ref = { kind, target: cleanTarget, ...extra };
   if (range) ref.range = range;
   ref.id = idFor(ref);
@@ -94,11 +98,13 @@ export function parseReferences(text = "") {
   for (const m of source.matchAll(/#插件\[([^\]]+)\]/g)) add(makeRef("plugin", m[1], { source: m[0] }));
   for (const m of source.matchAll(/#文件\[([^\]]+)\]/g)) add(makeRef("file", m[1], { source: m[0] }));
   for (const m of source.matchAll(/&会话\[([^\]]+)\]/g)) add(makeRef("session", m[1], { source: m[0] }));
+  // 创作画布：`@画布[designs/<slug>/project/<boardPath>#element=<id>]`。
+  for (const m of source.matchAll(/@画布\[([^\]]+)\]/g)) add(makeRef("canvas", m[1], { source: m[0] }));
   // @引用裸写法扩展名识别：CAD 开启时把 dxf/dwg 也当文件引用（与 SUPPORTED 同步门控）
   const ext = new RegExp(`\\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm${RUNTIME_FLAGS.cadAgent ? "|dxf|dwg" : ""})$`, "i");
   for (const m of source.matchAll(/(^|[\s(])@([^\s@，。！？\]}]+)/g)) {
     const target = m[2].replace(/[),;。！？]+$/, "");
-    if (/^(?:文件|知识库|模板|模板目录)\[/.test(target)) continue;
+    if (/^(?:文件|知识库|知识库目录|模板|模板目录|技能|插件|会话|画布)\[/.test(target)) continue;
     if (target.includes("/") || target.includes("\\") || ext.test(target)) add(makeRef("file", target, { source: `@${target}` }));
   }
   return out;
@@ -198,6 +204,45 @@ function resolveFile(ref, workspace = getWorkspace()) {
   return resolvePath(ref.target, workspace);
 }
 
+/** 画布引用：designs/<slug>/project/(canvas.json | boards/*.board.json)[#element=id]。 */
+function resolveCanvasReference(ref, workspace = getWorkspace()) {
+  const target = String(ref.target || "").replace(/\\/g, "/");
+  const parts = target.split("/").filter(Boolean);
+  if (parts[0] !== "designs" || parts.length < 4 || parts[2] !== "project") {
+    return { ...ref, status: "missing", metadata: null, message: "画布引用必须指向 designs/<slug>/project/ 下的 canvas.json 或 board 文件" };
+  }
+  const slug = parts[1];
+  const boardPath = parts.slice(3).join("/");
+  const file = resolvePath(target, workspace);
+  if (!file || !fs.existsSync(file)) {
+    return { ...ref, status: "missing", metadata: null, message: `画板不存在：${target}` };
+  }
+  const canvasFile = resolvePath(`designs/${slug}/project/canvas.json`, workspace);
+  let index = null;
+  try { index = JSON.parse(fs.readFileSync(canvasFile, "utf8")); } catch { index = null; }
+  if (!index || typeof index !== "object") {
+    return { ...ref, status: "missing", metadata: null, message: `画布索引不存在或无法解析：${slug}` };
+  }
+  const entry = boardPath === "canvas.json" ? null : index.boards?.[boardPath] || null;
+  const name = String(entry?.title || (boardPath === "canvas.json" ? index.title : path.basename(boardPath)) || slug);
+  return {
+    ...ref,
+    status: "resolved",
+    metadata: {
+      path: file,
+      relativePath: target,
+      name,
+      mime: "application/json",
+      canvas: true,
+      canvasSlug: slug,
+      canvasTitle: String(index.title || slug),
+      boardPath,
+      pageId: String(entry?.page || ""),
+      elementId: ref.range?.element ? String(ref.range.element) : "",
+    },
+  };
+}
+
 export function resolveReference(input, workspace = getWorkspace()) {
   const ref = typeof input === "string" ? makeRef("file", input) : { ...input };
   ref.id ||= idFor(ref);
@@ -210,6 +255,7 @@ export function resolveReference(input, workspace = getWorkspace()) {
       ? { ...ref, status: "resolved", metadata: { path: session.file, name: path.basename(session.file), mime: "text/plain", sessionId: ref.target } }
       : { ...ref, status: "missing", metadata: null, message: "未找到该历史会话" };
   }
+  if (ref.kind === "canvas") return resolveCanvasReference(ref, workspace);
   const file = resolveFile(ref, workspace);
   if (!file) return { ...ref, status: "missing", metadata: null, message: "文件不存在或不在已登记目录内" };
   const stat = fs.statSync(file);
@@ -349,8 +395,46 @@ export async function readReference(input, query = "", range = null, workspace =
     const text = q ? session.text.split(/\r?\n/).filter((line) => line.toLowerCase().includes(q)).join("\n") : session.text;
     return { ...resolved, status: "resolved", text: text.slice(0, MAX_READ_CHARS), truncated: text.length > MAX_READ_CHARS };
   }
-  if (resolved.kind === "knowledge") {
-    const kb = await import("./kb.mjs");
+  if (resolved.kind === "canvas") {
+    const cvs = await import("./创作画布.mjs");
+    const meta = resolved.metadata || {};
+    let text = "";
+    if (meta.boardPath === "canvas.json") {
+      const read = cvs.readCanvas(workspace, meta.canvasSlug);
+      const lines = read.boards.map((board) => `- ${board.path}（${board.title || board.path} · ${board.w}×${board.h}${board.page ? ` · 页 ${board.page}` : ""}${board.kind === "html" ? " · 兼容板只读" : ""}）`);
+      text = `【画布引用】${read.canvas.title || meta.canvasSlug}（slug=${meta.canvasSlug}，${read.canvas.kind || "board"}，rev ${read.canvas.rev}）\n板（${read.boards.length}）：\n${lines.join("\n") || "（空）"}\n\n修改约束：新增/修改画板请用 canvas_write，并显式传 slug=${meta.canvasSlug}；不要把整张画布当成单个板覆盖。`;
+    } else {
+      const read = cvs.readBoard(workspace, meta.canvasSlug, meta.boardPath);
+      if (read.board?.kind === "html") {
+        text = `【画布引用】${meta.canvasTitle} / ${meta.name}（兼容板只读，slug=${meta.canvasSlug}，board=${meta.boardPath}）\n该板是 .dc.html 兼容板，产品内不编辑内部对象、不写回原文件。`;
+      } else if (read.board?.kind === "svg") {
+        text = `【画布引用】${meta.canvasTitle} / ${meta.name}（SVG 矢量板只读，slug=${meta.canvasSlug}，board=${meta.boardPath}）`;
+      } else {
+        const board = read.board || {};
+        const elements = Array.isArray(board.elements) ? board.elements : [];
+        const wanted = String(meta.elementId || "");
+        const selected = wanted ? elements.filter((element) => String(element.id) === wanted) : [];
+        const summary = elements.slice(0, 60).map((element) => {
+          const label = element.type === "text" ? String(element.text || "").slice(0, 40) : element.type;
+          return `- ${element.id}（${element.type}${label ? ` · ${label}` : ""}）`;
+        });
+        text = `【画布引用】${meta.canvasTitle} / ${meta.name}（slug=${meta.canvasSlug}，board=${meta.boardPath}，页=${meta.pageId || "未指定"}，板 rev ${read.rev}）\n`
+          + `板尺寸：${board.w || "?"}×${board.h || "?"}；元素 ${elements.length} 个。\n`
+          + (wanted
+            ? `选中元素 ${wanted}：\n${JSON.stringify(selected[0] || null, null, 2)}\n${selected.length ? "" : "（该元素已不存在；请先 canvas_read 确认当前元素 id）\n"}`
+            : `元素摘要：\n${summary.join("\n") || "（空板）"}\n`)
+          + `\n修改约束：只改引用范围（${wanted ? `元素 ${wanted}` : `画板 ${meta.boardPath}`}）；使用 canvas_write patch_board 时传 slug=${meta.canvasSlug}、board=${meta.boardPath}，并保留未涉及的元素。`;
+      }
+    }
+    return {
+      ...resolved,
+      status: "resolved",
+      metadata: { ...meta, parser: "canvas", readAt: new Date().toISOString() },
+      text: text.slice(0, 4000),
+      truncated: text.length > 4000,
+    };
+  }
+  if (resolved.kind === "knowledge") {    const kb = await import("./kb.mjs");
     await kb.scan();
     const [relPath, rootName] = String(resolved.target).split("@").map((s) => s.trim());
     const rootIdx = rootName ? kb.status().roots.findIndex((r) => r.name === rootName) : null;

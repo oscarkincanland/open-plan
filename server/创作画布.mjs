@@ -11,6 +11,10 @@
  *   │  └─ legacy/                     # 兼容导入的 .dc.html（原样保留，不改写）
  *   ├─ exports/                       # 导出产物
  *   ├─ .trash/                        # 画板级软删除
+ *   ├─ .history/
+ *   │  ├─ index.json                  # 画布级版本索引（format 1：versions[].changes 文件 → sha|null）
+ *   │  ├─ objects/<sha256>            # 版本内容（内容寻址，天然去重）
+ *   │  └─ *.jsonl                     # 旧版板级快照（只读兼容，迁移后保留）
  *   └─ operations.jsonl               # 操作日志（create/save/delete/import/export）
  *
  * 约束：
@@ -67,9 +71,18 @@ const TRASH_DIR = ".trash";
 const OPERATIONS_FILE = "operations.jsonl";
 const JOBS_FILE = ".jobs.json";
 // 版本历史（2026-11-09 验收反馈）：每次写入前留存上一版，供画布内恢复。
+// 2026-11-09-004：新增画布级版本索引（index.json + objects/），旧板级 JSONL 保留兼容。
 const HISTORY_DIR = ".history";
 const HISTORY_LIMIT = 20;
 const HISTORY_FILE_MAX_BYTES = 8 * 1024 * 1024;
+const VERSION_INDEX_FILE = "index.json";
+const VERSION_OBJECTS_DIR = "objects";
+const VERSION_FORMAT = 1;
+const VERSION_KEEP_RECENT = 20;
+const VERSION_LIMIT = 200;
+const VERSION_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+const VERSION_MERGE_AGENT_MS = 10 * 60 * 1000;
+const VERSION_MERGE_UI_MS = 2 * 1000;
 
 const SLUG_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}_-]{0,63}$/u;
 const ELEMENT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -588,6 +601,421 @@ function appendHistorySnapshot(canvasDir, { scope = "board", boardPath = "", rev
   }
 }
 
+// ---------- 画布级版本（2026-11-09-004） ----------
+
+function versionIndexFileOf(canvasDir) {
+  return path.join(historyDirOf(canvasDir), VERSION_INDEX_FILE);
+}
+
+function versionObjectsDirOf(canvasDir) {
+  return path.join(historyDirOf(canvasDir), VERSION_OBJECTS_DIR);
+}
+
+function versionObjectFileOf(canvasDir, sha) {
+  return path.join(versionObjectsDirOf(canvasDir), String(sha || ""));
+}
+
+function sha256Of(buffer) {
+  return crypto.createHash("sha256").update(buffer).digest("hex");
+}
+
+function emptyVersionIndex() {
+  return { format: VERSION_FORMAT, next: 1, base: {}, versions: [], notices: [] };
+}
+
+function normalizeVersionIndex(raw) {
+  const index = emptyVersionIndex();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return index;
+  index.next = Math.max(1, Number(raw.next) || 1);
+  if (raw.base && typeof raw.base === "object" && !Array.isArray(raw.base)) {
+    for (const [key, value] of Object.entries(raw.base)) {
+      if (typeof value === "string" && value) index.base[String(key)] = value;
+    }
+  }
+  if (Array.isArray(raw.versions)) {
+    for (const item of raw.versions) {
+      if (!item || typeof item !== "object") continue;
+      const n = Number(item.n) || 0;
+      if (!n) continue;
+      const changes = {};
+      if (item.changes && typeof item.changes === "object" && !Array.isArray(item.changes)) {
+        for (const [key, value] of Object.entries(item.changes)) {
+          if (value === null) changes[String(key)] = null;
+          else if (typeof value === "string" && value) changes[String(key)] = value;
+        }
+      }
+      index.versions.push({
+        n,
+        first: String(item.first || item.at || ""),
+        at: String(item.at || item.first || ""),
+        by: ["agent", "human", "system"].includes(item.by) ? item.by : "human",
+        user: item.user && typeof item.user === "object" ? item.user : { id: "local", name: "本机用户" },
+        runId: item.runId ? String(item.runId) : null,
+        summary: String(item.summary || "").slice(0, 300),
+        changes,
+        ...(Number(item.restoredFrom) ? { restoredFrom: Number(item.restoredFrom) } : {}),
+      });
+    }
+    index.versions.sort((left, right) => left.n - right.n);
+    index.next = Math.max(index.next, ...index.versions.map((item) => item.n + 1));
+  }
+  if (Array.isArray(raw.notices)) index.notices = raw.notices.slice(-20);
+  return index;
+}
+
+function readVersionIndex(canvasDir) {
+  const file = versionIndexFileOf(canvasDir);
+  if (!fs.existsSync(file)) return null;
+  try {
+    return normalizeVersionIndex(JSON.parse(fs.readFileSync(file, "utf8")));
+  } catch {
+    return null;
+  }
+}
+
+function writeVersionIndex(canvasDir, index) {
+  ensureDirectory(historyDirOf(canvasDir));
+  atomicWriteJson(versionIndexFileOf(canvasDir), index);
+}
+
+function managedProjectFilePaths(projectDir) {
+  const result = [];
+  if (!fs.existsSync(projectDir)) return result;
+  const stack = [projectDir];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      const full = path.join(dir, entry.name);
+      const rel = relativeOf(projectDir, full);
+      if (entry.isDirectory()) {
+        if (rel === ASSETS_DIR || rel === LEGACY_DIR) continue;
+        stack.push(full);
+        continue;
+      }
+      if (rel === CANVAS_FILE || rel.toLowerCase().endsWith(".board.json")) result.push(rel);
+    }
+  }
+  result.sort();
+  return result;
+}
+
+function storedVersionContent(content) {
+  if (Buffer.isBuffer(content)) return content;
+  if (typeof content === "string") return Buffer.from(content, "utf8");
+  return Buffer.from(`${JSON.stringify(content, null, 2)}\n`, "utf8");
+}
+
+function storeVersionObject(canvasDir, content) {
+  const buffer = storedVersionContent(content);
+  const sha = sha256Of(buffer);
+  const file = versionObjectFileOf(canvasDir, sha);
+  if (!fs.existsSync(file)) {
+    ensureDirectory(versionObjectsDirOf(canvasDir));
+    atomicWriteFile(file, buffer);
+  }
+  return sha;
+}
+
+/** 首次写入前记录基线：当前 canvas.json / *.board.json 的内容哈希。 */
+function ensureVersionBase(canvasDir, projectDir, { empty = false } = {}) {
+  const existing = readVersionIndex(canvasDir);
+  if (existing) return existing;
+  const index = emptyVersionIndex();
+  if (!empty) {
+    for (const rel of managedProjectFilePaths(projectDir)) {
+      try {
+        index.base[rel] = storeVersionObject(canvasDir, fs.readFileSync(path.join(projectDir, rel)));
+      } catch { /* 读不到的文件不进入基线 */ }
+    }
+  }
+  writeVersionIndex(canvasDir, index);
+  return index;
+}
+
+function referencedVersionShas(index) {
+  const shas = new Set(Object.values(index.base || {}));
+  for (const version of index.versions || []) {
+    for (const sha of Object.values(version.changes || {})) if (sha) shas.add(sha);
+  }
+  return shas;
+}
+
+function gcVersionObjects(canvasDir, index) {
+  const dir = versionObjectsDirOf(canvasDir);
+  if (!fs.existsSync(dir)) return;
+  const keep = referencedVersionShas(index);
+  let entries;
+  try { entries = fs.readdirSync(dir); } catch { return; }
+  for (const name of entries) {
+    if (!keep.has(name)) {
+      try { fs.rmSync(path.join(dir, name), { force: true }); } catch { /* 忽略 GC 失败 */ }
+    }
+  }
+}
+
+function pruneVersionIndex(index) {
+  const now = Date.now();
+  while (index.versions.length > VERSION_KEEP_RECENT) {
+    const oldest = index.versions[0];
+    const tooMany = index.versions.length > VERSION_LIMIT;
+    const tooOld = now - Date.parse(oldest.at || oldest.first || "") > VERSION_MAX_AGE_MS;
+    if (!tooMany && !tooOld) break;
+    index.versions.shift();
+  }
+  return index;
+}
+
+/**
+ * 记录一次画布级版本。
+ * @param {Record<string, string|object|Buffer|null>} writes project 相对路径 → 写入后的内容（null=删除）
+ */
+function recordCanvasVersion(canvasDir, projectDir, { writes = {}, actor = "ui", runId = null, summary = "", mergeWindowMs = null, restoredFrom = null, forceNew = false } = {}) {
+  const changes = {};
+  for (const [rawPath, content] of Object.entries(writes || {})) {
+    let rel;
+    try { rel = normalizeProjectRelativePath(rawPath); } catch { continue; }
+    if (rel !== CANVAS_FILE && !rel.toLowerCase().endsWith(".board.json")) continue;
+    if (content === undefined) continue;
+    changes[rel] = content === null ? null : storeVersionObject(canvasDir, content);
+  }
+  if (!Object.keys(changes).length) return null;
+
+  const index = ensureVersionBase(canvasDir, projectDir);
+  const by = actor === "agent" ? "agent" : actor === "system" ? "system" : "human";
+  const at = nowIso();
+  const effectiveRunId = runId ? String(runId) : null;
+  const windowMs = mergeWindowMs != null
+    ? Math.max(0, Number(mergeWindowMs) || 0)
+    : (by === "agent" ? VERSION_MERGE_AGENT_MS : VERSION_MERGE_UI_MS);
+  const last = index.versions[index.versions.length - 1];
+  const merge = !forceNew
+    && Boolean(last)
+    && last.by === by
+    && (effectiveRunId
+      ? last.runId === effectiveRunId
+      : Date.now() - Date.parse(last.at || last.first || "") <= windowMs);
+
+  let version;
+  if (merge) {
+    version = last;
+    version.changes = { ...(version.changes || {}), ...changes };
+    version.at = at;
+    if (summary) version.summary = String(summary).slice(0, 300);
+    if (effectiveRunId) version.runId = effectiveRunId;
+    if (restoredFrom) version.restoredFrom = Number(restoredFrom);
+  } else {
+    version = {
+      n: index.next,
+      first: at,
+      at,
+      by,
+      user: by === "agent" ? { id: "agent", name: "Agent" } : by === "system" ? { id: "system", name: "System" } : { id: "local", name: "本机用户" },
+      runId: effectiveRunId,
+      summary: String(summary || "").slice(0, 300),
+      changes,
+      ...(restoredFrom ? { restoredFrom: Number(restoredFrom) } : {}),
+    };
+    index.next += 1;
+    index.versions.push(version);
+  }
+  pruneVersionIndex(index);
+  writeVersionIndex(canvasDir, index);
+  gcVersionObjects(canvasDir, index);
+  return version.n;
+}
+
+/** base + 所有 n ≤ upto 的 changes 折叠出的文件 → sha 映射。 */
+function foldVersionFiles(index, upto) {
+  const files = { ...(index.base || {}) };
+  for (const version of index.versions || []) {
+    if (version.n > upto) break;
+    for (const [rel, sha] of Object.entries(version.changes || {})) {
+      if (sha) files[rel] = sha;
+      else delete files[rel];
+    }
+  }
+  return files;
+}
+
+function versionChangeList(index, version) {
+  let previous = { ...(index.base || {}) };
+  const byN = new Map();
+  for (const item of index.versions || []) {
+    const list = [];
+    for (const [rel, sha] of Object.entries(item.changes || {})) {
+      if (sha === null) list.push({ path: rel, status: "deleted" });
+      else list.push({ path: rel, status: previous[rel] ? "modified" : "added" });
+    }
+    byN.set(item.n, list);
+    for (const [rel, sha] of Object.entries(item.changes || {})) {
+      if (sha) previous[rel] = sha;
+      else delete previous[rel];
+    }
+  }
+  return byN.get(version.n) || [];
+}
+
+/** 列出画布级版本（最新在前，不含内容）。 */
+export function listCanvasVersions(workspace, slug, { limit = 100 } = {}) {
+  const root = workspaceRoot(workspace);
+  const cleanSlug = assertSlug(slug);
+  const dir = canvasDirOf(root, cleanSlug);
+  if (!fs.existsSync(dir)) fail("CANVAS_NOT_FOUND", `画布不存在：${cleanSlug}`);
+  const index = readVersionIndex(dir);
+  if (!index) return { items: [], next: 1 };
+  const max = Math.max(1, Math.min(500, Number(limit) || 100));
+  const items = index.versions
+    .slice()
+    .sort((left, right) => right.n - left.n)
+    .slice(0, max)
+    .map((version) => ({
+      n: version.n,
+      first: version.first,
+      at: version.at,
+      by: version.by,
+      user: version.user,
+      runId: version.runId,
+      summary: version.summary,
+      restoredFrom: version.restoredFrom || null,
+      changes: versionChangeList(index, version),
+    }));
+  return { items, next: index.next };
+}
+
+/** 读单个版本的元数据（含 changes 状态，不含内容）。 */
+export function readCanvasVersion(workspace, slug, n) {
+  const root = workspaceRoot(workspace);
+  const cleanSlug = assertSlug(slug);
+  const dir = canvasDirOf(root, cleanSlug);
+  if (!fs.existsSync(dir)) fail("CANVAS_NOT_FOUND", `画布不存在：${cleanSlug}`);
+  const index = readVersionIndex(dir);
+  const version = index?.versions.find((item) => item.n === Number(n));
+  if (!version) fail("CANVAS_VERSION_NOT_FOUND", `版本不存在：${n}`);
+  return {
+    ...version,
+    changes: versionChangeList(index, version),
+    files: Object.keys(foldVersionFiles(index, version.n)).length,
+  };
+}
+
+/** 文件级 diff：from → to（to 省略时对比当前工作区）。 */
+export function diffCanvasVersions(workspace, slug, { from = 1, to = null } = {}) {
+  const root = workspaceRoot(workspace);
+  const cleanSlug = assertSlug(slug);
+  const dir = canvasDirOf(root, cleanSlug);
+  if (!fs.existsSync(dir)) fail("CANVAS_NOT_FOUND", `画布不存在：${cleanSlug}`);
+  const index = readVersionIndex(dir);
+  if (!index) fail("CANVAS_VERSION_NOT_FOUND", "该画布还没有版本历史");
+  const fromN = Number(from);
+  if (!index.versions.some((item) => item.n === fromN)) fail("CANVAS_VERSION_NOT_FOUND", `版本不存在：${from}`);
+  const fromFiles = foldVersionFiles(index, fromN);
+  let toFiles;
+  if (to == null) {
+    toFiles = {};
+    for (const rel of managedProjectFilePaths(path.join(dir, PROJECT_DIR_NAME))) {
+      try { toFiles[rel] = sha256Of(fs.readFileSync(path.join(dir, PROJECT_DIR_NAME, rel))); } catch { /* 忽略 */ }
+    }
+  } else {
+    const toN = Number(to);
+    if (!index.versions.some((item) => item.n === toN)) fail("CANVAS_VERSION_NOT_FOUND", `版本不存在：${to}`);
+    toFiles = foldVersionFiles(index, toN);
+  }
+  const added = Object.keys(toFiles).filter((rel) => !fromFiles[rel]).sort();
+  const removed = Object.keys(fromFiles).filter((rel) => !toFiles[rel]).sort();
+  const modified = Object.keys(toFiles).filter((rel) => fromFiles[rel] && fromFiles[rel] !== toFiles[rel]).sort();
+  return { from: fromN, to: to == null ? null : Number(to), added, removed, modified };
+}
+
+/** 从画布级版本恢复（整画布或指定文件）。恢复本身会生成一条新版本。 */
+export function restoreCanvasVersion(workspace, slug, { version = 0, paths = null, actor = "ui", runId = null } = {}) {
+  const root = workspaceRoot(workspace);
+  const cleanSlug = assertSlug(slug);
+  const dir = canvasDirOf(root, cleanSlug);
+  if (!fs.existsSync(dir)) fail("CANVAS_NOT_FOUND", `画布不存在：${cleanSlug}`);
+  const targetN = Number(version);
+  if (!Number.isFinite(targetN) || targetN <= 0) fail("CANVAS_INVALID", "version 必须是正整数");
+
+  return withCanvasLock(root, dir, cleanSlug, () => {
+    const index = readVersionIndex(dir);
+    const target = index?.versions.find((item) => item.n === targetN);
+    if (!target) fail("CANVAS_VERSION_NOT_FOUND", `版本不存在：${version}`);
+    const { projectDir, raw } = readCanvasIndex(root, cleanSlug);
+    const managed = String(raw.format || "") === "oaw-canvas";
+    if (!managed) fail("CANVAS_INVALID", "外部兼容画布不支持版本恢复；请先纳管");
+    const folded = foldVersionFiles(index, targetN);
+    const selected = Array.isArray(paths) && paths.length
+      ? paths.map((item) => normalizeProjectRelativePath(item))
+      : null;
+    const current = {};
+    for (const rel of managedProjectFilePaths(projectDir)) {
+      try { current[rel] = sha256Of(fs.readFileSync(path.join(projectDir, rel))); } catch { /* 忽略 */ }
+    }
+    const allPaths = [...new Set([...Object.keys(current), ...Object.keys(folded)])]
+      .filter((rel) => (selected ? selected.includes(rel) : true));
+    const writes = {};
+    const restored = [];
+    const removed = [];
+    const trashDir = ensureDirectory(path.join(dir, TRASH_DIR, `restore-${stamp()}`));
+    for (const rel of allPaths) {
+      const sha = folded[rel] || null;
+      const targetFile = path.join(projectDir, rel);
+      if (!sha) {
+        if (fs.existsSync(targetFile)) {
+          const trashFile = path.join(trashDir, rel.replace(/[\\/]+/g, "__"));
+          try { fs.renameSync(targetFile, trashFile); } catch { fs.rmSync(targetFile, { force: true }); }
+          removed.push(rel);
+          writes[rel] = null;
+        }
+        continue;
+      }
+      const objectFile = versionObjectFileOf(dir, sha);
+      if (!fs.existsSync(objectFile)) fail("CANVAS_VERSION_NOT_FOUND", `版本对象缺失：${sha}`);
+      const buffer = fs.readFileSync(objectFile);
+      if (rel === CANVAS_FILE) {
+        let doc;
+        try { doc = JSON.parse(buffer.toString("utf8")); } catch { fail("CANVAS_INVALID", "版本中的 canvas.json 无法解析"); }
+        doc.rev = (Number(raw.rev) || 0) + 1;
+        doc.updatedAt = nowIso();
+        atomicWriteJson(path.join(projectDir, rel), doc);
+        writes[rel] = doc;
+      } else {
+        let board;
+        try { board = JSON.parse(buffer.toString("utf8")); } catch { fail("CANVAS_INVALID", `版本中的画板无法解析：${rel}`); }
+        const boardPath = assertWritableBoardPath(rel);
+        const boardDir = path.dirname(path.join(projectDir, boardPath));
+        let currentBoardRev = 0;
+        try {
+          const currentBoard = JSON.parse(fs.readFileSync(path.join(projectDir, boardPath), "utf8"));
+          currentBoardRev = Number(currentBoard?.rev) || 0;
+        } catch { /* 当前文件不存在或损坏：按 0 起算 */ }
+        board.rev = currentBoardRev + 1;
+        const { board: validated } = validateBoardPayload(board, { projectDir, boardDir, boardPath });
+        atomicWriteJson(path.join(projectDir, boardPath), validated);
+        writes[rel] = validated;
+      }
+      restored.push(rel);
+    }
+    const versionNo = recordCanvasVersion(dir, projectDir, {
+      writes,
+      actor,
+      runId,
+      summary: `恢复画布版本 ${targetN}` + (selected ? `（${selected.length} 个文件）` : ""),
+      restoredFrom: targetN,
+      forceNew: true,
+    });
+    appendOperation(dir, {
+      action: "restore",
+      actor,
+      summary: `恢复画布版本 ${targetN}`,
+      detail: { scope: "canvas", restored, removed, restoredFrom: targetN },
+    });
+    return { ok: true, version: targetN, newVersion: versionNo, restored, removed };
+  });
+}
+
 /** 画布 project 内文件数与总字节（导出产物不计入画布配额）。 */
 function measureProject(projectDir) {
   const result = { files: 0, bytes: 0 };
@@ -885,6 +1313,7 @@ export function createCanvas(workspace, options = {}) {
     }
     const createdAt = nowIso();
     const boardsMap = {};
+    const writtenBoards = {};
     const order = [];
     for (const item of template.boards) {
       const boardRel = assertWritableBoardPath(normalizeProjectRelativePath(item.path));
@@ -894,6 +1323,7 @@ export function createCanvas(workspace, options = {}) {
       const boardDir = path.dirname(path.join(projectDir, boardRel));
       const validated = validateBoardPayload(item.board, { projectDir, boardDir, boardPath: boardRel }).board;
       atomicWriteJson(path.join(projectDir, boardRel), validated);
+      writtenBoards[boardRel] = validated;
     }
     const canvasDoc = {
       v: 3,
@@ -910,6 +1340,12 @@ export function createCanvas(workspace, options = {}) {
       updatedAt: createdAt,
     };
     atomicWriteJson(path.join(projectDir, CANVAS_FILE), canvasDoc);
+    ensureVersionBase(dir, projectDir, { empty: true });
+    recordCanvasVersion(dir, projectDir, {
+      writes: { [CANVAS_FILE]: canvasDoc, ...writtenBoards },
+      actor,
+      summary: `新建画布「${title}」（${order.length} 块板）`,
+    });
     appendOperation(dir, {
       action: "create",
       actor,
@@ -983,6 +1419,7 @@ export function updateCanvas(workspace, slug, patch = {}) {
     const { raw, projectDir, file } = index;
     const previousRaw = JSON.parse(JSON.stringify(raw));
     const managed = String(raw.format || "") === "oaw-canvas";
+    if (managed) ensureVersionBase(dir, projectDir);
     const currentRev = Number(raw.rev) || 0;
     if (managed && source.expectedRev != null && Number(source.expectedRev) !== currentRev) {
       fail("CANVAS_REV_CONFLICT", `画布已被其他会话修改：${cleanSlug}（期望 rev ${source.expectedRev}，当前 ${currentRev}）`, {
@@ -1066,6 +1503,13 @@ export function updateCanvas(workspace, slug, patch = {}) {
         summary: "更新画布索引前版本",
         content: previousRaw,
       });
+      recordCanvasVersion(dir, projectDir, {
+        writes: { [CANVAS_FILE]: next },
+        actor,
+        runId: source?.runId || null,
+        summary: String(source?.summary || "更新画布索引"),
+        mergeWindowMs: source?.mergeWindowMs,
+      });
     }
     appendOperation(dir, {
       action: "save",
@@ -1084,8 +1528,8 @@ export function updateCanvas(workspace, slug, patch = {}) {
  * @param {string} slug 画布 slug
  * @param {string} boardPath project 内相对路径（必须以 .board.json 结尾）
  * @param {object} board 板 JSON（按 §3.3 校验后落盘）
- * @param {{expectedRev?: number, actor?: string}} [options]
- * @returns {{rev: number, created: boolean, canvasRev: number, path: string}}
+ * @param {{expectedRev?: number, actor?: string, page?: string, title?: string, role?: "board"|"slide", layout?: object, runId?: string, summary?: string}} [options]
+ * @returns {{rev: number, created: boolean, canvasRev: number, path: string, page: string}}
  */
 export function writeBoard(workspace, slug, boardPath, board, options = {}) {
   const root = workspaceRoot(workspace);
@@ -1095,11 +1539,14 @@ export function writeBoard(workspace, slug, boardPath, board, options = {}) {
   if (!fs.existsSync(dir)) fail("CANVAS_NOT_FOUND", `画布不存在：${cleanSlug}`);
   const actor = normalizeActor(options?.actor);
   const expectedRev = options?.expectedRev != null ? Number(options.expectedRev) : null;
+  const requestedPage = options?.page != null ? String(options.page).slice(0, 64) : "";
+  const requestedTitle = options?.title != null ? normalizeTitle(options.title) : "";
 
   return withCanvasLock(root, dir, cleanSlug, () => {
     const index = readCanvasIndex(root, cleanSlug);
     const { projectDir, raw } = index;
     const managed = String(raw.format || "") === "oaw-canvas";
+    if (managed) ensureVersionBase(dir, projectDir);
     const target = assertInsideProject(projectDir, path.join(projectDir, rel), rel);
     const existed = fs.existsSync(target);
     if (existed && !fs.statSync(target).isFile()) fail("CANVAS_INVALID", `目标不是文件：${rel}`);
@@ -1143,21 +1590,36 @@ export function writeBoard(workspace, slug, boardPath, board, options = {}) {
     atomicWriteFile(target, serialized);
 
     let canvasRev = Number(raw.rev) || 0;
+    let nextCanvas = null;
+    let boardPage = "";
     if (!existed) {
+      const pages = Array.isArray(raw.pages) ? raw.pages : [];
+      if (requestedPage) {
+        if (!pages.some((item) => String(item?.id) === requestedPage)) {
+          fail("CANVAS_PAGE_NOT_FOUND", `页不存在：${requestedPage}`);
+        }
+        boardPage = requestedPage;
+      } else if (pages.length) {
+        boardPage = String(pages[0]?.id || "");
+      }
+      const layout = options?.layout && typeof options.layout === "object" ? options.layout : {};
       const boardsRaw = raw.boards && typeof raw.boards === "object" && !Array.isArray(raw.boards) ? { ...raw.boards } : {};
       const entries = Object.entries(boardsRaw).map(([key, value]) => normalizeBoardEntry(value, key));
       const maxBottom = entries.reduce((acc, item) => Math.max(acc, item.y + item.h), 0);
-      const nextX = 0;
-      const nextY = entries.length ? maxBottom + 120 : 0;
+      const nextX = Number.isFinite(Number(layout.x)) ? Number(layout.x) : 0;
+      const nextY = Number.isFinite(Number(layout.y)) ? Number(layout.y) : (entries.length ? maxBottom + 120 : 0);
       boardsRaw[rel] = normalizeBoardEntry({
         // 坐标按板自身尺寸登记，导出计划/截图尺寸才与画板一致（否则会被当成 1280×720）。
-        x: nextX, y: nextY, w: validated.w, h: validated.h,
-        title: path.basename(rel).replace(/\.board\.json$/i, ""),
-        role: raw.kind === "deck" ? "slide" : "board",
+        x: nextX, y: nextY,
+        w: Number(layout.w) || validated.w,
+        h: Number(layout.h) || validated.h,
+        title: requestedTitle || path.basename(rel).replace(/\.board\.json$/i, ""),
+        role: options?.role === "slide" ? "slide" : (raw.kind === "deck" ? "slide" : "board"),
+        ...(boardPage ? { page: boardPage } : {}),
       }, rel);
       const keptOrder = Array.isArray(raw.order) ? raw.order.map(String).filter((key) => boardsRaw[key]) : [];
       const order = [...keptOrder, ...Object.keys(boardsRaw).filter((key) => !keptOrder.includes(key))];
-      const nextCanvas = { ...raw, boards: boardsRaw, order, updatedAt: nowIso() };
+      nextCanvas = { ...raw, boards: boardsRaw, order, updatedAt: nowIso() };
       nextCanvas.v = Number(nextCanvas.v) || 3;
       nextCanvas.format = "oaw-canvas";
       nextCanvas.rev = canvasRev + 1;
@@ -1170,7 +1632,7 @@ export function writeBoard(workspace, slug, boardPath, board, options = {}) {
       actor,
       boardPath: rel,
       rev: validated.rev,
-      summary: `${existed ? "保存" : "新增"}画板 ${rel}`,
+      summary: String(options?.summary || `${existed ? "保存" : "新增"}画板 ${rel}`).slice(0, 300),
       detail: { scope: "board", elements: validated.elements.length, bytes, created: !existed },
     });
     if (previousBoard) {
@@ -1183,7 +1645,23 @@ export function writeBoard(workspace, slug, boardPath, board, options = {}) {
         content: previousBoard,
       });
     }
-    return { rev: validated.rev, created: !existed, canvasRev, path: rel };
+    if (managed) {
+      const writes = { [rel]: validated };
+      if (nextCanvas) writes[CANVAS_FILE] = nextCanvas;
+      recordCanvasVersion(dir, projectDir, {
+        writes,
+        actor,
+        runId: options?.runId || null,
+        summary: options?.summary || `${existed ? "保存" : "新增"}画板 ${rel}`,
+      });
+    }
+    return {
+      rev: validated.rev,
+      created: !existed,
+      canvasRev,
+      path: rel,
+      page: boardPage || String(raw.boards?.[rel]?.page || ""),
+    };
   });
 }
 
@@ -1263,6 +1741,8 @@ export function deleteBoard(workspace, slug, boardPath, options = {}) {
   return withCanvasLock(root, dir, cleanSlug, () => {
     const index = readCanvasIndex(root, cleanSlug);
     const { projectDir, raw } = index;
+    const managed = String(raw.format || "") === "oaw-canvas";
+    if (managed) ensureVersionBase(dir, projectDir);
     const target = assertInsideProject(projectDir, path.join(projectDir, rel), rel);
     if (!fs.existsSync(target)) fail("CANVAS_NOT_FOUND", `画板不存在：${rel}`);
     const trashDir = ensureDirectory(path.join(dir, TRASH_DIR, stamp()));
@@ -1273,8 +1753,8 @@ export function deleteBoard(workspace, slug, boardPath, options = {}) {
       fs.copyFileSync(target, trashFile);
       fs.rmSync(target, { force: true });
     }
-    const managed = String(raw.format || "") === "oaw-canvas";
     let rev = Number(raw.rev) || 0;
+    let nextCanvas = null;
     if (managed && raw.boards && Object.prototype.hasOwnProperty.call(raw.boards, rel)) {
       const next = JSON.parse(JSON.stringify(raw));
       delete next.boards[rel];
@@ -1283,7 +1763,16 @@ export function deleteBoard(workspace, slug, boardPath, options = {}) {
       next.rev = rev + 1;
       next.updatedAt = nowIso();
       rev = next.rev;
+      nextCanvas = next;
       atomicWriteJson(index.file, next);
+    }
+    if (managed) {
+      recordCanvasVersion(dir, projectDir, {
+        writes: { [rel]: null, ...(nextCanvas ? { [CANVAS_FILE]: nextCanvas } : {}) },
+        actor,
+        runId: options?.runId || null,
+        summary: String(options?.summary || `删除画板 ${rel}（软删）`),
+      });
     }
     appendOperation(dir, {
       action: "delete",
@@ -1296,6 +1785,139 @@ export function deleteBoard(workspace, slug, boardPath, options = {}) {
     return { ok: true, slug: cleanSlug, boardPath: rel, trash: relativeOf(root, trashFile), rev };
   });
 }
+
+/** 生成不冲突的板路径（ASCII 文件名；标题只用于可读性，不直接进路径）。 */
+function uniqueBoardPath(projectDir, rawBoards, preferred = "") {
+  const boards = rawBoards && typeof rawBoards === "object" ? rawBoards : {};
+  const base = String(preferred || "").replace(/\.board\.json$/i, "").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "board";
+  for (let index = 1; index < 1000; index += 1) {
+    const name = index === 1 ? `${base}.board.json` : `${base}-${index}.board.json`;
+    const rel = `${BOARD_DIR}/${name}`;
+    if (!Object.prototype.hasOwnProperty.call(boards, rel) && !fs.existsSync(path.join(projectDir, rel))) return rel;
+  }
+  fail("CANVAS_LIMIT", "无法生成不冲突的画板路径");
+}
+
+/**
+ * 新建一块画板（画布内“子画布”）。
+ * @param {{path?: string, title?: string, template?: "blank"|"cover"|"onepager", page?: string, layout?: object, role?: "board"|"slide", actor?: string, runId?: string}} options
+ */
+export function createBoard(workspace, slug, options = {}) {
+  const root = workspaceRoot(workspace);
+  const cleanSlug = assertSlug(slug);
+  const dir = canvasDirOf(root, cleanSlug);
+  if (!fs.existsSync(dir)) fail("CANVAS_NOT_FOUND", `画布不存在：${cleanSlug}`);
+  const index = readCanvasIndex(root, cleanSlug);
+  const title = normalizeTitle(options?.title) || "画板";
+  const rel = options?.path
+    ? assertWritableBoardPath(normalizeProjectRelativePath(options.path))
+    : uniqueBoardPath(index.projectDir, index.raw.boards);
+  if (Object.prototype.hasOwnProperty.call(index.raw.boards || {}, rel) || fs.existsSync(path.join(index.projectDir, rel))) {
+    fail("CANVAS_EXISTS", `画板已存在：${rel}`);
+  }
+  const layout = options?.layout && typeof options.layout === "object" ? options.layout : {};
+  const width = Math.round(clampNumber(layout.w, CANVAS_LIMITS.boardMin, CANVAS_LIMITS.boardMax, 1280));
+  const height = Math.round(clampNumber(layout.h, CANVAS_LIMITS.boardMin, CANVAS_LIMITS.boardMax, 720));
+  const template = String(options?.template || "").trim().toLowerCase();
+  const board = {
+    v: 1,
+    w: width,
+    h: height,
+    background: "#ffffff",
+    rev: 1,
+    elements: template === "cover" || template === "onepager" ? headerElements(title) : [],
+  };
+  const saved = writeBoard(workspace, cleanSlug, rel, board, {
+    actor: options?.actor,
+    page: options?.page,
+    title,
+    role: options?.role,
+    layout: { x: layout.x, y: layout.y, w: width, h: height },
+    runId: options?.runId,
+    summary: `新增画板「${title}」`,
+  });
+  return { slug: cleanSlug, boardPath: rel, title, page: saved.page, rev: saved.rev, canvasRev: saved.canvasRev, board };
+}
+
+/** 复制一块画板（元素 id 重新生成；插入到源板之后）。 */
+export function duplicateBoard(workspace, slug, boardPath, options = {}) {
+  const root = workspaceRoot(workspace);
+  const cleanSlug = assertSlug(slug);
+  const dir = canvasDirOf(root, cleanSlug);
+  if (!fs.existsSync(dir)) fail("CANVAS_NOT_FOUND", `画布不存在：${cleanSlug}`);
+  const index = readCanvasIndex(root, cleanSlug);
+  const sourceRel = assertWritableBoardPath(normalizeProjectRelativePath(boardPath));
+  const source = readBoard(workspace, cleanSlug, sourceRel);
+  if (source.board?.kind === "html" || source.board?.kind === "svg") {
+    fail("CANVAS_UNSUPPORTED", "兼容板/矢量板不支持复制为对象板");
+  }
+  const clone = JSON.parse(JSON.stringify(source.board || {}));
+  const used = new Set();
+  clone.elements = (Array.isArray(clone.elements) ? clone.elements : []).map((element, elementIndex) => {
+    let id = `el-copy-${elementIndex + 1}`;
+    let suffix = 2;
+    while (used.has(id)) { id = `el-copy-${elementIndex + 1}-${suffix}`; suffix += 1; }
+    used.add(id);
+    return { ...element, id };
+  });
+  clone.rev = 1;
+  const sourceEntry = index.raw.boards?.[sourceRel] || {};
+  const title = normalizeTitle(options?.title) || `${String(sourceEntry.title || path.basename(sourceRel)).slice(0, 100)} 副本`;
+  const rel = options?.path
+    ? assertWritableBoardPath(normalizeProjectRelativePath(options.path))
+    : uniqueBoardPath(index.projectDir, index.raw.boards, `${path.basename(sourceRel).replace(/\.board\.json$/i, "")}-copy`);
+  const saved = writeBoard(workspace, cleanSlug, rel, clone, {
+    actor: options?.actor,
+    page: options?.page !== undefined ? options.page : sourceEntry.page,
+    title,
+    role: sourceEntry.role,
+    layout: options?.layout && typeof options.layout === "object" ? options.layout : null,
+    runId: options?.runId,
+    summary: `复制画板 ${sourceRel} → ${rel}`,
+  });
+  return { slug: cleanSlug, source: sourceRel, boardPath: rel, title, page: saved.page, rev: saved.rev, canvasRev: saved.canvasRev };
+}
+
+/**
+ * 更新页（新建/重命名/排序/删除）。删除页时把该页的画板移动到 moveTo（缺省第一页）。
+ * @param {{pages: Array<{id:string,name:string}>, moveTo?: string, expectedRev?: number, actor?: string, runId?: string}} options
+ */
+export function updatePages(workspace, slug, options = {}) {
+  const root = workspaceRoot(workspace);
+  const cleanSlug = assertSlug(slug);
+  const dir = canvasDirOf(root, cleanSlug);
+  if (!fs.existsSync(dir)) fail("CANVAS_NOT_FOUND", `画布不存在：${cleanSlug}`);
+  const index = readCanvasIndex(root, cleanSlug);
+  const managed = String(index.raw.format || "") === "oaw-canvas";
+  if (!managed) fail("CANVAS_INVALID", "外部兼容画布不支持页管理；请先纳管");
+  const nextPages = validatePages(options?.pages);
+  const nextIds = new Set(nextPages.map((item) => item.id));
+  const currentPages = Array.isArray(index.raw.pages) ? index.raw.pages : [];
+  const currentIds = new Set(currentPages.map((item) => String(item?.id || "")));
+  const removed = [...currentIds].filter((id) => id && !nextIds.has(id));
+  const movedBoards = {};
+  if (removed.length) {
+    const affected = Object.entries(index.raw.boards || {})
+      .filter(([, entry]) => removed.includes(String(entry?.page || "")));
+    if (affected.length) {
+      const moveTo = String(options?.moveTo || "").trim();
+      if (moveTo && !nextIds.has(moveTo)) fail("CANVAS_PAGE_NOT_FOUND", `moveTo 页不存在：${moveTo}`);
+      if (!moveTo && !nextPages.length) fail("CANVAS_INVALID", "至少保留一页，或显式提供 moveTo");
+      const target = moveTo || nextPages[0].id;
+      for (const [rel] of affected) movedBoards[rel] = { page: target };
+    }
+  }
+  const updated = updateCanvas(workspace, cleanSlug, {
+    pages: nextPages,
+    ...(Object.keys(movedBoards).length ? { boards: movedBoards } : {}),
+    expectedRev: options?.expectedRev,
+    actor: options?.actor,
+    runId: options?.runId,
+    summary: String(options?.summary || "更新画布页"),
+  });
+  return { ...updated, pages: nextPages, movedBoards: Object.keys(movedBoards), removedPages: removed };
+}
+
 
 /**
  * 画布软删除：整体移入 `designs/.trash/`（不物理删除，可人工恢复）。
@@ -1479,6 +2101,12 @@ export function importCanvas(workspace, options = {}) {
         updatedAt: createdAt,
       };
       atomicWriteJson(path.join(projectDir, CANVAS_FILE), canvasDoc);
+      ensureVersionBase(dir, projectDir, { empty: true });
+      recordCanvasVersion(dir, projectDir, {
+        writes: { [CANVAS_FILE]: canvasDoc },
+        actor,
+        summary: `导入兼容画布「${title}」（${boards.length} 块板）`,
+      });
       appendOperation(dir, {
         action: "import",
         actor,

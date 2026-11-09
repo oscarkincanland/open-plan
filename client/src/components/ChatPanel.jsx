@@ -55,6 +55,20 @@ import { isActiveInteraction, mergeInteractionEvent, normalizeInteraction, norma
 // browser_close / browser_tabs / browser_snapshot / browser_screenshot 等查看或收尾动作不拉起。
 const BROWSER_PANEL_OPEN_TOOLS = new Set(["browser_open", "browser_click", "browser_type", "browser_press", "browser_scroll"]);
 
+/** canvas_* 工具活动：从工具入参里取 slug/board，供画布工具条按画布/板显示“正在编辑”。 */
+function canvasToolMeta(data) {
+  const raw = data?.input;
+  let input = raw;
+  if (typeof raw === "string") {
+    try { input = JSON.parse(raw); } catch { input = null; }
+  }
+  return {
+    slug: String(input?.slug || data?.slug || ""),
+    boardPath: String(input?.board || data?.boardPath || ""),
+    action: String(input?.action || data?.action || ""),
+  };
+}
+
 // 错误边界包装器
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -637,13 +651,13 @@ function referenceId(kind, target) {
 function parseReferenceMarkers(text = "") {
   const refs = [];
   const seen = new Set();
-  const add = (kind, target, source) => {
+  const add = (kind, target, source, range) => {
     const value = String(target || "").trim();
     if (!value) return;
     const id = referenceId(kind, value);
     if (seen.has(id)) return;
     seen.add(id);
-    refs.push({ id, kind, target: value, source });
+    refs.push({ id, kind, target: value, source, ...(range ? { range } : {}) });
   };
   for (const m of String(text).matchAll(/@知识库目录\[([^\]]+)\]/g)) add("knowledge_dir", m[1], m[0]);
   for (const m of String(text).matchAll(/@知识库\[([^\]]+)\]/g)) add("knowledge", m[1], m[0]);
@@ -651,9 +665,14 @@ function parseReferenceMarkers(text = "") {
   for (const m of String(text).matchAll(/@模板\[([^\]]+)\]/g)) add("template", m[1], m[0]);
   for (const m of String(text).matchAll(/@文件\[([^\]]+)\]/g)) add("file", m[1], m[0]);
   for (const m of String(text).matchAll(/&会话\[([^\]]+)\]/g)) add("session", m[1], m[0]);
+  for (const m of String(text).matchAll(/@画布\[([^\]]+)\]/g)) {
+    const raw = String(m[1] || "");
+    const element = raw.match(/^(.*?)#element=([A-Za-z0-9_-]{1,64})$/);
+    add("canvas", element ? element[1] : raw, m[0], element ? { element: element[2] } : undefined);
+  }
   for (const m of String(text).matchAll(/(^|[\s(])@([^\s@，。！？\]}]+)/g)) {
     const target = m[2].replace(/[),;。！？]+$/, "");
-    if (/^(?:文件|知识库|模板|模板目录|智能体)\[/.test(target)) continue;
+    if (/^(?:文件|知识库|知识库目录|模板|模板目录|技能|插件|会话|智能体|画布)\[/.test(target)) continue;
     if (target.includes("/") || target.includes("\\") || /\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i.test(target)) add("file", target, `@${target}`);
   }
   return refs;
@@ -3133,7 +3152,7 @@ case "runtime_connecting":
       // 工具调用开始：推入新 tool block（按 toolCallId 去重，重放不产生重复卡片）
       case "tool_start":
         if (data.name === "run_subagent") break;
-        if (String(data.name || "").startsWith("canvas_")) onCanvasActivity?.({ active: true, tool: data.name });
+        if (String(data.name || "").startsWith("canvas_")) onCanvasActivity?.({ active: true, tool: data.name, ...canvasToolMeta(data) });
         // 历史 hydrate 已包含同一 toolCallId（回放的旧事件）：只更新那一块，不再新建，
         // 避免把旧工具追加到新内容后面造成错位/重复。
         if (findToolBlockOwner(data.toolCallId)) break;
@@ -3191,7 +3210,7 @@ case "runtime_connecting":
       // 工具结束：标记完成；找不到对应 start（历史被截断/重连丢失）时创建恢复卡片
       case "tool_end":
         if (data.name === "run_subagent") break;
-        if (String(data.name || "").startsWith("canvas_")) onCanvasActivity?.({ active: false, tool: data.name });
+        if (String(data.name || "").startsWith("canvas_")) onCanvasActivity?.({ active: false, tool: data.name, ...canvasToolMeta(data) });
         flushToolOutput();
         {
           // 先跨消息找同一 toolCallId 的卡片：hydrate 快照里已有该工具时，
@@ -3746,8 +3765,8 @@ case "runtime_connecting":
         onDraftChanged?.(data);
         break;
       case "canvas_changed":
-        // 创作画布：Agent 写入后通知画布标签刷新；对话流不逐条播报。
-        onCanvasChanged?.(data);
+        // 创作画布：统一由 App 的 /api/agent/events 全局流按 slug/boardPath 增量刷新，
+        // 这里不再转发，避免同一事件触发两次重读。
         break;
       case "map_action":
         if (data && acceptSystemEvent(`map_action:${data.id || "analysis"}:${data.updatedAt || JSON.stringify(data.stats || {})}`)) {

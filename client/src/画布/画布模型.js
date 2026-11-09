@@ -384,6 +384,34 @@ export function deck序列(canvas) {
   return 幻灯片.length ? 幻灯片 : 条目;
 }
 
+/** 页分组：返回 `[{ id, name, boards: [板条目] }]`；无 pages 时返回一个“全部”伪页。 */
+export function 页分组(canvas) {
+  const 归一 = normalizeCanvas(canvas);
+  const 条目 = 板条目(归一);
+  const 页 = 归一.pages.length
+    ? 归一.pages
+    : [{ id: "", name: "全部画板" }];
+  const 首页 = 页[0]?.id || "";
+  const 页ids = new Set(页.map((项) => 项.id));
+  return 页.map((项) => ({
+    ...项,
+    boards: 条目.filter((board) => {
+      const pageId = board.page && 页ids.has(board.page) ? board.page : 首页;
+      return pageId === 项.id;
+    }),
+  }));
+}
+
+/** 板所属页 id（缺省/未知页归第一页；无 pages 时为空串）。 */
+export function 板所属页(canvas, path = "") {
+  const 归一 = normalizeCanvas(canvas);
+  const 布局 = 归一.boards[String(path || "")];
+  if (!布局) return "";
+  const 首页 = 归一.pages[0]?.id || "";
+  if (!布局.page) return 首页;
+  return 归一.pages.some((项) => 项.id === 布局.page) ? 布局.page : 首页;
+}
+
 /* ───────────────────────────── 元素操作 ───────────────────────────── */
 
 function 复制板(board) {

@@ -501,6 +501,14 @@ export const saveCanvasBoard = (workspace, slug, boardPath, board, expectedRev) 
     method: "PUT",
     body: JSON.stringify({ path: boardPath, board, expectedRev, workspace }),
   });
+export const createCanvasBoard = (workspace, slug, payload = {}) =>
+  api(`/api/canvas/${encodeURIComponent(slug)}/board`, { method: "POST", body: JSON.stringify({ ...payload, workspace }) });
+export const duplicateCanvasBoard = (workspace, slug, payload = {}) =>
+  api(`/api/canvas/${encodeURIComponent(slug)}/board/duplicate`, { method: "POST", body: JSON.stringify({ ...payload, workspace }) });
+export const deleteCanvasBoard = (workspace, slug, boardPath, { confirmed = false } = {}) =>
+  api(`/api/canvas/${encodeURIComponent(slug)}/board`, { method: "DELETE", body: JSON.stringify({ path: boardPath, confirmed, workspace }) });
+export const updateCanvasPages = (workspace, slug, payload = {}) =>
+  api(`/api/canvas/${encodeURIComponent(slug)}/pages`, { method: "PATCH", body: JSON.stringify({ ...payload, workspace }) });
 export const patchCanvas = (workspace, slug, patch = {}) =>
   api(`/api/canvas/${encodeURIComponent(slug)}`, { method: "PATCH", body: JSON.stringify({ patch, workspace }) });
 export const createCanvas = (workspace, payload = {}) =>
@@ -524,6 +532,29 @@ export const restoreCanvasHistory = (workspace, slug, payload = {}) =>
     method: "POST",
     body: JSON.stringify({ ...payload, workspace }),
   });
+export const listCanvasVersions = (workspace, slug, { limit = 100 } = {}) => {
+  const query = new URLSearchParams({ scope: "canvas", limit: String(limit) });
+  if (workspace) query.set("workspace", workspace);
+  return api(`/api/canvas/${encodeURIComponent(slug)}/history?${query.toString()}`);
+};
+export const getCanvasVersion = (workspace, slug, n) =>
+  api(`/api/canvas/${encodeURIComponent(slug)}/history/${encodeURIComponent(n)}${canvasWorkspaceQuery(workspace)}`);
+export const diffCanvasVersions = (workspace, slug, from, to = "") => {
+  const query = new URLSearchParams({ from: String(from) });
+  if (to !== "" && to != null) query.set("to", String(to));
+  if (workspace) query.set("workspace", workspace);
+  return api(`/api/canvas/${encodeURIComponent(slug)}/history/diff?${query.toString()}`);
+};
+export const restoreCanvasVersion = (workspace, slug, version, paths = null) =>
+  api(`/api/canvas/${encodeURIComponent(slug)}/history/restore`, {
+    method: "POST",
+    body: JSON.stringify({ version, paths, workspace }),
+  });
+export const listCanvasOperations = (workspace, slug, limit = 200) => {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (workspace) query.set("workspace", workspace);
+  return api(`/api/canvas/${encodeURIComponent(slug)}/operations?${query.toString()}`);
+};
 export const mapLayerReplace = (name, layerId, geojson, format = "geojson") =>
   api(`/api/map/project/${encodeURIComponent(name)}/layer/${encodeURIComponent(layerId)}/replace`, { method: "POST", body: JSON.stringify({ geojson, format }) });
 export const mapBaseline = (name) => api(`/api/map/project/${encodeURIComponent(name)}/baseline`);
