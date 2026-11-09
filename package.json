@@ -51,6 +51,7 @@
     "test:closure": "node scripts/遗留十项测试.mjs",
     "test:chat-flow": "node scripts/对话流性能回归测试.mjs",
     "test:stream-recovery": "node scripts/流恢复冻结回归测试.mjs",
+    "test:discussion-archive": "node scripts/讨论记录归档测试.mjs",
     "test:ava-trust": "node scripts/AVA对话状态可信测试.mjs",
     "test:ava-queue": "node scripts/AVA对话队列测试.mjs",
     "test:ava-draft": "node scripts/AVA草稿持久化测试.mjs",

@@ -32,6 +32,7 @@ import { piRuntimeManager } from "./Pi运行时管理.mjs";
 import { RUNTIME_FLAGS } from "./运行开关.mjs";
 import { parseExtractionResult, shouldExtract } from "./记忆抽取调度.mjs";
 import { createMemoryProposal } from "./记忆管理.mjs";
+import { appendChatDiscussion } from "./讨论记录.mjs";
 
 // ---------- 从 index.mjs 迁入的执行域工具 ----------
 
@@ -498,6 +499,20 @@ export function 创建执行句柄(初始依赖 = {}) {
     const finalStatus = cancelled ? "cancelled" : "completed";
     const publishPaths = publishableStagedValidations.map((item) => item.path).filter(Boolean);
     const publishedCount = changed.length + publishableStagedValidations.length;
+    // Chat 讨论记录归档（2026-11-08 / ADR 0030）：Chat 模型不持有写工具，由服务端在收尾时
+    // 把该轮终稿追加到工作区 `回报/讨论-<会话标题>.md`。best-effort，失败不影响 Run 终态。
+    if (!cancelled && String(task?.mode || "") === "chat") {
+      try {
+        appendChatDiscussion(runWorkspace, {
+          title: entry?.session?.title || entry?.title || task?.title || "",
+          question: String(text || ""),
+          answer: entry?.lastFinalText || "",
+          runId: run?.id || "",
+        });
+      } catch (error) {
+        deps.recordDiagnostic?.("chat_discussion_archive_failed", { message: String(error?.message || error).slice(0, 200) });
+      }
+    }
     const completed = run ? deps.runs.finishRun(run.id, { status: finalStatus, sessionId: entry?.session?.sessionId || null, summary: cancelled ? "任务已取消" : (publishedCount ? `本轮对话完成，共处理 ${publishedCount} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更"), validations: allValidations, publishPaths: run ? publishPaths : null, completion: resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations, finalText: entry?.lastFinalText || "" }) }) : null;
     if (entry) {
       const productPaths = [...changed, ...publishableStagedValidations.map((item) => item.path).filter(Boolean)];
