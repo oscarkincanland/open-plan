@@ -420,20 +420,28 @@ test("记忆建议不插主消息流，改挂结果卡入口", () => {
     const review = buildOutputPolicyLines({ mode: "review" }).join("\n");
     const work = buildOutputPolicyLines({ mode: "work" }).join("\n");
     const fallback = buildOutputPolicyLines().join("\n");
-    // 2026-11-06 用户决定：Chat 与其他模式结论保持一致，统一「推荐骨架」。
+    // 2026-11-08 方案 C：所有模式同一套口径 —— 人话开场 + 五项必答信息 + 结构自由。
     for (const [name, text] of [["chat", chat], ["review", review], ["work", work], ["default", fallback]]) {
-      assert.match(text, /## 结论/, `${name} 应包含推荐骨架的「结论」节`);
-      assert.match(text, /## 关键结果/, `${name} 应包含「关键结果」节`);
-      assert.match(text, /## 产物/, `${name} 应包含「产物」节`);
-      assert.match(text, /## 验证/, `${name} 应包含「验证」节`);
-      assert.match(text, /## 风险与未完成/, `${name} 应包含「风险与未完成」节`);
-      assert.match(text, /推荐骨架/, `${name} 应说明骨架是推荐而非强制`);
-      assert.match(text, /不得当小节标题/, `${name} 应约束加粗不能冒充标题`);
+      assert.match(text, /1-2 句人话/, `${name} 应先给 1-2 句人话汇报`);
+      assert.match(text, /必答项/, `${name} 应列出必答项`);
+      assert.match(text, /结果结论/, `${name} 必答项应含结果结论`);
+      assert.match(text, /关键数据/, `${name} 必答项应含关键数据或依据`);
+      assert.match(text, /产物位置/, `${name} 必答项应含产物位置`);
+      assert.match(text, /怎么验证的/, `${name} 必答项应含验证方式`);
+      assert.match(text, /没做完或风险/, `${name} 必答项应含未完成或风险`);
+      assert.match(text, /结构自由/, `${name} 应声明结构自由`);
+      assert.match(text, /不要\*\*用「关键结果/, `${name} 应禁止空模板词充当小标题`);
+      assert.match(text, /下一步建议/, `${name} 应要求结尾给下一步建议`);
       assert.match(text, /进度结论（重要）/, `${name} 模式应共享同一条进度策略`);
     }
+    // 研究型轮次才写结论文档
+    for (const text of [chat, work, review]) {
+      assert.match(text, /结论文档（仅研究型轮次）/, "应说明结论文档只用于研究型轮次");
+      assert.match(text, /回报\//, "结论文档应落到工作区 回报/ 目录");
+      assert.match(text, /纯执行轮次/, "应排除纯执行轮次");
+    }
     assert.equal(chat, work, "Chat 与 Work 的结论口径必须完全一致");
-    assert.doesNotMatch(chat, /不要输出固定的 Markdown 分段模板/, "不得再禁止结构化输出");
-    ok("输出策略按模式统一（Chat/Work/Review 同一套推荐骨架）");
+    ok("输出策略按模式统一（人话开场 + 五项必答 + 结构自由）");
   } catch (error) {
     bad(`输出策略按模式统一: ${error.message}`);
   }

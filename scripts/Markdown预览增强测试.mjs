@@ -71,13 +71,13 @@ test("行内产物文件条与本地文件链接仍走 onOpenFile（不回归）
   assert.match(md, /#artifact:/);
 });
 
-console.log("▶ 结论骨架与清洗接线");
+console.log("▶ 结论口径与清洗接线");
 
-test("所有模式的结论骨架一致（Chat 与其他模式同一套）", () => {
-  assert.match(prompt, /## 结论/);
-  assert.match(prompt, /## 关键结果/);
-  assert.match(prompt, /## 风险与未完成/);
-  assert.match(prompt, /推荐骨架/);
+test("所有模式结论口径一致（人话开场 + 五项必答 + 结构自由）", () => {
+  assert.match(prompt, /1-2 句人话/);
+  assert.match(prompt, /必答项/);
+  assert.match(prompt, /结构自由/);
+  assert.match(prompt, /纯执行轮次/);
   assert.doesNotMatch(prompt, /不要输出固定的 Markdown 分段模板/, "不得再禁止结构化输出");
 });
 
