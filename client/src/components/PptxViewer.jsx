@@ -6,6 +6,44 @@ import { buildDocUrls, makeFileIdentity, identityMatches, readIdentityHeader, pr
 const LARGE_PPT_BYTES = 100 * 1024 * 1024;
 
 /**
+ * 预览加速（2026-11-09 验收反馈）：
+ *  - 原始字节按「工作区 + 相对路径 + revision」做模块级 LRU，重开同一文件不再下载/等待网络；
+ *  - 首屏渲染结果缓存为 JPEG dataURL，重新打开时先显示首屏再等 viewer 就绪；
+ *  - HTTP 缓存走服务端已有的 ETag/Last-Modified（不再强制 no-store）。
+ */
+const 文件字节缓存 = new Map();
+const 文件字节缓存预算 = 240 * 1024 * 1024;
+const 首屏缓存 = new Map();
+const 首屏缓存上限 = 6;
+
+function 缓存键(identity) {
+  const revision = String(identity?.revision || "");
+  if (!revision) return "";
+  return `${identity?.workspaceId || identity?.cwd || ""}::${identity?.relativePath || ""}::${revision}`;
+}
+
+function 取字节缓存(key) {
+  if (!key) return null;
+  const hit = 文件字节缓存.get(key);
+  if (!hit) return null;
+  文件字节缓存.delete(key);
+  文件字节缓存.set(key, hit);
+  return hit;
+}
+
+function 存字节缓存(key, bytes) {
+  if (!key || !bytes?.byteLength) return;
+  文件字节缓存.set(key, bytes);
+  let 合计 = 0;
+  for (const 值 of 文件字节缓存.values()) 合计 += 值.byteLength || 0;
+  while (合计 > 文件字节缓存预算 && 文件字节缓存.size > 1) {
+    const 首个 = 文件字节缓存.keys().next().value;
+    合计 -= 文件字节缓存.get(首个)?.byteLength || 0;
+    文件字节缓存.delete(首个);
+  }
+}
+
+/**
  * PPT 预览（D03）：
  *  - 普通文件用 pptxviewjs Canvas 渲染；超大文件或渲染失败自动切换 OfficeCLI 高保真 HTML；
  *  - 同一 viewer 同时只执行一个 renderSlide，页码/缩放请求走 latest-wins 队列，
@@ -37,6 +75,13 @@ export default function PptxViewer({ name, revision = 0, identity, onPreviewStat
     [identity, name, revision],
   );
   const urls = useMemo(() => buildDocUrls(fileIdentity), [fileIdentity.workspaceId, fileIdentity.relativePath, fileIdentity.revision]);
+  const 缓存标识 = useMemo(
+    () => 缓存键(fileIdentity),
+    [fileIdentity.workspaceId, fileIdentity.relativePath, fileIdentity.revision],
+  );
+  const [首屏图, set首屏图] = useState(() => (缓存标识 ? 首屏缓存.get(缓存标识) || "" : ""));
+  const [首屏就绪, set首屏就绪] = useState(false);
+  const [慢, set慢] = useState(false);
   const generationRef = useRef(0);
 
   // 回调经 ref 透传：加载 effect 只依赖文件身份与渲染器，缩放/窗口变化不触发重新加载。
@@ -62,6 +107,12 @@ export default function PptxViewer({ name, revision = 0, identity, onPreviewStat
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, [fileIdentity]);
+
+  useEffect(() => {
+    if (!loading || renderer !== "canvas") { set慢(false); return undefined; }
+    const 定时 = window.setTimeout(() => set慢(true), 8000);
+    return () => window.clearTimeout(定时);
+  }, [loading, renderer, urls.raw]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -118,6 +169,16 @@ export default function PptxViewer({ name, revision = 0, identity, onPreviewStat
         if (viewerRef.current !== viewer) return;             // 已切换实例/文档
         applyCanvasSize();
         await viewer.renderSlide(index, canvasRef.current);
+        if (index === 0 && 缓存标识) {
+          try {
+            const 图片 = canvasRef.current.toDataURL("image/jpeg", 0.72);
+            if (图片 && !首屏缓存.has(缓存标识)) {
+              首屏缓存.set(缓存标识, 图片);
+              if (首屏缓存.size > 首屏缓存上限) 首屏缓存.delete(首屏缓存.keys().next().value);
+            }
+            set首屏就绪(true);
+          } catch { /* toDataURL 失败不影响预览 */ }
+        }
       })
       .catch((e) => {
         if (e?.name === "AbortError") return;
@@ -129,7 +190,7 @@ export default function PptxViewer({ name, revision = 0, identity, onPreviewStat
           callbacksRef.current.onPreviewState?.(PREVIEW_STATE.PARTIAL);
         }
       });
-  }, [applyCanvasSize]);
+  }, [applyCanvasSize, 缓存标识]);
 
   useEffect(() => {
     if (renderer === "canvas" && viewerRef.current && current > 0) renderPage(current - 1);
@@ -146,9 +207,27 @@ export default function PptxViewer({ name, revision = 0, identity, onPreviewStat
     setLargeFile(false);
     releaseViewer();
     callbacksRef.current.onPreviewState?.(PREVIEW_STATE.LOADING);
+    set首屏就绪(false);
+    set慢(false);
+    set首屏图(缓存标识 ? 首屏缓存.get(缓存标识) || "" : "");
     const load = async () => {
       try {
-        const res = await fetch(urls.raw, { cache: "no-store", signal: controller.signal });
+        const 已存 = 缓存标识 ? 取字节缓存(缓存标识) : null;
+        if (已存) {
+          const viewer = new PPTXViewJS.PPTXViewer({ canvas: canvasRef.current, renderMode: "canvas", lazyLoad: true });
+          await viewer.loadFile(已存);
+          if (!live()) { try { viewer.destroy?.(); } catch {} return; }
+          viewerRef.current = viewer;
+          const dims = viewer.processor?.getSlideDimensions?.() || viewer.presentation?.slideSize;
+          const ratio = dims?.cx && dims?.cy ? dims.cx / dims.cy : 16 / 9;
+          setSlideRatio(ratio);
+          setTotal(viewer.getSlideCount());
+          setCurrent(1);
+          return;
+        }
+        // 不再用 no-store：服务端 raw 路由已带 ETag/Last-Modified，
+        // 交给浏览器条件请求，切换标签/重开文件时命中 304 而不是重传整包。
+        const res = await fetch(urls.raw, { signal: controller.signal });
         if (!res.ok) {
           const fatal = new Error(`加载失败 HTTP ${res.status}`);
           fatal.previewFatal = true;
@@ -175,6 +254,7 @@ export default function PptxViewer({ name, revision = 0, identity, onPreviewStat
           return;
         }
         const data = new Uint8Array(await res.arrayBuffer());
+        if (缓存标识) 存字节缓存(缓存标识, data);
         if (!live()) return;
         const viewer = new PPTXViewJS.PPTXViewer({ canvas: canvasRef.current, renderMode: "canvas", lazyLoad: true });
         await viewer.loadFile(data);
@@ -242,13 +322,17 @@ export default function PptxViewer({ name, revision = 0, identity, onPreviewStat
             {!largeFile && <button className="btn-xs" onClick={() => { setFallbackReason(""); setRenderer("canvas"); }} title="切换回浏览器 Canvas 渲染">浏览器渲染</button>}
           </>
         )}
+        {renderer === "canvas" && 慢 && <span className="oaw-pptx-hint warn" role="status">渲染较慢，可切换高保真</span>}
         <span className="oaw-pptx-hint" title="Canvas 预览不播放动画/切换，文本不可选；字体可能替换">{renderer === "canvas" ? "Canvas · 不播放动画" : "HTML 高保真"}</span>
       </div>
       {loading && <div className="oaw-pptx-loading"><div className="loading-spinner"></div><div>{renderer === "office" ? "正在准备高保真预览..." : "正在渲染幻灯片..."}</div></div>}
       {error && <div className="oaw-pptx-error"><Icon name="warning" size={14} /> {error}</div>}
       <div className="oaw-pptx-host" ref={hostRef}>
         {renderer === "canvas" ? (
-          <div className="oaw-pptx-stage"><canvas ref={canvasRef} /></div>
+          <div className="oaw-pptx-stage">
+            <canvas ref={canvasRef} />
+            {首屏图 && !首屏就绪 && <img className="oaw-pptx-first-frame" src={首屏图} alt="" aria-hidden="true" />}
+          </div>
         ) : (
           <iframe
             ref={officeFrameRef}

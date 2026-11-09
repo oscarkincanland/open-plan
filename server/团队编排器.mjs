@@ -107,6 +107,10 @@ export class TeamService {
     leadName = "Lead",
     mode = "agent",
     canWrite = false,
+    // 2026-11-09：团队来源（user=用户 /team 指定，suggested=系统建议被采纳，model=模型自选）
+    trigger = "model",
+    suggestReasons = [],
+    teamIntent = "auto",
     emit = () => {},
     runMemberTask = null,
     signal = null,
@@ -122,6 +126,9 @@ export class TeamService {
     this.threadId = threadId ? String(threadId) : null;
     this.mode = String(mode || "agent");
     this.canWrite = canWrite === true;
+    this.trigger = ["user", "suggested", "model"].includes(String(trigger)) ? String(trigger) : "model";
+    this.suggestReasons = Array.isArray(suggestReasons) ? suggestReasons.map(String).slice(0, 3) : [];
+    this.teamIntent = String(teamIntent || "auto") === "required" ? "required" : "auto";
     this.emitFn = typeof emit === "function" ? emit : () => {};
     this.runMemberTask = runMemberTask;
     this.now = typeof now === "function" ? now : Date.now;
@@ -214,6 +221,10 @@ export class TeamService {
       canWrite: this.canWrite,
       maxMembers: this.maxMembers,
       maxTasks: this.maxTasks,
+      // 2026-11-09：来源可追溯（plan 2026-11-09-001 §5.6）
+      trigger: this.trigger,
+      teamIntent: this.teamIntent,
+      ...(this.suggestReasons.length ? { suggestReasons: this.suggestReasons } : {}),
       members: [this._publicMember(this.lead, { includeTranscript: false })],
       counts: this._counts(),
     });

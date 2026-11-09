@@ -24,6 +24,7 @@ const VIEW_META = Object.freeze({
   objects: { title: "对象", icon: "layers" },
   workflows: { title: "工作流", icon: "flow" },
   mapPreview: { title: "地图预览", icon: "map" },
+  design: { title: "创作画布", icon: "grid" },
   subagent: { title: "子代理", icon: "robot" },
   team: { title: "团队", icon: "user" },
 });
@@ -61,8 +62,34 @@ export function createViewTab(kind, payload = {}) {
   };
 }
 
-export function createSubagentTab(block = {}) {
-  const childId = String(block?.id || block?.childId || "");
+/**
+ * 创作画布标签身份（2026-11-09）：一画布一标签，按工作区 + slug 去重；
+ * 多画布可并行打开（不是单例）。slug 为空表示“新建画布”占位标签。
+ */
+export function designTabId(workspace = "", slug = "") {
+  const key = String(workspace || "")
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter(Boolean)
+    .slice(-2)
+    .join("-")
+    .replace(/[^\p{L}\p{N}_-]+/gu, "_")
+    .slice(-48) || "ws";
+  return `design:${key}:${slug}`;
+}
+
+export function createDesignTab({ workspace = "", slug = "", title = "" } = {}) {
+  return {
+    id: designTabId(workspace, slug),
+    kind: "design",
+    title: title || slug || "创作画布",
+    icon: "grid",
+    closable: true,
+    payload: { workspace, slug, path: slug ? `designs/${slug}` : "" },
+  };
+}
+
+export function createSubagentTab(block = {}) {  const childId = String(block?.id || block?.childId || "");
   return {
     id: `subagent:${childId || Math.random().toString(36).slice(2)}`,
     kind: "subagent",
@@ -156,6 +183,16 @@ function sanitizeTab(tab) {
   if (kind === "subagent") return null; // 临时标签不恢复
   if (kind === "mapPreview") return null; // 会话地图预览跟随当前会话，不跨会话恢复
   if (kind === "team") return null; // 团队跟随当前会话/Run，不写入 localStorage，避免指向新会话
+  if (kind === "design") {
+    // 创作画布恢复身份（不存板内容）；slug 为空的“新建”占位标签不持久化。
+    const slug = String(tab.payload?.slug || "");
+    if (!slug) return null;
+    return createDesignTab({
+      workspace: String(tab.payload?.workspace || ""),
+      slug,
+      title: String(tab.title || tab.payload?.title || slug),
+    });
+  }
   if (!VIEW_META[kind]) return null;
   return {
     ...createViewTab(kind, tab.payload || {}),

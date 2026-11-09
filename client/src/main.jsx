@@ -5,6 +5,8 @@ import App from "./App.jsx";
 const DesktopAgentPrototype = lazy(() => import("./components/桌面端Agent原型.jsx"));
 // G7：批量导出视图仅 ?export=map 可达（服务端经内置浏览器打开），同样 lazy 按需加载。
 const MapExportView = lazy(() => import("./components/地图导出视图.jsx"));
+// 创作画布导出视图仅 ?export=canvas 可达（服务端经内置浏览器打开）。
+const CanvasExportView = lazy(() => import("./components/创作画布导出视图.jsx"));
 import { ThemeProvider } from "./theme.jsx";
 import { installStaleChunkRecovery } from "./分包恢复.js";
 import "./styles.css";
@@ -25,12 +27,14 @@ restoreNativeFileApis();
 window.setInterval(restoreNativeFileApis, 1000);
 
 const isDesktopPrototype = new URLSearchParams(window.location.search).get("prototype") === "desktop";
-const isMapExportView = new URLSearchParams(window.location.search).get("export") === "map";
+const exportViewParam = new URLSearchParams(window.location.search).get("export");
+const isMapExportView = exportViewParam === "map";
+const isCanvasExportView = exportViewParam === "canvas";
 
 createRoot(document.getElementById("root")).render(
   <ThemeProvider>
     <Suspense fallback={null}>
-      {isMapExportView ? <MapExportView /> : isDesktopPrototype ? <DesktopAgentPrototype /> : <App />}
+      {isCanvasExportView ? <CanvasExportView /> : isMapExportView ? <MapExportView /> : isDesktopPrototype ? <DesktopAgentPrototype /> : <App />}
     </Suspense>
   </ThemeProvider>
 );

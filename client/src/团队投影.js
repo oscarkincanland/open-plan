@@ -172,6 +172,10 @@ export function reduceTeamEvent(team, event) {
       maxTasks: Number(data.maxTasks || team?.maxTasks || 20),
       members: Array.isArray(data.members) && data.members.length ? data.members : (team?.members || []),
       tasks: Array.isArray(data.tasks) ? data.tasks : (team?.tasks || []),
+      // 2026-11-09：团队来源（user/suggested/model）与建议原因，用于面板徽标。
+      trigger: data.trigger || team?.trigger || "model",
+      teamIntent: data.teamIntent || team?.teamIntent || "auto",
+      suggestReasons: Array.isArray(data.suggestReasons) ? data.suggestReasons : (team?.suggestReasons || []),
       startedAt: data.at || team?.startedAt || null,
       updatedAt: data.at || team?.updatedAt || null,
       lastSeq: Math.max(safeSeq(event), Number(team?.lastSeq || 0)),

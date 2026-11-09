@@ -10,6 +10,8 @@ const IntegrationsCenter = lazy(() => import("./components/IntegrationsCenter.js
 const KnowledgeBase = lazy(() => import("./components/KnowledgeBase.jsx"));
 const TemplateLibrary = lazy(() => import("./components/TemplateLibrary.jsx"));
 const MapPanel = lazy(() => import("./components/MapPanel.jsx"));
+// 创作画布编辑器较重（画布 + 导出对话框），按需加载；开关关闭时不进入任何 bundle 路径。
+const 创作画布 = lazy(() => import("./components/创作画布.jsx"));
 const CommandPalette = lazy(() => import("./components/CommandPalette.jsx"));
 // 文档预览依赖 docx-preview / pptxviewjs / x-data-spreadsheet 等重库，按需加载
 const DocViewer = lazy(() => import("./components/DocViewer.jsx"));
@@ -30,15 +32,16 @@ import 子代理详情面板 from "./components/子代理详情面板.jsx";
 import TeamHeaderChip from "./components/TeamHeaderChip.jsx";
 import TeamPanel from "./components/TeamPanel.jsx";
 import MiniMapPreview from "./components/MiniMapPreview.jsx";
-import { createDocTab, createViewTab, createSubagentTab, openCanvasTab, closeCanvasTab, reorderCanvasTabs, loadCanvasState, saveCanvasState, saveCanvasWidth, docTabId } from "./画布状态.js";
+import { createDocTab, createViewTab, createDesignTab, designTabId, createSubagentTab, openCanvasTab, closeCanvasTab, reorderCanvasTabs, loadCanvasState, saveCanvasState, saveCanvasWidth, docTabId } from "./画布状态.js";
 import { sideDrawerAllowed } from "./画布抽屉.js";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
 import { acquireStream } from "./长连接预算.js";
 import { createGlobalEventsLease } from "./跨标签页流租约.js";
-import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteSession, deleteSessions, archiveSession, archiveSessions, renameSession, getSession, getClientId, getTabId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun, updateSessionMapContext } from "./api.js";
+import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteSession, deleteSessions, archiveSession, archiveSessions, renameSession, getSession, getClientId, getTabId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession, cancelRun, updateSessionMapContext, updateSessionCanvasContext } from "./api.js";
 import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
 import { mergeMapContext, normalizeMapView } from "./地图/地图上下文.js";
+import { resolveMapPreviewAction } from "./地图/预览策略.js";
 import FeedbackHost, { notifyError, askConfirm } from "./components/Feedback.jsx";
 import 提示气泡 from "./components/提示气泡.jsx";
 import { initRuntimeFlags, flag, flagsReady } from "./运行开关.js";
@@ -497,6 +500,9 @@ export default function App() {
   const mapPreviewTab = canvasTabs.find((tab) => tab.kind === "mapPreview") || null;
   // 地图文件（agent 写入/用户保存）变更时递增；只影响预览刷新，不重挂 MapViewer。
   const [mapPreviewRevision, setMapPreviewRevision] = useState(0);
+  // 创作画布：Agent 写入（canvas_changed）后递增；agentBusy 用于“Agent 正在编辑…”指示。
+  const [canvasRevision, setCanvasRevision] = useState(0);
+  const [canvasAgentBusy, setCanvasAgentBusy] = useState(false);
   // 文件树抽屉只服务文档/产物/改动；切到浏览器/对象/工作流/地图预览时自动收起，切回允许的标签再恢复。
   const canvasSideVisible = canvasSideOpen && sideDrawerAllowed(activeCanvasTab?.kind);
   const canvasSideOpenRef = useRef(canvasSideOpen);
@@ -679,7 +685,7 @@ export default function App() {
 
   const closeCanvasTabById = useCallback(async (id) => {
     const tab = canvasTabs.find((item) => item.id === id);
-    if (tab?.kind === "doc" && tab.dirty) {
+    if ((tab?.kind === "doc" || tab?.kind === "design") && tab.dirty) {
       const ok = await askConfirm(`「${tab.title || "文档"}」有未保存修改，仍要关闭吗？`);
       if (!ok) return;
     }
@@ -765,27 +771,36 @@ export default function App() {
 
   const canvasRestoreRef = useRef("");
   useEffect(() => {
-    if (!currentWorkspace || canvasRestoreRef.current === currentWorkspace) return;
-    canvasRestoreRef.current = currentWorkspace;
-    const saved = loadCanvasState(currentWorkspace);
-    const savedDocs = (saved.tabs || []).filter((tab) => tab.kind === "doc" && tab.payload?.name).map((tab) => String(tab.payload.name));
-    pendingDocRestoreRef.current = savedDocs;
-    pendingActiveCanvasIdRef.current = saved.activeId || "";
-    const allowed = (saved.tabs || [])
-      .filter((tab) => tab.kind !== "doc" && tab.kind !== "subagent")
-      .filter((tab) => tab.kind !== "objects" || flag("qoderObjectBar"))
-      .filter((tab) => tab.kind !== "workflows" || flag("domainWorkflows"));
-    setCanvasTabs(allowed);
-    setCanvasActiveId(saved.activeId && allowed.some((tab) => tab.id === saved.activeId) ? saved.activeId : (allowed[allowed.length - 1]?.id || ""));
-    setCanvasMaximized(Boolean(saved.maximized));
-    setCanvasSideOpen(saved.side?.kind === "files");
-    setCanvasWidth(saved.width || 420);
-    setCanvasSideWidth(saved.sideWidth || 260);
-    try {
-      document.documentElement.style.setProperty("--canvas-w", `${saved.width || 420}px`);
-      document.documentElement.style.setProperty("--canvas-side-w", `${saved.sideWidth || 260}px`);
-    } catch {}
-    setCanvasBooted(true);
+    if (!currentWorkspace || canvasRestoreRef.current === currentWorkspace) return undefined;
+    let cancelled = false;
+    // 等运行开关快照（/api/status）就绪后再恢复：否则 design 标签会在 flag 尚未到达时
+    // 被当成“关闭”丢弃，表现为刷新后创作画布标签消失。
+    const restore = () => {
+      if (cancelled || canvasRestoreRef.current === currentWorkspace) return;
+      canvasRestoreRef.current = currentWorkspace;
+      const saved = loadCanvasState(currentWorkspace);
+      const savedDocs = (saved.tabs || []).filter((tab) => tab.kind === "doc" && tab.payload?.name).map((tab) => String(tab.payload.name));
+      pendingDocRestoreRef.current = savedDocs;
+      pendingActiveCanvasIdRef.current = saved.activeId || "";
+      const allowed = (saved.tabs || [])
+        .filter((tab) => tab.kind !== "doc" && tab.kind !== "subagent")
+        .filter((tab) => tab.kind !== "objects" || flag("qoderObjectBar"))
+        .filter((tab) => tab.kind !== "design" || flag("creativeCanvas"))
+        .filter((tab) => tab.kind !== "workflows" || flag("domainWorkflows"));
+      setCanvasTabs(allowed);
+      setCanvasActiveId(saved.activeId && allowed.some((tab) => tab.id === saved.activeId) ? saved.activeId : (allowed[allowed.length - 1]?.id || ""));
+      setCanvasMaximized(Boolean(saved.maximized));
+      setCanvasSideOpen(saved.side?.kind === "files");
+      setCanvasWidth(saved.width || 420);
+      setCanvasSideWidth(saved.sideWidth || 260);
+      try {
+        document.documentElement.style.setProperty("--canvas-w", `${saved.width || 420}px`);
+        document.documentElement.style.setProperty("--canvas-side-w", `${saved.sideWidth || 260}px`);
+      } catch {}
+      setCanvasBooted(true);
+    };
+    Promise.resolve(flagsReady).then(restore).catch(restore);
+    return () => { cancelled = true; };
   }, [currentWorkspace]);
 
   useEffect(() => {
@@ -799,6 +814,61 @@ export default function App() {
       sideWidth: canvasSideWidth,
     });
   }, [canvasActiveId, canvasBooted, canvasMaximized, canvasSideOpen, canvasSideWidth, canvasTabs, canvasWidth, currentWorkspace]);
+
+  // ---- 创作画布（2026-11-09 计划 2026-11-09-003；flag creativeCanvas，默认关）----
+  // 多画布多标签：一画布一标签（工作区 + slug 去重）；slug 为空表示“新建”占位标签，
+  // 组件创建成功后回调 onCreated，App 把占位标签替换成真实 slug 标签。
+  const openDesignCanvas = useCallback((slug, title = "") => {
+    if (!flag("creativeCanvas")) return;
+    if (!currentWorkspace) return;
+    const tab = createDesignTab({ workspace: currentWorkspace, slug: String(slug || ""), title });
+    setCanvasTabs((prev) => openCanvasTab(prev, tab).tabs);
+    setCanvasActiveId(tab.id);
+    setCanvasCollapsed(false);
+  }, [currentWorkspace]);
+
+  const handleDesignCreated = useCallback((oldId, slug, title) => {
+    if (!currentWorkspace || !slug) return;
+    const nextTab = createDesignTab({ workspace: currentWorkspace, slug, title });
+    setCanvasTabs((prev) => {
+      const cleaned = prev.filter((tab) => tab.id !== oldId && !(tab.kind === "design" && tab.payload?.slug === slug));
+      return openCanvasTab(cleaned, nextTab).tabs;
+    });
+    setCanvasActiveId(nextTab.id);
+    setCanvasCollapsed(false);
+  }, [currentWorkspace]);
+
+  const handleDesignDirty = useCallback((tabId, dirty) => {
+    setCanvasTabs((prev) => prev.map((tab) => (tab.id === tabId ? { ...tab, dirty: Boolean(dirty) } : tab)));
+  }, []);
+  const handleDesignTitle = useCallback((tabId, title) => {
+    setCanvasTabs((prev) => prev.map((tab) => (tab.id === tabId ? { ...tab, title: title || "创作画布" } : tab)));
+  }, []);
+
+  // 当前会话 id（用于界面恢复）。必须声明在使用它的回调/effect 之前：
+  // 2026-11-09 空白页事故——下方 useCallback / useEffect 的依赖数组在渲染期读取该变量，
+  // 声明在其后会触发 TDZ（Cannot access 'currentSessionId' before initialization）。
+  const [currentSessionId, setCurrentSessionId] = useState(null);
+
+  // 地图预览：`+` 菜单的手动入口（仅当前会话绑定地图项目时可用）。
+  const openMapPreviewForCurrentSession = useCallback(() => {
+    const project = String(currentMapContext?.mapProject || "");
+    if (!project) return;
+    openCanvasView("mapPreview", { project, view: currentMapContext, sessionId: currentSessionId || threadId });
+  }, [currentMapContext, currentSessionId, threadId, openCanvasView]);
+
+  // 创作画布会话绑定：当前激活的是创作画布标签时，把 slug 写回会话 header（类比 mapProject），
+  // 切回历史会话时由 openSession 恢复；开关关闭时不写。
+  useEffect(() => {
+    if (!flag("creativeCanvas") || !currentSessionId) return undefined;
+    const tab = canvasTabs.find((item) => item.id === canvasActiveId);
+    if (tab?.kind !== "design" || !tab.payload?.slug) return undefined;
+    const timer = window.setTimeout(() => {
+      updateSessionCanvasContext(currentSessionId, tab.payload.slug).catch(() => {});
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [canvasActiveId, canvasTabs, currentSessionId]);
+
   const [currentDir, setCurrentDir] = useState(""); // 相对路径子目录
   const currentDirRef = useRef(""); // 与 currentDir 同步的最新值，供无参 refreshFiles 使用
   const currentWorkspaceRef = useRef(""); // 与 currentWorkspace 同步：文件请求必须带上它，避免用旧闭包值
@@ -825,7 +895,6 @@ export default function App() {
   // 工作区切换失败（交互 8）：保留原状态并提示原因，不再静默 refreshFiles。
   const [workspaceSwitchError, setWorkspaceSwitchError] = useState(null); // { message, workspace }
   const [sessionResumeRetrying, setSessionResumeRetrying] = useState(false);
-  const [currentSessionId, setCurrentSessionId] = useState(null); // 当前会话 id（用于界面恢复）
   const currentSession = sessions.find((session) => session.id === currentSessionId) || null;
   // 团队清空由 ChatPanel 的 thread 切换统一负责（它就是投影来源）；App 不再按
   // currentSessionId 二次清空，避免与 ChatPanel 恢复/拉取团队的事件竞争。
@@ -1408,35 +1477,44 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [currentSessionId, currentMapContext]);
 
-  // 预览标签跟随当前会话的地图项目：只更新 payload，不激活标签、不抢占已有画布。
-  // 会话解绑时关闭预览；空画布且已绑定项目时自动打开（与选择会话的既有策略一致）。
+  // 预览标签跟随当前会话的地图项目：显式点击会话已在载入流程里打开/激活；
+  // 这里只做兜底同步（不激活、不抢占）：payload 变化时更新，空画布时自动补建。
   useEffect(() => {
-    // 新会话在落盘 header 之前 currentSessionId 可能为空，但视口上报已经能确定
-    // 当前线程的地图项目；预览仍应打开，因此会话键回退到 threadId。
     const sessionKey = currentSessionId || threadId;
     if (!sessionKey) return;
-    const project = String(currentMapContext?.mapProject || "");
-    const openTabs = canvasTabsRef.current || [];
-    const preview = openTabs.find((tab) => tab.kind === "mapPreview") || null;
-    if (!project) {
-      if (!preview) return;
+    const preview = (canvasTabsRef.current || []).find((tab) => tab.kind === "mapPreview") || null;
+    const action = resolveMapPreviewAction({
+      session: {
+        id: sessionKey,
+        mapProject: String(currentMapContext?.mapProject || ""),
+        mapView: currentMapContext
+          ? {
+            center: currentMapContext.center,
+            zoom: currentMapContext.zoom,
+            bounds: currentMapContext.bounds,
+            regionName: currentMapContext.regionName,
+            updatedAt: currentMapContext.updatedAt,
+          }
+          : null,
+      },
+      previewTab: preview,
+      userInitiated: false,
+    });
+    if (action.type === "close") {
       setCanvasTabs((prev) => prev.filter((tab) => tab.kind !== "mapPreview"));
       setCanvasActiveId((prev) => (prev === "view:mapPreview" ? "" : prev));
       return;
     }
-    if (preview) {
-      const previewSession = String(preview.payload?.sessionId || "");
-      if (previewSession && previewSession !== String(currentSessionId || "") && previewSession !== String(threadId || "")) return;
-      if (String(preview.payload?.project || "") === project) return;
+    if (action.type === "update") {
       setCanvasTabs((prev) => prev.map((tab) => (tab.kind === "mapPreview"
-        ? { ...tab, payload: { ...tab.payload, project, sessionId: sessionKey } }
+        ? { ...tab, payload: { ...tab.payload, ...action.payload } }
         : tab)));
       return;
     }
-    if (activeModule === "map") return;
-    if (openTabs.length > 0) return;
-    openCanvasView("mapPreview", { project, view: currentMapContext, sessionId: sessionKey });
-  }, [currentSessionId, threadId, currentMapContext?.mapProject, activeModule, openCanvasView]);
+    if (action.type === "open" && !preview && !(canvasTabsRef.current || []).length && activeModule !== "map") {
+      openCanvasView("mapPreview", action.payload);
+    }
+  }, [currentSessionId, threadId, currentMapContext, activeModule, openCanvasView]);
 
   useEffect(() => {
     refreshFiles();
@@ -1789,26 +1867,23 @@ export default function App() {
           ...(session.mapView || {}),
         }),
       }));
-      // 初始页点击地图会话：画布为空时自动打开只读“地图预览”标签；
-      // 已有预览标签时同步到当前会话；其他标签保持不动，不抢用户正在看的文档。
-      const sessionMapProject = String(session.mapProject || "").trim();
-      if (sessionMapProject) {
-        const openTabs = canvasTabsRef.current;
-        if (!openTabs.length || openTabs.some((tab) => tab.kind === "mapPreview")) {
-          openCanvasView("mapPreview", {
-            project: sessionMapProject,
-            view: session.mapView || null,
-            sessionId: session.id,
-          });
-        }
-      } else {
-        // 切到无地图绑定的会话：关闭上一条会话的地图预览，避免预览项目与当前会话不一致。
-        setCanvasTabs((prev) => {
-          if (!prev.some((tab) => tab.kind === "mapPreview")) return prev;
-          return prev.filter((tab) => tab.kind !== "mapPreview");
-        });
+      // 地图预览（2026-11-09 口径调整）：显式点击会话即打开并激活预览，不再要求画布为空；
+      // 草稿回放由 MiniMapPreview 负责；无地图绑定的会话关闭过期预览。
+      const previewTab = (canvasTabsRef.current || []).find((tab) => tab.kind === "mapPreview") || null;
+      const mapPreviewAction = resolveMapPreviewAction({
+        session: { id: session.id, mapProject: session.mapProject || "", mapView: session.mapView || null },
+        previewTab,
+        userInitiated: true,
+      });
+      if (mapPreviewAction.type === "open" || mapPreviewAction.type === "update") {
+        openCanvasView("mapPreview", mapPreviewAction.payload);
+      } else if (mapPreviewAction.type === "close") {
+        setCanvasTabs((prev) => prev.filter((tab) => tab.kind !== "mapPreview"));
         setCanvasActiveId((prev) => (prev === "view:mapPreview" ? "" : prev));
       }
+      // 创作画布会话绑定（flag 关闭时完全跳过）。
+      const sessionCanvasSlug = flag("creativeCanvas") ? String(session.creativeCanvas || "").trim() : "";
+      if (sessionCanvasSlug) openDesignCanvas(sessionCanvasSlug, session.title || sessionCanvasSlug);
       setChatLinks([]);
       localStorage.setItem("oaw_thread_id", conversationId);
       // 按原始 JSONL 顺序重建消息。toolResult 是工具输出，不能渲染成 You 的用户气泡；
@@ -1879,7 +1954,7 @@ export default function App() {
       // 无论成功/失败都结束骨架屏（成功路径已提前置 false，这里兜住提前 return 与异常）。
       if (loadSeq === sessionLoadSeqRef.current) setHistoryLoading(false);
     }
-  }, [clientId, currentWorkspace, open, refreshProjects, openCanvasView]);
+  }, [clientId, currentWorkspace, open, refreshProjects, openCanvasView, openDesignCanvas]);
 
   // v0.12.5：按游标续拉更早的历史（50 条/页），返回可直接前插的规范化消息。
   const loadOlderSessionHistory = useCallback(async () => {
@@ -2028,6 +2103,25 @@ export default function App() {
     await archiveSession(id, archived);
     await refreshSessions();
   }, [refreshSessions]);
+
+  // 归档恢复联动（2026-11-09 地图预览改口径）：恢复后自动选中该会话，
+  // 历史/地图预览/创作画布随会话载入一并带出；失败只提示，不阻断恢复结果。
+  const handleSessionRestored = useCallback(async (session) => {
+    if (!session?.id) return;
+    try { await handleSelectSession(session); } catch (e) { notifyError(`恢复后打开会话失败：${e?.message || e}`); }
+  }, [handleSelectSession]);
+
+  const handleSessionsRestored = useCallback(async (ids) => {
+    const id = (Array.isArray(ids) ? ids.find(Boolean) : ids) || "";
+    if (!id) return;
+    try {
+      const data = await listSessions();
+      const session = (data?.sessions || []).find((item) => item.id === id);
+      if (session) await handleSelectSession(session);
+    } catch (e) {
+      notifyError(`恢复后打开会话失败：${e?.message || e}`);
+    }
+  }, [handleSelectSession]);
 
   const handleBatchArchiveSessions = useCallback(async (ids, archived = true) => {
     const result = await archiveSessions(ids, archived);
@@ -2380,7 +2474,13 @@ export default function App() {
         mapBridgeRef.current?.onFileChanged?.(changed);
       }}
       onMapAction={(action) => mapBridgeRef.current?.onMapAction?.(action)}
-      onDraftChanged={(payload) => mapBridgeRef.current?.onDraftChanged?.(payload)}
+      onDraftChanged={(payload) => {
+        mapBridgeRef.current?.onDraftChanged?.(payload);
+        // 草稿变更也驱动只读预览刷新（2026-11-09：预览回放未固化草稿）。
+        setMapPreviewRevision((value) => value + 1);
+      }}
+      onCanvasChanged={() => setCanvasRevision((value) => value + 1)}
+      onCanvasActivity={({ active }) => setCanvasAgentBusy(Boolean(active))}
        // 地图项目不是“打开的文件”；不要再把「地图项目:x」塞进 currentDoc，
        // 否则提示词会同时出现伪文件与地图上下文，模型可能先尝试读取不存在的文件。
        // 地图模式下也不把画布里恰好打开的业务文档带进地图任务。
@@ -2435,7 +2535,7 @@ export default function App() {
 
   return (
     <AppErrorBoundary>
-      <div className={`app ${canvasMaximized ? "canvas-maximized" : ""} ${browserFullscreen ? "browser-fullscreen" : ""} ${sidebarOpen ? "sidebar-expanded" : "sidebar-collapsed"} ${activeModule === "map" ? "map-module-active" : ""}`}>
+      <div className={`app ${canvasMaximized && canvasOpen ? "canvas-maximized" : ""} ${browserFullscreen ? "browser-fullscreen" : ""} ${sidebarOpen ? "sidebar-expanded" : "sidebar-collapsed"} ${activeModule === "map" ? "map-module-active" : ""}`}>
         <RefreshBloom />
         <FeedbackHost />
         {/* 构建版本守卫：dist 保留历史 assets，已打开的页面不会自己失效，
@@ -2589,6 +2689,7 @@ export default function App() {
               onDeleteSession={handleDeleteSession}
               onBatchDeleteSession={handleBatchDeleteSessions}
               onArchiveSession={handleArchiveSession}
+              onRestoredSession={handleSessionRestored}
               onBatchArchiveSession={handleBatchArchiveSessions}
               onRenameSession={handleRenameSession}
               onForkSession={handleForkSession}
@@ -2724,6 +2825,19 @@ export default function App() {
                       <Icon name="list" size={15} />
                       <span><strong>任务中心</strong><small>并行任务与运行状态</small></span>
                     </button>
+                    {/* 创作画布（2026-11-09）：画布关闭时没有标签栏「+」入口，
+                        这里必须提供一级入口；打开后走「新建 / 最近画布」空态。 */}
+                    {flag("creativeCanvas") && (
+                      <button
+                        type="button"
+                        className="topbar-tools-card"
+                        onClick={() => { setTopbarMenuOpen(false); openDesignCanvas("", ""); }}
+                        title="新建或打开创作画布：画板、文本/形状/SVG 编辑与 SVG/PNG/PDF/PPTX 导出"
+                      >
+                        <Icon name="grid" size={15} />
+                        <span><strong>创作画布</strong><small>画板、对象编辑与导出</small></span>
+                      </button>
+                    )}
                   </div>
                   {(artifactNotice || flag("qoderObjectBar") || flag("domainWorkflows")) && (
                     <div className="topbar-tools-more">
@@ -2871,7 +2985,9 @@ export default function App() {
                 if (action === "changes") { openCanvasView("changes"); return; }
                 if (action === "browser") { browserAutoOpenBlockedRef.current = false; setBrowserActivityPing(0); openCanvasView("browser"); return; }
                 if (action === "objects") { openCanvasView("objects"); return; }
-                if (action === "workflows") { openCanvasView("workflows"); }
+                if (action === "workflows") { openCanvasView("workflows"); return; }
+                if (action === "mapPreview") { openMapPreviewForCurrentSession(); return; }
+                if (action === "design") { openDesignCanvas("", ""); }
               }}
               onSearch={() => setPaletteOpen(true)}
               onToggleFiles={() => setCanvasSideOpen((value) => !value)}
@@ -2879,6 +2995,8 @@ export default function App() {
               onNewChat={async () => { await handleNewSession(currentWorkspaceRef.current || currentWorkspace); chatInputRef.current?.focusInput?.(); }}
               mapSessions={recentMapSessions}
               onOpenMapSession={async (session) => { await handleSelectSession(session); setActiveModule("map"); }}
+              showMapPreview={Boolean(currentMapContext?.mapProject)}
+              showDesignCanvas={flag("creativeCanvas")}
               showObjects={flag("qoderObjectBar")}
               showWorkflows={flag("domainWorkflows")}
               browserActivityPing={browserActivityPing}
@@ -2946,6 +3064,28 @@ export default function App() {
                     </div>
                   </div>
                 )}
+                {canvasTabs.filter((tab) => tab.kind === "design").map((tab) => (
+                  <div key={tab.id} className={`app-canvas-body canvas-body-design ${activeCanvasTab?.id === tab.id ? "" : "canvas-hidden"}`}>
+                    <Suspense fallback={<div className="module-loading">正在加载创作画布…</div>}>
+                      <创作画布
+                        slug={tab.payload?.slug || ""}
+                        workspace={tab.payload?.workspace || currentWorkspace}
+                        refreshToken={canvasRevision}
+                        agentBusy={canvasAgentBusy}
+                        onDirtyChange={(dirty) => handleDesignDirty(tab.id, dirty)}
+                        onTitleChange={(title) => handleDesignTitle(tab.id, title)}
+                        onCreated={(slug, title) => handleDesignCreated(tab.id, slug, title)}
+                        onOpenCanvas={(slug, title) => handleDesignCreated(tab.id, slug, title || slug)}
+                        onAddToChat={(text) => {
+                          // 最大化画布时对话栏被隐藏：插入引用后自动恢复布局，避免"点了没反应"。
+                          if (canvasMaximized) setCanvasMaximized(false);
+                          insertChatText(text);
+                        }}
+                        onClose={() => closeCanvasTabById(tab.id)}
+                      />
+                    </Suspense>
+                  </div>
+                ))}
                 {browserOpen && (
                   <div className={`app-canvas-body canvas-body-browser ${activeCanvasTab?.kind === "browser" ? "" : "canvas-hidden"}`}>
                     {/* T1：面板只在浏览器画布标签为激活页时连帧流；隐藏的其他画布标签不挂流 */}
@@ -3065,7 +3205,7 @@ export default function App() {
              <div className="module-body module-settings-body">
                {settingsModuleTab === "memory"
                  ? <MemoryTab workspace={currentWorkspace} projectId={currentProject?.id || ""} />
-                 : <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} defaultModel={defaultModel} activeModel={selectedModel} clientId={clientId} threadId={threadId} initialSection={settingsSection} onSessionsChanged={refreshSessions} onModelChange={setSelectedModel} onModelsRefresh={refreshModelCatalog} onProjectUpdated={refreshProjects} onProjectSelect={(id) => { closeExternalModules(); handleProjectChange(id); }} />}
+                 : <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} defaultModel={defaultModel} activeModel={selectedModel} clientId={clientId} threadId={threadId} initialSection={settingsSection} onSessionsChanged={refreshSessions} onRestoredSession={handleSessionsRestored} onModelChange={setSelectedModel} onModelsRefresh={refreshModelCatalog} onProjectUpdated={refreshProjects} onProjectSelect={(id) => { closeExternalModules(); handleProjectChange(id); }} />}
              </div>
            </div>
          )}

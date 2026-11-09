@@ -284,7 +284,7 @@ function formatArchiveTime(value) {
  * 归档历史（2026-11-03）：归档会话的唯一管理入口。
  * 归档只改 header，不删除文件/消息；运行中的会话不可归档，因此这里不会出现“在跑”的项。
  */
-function ArchiveSettingsSection({ onSessionsChanged }) {
+function ArchiveSettingsSection({ onSessionsChanged, onRestoredSession }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
@@ -323,6 +323,8 @@ function ArchiveSettingsSection({ onSessionsChanged }) {
       await archiveSession(id, false);
       await load();
       onSessionsChanged?.();
+      // 恢复成功后让上层（App）选中该会话；有地图绑定则同时带出地图预览（计划 §4.6）。
+      onRestoredSession?.([id]);
       setMessage("已恢复该会话");
     } catch (error) { setMessage(`恢复失败：${error.message}`); }
   };
@@ -342,6 +344,8 @@ function ArchiveSettingsSection({ onSessionsChanged }) {
       setSelectedIds(new Set());
       await load();
       onSessionsChanged?.();
+      // 批量恢复同样交给上层选中（App 取第一个；跨工作区时先切工作区）。
+      onRestoredSession?.(Array.isArray(result?.restoredIds) ? result.restoredIds : []);
       setMessage(`已恢复 ${result?.restoredIds?.length || 0} 个会话${result?.skipped?.length ? `，跳过 ${result.skipped.length} 个` : ""}`);
     } catch (error) { setMessage(`批量恢复失败：${error.message}`); }
   };
@@ -400,7 +404,7 @@ function ArchiveSettingsSection({ onSessionsChanged }) {
   );
 }
 
-export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], defaultModel = "", activeModel = "", clientId = "", threadId = "", initialSection = "model", onSessionsChanged, onModelChange, onModelsRefresh, onProjectUpdated, onProjectSelect }) {
+export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], defaultModel = "", activeModel = "", clientId = "", threadId = "", initialSection = "model", onSessionsChanged, onRestoredSession, onModelChange, onModelsRefresh, onProjectUpdated, onProjectSelect }) {
   const { theme, setTheme, skin, setSkin } = useTheme();
   const [settingsSection, setSettingsSection] = useState("model");
   const appearance = useAppearance();
@@ -693,7 +697,7 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
       </aside>
       <div className="settings-content">
 
-      {settingsSection === "archive" && <ArchiveSettingsSection onSessionsChanged={onSessionsChanged} />}
+      {settingsSection === "archive" && <ArchiveSettingsSection onSessionsChanged={onSessionsChanged} onRestoredSession={onRestoredSession} />}
 
       {settingsSection === "project" && <ProjectSettingsSection
         project={project}

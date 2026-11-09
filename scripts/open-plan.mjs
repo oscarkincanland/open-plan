@@ -61,13 +61,17 @@ function getHealth(port, timeoutMs = 2500) {
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
 function printStatus(status) {
+  const interesting = [
+    "skillDeps", "interactionHub", "composerUnified", "writingOneShot", "writingLeanContext", "askAssumption", "writingBudget",
+    "teamSuggest", "teamGuard", "teamRequiredEntry",
+  ];
   const enabled = Object.entries(status.runtimeFlags || {})
-    .filter(([key, value]) => value === true && ["skillDeps", "interactionHub", "composerUnified", "writingOneShot", "writingLeanContext", "askAssumption", "writingBudget"].includes(key))
+    .filter(([key, value]) => value === true && interesting.includes(key))
     .map(([key]) => key);
   console.log(`[规聚] 运行中：${baseUrl("3002")}`);
   console.log(`  版本        ${status.version || "?"}（客户端构建 ${status.clientBuild || "?"}）`);
   if (status.service) console.log(`  服务 PID    ${status.service.pid}（已运行 ${Math.round(Number(status.service.uptimeSec || 0) / 60)} 分钟）`);
-  console.log(`  新功能开关  ${enabled.length ? enabled.join("、") : "全部关闭（基线行为）"}`);
+  console.log(`  已开启开关  ${enabled.length ? enabled.join("、") : "全部关闭（基线行为）"}`);
 }
 
 function openBrowser(url) {

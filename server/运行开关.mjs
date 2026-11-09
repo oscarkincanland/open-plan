@@ -92,6 +92,14 @@ export const RUNTIME_FLAGS = Object.freeze({
   /** 写作路由精简上下文（2026-11-08 D5，默认关）：写作路由只注入写作/文档/排版/图表类技能，
       目录预算降到 4KB，降低每轮上下文与 TTFT。 */
   writingLeanContext: readFlag("OAW_WRITING_LEAN_CONTEXT"),
+  /** 专家团队按需触发（2026-11-09，默认开；用户 2026-11-09 拍板）：能力计划对复杂任务给出
+      team.suggested + 提示词建议；模型仍可拒绝。OAW_TEAM_SUGGEST=0 可整体回退。 */
+  teamSuggest: readFlagDefault("OAW_TEAM_SUGGEST", true),
+  /** 团队组队护栏（默认开）：非 required 模式下，没有可认领任务时阻断 team_spawn；
+      OAW_TEAM_GUARD=0 可回退。 */
+  teamGuard: readFlagDefault("OAW_TEAM_GUARD", true),
+  /** /team 显式入口（默认开）：输入区 /team 置 teamIntent=required；OAW_TEAM_REQUIRED_ENTRY=0 隐藏/拒绝。 */
+  teamRequiredEntry: readFlagDefault("OAW_TEAM_REQUIRED_ENTRY", true),
   /** 后台任务：长工具调用超过阈值自动转后台（默认开，OAW_BACKGROUND_JOBS=0 可关）。 */
   backgroundJobs: readFlagDefault("OAW_BACKGROUND_JOBS", true),
   /** U2+U6：Pi 把关扩展（ToolCallEvent 单工具拦截 + 压缩生命周期事件增强） */
@@ -220,6 +228,11 @@ export const RUNTIME_FLAGS = Object.freeze({
   /** CAD agent 能力：documentRead 读取 CAD + cad_read/cad_edit 工具（默认关，写能力保留显式开启） */
   cadAgent: readFlag("OAW_CAD_AGENT"),
 
+  /* ===== 创作画布（2026-11-09 计划 2026-11-09-003，默认关）===== */
+  /** 创作画布：可编辑设计画布（画板/对象编辑、SVG/PNG/PDF/PPTX 导出、canvas_* 工具）。
+      默认关 = 无入口、无工具、API 404，与基线一致；OAW_CREATIVE_CANVAS=1 开启。 */
+  creativeCanvas: readFlag("OAW_CREATIVE_CANVAS"),
+
   /* ===== ZCode Harness 对标开关族（默认全关）===== */
   /** 总开关：一键打开 H 线整族（仅测试/预览；关闭即整体回滚） */
   harnessAlign: HARNESS_ALIGN,
@@ -346,6 +359,7 @@ export function runtimeFlagsSnapshot() {
     officeFormat: RUNTIME_FLAGS.officeFormat,
     cadPreview: RUNTIME_FLAGS.cadPreview,
     cadAgent: RUNTIME_FLAGS.cadAgent,
+    creativeCanvas: RUNTIME_FLAGS.creativeCanvas,
     // ZCode Harness 对标开关族
     harnessAlign: RUNTIME_FLAGS.harnessAlign,
     toolMetadata: RUNTIME_FLAGS.toolMetadata,
@@ -365,6 +379,10 @@ export function runtimeFlagsSnapshot() {
     writingLeanContext: RUNTIME_FLAGS.writingLeanContext,
     askAssumption: RUNTIME_FLAGS.askAssumption,
     writingBudget: RUNTIME_FLAGS.writingBudget,
+    // 2026-11-09 专家团队按需触发
+    teamSuggest: RUNTIME_FLAGS.teamSuggest,
+    teamGuard: RUNTIME_FLAGS.teamGuard,
+    teamRequiredEntry: RUNTIME_FLAGS.teamRequiredEntry,
     hookEvents: RUNTIME_FLAGS.hookEvents,
     subagentProfile: RUNTIME_FLAGS.subagentProfile,
     toolErrorEnvelope: RUNTIME_FLAGS.toolErrorEnvelope,

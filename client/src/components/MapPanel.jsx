@@ -521,6 +521,21 @@ export default function MapPanel({
     flash(next === "province" ? "已显示全省道路与设施" : next === "city" ? "已显示当前地市道路与设施" : "已显示当前区域道路与设施");
   }, [flash]);
 
+  // 会话记录的地图视口（App.mapContexts → mapView）：建图时作为 initialView 传给 MapViewer，
+  // 让“上次视口”真正生效。这里只做“上层 → 本地”的一次性传入，不在初始化时用默认相机
+  // 反向覆盖会话视口；项目变了就不再套用旧项目的视口（避免 A 项目相机落到 B 项目）。
+  const sessionInitialView = useMemo(() => {
+    const center = mapContext?.center;
+    if (!Array.isArray(center) || center.length !== 2) return null;
+    const lng = Number(center[0]);
+    const lat = Number(center[1]);
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+    const boundProject = String(mapContext?.mapProject || "").trim();
+    if (boundProject && boundProject !== project) return null;
+    const zoom = Number(mapContext?.zoom);
+    return { center: [lng, lat], ...(Number.isFinite(zoom) && zoom > 0 ? { zoom } : {}) };
+  }, [mapContext?.center, mapContext?.zoom, mapContext?.mapProject, project]);
+
   // 初始化：项目列表 + 默认项目
   useEffect(() => {
     mapProjects().then((r) => setProjects(r.projects || [])).catch(() => {});
@@ -2349,6 +2364,9 @@ export default function MapPanel({
             project={project}
             config={cfg}
             drafts={drafts}
+            // 会话视口在建图前应用，随后 MapViewer 的首次视口上报就是“应用后的相机”，
+            // 不会再出现默认相机覆盖会话 header 的反向覆盖（计划 §4.4 / A7）。
+            initialView={sessionInitialView}
             onBasemapResolved={(id) => setCfg((prev) => (prev && prev.basemap === id ? prev : { ...(prev || {}), basemap: id }))}
             onViewportChange={(context) => {
               // 视口上报时带上当前下钻区域名：对话栏的"地图状态行"与 Agent 上下文

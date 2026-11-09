@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { RUNTIME_FLAGS, officeGateActiveFor } from "./运行开关.mjs";
 import { estimateTaskComplexity, resolveSkillsRouting, resolveSkillDraftRouting } from "./任务复杂度.mjs";
+import { shouldSuggestTeam } from "./团队建议.mjs";
 import { matchTemplate } from "./office规范/模板匹配.mjs";
 import { selectScene, sceneLabels, defaultScene } from "./office规范/场景选择.mjs";
 
@@ -56,6 +57,10 @@ const AGENT_TOOLS = Object.freeze([
   "map_template",
   // CAD 白名单修改（cadAgent 开关，默认关）：仅 Work；落盘走统一审批与写入通道。
   ...(RUNTIME_FLAGS.cadAgent ? ["cad_edit"] : []),
+  // 创作画布（creativeCanvas 开关，默认关）：仅 Work；写 designs/<slug>，删除/导入/导出走审批。
+  ...(RUNTIME_FLAGS.creativeCanvas
+    ? ["canvas_read", "canvas_write", "canvas_delete", "canvas_import", "canvas_export"]
+    : []),
   "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close",
   "browser_wait_for", "browser_act", "browser_extract", "browser_select_option",
 ]);
@@ -456,16 +461,40 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
   // 避免"声明了却调不到"（Office / Review 不暴露 run_subagent）。
   if (mode === "chat" || mode === "agent") capabilities.push({ id: "subagent", label: "子代理", status: "available", required: false, provider: "pi", reason: "可派发隔离的只读子 Agent 并行处理资料阅读/审阅" });
   // Agent Teams：Work / Review 可创建（Review 只读），Chat 只能查看历史团队，不能创建。
+  // 2026-11-09：支持 teamIntent=required（/team）与服务端建议（teamSuggestion，≥2 信号）。
   if (mode === "agent" || mode === "review") {
+    const requestedTeam = String(task.teamIntent || "").toLowerCase() === "required";
+    const teamIntent = requestedTeam ? "required" : "auto";
+    const teamSuggestion = (!requestedTeam && RUNTIME_FLAGS.teamSuggest)
+      ? shouldSuggestTeam({
+          text: `${text || ""} ${task.goal || ""}`.trim(),
+          mode,
+          route: intent.route,
+          references,
+          attachments,
+          complexity,
+          hasCurrentFile: Boolean(task.currentFile || document),
+        })
+      : { suggested: false, score: 0, reasons: [], signals: [], minTasks: 2, negative: "" };
+    const teamReasons = requestedTeam
+      ? ["用户通过 /team 指定本轮必须使用专家团队"]
+      : teamSuggestion.reasons;
     capabilities.push({
       id: "team",
       label: "专家团队",
-      status: "available",
-      required: false,
+      status: requestedTeam ? "required" : (teamSuggestion.suggested ? "suggested" : "available"),
+      required: requestedTeam,
       provider: "pi",
-      reason: mode === "review"
-        ? "可创建只读审阅团队（Lead + 最多 2 名队友），共享任务板；不越权写文件"
-        : "可创建 Lead + 最多 2 名队友的专家小组，共享任务板与消息；写操作仍逐次审批",
+      reason: requestedTeam
+        ? "用户指定本轮必须使用专家团队（/team），需先建 ≥2 个可认领任务"
+        : teamSuggestion.suggested
+          ? `系统建议使用专家团队：${teamSuggestion.reasons.join("；")}`
+          : mode === "review"
+            ? "可创建只读审阅团队（Lead + 最多 2 名队友），共享任务板；不越权写文件"
+            : "可创建 Lead + 最多 2 名队友的专家小组，共享任务板与消息；写操作仍逐次审批",
+      teamIntent,
+      minTasks: teamSuggestion.minTasks || 2,
+      ...(teamSuggestion.suggested ? { reasons: teamSuggestion.reasons, signals: teamSuggestion.signals, score: teamSuggestion.score } : {}),
     });
   }
   // 地图能力只在 Work 声明（用户决策 2026-11-07：地图模块不保留 Chat）。
@@ -482,6 +511,17 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
       reason: mapWritable
         ? "地图草稿层生成、查询、分析与用户确认后固化（正式写需审批）"
         : "地图仅在 Work 模式可用",
+    });
+  }
+  // 创作画布能力（creativeCanvas 开关，默认关）：仅 Work 声明；关闭时工具白名单里也没有。
+  if (RUNTIME_FLAGS.creativeCanvas && mode === "agent") {
+    capabilities.push({
+      id: "canvas",
+      label: "创作画布",
+      status: "available",
+      required: false,
+      provider: "native",
+      reason: "可编辑设计画布：画板/文本/形状/SVG 对象，支持 SVG/PNG/PDF/PPTX 导出",
     });
   }
   // CAD 能力（cadAgent 开关，默认关）：关闭时不声明，编排/遥测与基线一致。
@@ -554,6 +594,8 @@ export function createTaskEnvelope(input = {}) {
     currentFile: input.currentFile || null,
     references: references.map((r) => ({ id: r.id, kind: r.kind, target: r.target, status: r.status })),
     capabilityPlan: input.capabilityPlan || null,
+    // 2026-11-09：/team 显式入口；缺省 auto（模型判断）。
+    teamIntent: input.teamIntent === "required" ? "required" : "auto",
     constraints: Array.isArray(input.constraints) ? input.constraints : [],
     output: {
       format: input.output?.format || "markdown",
@@ -579,6 +621,7 @@ export function taskSummary(task) {
     mapCapabilityHint(task),
     officeWritingHint(task),
     task.references?.length ? `引用：${task.references.length} 项` : "",
+    task.teamIntent === "required" ? "团队：本轮必须使用专家团队（/team）" : "",
     task.mode === "chat" ? "边界：只读检索，不修改文件。" : "边界：按任务执行工具，面向用户直接给出结论；过程与产物详情留在任务记录中，按需说明。",
   ].filter(Boolean).join("\n");
 }

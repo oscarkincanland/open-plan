@@ -91,7 +91,10 @@ const REGISTRY = [
 
   // ---- Agent Teams（Team Lite，2026-11-04）----
   // Team 只属于一个 Run；事件带 teamId/runId，前端据此重建只读 roster 与任务板。
-  { type: "team_started", lifecycle: true, persist: true, note: "团队创建（Lead/人数上限/模式）", schema: { required: ["teamId", "leadId", "mode"], types: { teamId: "string", leadId: "string", mode: "string", maxMembers: "number", maxTasks: "number" } } },
+  { type: "team_started", lifecycle: true, persist: true, note: "团队创建（Lead/人数上限/模式；2026-11-09 起带来源 trigger）", schema: { required: ["teamId", "leadId", "mode"], types: { teamId: "string", leadId: "string", mode: "string", maxMembers: "number", maxTasks: "number", trigger: "string", teamIntent: "string", suggestReasons: "array" } } },
+  // 2026-11-09（计划 2026-11-09-001）：团队建议与组队护栏的可观测事件。
+  { type: "team_suggested", lifecycle: true, persist: true, note: "系统建议使用专家团队（建议不强制，模型可拒绝）", schema: { required: ["reasons"], types: { runId: "string", score: "number", minTasks: "number", mode: "string", reasons: "array", signals: "array" } } },
+  { type: "team_spawn_blocked", lifecycle: true, persist: true, note: "组队护栏阻断 team_spawn（无可认领任务）", schema: { required: ["code"], types: { runId: "string", teamIntent: "string", taskCount: "number", code: "string", reason: "string" } } },
   { type: "team_member_spawned", lifecycle: true, persist: true, note: "团队队友创建", schema: { required: ["teamId", "member"], types: { teamId: "string", member: "object", role: "string", readOnly: "boolean" } } },
   { type: "team_member_status", lifecycle: true, persist: true, note: "团队队友状态/当前活动", schema: { required: ["teamId", "memberId", "status"], types: { teamId: "string", memberId: "string", status: "string", activity: "string" } } },
   { type: "team_member_result", lifecycle: true, persist: true, note: "团队队友本轮结果（含会话轨迹）", schema: { required: ["teamId", "memberId", "status"], types: { teamId: "string", memberId: "string", status: "string", output: "string", transcript: "array", isError: "boolean" } } },
@@ -246,6 +249,12 @@ const REGISTRY = [
   { type: "workflow_journal_updated", lifecycle: true, persist: true, note: "工作流阶段 journal 更新" },
   { type: "plugin_manifest_invalid", lifecycle: true, persist: true, note: "插件清单缺失/哈希不匹配" },
   { type: "plan_persisted", lifecycle: true, persist: true, note: "计划文件落盘" },
+
+  // ---- 创作画布（2026-11-09 计划 2026-11-09-003，默认关）----
+  // 画布由工作区文件承载；事件只表达“哪块板变了/导出完成”，消费方按 revision 重读。
+  { type: "canvas_created", lifecycle: true, persist: true, note: "创作画布创建", schema: { required: ["slug", "workspace"], types: { slug: "string", title: "string", kind: "string", workspace: "string" } } },
+  { type: "canvas_changed", lifecycle: true, persist: true, note: "创作画布内容变更（索引/板）", schema: { required: ["slug", "action"], types: { slug: "string", boardPath: "string", action: "string", revision: "number", actor: "string", workspace: "string" } } },
+  { type: "canvas_exported", lifecycle: true, persist: true, note: "创作画布导出完成", schema: { required: ["slug", "format", "files"], types: { slug: "string", format: "string", files: "array", jobId: "string" } } },
 
   // ---- 高频增量（只走实时 SSE，可优先淘汰）----
   { type: "token", lifecycle: false, persist: false, note: "回答流式文本" },

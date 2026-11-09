@@ -6,6 +6,7 @@ import rehypeSlug from "rehype-slug";
 import remarkToc from "remark-toc";
 import Icon from "./Icon.jsx";
 import { buildArtifactIndex, resolveArtifactTarget, normalizeLocalFileHref } from "../产物类型.js";
+import { normalizeAtxHeadings } from "../markdown规范化.js";
 
 /**
  * 统一 Markdown 渲染组件（聊天消息 + MD 文档共用）
@@ -157,7 +158,7 @@ export default function MarkdownBody({ children, className = "", withToc = false
   // 预处理：[[目标]] → 内部 wikilink 标记链接（保留显示文本，供 a 组件拦截渲染）
   // 以及把正文里提到的本轮产物转成 #artifact: 链接（同样由 a 组件渲染为文件条）。
   const processed = useMemo(() => {
-    const source = String(children ?? "");
+    const source = normalizeAtxHeadings(children);
     const withWikilinks = onWikilinkHover
       ? source.replace(/\[\[([^\]]+)\]\]/g, (_, target) => {
         const label = target.split("|")[0] || target;

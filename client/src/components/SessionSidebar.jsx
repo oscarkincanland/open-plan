@@ -112,7 +112,7 @@ function groupByDate(sessions) {
 }
 
 // 会话列表：置顶区 + 日期分组（Proma 风格，供左侧栏与对话栏历史抽屉共用）
-export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete, onBatchDelete, onRename, onFork, onPin, onFreeze, onArchive, onBatchArchive, initialEditingId = null }) {
+export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete, onBatchDelete, onRename, onFork, onPin, onFreeze, onArchive, onBatchArchive, onRestored, initialEditingId = null }) {
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState("");
   const [pinned, setPinned] = useState(getPinnedSet);
@@ -130,6 +130,10 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   });
   const [expandedGroups, setExpandedGroups] = useState(() => new Set());
   const initialEditAppliedRef = useRef(null);
+  // 恢复会话是异步动作，完成后要用“最新列表”里的会话对象回调上层
+  // （闭包里的 sessions 是点击时的旧快照，可能仍带 archived: true）。
+  const sessionsRef = useRef(sessions);
+  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
 
   useEffect(() => {
     const available = new Set(sessions.map((session) => session.id));
@@ -188,7 +192,18 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
     const running = RUNNING_SESSION_STATUSES.has(session.runStatus);
     if (session.archived) {
       return [
-        { label: "恢复会话", icon: "history", onClick: async () => { if (onArchive) await onArchive(session.id, false); } },
+        {
+          label: "恢复会话",
+          icon: "history",
+          onClick: async () => {
+            if (!onArchive) return;
+            await onArchive(session.id, false);
+            // 恢复成功后把会话对象交给上层（App）：有地图绑定则同时带出地图预览（计划 §4.6）。
+            // 列表可能已刷新，优先用最新列表里的对象，找不到时回退到点击时的快照。
+            const restored = (sessionsRef.current || []).find((item) => item.id === session.id) || session;
+            onRestored?.(restored);
+          },
+        },
         { label: "重命名", icon: "penTool", onClick: () => { setEditingId(session.id); setEditValue(session.label || session.title || ""); } },
         { separator: true },
         { label: "永久删除", icon: "trash", danger: true, onClick: async () => { if (await askConfirm("永久删除此归档会话？删除后不可恢复。")) await onDelete?.(session.id); } },
@@ -394,7 +409,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   );
 }
 
-export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onAtMention, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenMcp, onOpenPiPlugins, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, onCollapseSidebar, onCreateTask, theme = "dark", loadStatus = {}, changedFiles = NO_CHANGED_FILES }) {
+export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onAtMention, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onRestoredSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenMcp, onOpenPiPlugins, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, onCollapseSidebar, onCreateTask, theme = "dark", loadStatus = {}, changedFiles = NO_CHANGED_FILES }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
   // v0.13.8：项目卡片工作区菜单（创建新任务 / 在资源管理器打开 / 归档）
@@ -1236,6 +1251,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                 onBatchDelete={onBatchDeleteSession}
                 onArchive={onArchiveSession}
                 onBatchArchive={onBatchArchiveSession}
+                onRestored={onRestoredSession}
                 onRename={onRenameSession}
                 onFork={onForkSession}
                 onPin={onPinSession}

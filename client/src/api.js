@@ -321,6 +321,9 @@ export const pinSession = (id, pinned = true) =>
 // 地图会话绑定：项目名 + 视口（初始页小地图 / 重启后切回恢复）
 export const updateSessionMapContext = (id, mapProject, mapView) =>
   api(`/api/sessions/${encodeURIComponent(id)}/map-context`, { method: "POST", body: JSON.stringify({ mapProject, mapView }) });
+// 创作画布会话绑定：只存 slug，画布内容在工作区 designs/<slug>/。
+export const updateSessionCanvasContext = (id, creativeCanvas) =>
+  api(`/api/sessions/${encodeURIComponent(id)}/canvas-context`, { method: "POST", body: JSON.stringify({ creativeCanvas }) });
 export const freezeSession = (id, frozen = true, reason = "") =>
   api(`/api/sessions/${encodeURIComponent(id)}/freeze`, { method: "POST", body: JSON.stringify({ frozen, reason }) });
 export const forkSession = (id, label, options = {}) =>
@@ -482,6 +485,45 @@ export const mapDraftDiscard = (name, id) =>
   api(`/api/map/project/${encodeURIComponent(name)}/drafts/${encodeURIComponent(id)}`, { method: "DELETE" });
 export const mapDraftUpdate = (name, id, patch = {}) =>
   api(`/api/map/project/${encodeURIComponent(name)}/drafts/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) });
+
+// ---- 创作画布（2026-11-09 计划 2026-11-09-003；服务端开关 OAW_CREATIVE_CANVAS）----
+const canvasWorkspaceQuery = (workspace = "") => (workspace ? `?workspace=${encodeURIComponent(workspace)}` : "");
+export const listCanvases = (workspace = "") => api(`/api/canvas/list${canvasWorkspaceQuery(workspace)}`);
+export const getCanvas = (workspace, slug) =>
+  api(`/api/canvas/${encodeURIComponent(slug)}${canvasWorkspaceQuery(workspace)}`);
+export const getCanvasBoard = (workspace, slug, boardPath) => {
+  const query = new URLSearchParams({ path: String(boardPath || "") });
+  if (workspace) query.set("workspace", workspace);
+  return api(`/api/canvas/${encodeURIComponent(slug)}/board?${query.toString()}`);
+};
+export const saveCanvasBoard = (workspace, slug, boardPath, board, expectedRev) =>
+  api(`/api/canvas/${encodeURIComponent(slug)}/board`, {
+    method: "PUT",
+    body: JSON.stringify({ path: boardPath, board, expectedRev, workspace }),
+  });
+export const patchCanvas = (workspace, slug, patch = {}) =>
+  api(`/api/canvas/${encodeURIComponent(slug)}`, { method: "PATCH", body: JSON.stringify({ patch, workspace }) });
+export const createCanvas = (workspace, payload = {}) =>
+  api("/api/canvas", { method: "POST", body: JSON.stringify({ ...payload, workspace }) });
+export const deleteCanvas = (workspace, slug, { confirmed = false } = {}) =>
+  api(`/api/canvas/${encodeURIComponent(slug)}`, { method: "DELETE", body: JSON.stringify({ confirmed, workspace }) });
+export const importCanvas = (workspace, payload = {}) =>
+  api("/api/canvas/import", { method: "POST", body: JSON.stringify({ ...payload, workspace }) });
+export const exportCanvas = (workspace, slug, payload = {}) =>
+  api(`/api/canvas/${encodeURIComponent(slug)}/export`, { method: "POST", body: JSON.stringify({ ...payload, workspace }) });
+export const getCanvasExport = (workspace, jobId) =>
+  api(`/api/canvas/exports/${encodeURIComponent(jobId)}${canvasWorkspaceQuery(workspace)}`);
+export const listCanvasHistory = (workspace, slug, boardPath = "", scope = "board") => {
+  const query = new URLSearchParams({ scope });
+  if (boardPath) query.set("board", String(boardPath));
+  if (workspace) query.set("workspace", workspace);
+  return api(`/api/canvas/${encodeURIComponent(slug)}/history?${query.toString()}`);
+};
+export const restoreCanvasHistory = (workspace, slug, payload = {}) =>
+  api(`/api/canvas/${encodeURIComponent(slug)}/history/restore`, {
+    method: "POST",
+    body: JSON.stringify({ ...payload, workspace }),
+  });
 export const mapLayerReplace = (name, layerId, geojson, format = "geojson") =>
   api(`/api/map/project/${encodeURIComponent(name)}/layer/${encodeURIComponent(layerId)}/replace`, { method: "POST", body: JSON.stringify({ geojson, format }) });
 export const mapBaseline = (name) => api(`/api/map/project/${encodeURIComponent(name)}/baseline`);

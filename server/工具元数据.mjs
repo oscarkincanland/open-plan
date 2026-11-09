@@ -14,6 +14,8 @@
  *   - MCP 服务端 annotations 不可信；MCP 工具统一用保守默认值。
  */
 
+import { RUNTIME_FLAGS } from "./运行开关.mjs";
+
 const KB = 1024;
 
 function budget(maxInlineBytes, direction = "head", strategy = "artifact") {
@@ -448,6 +450,64 @@ add([
     denyPriority: 90,
     resultBudget: budget(16 * KB, "head", "truncate"),
   }),
+
+  // ---- 创作画布（2026-11-09，仅 Work；开关 OAW_CREATIVE_CANVAS，默认关）----
+  // 开关关闭时工具不进任何白名单，元数据也不登记（与反向覆盖测试一致）；
+  // 开启后能力事实可追溯。cad_read/cad_edit 采用同样的门控约定。
+  ...(RUNTIME_FLAGS.creativeCanvas
+    ? [
+      meta("canvas_read", {
+        readOnly: true,
+        sideEffectScope: "none",
+        riskLevel: "low",
+        resultBudget: budget(30 * KB, "head", "truncate"),
+        notes: "只读画布索引/板/列表，不写工作区",
+      }),
+      meta("canvas_write", {
+        readOnly: false,
+        destructive: false,
+        sideEffectScope: "workspace",
+        riskLevel: "medium",
+        needsApproval: false,
+        resultBudget: budget(16 * KB, "head", "truncate"),
+        notes: "写 designs/<slug> 画布文件（与 write 同类，受工作区边界与写锁约束）",
+      }),
+      meta("canvas_delete", {
+        readOnly: false,
+        destructive: true,
+        sideEffectScope: "workspace",
+        riskLevel: "high",
+        needsApproval: true,
+        forceConfirm: true,
+        patternSource: "input",
+        denyPriority: 90,
+        resultBudget: budget(8 * KB, "head", "truncate"),
+        notes: "软删除画布/画板到 .trash；auto 模式不得自动批准",
+      }),
+      meta("canvas_import", {
+        readOnly: false,
+        destructive: false,
+        sideEffectScope: "workspace",
+        riskLevel: "medium",
+        needsApproval: true,
+        patternSource: "path",
+        denyPriority: 70,
+        resultBudget: budget(8 * KB, "head", "truncate"),
+        notes: "从工作区内已有 .dc.html 画布目录复制导入",
+      }),
+      meta("canvas_export", {
+        readOnly: false,
+        destructive: false,
+        sideEffectScope: "workspace",
+        riskLevel: "medium",
+        needsApproval: true,
+        patternSource: "input",
+        denyPriority: 60,
+        resultBudget: budget(8 * KB, "head", "truncate"),
+        notes: "导出 SVG/PNG/PDF/PPTX 到 designs/<slug>/exports",
+      }),
+    ]
+    : []),
 
   // ---- 内置浏览器 ----
   meta("browser_open", { readOnly: false, destructive: false, sideEffectScope: "network", riskLevel: "medium", resultBudget: budget(16 * KB, "head", "truncate") }),

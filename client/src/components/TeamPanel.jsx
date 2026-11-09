@@ -181,6 +181,13 @@ export default function TeamPanel({ team = null, onOpenTranscript }) {
         <div className="team-summary-meta">
           <span>{team.mode === "review" ? "Review · 只读" : "Work · 面板只读"}</span>
           <span>·</span>
+          <span
+            className={`team-trigger-badge trigger-${team.trigger || "model"}`}
+            title={(team.suggestReasons || []).join("；") || "团队创建来源"}
+          >
+            {team.trigger === "user" ? "用户指定" : team.trigger === "suggested" ? "系统建议" : "模型自选"}
+          </span>
+          <span>·</span>
           <span>队友写操作仍需审批</span>
           <span>·</span>
           <span>{counts.tasks} 个任务 · {counts.doneTasks} 完成</span>

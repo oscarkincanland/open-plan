@@ -33,7 +33,9 @@ test("服务端按 thinkingLevelMap 计算可用档位", () => {
 });
 
 test("跟随默认不改运行时档位", () => {
-  assert.match(agent, /const requestedThinkingLevel = effort \|\| "default"/);
+  // D4（2026-11-08）起写作路由默认 medium，判定收敛到 task.mjs 的 resolveWritingThinkingLevel；
+  // 关闭一次成稿时该函数返回 effort || "default"，仍保持“跟随默认不改运行时档位”。
+  assert.match(agent, /const requestedThinkingLevel = resolveWritingThinkingLevel\(\{/);
   assert.match(agent, /requestedThinkingLevel === "default"/);
   assert.match(agent, /thinkingChanged = requestedThinkingLevel !== "default"/);
 });

@@ -137,7 +137,8 @@ const COMPOSER_COMMANDS = [
   { insert: "/chat", label: "切换到 Chat", hint: "只读检索知识库、Skills 和工作区资料" },
   { insert: "/agent", label: "切换到 Agent", hint: "执行任务、调用工具并生成产物" },
   { insert: "/review", label: "切换到 Review", hint: "按规范审查材料，先生成报告和副本" },
-  { insert: "/help", label: "查看输入帮助", hint: "显示 /、@、#、& 的使用方式" },
+  { insert: "/team ", label: "团队模式", hint: "本轮要求必须使用专家团队（Work/Review，先建 ≥2 个任务）" },
+  { insert: "/help", label: "查看输入帮助", hint: "显示 /、@、#、& 与 /team 的使用方式" },
 ];
 const THINKING_OPTIONS = [
   { id: "default", label: "跟随默认", shortLabel: "默认", desc: "沿用当前模型/项目默认的思考档位" },
@@ -689,7 +690,7 @@ export function extractSessionLinks(messages = []) {
   return [...seen.values()];
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, agentReady = true, onFileChanged, onMapAction, onDraftChanged, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "", onTeamChange, onOpenSettings }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, agentReady = true, onFileChanged, onMapAction, onDraftChanged, onCanvasChanged, onCanvasActivity, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "", onTeamChange, onOpenSettings }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   // 供非渲染事件（重试复用气泡、终态清理）同步读取最新消息，避免依赖异步 state。
   const messagesRef = useRef([]);
@@ -1091,6 +1092,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const onTeamChangeRef = useRef(onTeamChange);
   onTeamChangeRef.current = onTeamChange;
   const teamHydrateKeyRef = useRef("");
+  // 2026-11-09（计划 2026-11-09-001）：/team 团队模式 + “建议未采纳”收尾提示。
+  const [teamRequired, setTeamRequired] = useState(false);
+  const teamSuggestedRunRef = useRef("");
+  const teamStartedRunRef = useRef("");
   const emitTeam = useCallback((next, source = "event") => {
     teamRef.current = next || null;
     try { onTeamChangeRef.current?.(next || null, { source }); } catch {}
@@ -2775,6 +2780,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         at: envelope.at,
       });
       if (nextTeam !== teamRef.current) emitTeam(nextTeam);
+      // 2026-11-09：记录“本轮建议/是否建队”，用于 Run 收尾提示（不进入过程流）。
+      if (type === "team_suggested") teamSuggestedRunRef.current = String(data?.runId || eventRunId || "");
+      if (type === "team_started") teamStartedRunRef.current = String(data?.runId || eventRunId || "");
     }
     if (type !== "connected") agentEventAtRef.current = Date.now();
     // 首字延迟：首个 SSE 事件、首个正文增量分别打点（方案 §3.5）。
@@ -3125,6 +3133,7 @@ case "runtime_connecting":
       // 工具调用开始：推入新 tool block（按 toolCallId 去重，重放不产生重复卡片）
       case "tool_start":
         if (data.name === "run_subagent") break;
+        if (String(data.name || "").startsWith("canvas_")) onCanvasActivity?.({ active: true, tool: data.name });
         // 历史 hydrate 已包含同一 toolCallId（回放的旧事件）：只更新那一块，不再新建，
         // 避免把旧工具追加到新内容后面造成错位/重复。
         if (findToolBlockOwner(data.toolCallId)) break;
@@ -3182,6 +3191,7 @@ case "runtime_connecting":
       // 工具结束：标记完成；找不到对应 start（历史被截断/重连丢失）时创建恢复卡片
       case "tool_end":
         if (data.name === "run_subagent") break;
+        if (String(data.name || "").startsWith("canvas_")) onCanvasActivity?.({ active: false, tool: data.name });
         flushToolOutput();
         {
           // 先跨消息找同一 toolCallId 的卡片：hydrate 快照里已有该工具时，
@@ -3735,6 +3745,10 @@ case "runtime_connecting":
         // 草稿层只用于地图面板实时刷新；对话流不逐条播报，避免噪音。
         onDraftChanged?.(data);
         break;
+      case "canvas_changed":
+        // 创作画布：Agent 写入后通知画布标签刷新；对话流不逐条播报。
+        onCanvasChanged?.(data);
+        break;
       case "map_action":
         if (data && acceptSystemEvent(`map_action:${data.id || "analysis"}:${data.updatedAt || JSON.stringify(data.stats || {})}`)) {
           if (data.action === "clear_analysis") {
@@ -3770,6 +3784,15 @@ case "runtime_connecting":
         flushToolOutput();
         // 一轮结束：交互应已结算或随 Run 取消，补一次对账清理残留（关闭时是 no-op）。
         if (interactionHubRef.current) refreshInteractionsRef.current?.();
+        // 2026-11-09：系统建议了专家团队但本轮未建队 → 收尾处给一句可操作提示（不在过程流里打扰）。
+        {
+          const suggestedRunId = teamSuggestedRunRef.current;
+          if (suggestedRunId && teamStartedRunRef.current !== suggestedRunId) {
+            pushSystem("本轮系统建议使用专家团队，但未创建团队；如需要团队协作，可在下一条消息加 /team 指定（Work/Review）。", "team-suggest-skipped");
+          }
+          teamSuggestedRunRef.current = "";
+          teamStartedRunRef.current = "";
+        }
         // 同一个 Run 的 run_finished 只处理一次。重连回放/迟到帧不得再次触发
         // 自动打开、队列冲刷或文本补齐，否则任务结束后界面会被“重新收尾”一次。
         {
@@ -4066,7 +4089,29 @@ case "runtime_connecting":
       const proceed = await askConfirm(`当前模型「${model || "未选择"}」不支持图片输入，继续发送可能失败。是否仍然发送？`);
       if (!proceed) return;
     }
-    const rawText = String(source.rawText ?? overrideText ?? input).trim();
+    let rawText = String(source.rawText ?? overrideText ?? input).trim();
+    // 2026-11-09（/team）：Team 只需要在 Work/Review；命令可单独开启，也可 /team 任务 直接带任务。
+    let teamRequiredForSend = teamRequired;
+    if (!options.payload && /^\/team(?:\s|$)/i.test(rawText)) {
+      const rest = rawText.replace(/^\/team(?:\s|$)/i, "").trim();
+      clearInput();
+      setComposerMenu(null);
+      if (selectedEditMode === "chat") {
+        pushSystem("专家团队只在 Work/Review 可用；请先切换到 Work 再使用 /team。", "team-mode-rejected");
+        return;
+      }
+      if (!flag("teamRequiredEntry")) {
+        pushSystem("团队模式入口已关闭（服务端 OAW_TEAM_REQUIRED_ENTRY=0）。", "team-mode-disabled");
+        return;
+      }
+      teamRequiredForSend = true;
+      setTeamRequired(true);
+      if (!rest) {
+        pushSystem("已开启团队模式：本轮要求必须使用专家团队（先建 ≥2 个可认领任务，再创建队友）。", "team-mode-on");
+        return;
+      }
+      rawText = rest;
+    }
     if (!rawText && sourceImages.length === 0 && sourceAttachments.length === 0) return;
     // 失败兜底（D3）：统一面板开启时，发送前扫描无法识别的标记并明示，不静默降级为普通文字。
     if (composerUnified && !options.payload) {
@@ -4093,7 +4138,7 @@ case "runtime_connecting":
         pushSystem("已切换到 " + (mode === "chat" ? "Chat（只读检索）" : mode === "review" ? "Review（审查与安全副本）" : "Work（执行与产出）") + "。");
         return;
       }
-      pushSystem("输入帮助：/goal 设置长期目标；/compact 压缩上下文；/new 新建会话；/chat、/agent 或 /review 切换模式；@ 选择文件；& 选择历史会话。", "composer-help");
+      pushSystem("输入帮助：/goal 设置长期目标；/compact 压缩上下文；/new 新建会话；/chat、/agent 或 /review 切换模式；/team 开启团队模式（Work/Review）；@ 选择文件；& 选择历史会话。", "composer-help");
       return;
     }
     const text = rawText || (sourceImages.length ? "（图片消息）" : "（附件消息）");
@@ -4325,6 +4370,7 @@ case "runtime_connecting":
              currentFile: selectedCurrentDoc || null,
             references: sendReferences,
             workflowId: text.match(/@工作流\[([^\]]+)\]/)?.[1] || null,
+            teamIntent: teamRequiredForSend ? "required" : "auto",
           },
         }),
       });
@@ -4341,6 +4387,7 @@ case "runtime_connecting":
       // 上报 pi 会话 id（App 持久化，刷新后恢复当前对话）
       if (d.sessionId) onSessionChange?.(d.sessionId);
       if (d.accepted) {
+        if (teamRequiredForSend) setTeamRequired(false);
         if (d.queued) setAgentPhase(`已排队（第 ${d.queuePosition || 1} 项）`);
         else if (!agentEventAtRef.current) {
           setAgentPhase("已接收，等待模型首个事件");
@@ -5381,6 +5428,15 @@ case "runtime_connecting":
                 </button>
               </div>
             ))}
+          </div>
+        )}
+        {teamRequired && (
+          <div className="reference-bar team-mode-bar" aria-label="团队模式">
+            <span className="reference-bar-label">团队模式</span>
+            <span className="reference-chip team-mode-chip" title="本轮要求必须使用专家团队（先建 ≥2 个任务）">
+              必须使用专家团队
+              <button type="button" onClick={() => setTeamRequired(false)} aria-label="取消团队模式">×</button>
+            </span>
           </div>
         )}
         {!composerUnified && references.length > 0 && (

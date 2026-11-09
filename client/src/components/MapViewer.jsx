@@ -91,10 +91,23 @@ const MapViewer = forwardRef(function MapViewer(
   const viewportCallbackRef = useRef(onViewportChange);
   const basemapResolvedCallbackRef = useRef(onBasemapResolved);
   const viewportTimerRef = useRef(null);
+  // 只读小地图（预览）不上报视口；用 ref 保留最新值，避免建图效果闭包读到旧 prop。
+  const readOnlyRef = useRef(readOnly);
+  // 最后一次真实视口：卸载清理在去抖窗口内补报一次，防止最后一次移动被吞掉。
+  const lastViewportRef = useRef(null);
+  const projectRef = useRef(project);
 
   useEffect(() => {
     viewportCallbackRef.current = onViewportChange;
   }, [onViewportChange]);
+
+  useEffect(() => {
+    readOnlyRef.current = readOnly;
+  }, [readOnly]);
+
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
 
   useEffect(() => {
     basemapResolvedCallbackRef.current = onBasemapResolved;
@@ -604,24 +617,42 @@ const MapViewer = forwardRef(function MapViewer(
       if (map.isStyleLoaded?.() || map.loaded?.() || map.getStyle?.()?.layers?.length) markReady();
       else setLoadError("地图样式加载失败，请重试");
     }, 10000);
+    // 读取当前真实相机。会话视口（initialView）已在建图参数里应用，
+    // 因此首次 publishViewport 上报的就是“应用后的相机”，不是默认相机。
+    const readViewport = () => {
+      const center = map.getCenter();
+      const bounds = map.getBounds();
+      return {
+        // project 随视口一起上报：上层合并会话上下文时不能丢地图项目。
+        project,
+        center: [Number(center.lng.toFixed(6)), Number(center.lat.toFixed(6))],
+        zoom: Number(map.getZoom().toFixed(3)),
+        bounds: [
+          Number(bounds.getWest().toFixed(6)),
+          Number(bounds.getSouth().toFixed(6)),
+          Number(bounds.getEast().toFixed(6)),
+          Number(bounds.getNorth().toFixed(6)),
+        ],
+      };
+    };
     const publishViewport = () => {
+      // 同步缓存最后一次真实视口：去抖窗口内组件卸载/关闭时由卸载清理补报，
+      // 否则“最后一次移动”只存在定时器里会直接丢失。
+      try { lastViewportRef.current = readViewport(); } catch {}
       if (viewportTimerRef.current) window.clearTimeout(viewportTimerRef.current);
       viewportTimerRef.current = window.setTimeout(() => {
         if (mapRef.current !== map || !viewportCallbackRef.current) return;
+        // 预览只读：不把轻量小地图的相机写回会话 header。
+        if (readOnlyRef.current) return;
+        const pending = lastViewportRef.current;
+        if (!pending) return;
         try {
-          const c = map.getCenter();
-          const bounds = map.getBounds();
           viewportCallbackRef.current({
             // project 随视口一起上报：上层合并会话上下文时不能丢地图项目。
             project,
-            center: [Number(c.lng.toFixed(6)), Number(c.lat.toFixed(6))],
-            zoom: Number(map.getZoom().toFixed(3)),
-            bounds: [
-              Number(bounds.getWest().toFixed(6)),
-              Number(bounds.getSouth().toFixed(6)),
-              Number(bounds.getEast().toFixed(6)),
-              Number(bounds.getNorth().toFixed(6)),
-            ],
+            center: pending.center,
+            zoom: pending.zoom,
+            bounds: pending.bounds,
             updatedAt: Date.now(),
           });
         } catch {}
@@ -658,6 +689,18 @@ const MapViewer = forwardRef(function MapViewer(
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project, retryToken]);
+
+  // 卸载清理：把仍在去抖窗口里的最后一次真实视口补报一次。
+  // 只在组件真正卸载时执行（项目切换会重建地图实例，但不会卸载组件），
+  // 因此不会把旧项目的相机写到新项目上；只读预览不上报。
+  useEffect(() => () => {
+    if (readOnlyRef.current) return;
+    const pending = lastViewportRef.current;
+    const callback = viewportCallbackRef.current;
+    if (!pending || !callback) return;
+    if (String(pending.project || "") !== String(projectRef.current || "")) return;
+    try { callback({ ...pending, updatedAt: Date.now() }); } catch {}
+  }, []);
 
   // 项目配置加载/切换后同步底图；配置是持久化选择的唯一来源，避免热更新时回到样式文件中的旧默认值。
   useEffect(() => {

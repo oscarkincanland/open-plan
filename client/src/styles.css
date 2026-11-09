@@ -1225,12 +1225,20 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 .markdown-body h1, .markdown-body h2, .markdown-body h3,
 .markdown-body h4, .markdown-body h5, .markdown-body h6 {
   font-weight: 600;
-  margin: 12px 0 6px;
+  /* 2026-11-09：标题原本统一 margin 12/6，与段间距几乎一样，层级读不出来。
+     改为按层级递减的上间距：h1/h2 与上文明显分开，h3 次之，紧贴其下内容。 */
+  margin: 20px 0 8px;
   color: var(--text);
+  line-height: 1.45;
 }
 .markdown-body h1 { font-size: 16px; }
 .markdown-body h2 { font-size: 16px; }
 .markdown-body h3, .markdown-body h4, .markdown-body h5, .markdown-body h6 { font-size: 14px; }
+/* h3 与正文同为 14px，只能靠"上间距 + 字重"区分，因此再给它更紧的下间距，
+   让它承接下面的列表/段落，而不是浮在两段之间。 */
+.markdown-body h3, .markdown-body h4 { margin: 16px 0 4px; }
+/* 首个标题不额外吃到容器顶部留白。 */
+.markdown-body > :first-child { margin-top: 0; }
 .markdown-body ul, .markdown-body ol {
   padding-left: 20px;
   margin: 6px 0;
@@ -13245,6 +13253,19 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   line-height: 1.4;
 }
 .team-summary-warn { color: var(--warning); }
+/* 2026-11-09：团队来源徽标（用户指定 / 系统建议 / 模型自选） */
+.team-trigger-badge {
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: var(--surface);
+}
+.team-trigger-badge.trigger-user { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.team-trigger-badge.trigger-suggested { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, var(--border)); }
+.team-trigger-badge.trigger-model { color: var(--muted); }
+/* /team 团队模式 chip（沿用引用 chip 样式，仅加颜色区分） */
+.team-mode-bar .team-mode-chip { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
 .team-status-pill {
   display: inline-flex;
   align-items: center;
@@ -13661,4 +13682,540 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   .interaction-receipt-status { flex: 1 1 100%; text-align: left; white-space: normal; }
   .interaction-card { padding: 8px 10px; }
 }
+
+/* ===== 创作画布（design 标签：画布视图 / 直接编辑 / 导出对话框 / 导出视图） =====
+   关联计划：docs/plans/2026-11-09-003-创作画布模块修改计划.md（§4.3 DESIGN 8.4、§5.1 渲染器、§5.5 导出）。
+   色值约定：界面色一律走语义令牌；画板"纸与墨"是导出/截图语义（不随主题反转），
+   收敛为两个组件变量 --oaw-canvas-paper / --oaw-canvas-ink，画板与导出视图共用。 */
+.oaw-canvas-shell {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  background: var(--panel-bg);
+  color: var(--text);
+  outline: none;
+}
+.oaw-canvas-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-bg);
+}
+.oaw-canvas-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--font-xs);
+  cursor: pointer;
+}
+.oaw-canvas-tool:hover:not(:disabled) { color: var(--text); background: var(--surface); }
+.oaw-canvas-tool.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.oaw-canvas-tool:disabled { opacity: .45; cursor: not-allowed; }
+.oaw-canvas-tool:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.oaw-canvas-zoom {
+  min-width: 48px;
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel2-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-xs);
+  cursor: pointer;
+}
+.oaw-canvas-zoom:hover { border-color: var(--accent); color: var(--accent); }
+.oaw-canvas-zoom:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.oaw-canvas-divider { width: 1px; height: 16px; background: var(--border); }
+.oaw-canvas-spacer { flex: 1 1 auto; }
+.oaw-canvas-title-wrap { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 240px; }
+.oaw-canvas-title {
+  overflow: hidden;
+  max-width: 100%;
+  padding: 2px 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-base);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+}
+.oaw-canvas-title:hover { border-color: var(--border); }
+.oaw-canvas-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.oaw-canvas-dirty-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: var(--radius-pill); background: var(--warning); }
+.oaw-canvas-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: var(--font-xs);
+  white-space: nowrap;
+}
+.oaw-canvas-status.dirty { color: var(--warning); }
+.oaw-canvas-status.saving { color: var(--accent); }
+.oaw-canvas-status.readonly { color: var(--dim); }
+.oaw-canvas-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  color: var(--muted);
+  font-size: var(--font-xs);
+}
+.oaw-canvas-banner.warn { color: var(--warning); border-bottom-color: color-mix(in srgb, var(--warning) 40%, var(--border)); }
+.oaw-canvas-banner.conflict { color: var(--error); border-bottom-color: color-mix(in srgb, var(--error) 40%, var(--border)); }
+.oaw-canvas-banner-actions { margin-left: auto; display: flex; gap: 6px; }
+.oaw-canvas-body { display: flex; flex: 1; min-width: 0; min-height: 0; }
+.oaw-canvas-main { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
+.oaw-canvas-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--panel2-bg);
+  touch-action: none;
+}
+.oaw-canvas-viewport.grid {
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--border) 60%, transparent) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+.oaw-canvas-viewport.panning { cursor: grabbing; }
+.oaw-canvas-board { position: absolute; }
+.oaw-canvas-board-head {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  height: 20px;
+  padding: 0 4px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--font-xs);
+  white-space: nowrap;
+  cursor: move;
+  user-select: none;
+}
+.oaw-canvas-board.active .oaw-canvas-board-head { color: var(--accent); }
+.oaw-canvas-board-title { overflow: hidden; text-overflow: ellipsis; }
+.oaw-canvas-board-size { color: var(--dim); font-size: var(--font-micro); }
+.oaw-canvas-board-badge {
+  padding: 0 4px;
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
+  color: var(--warning);
+  font-size: var(--font-micro);
+}
+.oaw-canvas-board-scale {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--oaw-canvas-paper);
+}
+.oaw-canvas-board.active .oaw-canvas-board-scale { border-color: var(--accent); }
+.oaw-canvas-board-paper,
+.oaw-canvas-export-page {
+  --oaw-canvas-paper: white;
+  --oaw-canvas-ink: black;
+}
+.oaw-canvas-board-paper {
+  position: relative;
+  overflow: hidden;
+  background: var(--oaw-canvas-paper);
+  color: var(--oaw-canvas-ink);
+  transform-origin: top left;
+}
+.oaw-canvas-board-paper-plain { pointer-events: none; }
+.oaw-canvas-iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--oaw-canvas-paper);
+  pointer-events: none;
+}
+.oaw-canvas-board-resize {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-xs);
+  background: var(--panel-bg);
+  cursor: nwse-resize;
+}
+.oaw-canvas-board-resize:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.oaw-canvas-board-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px;
+  color: var(--dim);
+  font-size: var(--font-xs);
+  text-align: center;
+}
+.oaw-canvas-board-placeholder.error { color: var(--error); }
+.oaw-canvas-el { pointer-events: none; }
+.oaw-canvas-el-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--warning);
+  color: var(--warning);
+  font-size: var(--font-xs);
+}
+.oaw-canvas-el-text-editing {
+  pointer-events: auto;
+  cursor: text;
+  box-shadow: 0 0 0 1px var(--accent);
+  border-radius: var(--radius-xs);
+}
+.oaw-canvas-selection {
+  position: absolute;
+  box-sizing: border-box;
+  border-style: solid;
+  border-color: var(--accent);
+  pointer-events: none;
+}
+.oaw-canvas-handle {
+  position: absolute;
+  padding: 0;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-pill);
+  background: var(--panel-bg);
+  pointer-events: auto;
+}
+.oaw-canvas-handle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.oaw-canvas-handle[data-handle="nw"] { left: 0; top: 0; transform: translate(-50%, -50%); cursor: nwse-resize; }
+.oaw-canvas-handle[data-handle="n"] { left: 50%; top: 0; transform: translate(-50%, -50%); cursor: ns-resize; }
+.oaw-canvas-handle[data-handle="ne"] { left: 100%; top: 0; transform: translate(-50%, -50%); cursor: nesw-resize; }
+.oaw-canvas-handle[data-handle="e"] { left: 100%; top: 50%; transform: translate(-50%, -50%); cursor: ew-resize; }
+.oaw-canvas-handle[data-handle="se"] { left: 100%; top: 100%; transform: translate(-50%, -50%); cursor: nwse-resize; }
+.oaw-canvas-handle[data-handle="s"] { left: 50%; top: 100%; transform: translate(-50%, -50%); cursor: ns-resize; }
+.oaw-canvas-handle[data-handle="sw"] { left: 0; top: 100%; transform: translate(-50%, -50%); cursor: nesw-resize; }
+.oaw-canvas-handle[data-handle="w"] { left: 0; top: 50%; transform: translate(-50%, -50%); cursor: ew-resize; }
+.oaw-canvas-deck {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-top: 1px solid var(--border);
+  background: var(--panel-bg);
+}
+.oaw-canvas-deck-item { display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; gap: 2px; }
+.oaw-canvas-deck-thumb {
+  position: relative;
+  display: block;
+  width: 96px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--oaw-canvas-paper);
+  cursor: pointer;
+}
+.oaw-canvas-deck-thumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.oaw-canvas-deck-item.active .oaw-canvas-deck-thumb { border-color: var(--accent); }
+.oaw-canvas-deck-mini { position: absolute; inset: 0; display: block; }
+.oaw-canvas-deck-shot {
+  position: absolute;
+  display: block;
+  min-height: 1px;
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--text) 30%, transparent);
+}
+.oaw-canvas-deck-shot[data-type="rect"] { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+.oaw-canvas-deck-shot[data-type="image"],
+.oaw-canvas-deck-shot[data-type="svg"] { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.oaw-canvas-deck-name {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 2px;
+  color: var(--muted);
+  font-size: var(--font-micro);
+  line-height: 1.3;
+}
+.oaw-canvas-deck-index { color: var(--dim); font-size: var(--font-micro); }
+.oaw-canvas-deck-item.active .oaw-canvas-deck-index { color: var(--accent); }
+.oaw-canvas-inspector {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 6px;
+  width: 204px;
+  padding: 8px;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+  background: var(--panel-bg);
+}
+.oaw-canvas-inspector-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+  color: var(--text);
+  font-size: var(--font-sm);
+}
+.oaw-canvas-inspector-head > span:first-of-type { flex: 1 1 auto; }
+.oaw-canvas-inspector-row { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: var(--font-xs); }
+.oaw-canvas-inspector-label { flex: 0 0 32px; color: var(--dim); font-size: var(--font-xs); }
+.oaw-canvas-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel2-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-xs);
+  outline: none;
+}
+.oaw-canvas-field:focus { border-color: var(--accent); }
+.oaw-canvas-swatch {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+}
+.oaw-canvas-inspector-hint { margin: 4px 0 0; color: var(--dim); font-size: var(--font-micro); line-height: 1.6; }
+.oaw-canvas-empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  max-width: 720px;
+  min-height: 0;
+  padding: 24px;
+  overflow-y: auto;
+}
+.oaw-canvas-empty h3 { margin: 0; font-size: var(--font-base); }
+.oaw-canvas-empty-text { margin: 0; color: var(--muted); font-size: var(--font-sm); line-height: 1.7; }
+.oaw-canvas-empty-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; width: 100%; }
+.oaw-canvas-empty-form .oaw-canvas-field { flex: 1 1 180px; }
+.oaw-canvas-list { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.oaw-canvas-list-head { color: var(--muted); font-size: var(--font-xs); }
+.oaw-canvas-list-empty { color: var(--dim); font-size: var(--font-xs); }
+.oaw-canvas-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel2-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.oaw-canvas-list-item:hover { border-color: var(--accent); }
+.oaw-canvas-list-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.oaw-canvas-list-title { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oaw-canvas-list-meta { color: var(--dim); font-size: var(--font-micro); }
+.oaw-canvas-state {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: var(--font-sm);
+}
+.oaw-canvas-state.error { color: var(--error); }
+.oaw-canvas-state-actions { display: flex; gap: 6px; }
+.oaw-canvas-export {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--body-bg) 72%, transparent);
+}
+.oaw-canvas-export-card {
+  display: flex;
+  flex-direction: column;
+  width: min(520px, 100%);
+  max-height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel-bg);
+  box-shadow: 0 20px 46px color-mix(in srgb, var(--body-bg) 70%, transparent);
+}
+.oaw-canvas-export-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--font-sm);
+}
+.oaw-canvas-export-sub { margin-left: auto; color: var(--dim); font-size: var(--font-micro); }
+.oaw-canvas-export-body { display: flex; flex-direction: column; gap: 8px; padding: 10px; overflow-y: auto; }
+.oaw-canvas-export-row { display: flex; align-items: flex-start; gap: 8px; }
+.oaw-canvas-export-formats { display: grid; flex: 1 1 auto; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.oaw-canvas-export-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel2-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--font-xs);
+  text-align: left;
+  cursor: pointer;
+}
+.oaw-canvas-export-option strong { font-size: var(--font-sm); }
+.oaw-canvas-export-option span { color: var(--muted); }
+.oaw-canvas-export-option.active { border-color: var(--accent); }
+.oaw-canvas-export-option:disabled { opacity: .45; cursor: not-allowed; }
+.oaw-canvas-export-option:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.oaw-canvas-export-note { margin: 0; color: var(--muted); font-size: var(--font-xs); line-height: 1.6; }
+.oaw-canvas-export-note.warn { color: var(--warning); }
+.oaw-canvas-export-result { margin: 0; color: var(--success); font-size: var(--font-xs); word-break: break-all; }
+.oaw-canvas-export-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+}
+/* 导出视图（?export=canvas）：固定尺寸、无交互、纸白底，供内置浏览器截图 / printToPDF */
+.oaw-canvas-export-page {
+  position: fixed;
+  left: 0;
+  top: 0;
+  overflow: hidden;
+  background: var(--oaw-canvas-paper);
+  color: var(--oaw-canvas-ink);
+}
+/* 多板 PDF：页面改为文档流逐页排版，printToPDF 按板分页 */
+.oaw-canvas-export-stack { display: block; }
+.oaw-canvas-export-page.is-stack {
+  position: relative;
+  break-after: page;
+  page-break-after: always;
+  margin: 0;
+}
+.oaw-canvas-export-page.is-stack:last-child {
+  break-after: auto;
+  page-break-after: auto;
+}
+.oaw-canvas-export-board { position: relative; overflow: hidden; transform-origin: top left; }
+.oaw-canvas-export-frame { position: absolute; left: 0; top: 0; border: 0; transform-origin: top left; }
+.oaw-canvas-export-error { padding: 16px; color: var(--error); font-size: var(--font-sm); }
+@media (max-width: 768px) {
+  .oaw-canvas-title-wrap { max-width: 140px; }
+  .oaw-canvas-inspector { width: 168px; }
+  .oaw-canvas-export-formats { grid-template-columns: 1fr; }
+  .oaw-canvas-deck-thumb { width: 76px; }
+}
+/* ===== 创作画布验收反馈：全屏画布 / 抓手 / 播放 / 页面与间距 / 版本历史（2026-11-09） ===== */
+.app.canvas-maximized .center-area,
+.app.canvas-maximized .resizer { display: none; }
+.oaw-canvas-viewport.pan-mode { cursor: grab; }
+.oaw-canvas-viewport.pan-mode .oaw-canvas-board-paper { cursor: grab; }
+.oaw-canvas-viewport.pan-mode.panning,
+.oaw-canvas-viewport.pan-mode.panning .oaw-canvas-board-paper { cursor: grabbing; }
+.oaw-canvas-safe-area {
+  position: absolute;
+  border: 1px dashed color-mix(in srgb, var(--accent) 50%, transparent);
+  border-radius: var(--radius-xs);
+  pointer-events: none;
+}
+.oaw-canvas-dialog-card { width: min(560px, 100%); }
+.oaw-canvas-field-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.oaw-canvas-field-row .oaw-canvas-field { width: 84px; }
+.oaw-canvas-field-row .oaw-canvas-inspector-label { min-width: 64px; }
+.oaw-canvas-settings-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.oaw-canvas-history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel2-bg);
+}
+.oaw-canvas-history-item + .oaw-canvas-history-item { margin-top: 6px; }
+.oaw-canvas-history-item-main { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; text-align: left; }
+.oaw-canvas-history-time { color: var(--text); font-size: var(--font-sm); }
+.oaw-canvas-history-meta { color: var(--dim); font-size: var(--font-micro); }
+.oaw-canvas-history-empty { padding: 4px 0; color: var(--muted); font-size: var(--font-xs); }
+.oaw-canvas-play {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--body-bg) 94%, transparent);
+}
+.oaw-canvas-play-stage { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.oaw-canvas-play-paper {
+  position: relative;
+  flex: 0 0 auto;
+  overflow: hidden;
+  background: var(--oaw-canvas-paper, white);
+  box-shadow: 0 20px 52px color-mix(in srgb, var(--body-bg) 65%, transparent);
+}
+.oaw-canvas-play-iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; pointer-events: none; background: var(--oaw-canvas-paper, white); }
+.oaw-canvas-play-bar { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); background: var(--panel-bg); }
+.oaw-canvas-play-title { margin: 0 8px; max-width: 40vw; overflow: hidden; color: var(--muted); font-size: var(--font-xs); text-overflow: ellipsis; white-space: nowrap; }
+.oaw-canvas-play-empty { color: var(--muted); font-size: var(--font-sm); }
+/* PPT 预览加速（2026-11-09）：首屏缓存图覆盖在 canvas 上，直到第一页真正渲染完成 */
+.oaw-pptx-stage { position: relative; }
+.oaw-pptx-first-frame { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.oaw-pptx-hint.warn { color: var(--warning); }
 

@@ -10,6 +10,7 @@ import { listSkillCatalog } from "./技能目录.mjs";
 import { parseRequires, probeSkillDeps } from "./技能依赖.mjs";
 import { startSkillDepsInstall, cancelSkillDepsInstall, skillInstallJob, uninstallSkillDeps } from "./技能安装.mjs";
 import { listActiveInteractions, getInteraction, settleInteraction, assumeInteraction, expireStaleInteractions, migrateLegacyAsks } from "./交互中枢.mjs";
+import { teamMetricsSnapshot } from "./团队指标.mjs";
 import { ACTIVE_SESSION_STATUSES, archiveHeaderPatch, shouldIncludeArchived, sortArchivedSessions } from "./会话归档.mjs";
 import { initializeWorkspace } from "./工作区初始化.mjs";
 import { RUNTIME_CONSTITUTION_VERSION } from "./智能体运行宪法.mjs";
@@ -2435,7 +2436,7 @@ let sessionsListCache = { at: 0, payload: null };
 function invalidateSessionsListCache() {
   sessionsListCache = { at: 0, payload: null };
 }
-const SESSION_LIST_FIELDS = new Set(["label", "pinned", "frozen", "freezeReason", "archived", "archivedAt", "projectId", "cwd", "parentSessionId", "agentId", "threadId"]);
+const SESSION_LIST_FIELDS = new Set(["label", "pinned", "frozen", "freezeReason", "archived", "archivedAt", "projectId", "cwd", "parentSessionId", "agentId", "threadId", "mapProject", "creativeCanvas"]);
 const sessionHeaderCache = new Map();
 const sessionMetaCache = new Map();
 const persistedSessionMeta = new Map();
@@ -3525,6 +3526,8 @@ function buildSessionMeta(f, h, text, { truncated = false } = {}) {
     // 地图会话绑定：项目名 + 视口（只存白名单字段，供初始页小地图与切回恢复）
     mapProject: typeof h.mapProject === "string" ? h.mapProject : "",
     mapView: h.mapView && typeof h.mapView === "object" ? h.mapView : null,
+    // 创作画布会话绑定（2026-11-09）：只存 slug，画布内容仍以工作区文件为事实来源。
+    creativeCanvas: typeof h.creativeCanvas === "string" ? h.creativeCanvas : "",
     created: h.created || "",
     title,
     hasUserMessage,
@@ -4318,6 +4321,7 @@ app.get("/api/sessions", (req, res) => {
           branchPurpose: meta.branchPurpose,
           mapProject: meta.mapProject || "",
           mapView: meta.mapView || null,
+          creativeCanvas: meta.creativeCanvas || "",
           fileName: f.fileName,
           title,
           runStatus: latestRun?.status || "idle",
@@ -4816,6 +4820,27 @@ app.post("/api/sessions/:id/map-context", (req, res) => {
   res.json({ ok: true, mapProject: result.header.mapProject || "", mapView: result.header.mapView || {} });
 });
 
+// 创作画布会话绑定（2026-11-09）：持久化当前创作画布 slug，切回会话时可恢复。
+// 只存 slug；画布内容以工作区 designs/<slug>/project/canvas.json 为事实来源。
+app.post("/api/sessions/:id/canvas-context", (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return res.status(404).json({ ok: false, error: "not found" });
+  const raw = String(req.body?.creativeCanvas || "").trim();
+  if (raw && !/^[\p{L}\p{N}][\p{L}\p{N}_-]{0,63}$/u.test(raw)) {
+    return res.status(400).json({ ok: false, error: "非法画布 slug", code: "CANVAS_INVALID" });
+  }
+  if (raw) {
+    const session = readSessionHeader(findSessionFile(req.params.id) || {});
+    const ws = normalizeWorkspace(String(session?.cwd || "")) || getWorkspace();
+    if (!fs.existsSync(path.join(ws, "designs", raw, "project", "canvas.json"))) {
+      return res.status(400).json({ ok: false, error: "创作画布不存在", code: "CANVAS_NOT_FOUND" });
+    }
+  }
+  const result = updateSessionHeader(req.params.id, { creativeCanvas: raw });
+  if (!result.ok) return res.status(result.status || 400).json({ ok: false, error: result.error || "not found" });
+  invalidateSessionsListCache();
+  res.json({ ok: true, creativeCanvas: result.header.creativeCanvas || "" });
+});
+
 app.post("/api/sessions/:id/freeze", (req, res) => {
   const frozen = req.body?.frozen !== false;
   const found = findSessionFile(req.params.id);
@@ -5023,7 +5048,12 @@ app.get("/api/metrics/summary", (_req, res) => {
         writingLeanContext: RUNTIME_FLAGS.writingLeanContext,
         askAssumption: RUNTIME_FLAGS.askAssumption,
         writingBudget: RUNTIME_FLAGS.writingBudget,
+        teamSuggest: RUNTIME_FLAGS.teamSuggest,
+        teamGuard: RUNTIME_FLAGS.teamGuard,
+        teamRequiredEntry: RUNTIME_FLAGS.teamRequiredEntry,
       },
+      // 2026-11-09（计划 2026-11-09-001）：团队建议/创建/来源/阻断/空团队指标
+      teams: teamMetricsSnapshot(),
     });
   } catch (error) {
     res.status(500).json({ error: String(error?.message || error) });
@@ -6328,6 +6358,250 @@ app.get("/api/map/export/batch", (req, res) => {
     createdAt: batch.createdAt,
     finishedAt: batch.finishedAt || "",
   });
+});
+
+// ---------- 创作画布（计划 2026-11-09-003，flag OAW_CREATIVE_CANVAS，默认关） ----------
+// 数据以工作区 designs/<slug>/project/ 为事实来源；本段只做路由、校验、任务队列与错误映射，
+// 文件读写/序列化/导出全部在 server/创作画布.mjs 与 server/创作画布导出.mjs。
+const canvasExportJobs = new Map(); // jobId → { id, slug, format, status, files, error, createdAt, finishedAt }
+let canvasExportSeq = 0;
+
+function canvasFeature(res) {
+  return res.status(404).json({ ok: false, error: "not found" });
+}
+
+function canvasError(res, error) {
+  const code = String(error?.code || "");
+  const message = String(error?.message || error || "创作画布操作失败");
+  if (code === "CANVAS_NOT_FOUND" || code === "CANVAS_HISTORY_NOT_FOUND") return res.status(404).json({ ok: false, error: message, code });
+  if (code === "CANVAS_REV_CONFLICT" || code === "CANVAS_BUSY") return res.status(409).json({ ok: false, error: message, code });
+  if (["CANVAS_PATH_DENIED", "CANVAS_INVALID", "CANVAS_LIMIT", "CANVAS_UNSUPPORTED"].includes(code)) {
+    return res.status(400).json({ ok: false, error: message, code });
+  }
+  return res.status(500).json({ ok: false, error: message, code });
+}
+
+function canvasWorkspaceFrom(req) {
+  return normalizeWorkspace(String(req.body?.workspace || req.query?.workspace || "")) || getWorkspace();
+}
+
+app.get("/api/canvas/list", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    res.json({ ok: true, ...cvs.listCanvases(canvasWorkspaceFrom(req)) });
+  } catch (e) { canvasError(res, e); }
+});
+
+app.get("/api/canvas/exports/:jobId", (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  const job = canvasExportJobs.get(String(req.params.jobId || ""));
+  if (!job) return res.status(404).json({ ok: false, error: "导出任务不存在或服务已重启" });
+  res.json({ ok: true, ...job });
+});
+
+app.post("/api/canvas", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    const created = cvs.createCanvas(canvasWorkspaceFrom(req), {
+      slug: req.body?.slug,
+      title: req.body?.title,
+      kind: req.body?.kind === "deck" ? "deck" : "board",
+      template: req.body?.template,
+    });
+    // 前端按 `{ canvas: { slug, title } }` 取新建结果（其余字段保留）。
+    res.json({ ok: true, ...created, canvas: { slug: created.slug, title: created.title || req.body?.title || created.slug, path: created.path } });
+  } catch (e) { canvasError(res, e); }
+});
+
+// 创作画布素材受控读取：只允许 project/ 内的图片/字体/样式/脚本等文件。
+// 渲染端用 `<img src>` / `url(...)` 引用，不执行页面脚本；SVG 另加 CSP 防外链。
+const CANVAS_ASSET_MIME = new Map(Object.entries({
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif",
+  avif: "image/avif", svg: "image/svg+xml", ico: "image/x-icon",
+  woff2: "font/woff2", woff: "font/woff", ttf: "font/ttf", otf: "font/otf",
+  css: "text/css; charset=utf-8", js: "text/javascript; charset=utf-8",
+  json: "application/json; charset=utf-8", mp4: "video/mp4", webm: "video/webm",
+}));
+
+app.get("/api/canvas/:slug/asset", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const slug = String(req.params.slug || "");
+    if (!/^[\p{L}\p{N}][\p{L}\p{N}_-]{0,63}$/u.test(slug)) {
+      return res.status(400).json({ ok: false, error: "非法画布 slug", code: "CANVAS_INVALID" });
+    }
+    const workspace = canvasWorkspaceFrom(req);
+    const projectDir = path.join(workspace, "designs", slug, "project");
+    const rel = String(req.query.path || "").replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!rel || rel.includes("..") || path.isAbsolute(rel) || /^[a-zA-Z]:/.test(rel)) {
+      return res.status(400).json({ ok: false, error: "素材路径非法", code: "CANVAS_PATH_DENIED" });
+    }
+    const target = path.resolve(projectDir, rel);
+    if (!isInside(projectDir, target)) {
+      return res.status(400).json({ ok: false, error: "素材路径越界", code: "CANVAS_PATH_DENIED" });
+    }
+    const mime = CANVAS_ASSET_MIME.get(path.extname(target).slice(1).toLowerCase()) || "";
+    if (!mime) return res.status(400).json({ ok: false, error: "不支持的素材类型", code: "CANVAS_INVALID" });
+    if (!fs.existsSync(target) || !fs.statSync(target).isFile()) {
+      return res.status(404).json({ ok: false, error: "素材不存在", code: "CANVAS_NOT_FOUND" });
+    }
+    res.setHeader("Content-Type", mime);
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    // SVG/字体等按受控资源返回：禁止外链与脚本，避免素材成为 XSS 入口。
+    res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:");
+    fs.createReadStream(target).pipe(res);
+  } catch (e) { canvasError(res, e); }
+});
+
+app.get("/api/canvas/:slug", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    res.json({ ok: true, ...cvs.readCanvas(canvasWorkspaceFrom(req), req.params.slug) });
+  } catch (e) { canvasError(res, e); }
+});
+
+app.patch("/api/canvas/:slug", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    const updated = cvs.updateCanvas(canvasWorkspaceFrom(req), req.params.slug, req.body?.patch || req.body || {});
+    res.json({ ok: true, ...updated });
+  } catch (e) { canvasError(res, e); }
+});
+
+app.delete("/api/canvas/:slug", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  if (req.body?.confirmed !== true) {
+    return res.status(409).json({ ok: false, error: "删除创作画布需要 confirmed:true", code: "CANVAS_CONFIRM_REQUIRED" });
+  }
+  try {
+    const cvs = await import("./创作画布.mjs");
+    res.json({ ok: true, ...cvs.deleteCanvas(canvasWorkspaceFrom(req), req.params.slug, { confirmed: true }) });
+  } catch (e) { canvasError(res, e); }
+});
+
+app.get("/api/canvas/:slug/board", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    res.json({ ok: true, ...cvs.readBoard(canvasWorkspaceFrom(req), req.params.slug, String(req.query.path || "")) });
+  } catch (e) { canvasError(res, e); }
+});
+
+app.put("/api/canvas/:slug/board", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    const boardPath = String(req.body?.path || req.query?.path || "");
+    const saved = cvs.writeBoard(canvasWorkspaceFrom(req), req.params.slug, boardPath, req.body?.board || {}, {
+      expectedRev: Number.isFinite(Number(req.body?.expectedRev)) ? Number(req.body.expectedRev) : undefined,
+    });
+    res.json({ ok: true, ...saved });
+  } catch (e) { canvasError(res, e); }
+});
+
+// 版本历史（2026-11-09 验收反馈）：列快照元数据 + 恢复某条快照为当前板。
+app.get("/api/canvas/:slug/history", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    res.json({
+      ok: true,
+      ...cvs.listCanvasHistory(canvasWorkspaceFrom(req), req.params.slug, {
+        boardPath: String(req.query.board || ""),
+        scope: String(req.query.scope || "board") === "canvas" ? "canvas" : "board",
+      }),
+    });
+  } catch (e) { canvasError(res, e); }
+});
+
+app.post("/api/canvas/:slug/history/restore", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    const restored = cvs.restoreBoardHistory(canvasWorkspaceFrom(req), req.params.slug, {
+      boardPath: String(req.body?.board || req.body?.path || ""),
+      id: String(req.body?.id || ""),
+      expectedRev: Number.isFinite(Number(req.body?.expectedRev)) ? Number(req.body.expectedRev) : null,
+      actor: "ui",
+    });
+    res.json({ ok: true, ...restored });
+  } catch (e) { canvasError(res, e); }
+});
+
+// 导入兼容画布：slug 可选（省略时由源目录名/标题生成），故单独一条无 slug 路由。
+app.post("/api/canvas/import", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    const imported = cvs.importCanvas(canvasWorkspaceFrom(req), {
+      sourcePath: req.body?.sourcePath,
+      slug: req.body?.slug,
+      title: req.body?.title,
+    });
+    res.json({
+      ok: true,
+      ...imported,
+      canvas: { slug: imported.slug, title: imported.title, path: imported.path },
+    });
+  } catch (e) { canvasError(res, e); }
+});
+
+app.post("/api/canvas/:slug/import", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    const imported = cvs.importCanvas(canvasWorkspaceFrom(req), {
+      sourcePath: req.body?.sourcePath,
+      slug: req.body?.slug || req.params.slug,
+      title: req.body?.title,
+    });
+    res.json({
+      ok: true,
+      ...imported,
+      canvas: { slug: imported.slug, title: imported.title, path: imported.path },
+    });
+  } catch (e) { canvasError(res, e); }
+});
+
+app.post("/api/canvas/:slug/export", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  const workspace = canvasWorkspaceFrom(req);
+  const slug = String(req.params.slug || "");
+  try {
+    const cvs = await import("./创作画布.mjs");
+    const format = String(req.body?.format || "png").toLowerCase();
+    const boards = Array.isArray(req.body?.boards) ? req.body.boards.map(String) : undefined;
+    const plan = cvs.planExport(workspace, slug, { format, boards });
+    if (plan.errors?.length) {
+      return res.status(400).json({ ok: false, error: plan.errors.join("；"), code: "CANVAS_INVALID", errors: plan.errors });
+    }
+    const jobId = `canvas-export-${++canvasExportSeq}-${Date.now().toString(36)}`;
+    const job = { id: jobId, slug, format, status: "running", files: [], error: "", createdAt: new Date().toISOString(), finishedAt: "" };
+    canvasExportJobs.set(jobId, job);
+    while (canvasExportJobs.size > 40) {
+      const oldest = canvasExportJobs.keys().next().value;
+      if (!oldest) break;
+      canvasExportJobs.delete(oldest);
+    }
+    // 后台执行：同一画布串行由模块内写锁/导出队列保证；HTTP 只返回任务号。
+    void cvs.runExport(workspace, slug, { format, boards, outputName: req.body?.outputName, jobId })
+      .then((result) => {
+        job.status = "completed";
+        job.files = result?.files || [];
+        job.finishedAt = new Date().toISOString();
+      })
+      .catch((e) => {
+        job.status = "failed";
+        job.error = String(e?.message || e);
+        job.finishedAt = new Date().toISOString();
+      });
+    res.json({ ok: true, jobId, slug, format, status: "running" });
+  } catch (e) { canvasError(res, e); }
 });
 
 // ---------- GIS G5-v1：OD 通勤分析模板（flag OAW_MAP_TEMPLATES，默认关） ----------

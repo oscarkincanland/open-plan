@@ -59,7 +59,7 @@ import { probeBashAvailability, bashUnavailableError, bashWorkspaceRule, resolve
 const OFFICE_TOOL_RULE = "- ALWAYS operate on office documents through the `officecli` tool — it resolves file names relative to the current workspace and runs on Windows natively. NEVER try to run `officecli` via the bash tool.";
 
 /** 团队使用口径：只在 Work/Review 的复杂多角色任务启用，避免简单任务被拆成多人。 */
-const TEAM_TOOL_RULE = "- **专家团队（Work/Review）**: 仅当任务确实需要多角色并行/交接（多章节写作、批量审阅、撰写—审阅—核验闭环）时，才用 `team_spawn` 创建 1–2 名具名队友（团队总人数最多 3，含 Lead）。简单问答、单文件修改、单步检索不要组队。团队工具是 `team_spawn`/`team_send`/`team_wait`/`team_list`/`team_task`；共享任务板用 `team_task create` 拆任务，队友用 `team_task claim/update` 推进。创建队友后必须 `team_wait` 等一次变化，不要轮询；不要嵌套团队，队友不能再创建队友。写文件仍按角色与既有审批，`writeScopes` 只是告警，不是授权。";
+const TEAM_TOOL_RULE = "- **专家团队与子代理的选择（2026-11-09）**: ① **单干**：单文件修改、单步检索、纯问答、一次生成——直接做，不组队、不派子代理；② **子代理（run_subagent）**：只需一次性并行/隔离的只读准备（多份资料同时读、多个文件同时审），没有交接与共享任务板需求；③ **专家团队（team_*）**：存在 ≥2 个可独立认领的子任务，且需要“分工 → 交接 → 汇总/审阅”（多章节写作、批量审阅、撰写—审阅—核验闭环、跨角色核验）。团队工具是 `team_spawn`/`team_send`/`team_wait`/`team_list`/`team_task`；先在任务板创建 ≥2 个可认领任务再创建队友。创建队友后必须 `team_wait` 等一次变化，不要轮询；不要嵌套团队，队友不能再创建队友。写文件仍按角色与既有审批，`writeScopes` 只是告警，不是授权。若本轮收到 [团队建议] 但你判断不需要，必须在最终答复中用一句话说明原因；若收到 [团队要求]（用户 /team），必须使用团队且 ≥2 个任务，不得用 run_subagent 替代。";
 
 /**
  * 输出策略（A03，2026-11-08 修订 → 方案 C「必答项 + 自由结构」）：
@@ -76,6 +76,7 @@ export function buildOutputPolicyLines() {
     "- **最终答复（重要）**: 先用 1-2 句人话像同事汇报那样说清「做了什么、结论是什么」（不要标题、不要客套），再展开正文。",
     "  正文必须覆盖这些**必答项**（内容要齐，形式你自己定）：结果结论 / 关键数据或依据 / 产物位置 / 怎么验证的 / 没做完或风险。",
     "  **结构自由**：小标题、表格、编号列表、纯叙述都可以；小标题用内容词（例如「这次动了三处」「为什么不用模板法」「还差什么」），**不要**用「关键结果 / 产物 / 验证 / 风险与未完成」这类空模板词；加粗只做行内强调，不得当标题；没内容的节直接省略，不要留空标题。",
+    "  **Markdown 硬约束**：标题必须写成 `## 标题`（井号后有空格）——`##结论` 这类写法不会渲染成标题，会原样显示成正文；超过三节时用 `## 一、…` / `## 二、…` 这类编号分节（或统一用有序列表），同一轮只用一个编号体系；每个标题必须概括它下面那段内容，标题与内容对不上比没有标题更糟。",
     "  结尾给一句下一步建议或征询（例如「标注样式还没迁移，要不要下一轮补上」）。",
     "  **纪律**：不要复述工具调用流水；不得把「进度小结 / 本轮无剩余动作 / 接下来我将」等过程口吻写进终稿；终稿语言与用户一致，不得混入英文内部推理。",
     "- **结论文档（仅研究型轮次）**: 如果本轮属于研究、评估、方案对比或审查，且结论值得以后复用，把完整结论写成一份 Markdown 文档放进当前工作区 `回报/` 目录（文件名 `YYYY-MM-DD-<主题>.md`），最终答复里用一句话指路即可；纯执行轮次（跑命令、改错别字、单文件小改）不要写文档，避免工作区堆满一次性文件。",
@@ -156,6 +157,8 @@ import { listSkillCatalog } from "./技能目录.mjs";
 import { searchSkills, rankSkills } from "./技能检索.mjs";
 import { selectWritingSkills } from "./写作技能筛选.mjs";
 import { probeSkillDeps } from "./技能依赖.mjs";
+import { shouldSuggestTeam } from "./团队建议.mjs";
+import { recordTeamBlocked, recordTeamClosed, recordTeamStarted, recordTeamSuggested, recordTeamTaskUpdate } from "./团队指标.mjs";
 import { createInteraction, settleInteraction, expireInteraction, assumeInteraction, cancelClientInteractions } from "./交互中枢.mjs";
 import {
   BACKGROUND_AFTER_MS,
@@ -4276,6 +4279,278 @@ execute: async (_toolCallId, params, signal) => {
       },
     });
 
+    // ---- 创作画布工具（creativeCanvas 开关，默认关；仅 Work）----
+    // 工具只做参数校验、审批、事件与文本投影；文件读写/校验/导出全部在 server/创作画布.mjs。
+    const canvasSlugify = (title) => String(title || "canvas")
+      .trim().toLowerCase()
+      .replace(/[^\p{L}\p{N}_-]+/gu, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 60) || "canvas";
+
+    const canvasReadTool = defineTool({
+      name: "canvas_read",
+      label: "创作画布读取",
+      description:
+        "读取创作画布：不传 slug 时列出工作区内全部画布（标题/类型/板数）；传 slug 返回画布索引与板清单；再传 board（相对 project 的板路径，如 boards/cover.board.json）返回该板元素 JSON。只读，不写工作区。",
+      parameters: Type.Object({
+        slug: Type.Optional(Type.String({ description: "画布 slug；省略则列出全部画布" })),
+        board: Type.Optional(Type.String({ description: "板路径（相对 project/），如 boards/cover.board.json" })),
+        workspace: Type.Optional(Type.String({ description: "工作区绝对路径；缺省使用当前会话工作区" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        try {
+          const cvs = await import("./创作画布.mjs");
+          const ws = String(params.workspace || entry.workspace || getWorkspace());
+          if (!params.slug) {
+            const list = cvs.listCanvases(ws);
+            const text = list.canvases.length
+              ? list.canvases.map((c) => `- ${c.slug}（${c.title || c.slug} · ${c.kind || "board"} · ${c.boards ?? 0} 块板）`).join("\n")
+              : "（当前工作区没有创作画布）";
+            return { content: [{ type: "text", text: `创作画布（${list.canvases.length}）：\n${text}` }], details: { canvases: list.canvases } };
+          }
+          if (params.board) {
+            const read = cvs.readBoard(ws, params.slug, params.board);
+            return {
+              content: [{ type: "text", text: `画布 ${params.slug} / ${params.board}（rev ${read.rev}）：\n${JSON.stringify(read.board, null, 2)}` }],
+              details: { slug: params.slug, boardPath: params.board, rev: read.rev },
+            };
+          }
+          const read = cvs.readCanvas(ws, params.slug);
+          const lines = read.boards.map((b) => `- ${b.path}（${b.title || b.path} · ${b.w}×${b.h}${b.role ? ` · ${b.role}` : ""}${b.kind === "html" ? " · 兼容板只读" : ""}）`).join("\n");
+          return {
+            content: [{ type: "text", text: `画布「${read.canvas.title || params.slug}」（${read.canvas.kind || "board"}，rev ${read.canvas.rev}）\n板（${read.boards.length}）：\n${lines || "（空）"}` }],
+            details: { slug: params.slug, compatible: read.compatible, boards: read.boards, rev: read.canvas.rev },
+          };
+        } catch (e) {
+          return { content: [{ type: "text", text: `创作画布读取失败：${e?.message || e}` }], details: { code: e?.code || "" } };
+        }
+      },
+    });
+
+    const canvasWriteTool = defineTool({
+      name: "canvas_write",
+      label: "创作画布编辑",
+      description:
+        "创建/修改创作画布（写工作区 designs/<slug>，不覆盖用户正在编辑的板除非显式传 expectedRev）。action：\n"
+        + "create_canvas：新建画布（title 必填，slug 可省略；kind=board|deck）；\n"
+        + "add_board：新增对象板（slug、title、board 可选路径；元素为空，后续用 patch_board 写入）；\n"
+        + "patch_board：整板写入（slug、board、elements JSON 数组 或 完整 board JSON；expectedRev 做并发校验）；\n"
+        + "update_canvas：改标题/页面/顺序/板坐标（slug + title/pages/order/boards JSON）；\n"
+        + "delete_element：从板删除指定元素（slug、board、elementId）。\n"
+        + "元素类型：text（text/style/x/y/w/h）、rect、line、image（src 为 project 内相对路径）、svg（src 或 markup）。画布文件属于工作区产物。",
+      parameters: Type.Object({
+        action: Type.Union([
+          Type.Literal("create_canvas"),
+          Type.Literal("add_board"),
+          Type.Literal("patch_board"),
+          Type.Literal("update_canvas"),
+          Type.Literal("delete_element"),
+        ]),
+        slug: Type.Optional(Type.String({ description: "画布 slug（create_canvas 可省略，由标题生成）" })),
+        title: Type.Optional(Type.String({ description: "画布/画板标题" })),
+        kind: Type.Optional(Type.String({ description: "create_canvas：board（普通画板）或 deck（幻灯片）" })),
+        board: Type.Optional(Type.String({ description: "板路径（相对 project/），如 boards/cover.board.json" })),
+        elements: Type.Optional(Type.String({ description: "patch_board：元素数组 JSON 字符串（整板替换）" })),
+        elementId: Type.Optional(Type.String({ description: "delete_element：要删除的元素 id" })),
+        boardJson: Type.Optional(Type.String({ description: "patch_board：完整板 JSON 字符串（含 w/h/background/elements）" })),
+        layout: Type.Optional(Type.String({ description: "add_board/update_canvas：板坐标 JSON，如 {\"x\":0,\"y\":0,\"w\":1280,\"h\":720}" })),
+        order: Type.Optional(Type.String({ description: "update_canvas：板顺序 JSON 数组字符串" })),
+        pages: Type.Optional(Type.String({ description: "update_canvas：页面 JSON 数组字符串" })),
+        boards: Type.Optional(Type.String({ description: "update_canvas：boards 元数据 JSON 对象字符串" })),
+        expectedRev: Type.Optional(Type.Number({ description: "patch_board：期望板 rev；冲突时返回错误，不覆盖" })),
+        workspace: Type.Optional(Type.String({ description: "工作区绝对路径；缺省使用当前会话工作区" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        try {
+          if (!RUNTIME_FLAGS.creativeCanvas) {
+            return { content: [{ type: "text", text: "创作画布未开启（OAW_CREATIVE_CANVAS=1）。" }], details: { code: "CANVAS_FEATURE_OFF" } };
+          }
+          const cvs = await import("./创作画布.mjs");
+          const ws = String(params.workspace || entry.workspace || getWorkspace());
+          const ctx = activeWriteContext("canvas_write");
+          const action = String(params.action || "");
+          const slug = String(params.slug || "").trim() || canvasSlugify(params.title);
+          const parse = (value, fallback) => {
+            if (value === undefined || value === null || value === "") return fallback;
+            try { return JSON.parse(String(value)); } catch { throw Object.assign(new Error("JSON 参数解析失败"), { code: "CANVAS_INVALID" }); }
+          };
+          if (!["create_canvas", "add_board", "patch_board", "update_canvas", "delete_element"].includes(action)) {
+            return { content: [{ type: "text", text: `未知 action：${action}` }], details: { code: "CANVAS_INVALID" } };
+          }
+          await requireToolApproval({
+            entry, tool: "canvas_write", input: `${slug}/${action}`,
+            runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+          });
+          if (action === "create_canvas") {
+            if (!String(params.title || "").trim()) return { content: [{ type: "text", text: "create_canvas 需要 title" }], details: { code: "CANVAS_INVALID" } };
+            const created = cvs.createCanvas(ws, { slug, title: String(params.title).trim(), kind: params.kind === "deck" ? "deck" : "board" });
+            writeEvent("canvas_created", { slug: created.slug, title: String(params.title).trim(), kind: params.kind === "deck" ? "deck" : "board", workspace: ws });
+            writeEvent("canvas_changed", { slug: created.slug, action: "create_canvas", boardPath: "", revision: 1, actor: "agent", workspace: ws });
+            return { content: [{ type: "text", text: `已创建创作画布「${params.title}」（${created.slug}）。可用 add_board 加板，patch_board 写内容。` }], details: { slug: created.slug, path: created.path } };
+          }
+          if (action === "add_board") {
+            const boardPath = String(params.board || `boards/board-${Date.now().toString(36)}.board.json`);
+            const layout = parse(params.layout, { x: 0, y: 0, w: 1280, h: 720 });
+            const index = cvs.readCanvas(ws, slug);
+            const board = { v: 1, w: Number(layout.w) || 1280, h: Number(layout.h) || 720, background: "#ffffff", rev: 1, elements: [] };
+            const savedBoard = cvs.writeBoard(ws, slug, boardPath, board, {});
+            const order = [...(index.canvas.order || []), boardPath];
+            const boards = { ...(index.canvas.boards || {}), [boardPath]: { ...layout, title: String(params.title || "画板"), role: index.canvas.kind === "deck" ? "slide" : "board" } };
+            const updated = cvs.updateCanvas(ws, slug, { order, boards });
+            writeEvent("canvas_changed", { slug, action: "add_board", boardPath, revision: Number(updated?.rev) || Number(savedBoard?.canvasRev) || index.canvas.rev + 1, actor: "agent", workspace: ws });
+            return { content: [{ type: "text", text: `已新增画板 ${boardPath}（${board.w}×${board.h}）。` }], details: { slug, boardPath } };
+          }
+          if (action === "patch_board") {
+            if (!params.board) return { content: [{ type: "text", text: "patch_board 需要 board 路径" }], details: { code: "CANVAS_INVALID" } };
+            const existing = cvs.readBoard(ws, slug, params.board);
+            const patch = parse(params.boardJson, null) || {};
+            const elements = params.elements !== undefined ? parse(params.elements, []) : (Array.isArray(patch.elements) ? patch.elements : null);
+            const next = {
+              ...existing.board,
+              ...(patch && typeof patch === "object" ? patch : {}),
+              ...(elements ? { elements } : {}),
+              rev: existing.rev + 1,
+            };
+            const saved = cvs.writeBoard(ws, slug, params.board, next, { expectedRev: Number.isFinite(params.expectedRev) ? params.expectedRev : existing.rev });
+            writeEvent("canvas_changed", { slug, action: "patch_board", boardPath: params.board, revision: saved.rev, actor: "agent", workspace: ws });
+            return { content: [{ type: "text", text: `已写入画板 ${params.board}（${(next.elements || []).length} 个元素，rev ${saved.rev}）。` }], details: { slug, boardPath: params.board, rev: saved.rev } };
+          }
+          if (action === "delete_element") {
+            if (!params.board || !params.elementId) return { content: [{ type: "text", text: "delete_element 需要 board 与 elementId" }], details: { code: "CANVAS_INVALID" } };
+            const existing = cvs.readBoard(ws, slug, params.board);
+            const elements = (existing.board.elements || []).filter((el) => String(el.id) !== String(params.elementId));
+            const saved = cvs.writeBoard(ws, slug, params.board, { ...existing.board, elements, rev: existing.rev + 1 }, {});
+            writeEvent("canvas_changed", { slug, action: "delete_element", boardPath: params.board, revision: saved.rev, actor: "agent", workspace: ws });
+            return { content: [{ type: "text", text: `已删除元素 ${params.elementId}（剩 ${elements.length} 个）。` }], details: { slug, boardPath: params.board, rev: saved.rev } };
+          }
+          // update_canvas
+          const patch = {};
+          if (params.title) patch.title = String(params.title);
+          const order = parse(params.order, null);
+          const pages = parse(params.pages, null);
+          const boards = parse(params.boards, null);
+          if (order) patch.order = order;
+          if (pages) patch.pages = pages;
+          if (boards) patch.boards = boards;
+          const updated = cvs.updateCanvas(ws, slug, patch);
+          writeEvent("canvas_changed", { slug, action: "update_canvas", boardPath: "", revision: updated.rev, actor: "agent", workspace: ws });
+          return { content: [{ type: "text", text: `已更新画布 ${slug}（rev ${updated.rev}）。` }], details: { slug, rev: updated.rev } };
+        } catch (e) {
+          return { content: [{ type: "text", text: `创作画布写入失败：${e?.message || e}` }], details: { code: e?.code || "" } };
+        }
+      },
+    });
+
+    const canvasDeleteTool = defineTool({
+      name: "canvas_delete",
+      label: "创作画布删除",
+      description: "删除创作画布整张（action=delete_canvas）或其中一块板（action=delete_board）。软删除到项目 .trash/，可人工恢复；需用户审批，auto 模式不自动批准。",
+      parameters: Type.Object({
+        action: Type.Union([Type.Literal("delete_canvas"), Type.Literal("delete_board")]),
+        slug: Type.String({ description: "画布 slug" }),
+        board: Type.Optional(Type.String({ description: "delete_board：板路径" })),
+        workspace: Type.Optional(Type.String({ description: "工作区绝对路径" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        try {
+          if (!RUNTIME_FLAGS.creativeCanvas) return { content: [{ type: "text", text: "创作画布未开启（OAW_CREATIVE_CANVAS=1）。" }], details: {} };
+          const cvs = await import("./创作画布.mjs");
+          const ws = String(params.workspace || entry.workspace || getWorkspace());
+          const ctx = activeWriteContext("canvas_delete");
+          await requireToolApproval({
+            entry, tool: "canvas_delete", input: `${params.slug}/${params.board || ""}`,
+            runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+          });
+          if (params.action === "delete_canvas") {
+            cvs.deleteCanvas(ws, params.slug, { confirmed: true });
+            writeEvent("canvas_changed", { slug: params.slug, action: "delete_canvas", boardPath: "", revision: 0, actor: "agent", workspace: ws });
+            return { content: [{ type: "text", text: `已删除创作画布 ${params.slug}（已移入 .trash，可人工恢复）。` }], details: { slug: params.slug } };
+          }
+          if (!params.board) return { content: [{ type: "text", text: "delete_board 需要 board 路径" }], details: { code: "CANVAS_INVALID" } };
+          const index = cvs.readCanvas(ws, params.slug);
+          const order = (index.canvas.order || []).filter((p) => p !== params.board);
+          const boards = { ...(index.canvas.boards || {}) };
+          delete boards[params.board];
+          cvs.updateCanvas(ws, params.slug, { order, boards });
+          writeEvent("canvas_changed", { slug: params.slug, action: "delete_board", boardPath: params.board, revision: index.canvas.rev + 1, actor: "agent", workspace: ws });
+          return { content: [{ type: "text", text: `已从画布移除画板 ${params.board}（文件保留在 project 内，可再加入 order）。` }], details: { slug: params.slug, boardPath: params.board } };
+        } catch (e) {
+          return { content: [{ type: "text", text: `创作画布删除失败：${e?.message || e}` }], details: { code: e?.code || "" } };
+        }
+      },
+    });
+
+    const canvasImportTool = defineTool({
+      name: "canvas_import",
+      label: "创作画布导入",
+      description: "把工作区内已有的 claude-design/baoyu-design 画布目录（含 project/canvas.json 与 .dc.html）复制导入为创作画布（只读兼容板，不改写原文件）。需用户审批。",
+      parameters: Type.Object({
+        sourcePath: Type.String({ description: "源画布目录（工作区内绝对或相对路径，需含 project/canvas.json）" }),
+        slug: Type.Optional(Type.String({ description: "目标画布 slug；省略按目录名" })),
+        title: Type.Optional(Type.String({ description: "画布标题" })),
+        workspace: Type.Optional(Type.String({ description: "工作区绝对路径" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        try {
+          if (!RUNTIME_FLAGS.creativeCanvas) return { content: [{ type: "text", text: "创作画布未开启（OAW_CREATIVE_CANVAS=1）。" }], details: {} };
+          const cvs = await import("./创作画布.mjs");
+          const ws = String(params.workspace || entry.workspace || getWorkspace());
+          const ctx = activeWriteContext("canvas_import");
+          const sourcePath = path.resolve(ws, String(params.sourcePath || ""));
+          if (!isInside(ws, sourcePath)) return { content: [{ type: "text", text: "导入失败：源目录必须位于工作区内" }], details: { code: "CANVAS_PATH_DENIED" } };
+          await requireToolApproval({
+            entry, tool: "canvas_import", input: sourcePath,
+            runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+          });
+          const slug = String(params.slug || "").trim() || canvasSlugify(path.basename(sourcePath));
+          const imported = cvs.importCanvas(ws, { sourcePath, slug, title: String(params.title || path.basename(sourcePath)) });
+          writeEvent("canvas_created", { slug, title: String(params.title || path.basename(sourcePath)), kind: "board", workspace: ws });
+          writeEvent("canvas_changed", { slug, action: "import", boardPath: "", revision: 1, actor: "agent", workspace: ws });
+          const importedBoards = Number(imported?.boardCount) || (Array.isArray(imported?.boards) ? imported.boards.length : 0);
+          return { content: [{ type: "text", text: `已导入画布「${params.title || slug}」（${importedBoards} 块板）。兼容板为只读渲染。` }], details: { slug, boards: imported?.boards || [] } };
+        } catch (e) {
+          return { content: [{ type: "text", text: `创作画布导入失败：${e?.message || e}` }], details: { code: e?.code || "" } };
+        }
+      },
+    });
+
+    const canvasExportTool = defineTool({
+      name: "canvas_export",
+      label: "创作画布导出",
+      description: "导出创作画布：format=svg（对象板矢量）/png（逐板截图）/pdf（同尺寸多板分页）/pptx（对象板文本可编辑、形状为形状、图片为图片；兼容板为整页图片）。导出到 designs/<slug>/exports/，返回文件清单。需用户审批。",
+      parameters: Type.Object({
+        slug: Type.String({ description: "画布 slug" }),
+        format: Type.Union([Type.Literal("svg"), Type.Literal("png"), Type.Literal("pdf"), Type.Literal("pptx")]),
+        boards: Type.Optional(Type.String({ description: "可选：板路径数组 JSON 字符串；缺省导出全部板" })),
+        outputName: Type.Optional(Type.String({ description: "可选：输出文件名（不含扩展名）" })),
+        workspace: Type.Optional(Type.String({ description: "工作区绝对路径" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        try {
+          if (!RUNTIME_FLAGS.creativeCanvas) return { content: [{ type: "text", text: "创作画布未开启（OAW_CREATIVE_CANVAS=1）。" }], details: {} };
+          const cvs = await import("./创作画布.mjs");
+          const ws = String(params.workspace || entry.workspace || getWorkspace());
+          const ctx = activeWriteContext("canvas_export");
+          await requireToolApproval({
+            entry, tool: "canvas_export", input: `${params.slug}/${params.format}`,
+            runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+          });
+          let boards;
+          if (params.boards) {
+            try { boards = JSON.parse(String(params.boards)); } catch { return { content: [{ type: "text", text: "boards 需为 JSON 数组字符串" }], details: { code: "CANVAS_INVALID" } }; }
+          }
+          const plan = cvs.planExport(ws, params.slug, { format: params.format, boards });
+          if (plan.errors?.length) return { content: [{ type: "text", text: `导出无法执行：${plan.errors.join("；")}` }], details: { errors: plan.errors } };
+          const result = await cvs.runExport(ws, params.slug, { format: params.format, boards, outputName: params.outputName });
+          writeEvent("canvas_exported", { slug: params.slug, format: params.format, files: result.files, jobId: result.jobId });
+          const lines = (result.files || []).map((f) => `- ${f.path}（${Math.round((f.bytes || 0) / 1024)} KB）`).join("\n");
+          return { content: [{ type: "text", text: `已导出 ${params.format.toUpperCase()}：\n${lines}` }], details: { slug: params.slug, format: params.format, files: result.files } };
+        } catch (e) {
+          return { content: [{ type: "text", text: `创作画布导出失败：${e?.message || e}` }], details: { code: e?.code || "" } };
+        }
+      },
+    });
+
     // ---- 记忆工具（agent 完成任务后自主沉淀经验/偏好） ----
     const memoryUpdateTool = defineTool({
       name: "memory_update",
@@ -4998,16 +5273,35 @@ execute: async (_toolCallId, params, signal) => {
     const ensureTeamService = ({ create = false } = {}) => {
       if (entry.teamService && !entry.teamService.closed) return entry.teamService;
       if (!create) return null;
-      if (!teamModeAllowed()) throw new Error("团队只能在 Work 或 Review 模式创建；Chat 只能只读查看团队");
+      if (!teamModeAllowed()) throw new Error("团队只能在 Work 或 Review 模式创建；Chat 只能只读查看历史团队");
+      const teamPlan = (entry.teamPlan && entry.teamPlan.id === "team")
+        ? entry.teamPlan
+        : (entry.task?.capabilityPlan?.capabilities || []).find((item) => item?.id === "team") || null;
+      const teamIntent = String(entry.task?.teamIntent || "auto") === "required" ? "required" : "auto";
+      // 2026-11-09：来源 trigger = user（/team）/ suggested（建议被采纳）/ model（模型自选）
+      const trigger = teamIntent === "required" ? "user" : (teamPlan?.status === "suggested" ? "suggested" : "model");
+      const suggestReasons = Array.isArray(teamPlan?.reasons) ? teamPlan.reasons : [];
+      const currentTeamId = teamIdForRun();
       const service = createTeamService({
-        teamId: teamIdForRun(),
+        teamId: currentTeamId,
         runId: entry.activeRunId || null,
         sessionId: entry.clientId || null,
         threadId: entry.threadId || null,
         leadName: "Lead",
         mode: entry.mode,
         canWrite: teamCanWrite(),
-        emit: (type, data) => writeEvent(type, data),
+        // 2026-11-09：团队来源元数据 → team_started 事件可追溯
+        trigger,
+        teamIntent,
+        suggestReasons,
+        emit: (type, data) => {
+          try {
+            if (type === "team_started") recordTeamStarted(trigger);
+            else if (type === "team_task_updated") recordTeamTaskUpdate(data?.teamId || currentTeamId);
+            else if (type === "team_closed") recordTeamClosed(data?.teamId || currentTeamId);
+          } catch {}
+          writeEvent(type, data);
+        },
         runMemberTask: runTeamMemberTask,
       });
       entry.teamService = service;
@@ -5113,6 +5407,29 @@ execute: async (_toolCallId, params, signal) => {
       execute: async (_toolCallId, params) => {
         try {
           if (!teamModeAllowed()) throw new Error("团队只能在 Work 或 Review 模式创建");
+          // 2026-11-09（计划 2026-11-09-001 §5.5）：组队护栏——没有可认领任务时阻断。
+          if (RUNTIME_FLAGS.teamGuard) {
+            const existing = entry.teamService && !entry.teamService.closed ? entry.teamService : null;
+            const taskCount = existing ? (existing.snapshot({ includeTranscript: false }).tasks || []).length : 0;
+            if (taskCount === 0) {
+              const teamIntent = String(entry.task?.teamIntent || "auto");
+              try {
+                writeEvent("team_spawn_blocked", {
+                  runId: entry.activeRunId || null,
+                  teamIntent,
+                  taskCount,
+                  code: "TEAM_TASKS_REQUIRED",
+                  reason: "创建队友前请先用 team_task create 创建至少 2 个可认领任务",
+                });
+                recordTeamBlocked();
+              } catch {}
+              return {
+                content: [{ type: "text", text: "组队护栏：创建队友前请先用 team_task create 创建至少 2 个可认领任务（当前 0 个）；然后重新 team_spawn。" }],
+                isError: true,
+                details: { code: "TEAM_TASKS_REQUIRED", taskCount },
+              };
+            }
+          }
           const service = ensureTeamService({ create: true });
           const result = service.spawn({ name: params.name, role: params.role, task: params.task });
           return teamToolResult(
@@ -5405,7 +5722,7 @@ execute: async (_toolCallId, params, signal) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, jobStatusTool, jobCancelTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, skillDraftTool, contextReadTool, mapReadTool, mapDatasetsTool, mapLayerInfoTool, mapResetTool, mapProjectCreateTool, mapDraftLayerTool, mapFixateLayerTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, cadReadTool, cadEditTool, memoryUpdateTool, webSearchTool, webFetchTool, wrapBrowserStepTool("open", browserOpenTool), wrapBrowserStepTool("snapshot", browserSnapshotTool), wrapBrowserStepTool("click", browserClickTool), wrapBrowserStepTool("type", browserTypeTool), wrapBrowserStepTool("press", browserPressTool), wrapBrowserStepTool("scroll", browserScrollTool), wrapBrowserStepTool("screenshot", browserScreenshotTool), wrapBrowserStepTool("tabs", browserTabsTool), wrapBrowserStepTool("back", browserBackTool), wrapBrowserStepTool("close", browserCloseTool), wrapBrowserStepTool("wait", browserWaitForTool), wrapBrowserStepTool("act", browserActTool), wrapBrowserStepTool("extract", browserExtractTool), wrapBrowserStepTool("select", browserSelectOptionTool), subagentTool, ...teamTools, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
+        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, jobStatusTool, jobCancelTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, skillDraftTool, contextReadTool, mapReadTool, mapDatasetsTool, mapLayerInfoTool, mapResetTool, mapProjectCreateTool, mapDraftLayerTool, mapFixateLayerTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, cadReadTool, cadEditTool, canvasReadTool, canvasWriteTool, canvasDeleteTool, canvasImportTool, canvasExportTool, memoryUpdateTool, webSearchTool, webFetchTool, wrapBrowserStepTool("open", browserOpenTool), wrapBrowserStepTool("snapshot", browserSnapshotTool), wrapBrowserStepTool("click", browserClickTool), wrapBrowserStepTool("type", browserTypeTool), wrapBrowserStepTool("press", browserPressTool), wrapBrowserStepTool("scroll", browserScrollTool), wrapBrowserStepTool("screenshot", browserScreenshotTool), wrapBrowserStepTool("tabs", browserTabsTool), wrapBrowserStepTool("back", browserBackTool), wrapBrowserStepTool("close", browserCloseTool), wrapBrowserStepTool("wait", browserWaitForTool), wrapBrowserStepTool("act", browserActTool), wrapBrowserStepTool("extract", browserExtractTool), wrapBrowserStepTool("select", browserSelectOptionTool), subagentTool, ...teamTools, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
         tools: sessionToolNames,
       }));
     } catch (error) {
@@ -6264,6 +6581,32 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.runStopCheckedAt = 0;
     entry.officeLockFailures = new Map();
     entry.task = runContext?.task || null;
+    // 2026-11-09（计划 2026-11-09-001）：团队建议/要求 → 系统提示注入 + team_suggested 事件。
+    entry.teamPlan = null;
+    entry.teamNotice = "";
+    try {
+      const teamPlan = (entry.task?.capabilityPlan?.capabilities || []).find((item) => item?.id === "team") || null;
+      entry.teamPlan = teamPlan;
+      if (teamPlan && (teamPlan.teamIntent === "required" || teamPlan.status === "suggested")) {
+        if (teamPlan.teamIntent === "required") {
+          entry.teamNotice = "[团队要求] 用户已指定本轮必须使用专家团队（teamIntent=required）：必须先用 team_task create ≥2 个可认领任务，再 team_spawn 1–2 名队友；不得用 run_subagent 替代。";
+        } else {
+          const reasons = Array.isArray(teamPlan.reasons) ? teamPlan.reasons : [];
+          entry.teamNotice = `[团队建议] 本轮任务特征适合使用专家团队：${reasons.slice(0, 2).join("；")}。若采用，请先创建 ≥2 个可认领任务再 team_spawn；若判断不需要，请在最终答复中用一句话说明原因。`;
+          try {
+            emitChannelSafe(entry, "team_suggested", {
+              runId: entry.activeRunId || null,
+              reasons,
+              score: Number(teamPlan.score) || 0,
+              minTasks: Number(teamPlan.minTasks) || 2,
+              mode: entry.mode || "agent",
+              signals: Array.isArray(teamPlan.signals) ? teamPlan.signals : [],
+            });
+            recordTeamSuggested();
+          } catch {}
+        }
+      }
+    } catch {}
     entry.mode = normalizeTaskMode(runContext?.task?.mode || entry.mode || "agent");
     // 计划 008：执行闸门状态按 Run 重置。ADR 0012：写作路由（template/generate）
     // 自动通电，OAW_OFFICE_FORMAT=off 显式退出；非写作路由与基线逐字一致。
@@ -6518,6 +6861,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         if (referencesSummary) text = referencesSummary + "\n\n" + text;
         if (taskBlock) text = taskBlock + "\n\n" + text;
       }
+      if (entry.teamNotice) text = entry.teamNotice + "\n\n" + text;
       entry.promptChars += text.length;
       // 首字延迟分项（方案 §3.5）：真正把请求交给 SDK 的时刻。
       // 它在 runPrompt 之前，因此到首个 provider 事件之间的等待包含 SDK 准备、

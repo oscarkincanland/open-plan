@@ -30,6 +30,8 @@ export default function 画布标签栏({
   onToggleBrowserFullscreen,
   mapSessions = [],
   onOpenMapSession,
+  showMapPreview = false,
+  showDesignCanvas = false,
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [overflowOpen, setOverflowOpen] = useState(false);
@@ -209,6 +211,16 @@ export default function 画布标签栏({
             <button type="button" role="menuitem" onClick={() => run("files")}><Icon name="folder" size={13} /> 文件</button>
             <button type="button" role="menuitem" onClick={() => run("browser")}><Icon name="globe" size={13} /> 浏览器</button>
             <button type="button" role="menuitem" onClick={() => run("changes")}><Icon name="history" size={13} /> 代码变更</button>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!showMapPreview}
+              title={showMapPreview ? "打开当前会话的地图预览" : "当前会话未绑定地图项目"}
+              onClick={() => run("mapPreview")}
+            >
+              <Icon name="map" size={13} /> 地图预览
+            </button>
+            {showDesignCanvas && <button type="button" role="menuitem" onClick={() => run("design")}><Icon name="grid" size={13} /> 创作画布</button>}
             {showObjects && <button type="button" role="menuitem" onClick={() => run("objects")}><Icon name="layers" size={13} /> 对象栏</button>}
             {showWorkflows && <button type="button" role="menuitem" onClick={() => run("workflows")}><Icon name="flow" size={13} /> 领域工作流</button>}
             {mapSessions.length > 0 && (
