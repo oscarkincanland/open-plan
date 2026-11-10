@@ -709,7 +709,7 @@ export function extractSessionLinks(messages = []) {
   return [...seen.values()];
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, agentReady = true, onFileChanged, onMapAction, onDraftChanged, onCanvasChanged, onCanvasActivity, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "", onTeamChange, onOpenSettings }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, agentReady = true, onFileChanged, onMapAction, onDraftChanged, onCanvasChanged, onCanvasActivity, currentDoc, mapContext, models: modelsProp, defaultModel, onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "", onTeamChange, onOpenSettings }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   // 供非渲染事件（重试复用气泡、终态清理）同步读取最新消息，避免依赖异步 state。
   const messagesRef = useRef([]);
@@ -847,6 +847,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [model, setModel] = useState("");
   const [modelVision, setModelVision] = useState(false);
   const [modelMsg, setModelMsg] = useState("");
+  // 计划 007 块 C：模型自动变化（通道回退 / 其他窗口切换）必须是持久提示并给“切回”入口——
+  // 旧实现 4 秒后消失，用户会误以为“模型自己变了”。
+  const [modelFallbackNotice, setModelFallbackNotice] = useState(null); // { from, to, kind: "fallback" | "external" }
+  // 本窗口主动切换的时间与目标：用于区分“我点的”与“别处改的”，避免把自己的切换也报成异常。
+  const localModelSwitchRef = useRef({ at: 0, target: "" });
   // 阶段 4.4：最近一次地图可视化（来自 map_action 事件）。用于结果区提示
   // "已在地图上显示（临时，未保存）"——临时层不落盘，Run 的 artifacts 为空，
   // 用户会问"我刚画的那层呢"。这里只做展示与引导保存，不改事件链路。
@@ -2332,7 +2337,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       // 会话自己的模型优先（thread 缓存），其次才是全局"上次使用"；否则切回会话
       // 会先把别的会话的模型显示出来，再由 connected 纠正（用户看到的模型跳变）。
       const cachedModel = threadCacheRef.current.get(threadId)?.model || "";
-      const preferred = cachedModel || saved || d.default || "";
+      // 计划 006 D2：会话模型 sessionStorage 缓存优先于全局偏好——刷新后本会话模型不丢，
+      // 也不会被（可能来自其他窗口的）全局偏好覆盖。
+      const storedThreadModel = readThreadModelCache()[threadId] || "";
+      const preferred = cachedModel || storedThreadModel || saved || d.default || "";
       const cur = nextModels.some((m) => m.id === preferred) ? preferred : (nextModels[0]?.id || "");
       setModel(cur);
       // 只做显示层初始化，不写全局偏好、不回推 onModelChange：
@@ -2344,16 +2352,28 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     return () => { cancelled = true; };
   }, [modelsProp, defaultModel, clientId, threadId]);
 
-  // 设置面板与输入框共用同一个当前模型；只有「用户真的改了全局选择」才推给当前会话。
-  // 用 ref 记录上一值：切会话导致的 selectedModel/model 不一致不算用户操作。
-  const lastSelectedModelRef = useRef(selectedModel);
-  useEffect(() => {
-    const previous = lastSelectedModelRef.current;
-    lastSelectedModelRef.current = selectedModel;
-    if (selectedModel === previous) return;
-    if (!selectedModel || selectedModel === model || !models.some((item) => item.id === selectedModel)) return;
-    void changeModel(selectedModel);
-  }, [selectedModel, model, models]);
+  // 2026-11-10-005 模型切换修复：删除旧的"selectedModel ≠ model 时自动 changeModel"回切 effect。
+  // 旧 effect 会把全局偏好（oaw_model，localStorage 跨窗口共享）强推给会话 runtime：
+  //   · 恢复会话上报模型 → 被全局偏好回切（"刚恢复就变模型"）；
+  //   · 服务端运行中回退（agent_model_fallback）→ 被再次切回不可用模型 → 循环；
+  //   · 同浏览器另一窗口切模型 → 本窗口刷新后会被动跟随（跨窗口污染）。
+  // 现在的语义（计划 006 D1）：oaw_model 只作"新会话默认模型"（见下方初始化 preferred 链），
+  // 会话级切换只由用户在模型选择器显式点选（changeModel）触发；
+  // 会话上报/回退只经 applyModelForSession 对齐显示，不再反向驱动切换。
+
+  // 会话模型缓存（计划 006 D2）：sessionStorage 按浏览上下文隔离——刷新后恢复会话模型，
+  // 又不跨窗口共享（避免全局偏好式的跨窗口污染）。
+  const readThreadModelCache = useCallback(() => {
+    try { return JSON.parse(sessionStorage.getItem("oaw_thread_model_v1") || "{}") || {}; } catch { return {}; }
+  }, []);
+  const writeThreadModel = useCallback((tid, id) => {
+    if (!tid || !id) return;
+    try {
+      const map = readThreadModelCache();
+      map[tid] = id;
+      sessionStorage.setItem("oaw_thread_model_v1", JSON.stringify(map));
+    } catch {}
+  }, [readThreadModelCache]);
 
   function applyModel(id, list) {
     const m = (list || models).find((x) => x.id === id);
@@ -2364,17 +2384,25 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   // 2026-11-06 会话隔离：服务端/会话上报的模型只属于「这个 thread 的运行时」，
   // 只能更新本地显示，绝不能写全局偏好（MODEL_KEY）或 App 级 selectedModel——
   // 否则切到另一个会话时会把它的模型反向推给当前会话（用户看到的「模型自动切换」）。
+  // 2026-11-10-005：同时写入会话模型缓存（sessionStorage），刷新后本会话模型不丢。
   function applyModelForSession(id, list) {
     const m = (list || models).find((x) => x.id === id);
     setModelVision(!!m?.vision);
+    writeThreadModel(threadId, id);
   }
 
   const changeModel = async (id) => {
     setModel(id);
+    // 用户显式切换即视为已处理提示，避免横幅长期占用头部。
+    setModelFallbackNotice(null);
+    localModelSwitchRef.current = { at: Date.now(), target: id };
     applyModel(id);
     onModelChange?.(id);
     rememberModel(id);
     setModelMsg("切换中...");
+    // 计划 006 D3：成功提示短时；回退/失败提示持久显示（不再 setTimeout 清除），
+    // 用户此前 2.5s 内没注意到"已回退到默认模型"就会误以为切换不生效。
+    let persistentMsg = "";
     try {
       const result = await setAgentModel(clientId, id, threadId);
       // 运行中切换：服务端把切换排队到本轮结束（本轮仍由旧模型跑完），
@@ -2387,14 +2415,17 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       setPendingModel("");
       if (result?.model && result.model !== id) {
         setModel(result.model);
-        applyModel(result.model);
-        onModelChange?.(result.model);
+        applyModelForSession(result.model);
+        // 不回推 onModelChange：回退是本会话事实，不能改全局偏好（与 model_switched 分支同语义）。
         rememberModel(result.model);
-        setModelMsg(`连接失败，已切换到 ${result.model}`);
-      } else setModelMsg("ok");
+        persistentMsg = `连接失败，已回退到 ${result.model}（目标 ${id} 不可用）`;
+      } else {
+        setModelMsg("ok");
+        setTimeout(() => setModelMsg(""), 2500);
+      }
     }
-    catch (e) { setModelMsg("失败: " + e.message); }
-    setTimeout(() => setModelMsg(""), 2500);
+    catch (e) { persistentMsg = `切换失败: ${e.message}（仍在用原模型）`; }
+    if (persistentMsg) setModelMsg(persistentMsg);
   };
 
   // SSE 连接
@@ -3507,6 +3538,8 @@ case "runtime_connecting":
           setModel(data.to);
           applyModelForSession(data.to);
           setAgentPhase("切换备用模型");
+          // 持久提示：记录 from→to，供头部横幅展示并可一键切回。
+          setModelFallbackNotice({ from: String(data.from || ""), to: String(data.to || ""), kind: "fallback" });
           pushSystem(data.message || `模型连接失败，已切换到 ${data.to}`, `agent_model_fallback:${data.from || "unknown"}:${data.to}`);
         }
         break;
@@ -3523,8 +3556,8 @@ case "runtime_connecting":
         }
         if (data.effective === "failed") {
           setPendingModel("");
-          setModelMsg(`模型切换失败：${data.message || to || "未知原因"}`);
-          setTimeout(() => setModelMsg(""), 6000);
+          // 计划 006 D3：失败提示持久显示（不再 6s 自动消失），直到用户下次显式操作。
+          setModelMsg(`模型切换失败：${data.message || to || "未知原因"}（仍在用原模型）`);
           break;
         }
         if (to) {
@@ -3534,7 +3567,20 @@ case "runtime_connecting":
           // 不再 onModelChange：通道回退/自动切换属于本会话事实，不能改全局偏好。
         }
         setPendingModel("");
-        setModelMsg(data.reason === "fallback" ? `通道回退为 ${to}` : `已切换为 ${to}`);
+        if (data.reason === "fallback") {
+          // 计划 007 块 C：回退提示不再自动消失，改为持久横幅 + 一键切回。
+          setModelFallbackNotice({ from: String(data.from || ""), to, kind: "fallback" });
+          setModelMsg(`通道回退为 ${to}`);
+          break;
+        }
+        // 非本窗口发起的切换（其他标签页/窗口的模型选择同步过来）也要留痕：
+        // 否则用户只会看到“模型自己变了”。
+        {
+          const local = localModelSwitchRef.current;
+          const fromSelf = local.target === to && Date.now() - local.at < 8000;
+          if (!fromSelf) setModelFallbackNotice({ from: String(data.from || ""), to, kind: "external" });
+        }
+        setModelMsg(`已切换为 ${to}`);
         setTimeout(() => setModelMsg(""), 4000);
         break;
       }
@@ -5853,7 +5899,8 @@ case "runtime_connecting":
                   <ModelProviderMark model={selectedModelInfo} size={16} />
                   <span className="model-control-current">
                     <strong>{modelDisplayName(selectedModelInfo)}</strong>
-                    <small>{selectedProviderMeta.label} · {selectedEffort.shortLabel}</small>
+                    {/* 计划 006 D3：回退/失败提示常驻到副标题，用户一眼看到实际生效模型 */}
+                    <small>{modelMsg || `${selectedProviderMeta.label} · ${selectedEffort.shortLabel}`}</small>
                   </span>
                   <Icon name="chevronDown" size={12} />
                 </button>
@@ -5996,6 +6043,22 @@ case "runtime_connecting":
               </提示气泡>
             </div>
             {modelMsg && <span className={`model-msg${pendingModel ? " pending" : ""}`} title={pendingModel ? `已排队：本轮结束后切换为 ${pendingModel}` : undefined}>{modelMsg}</span>}
+            {modelFallbackNotice?.to && (
+              <span
+                className="model-fallback-chip"
+                role="status"
+                title={modelFallbackNotice.kind === "fallback"
+                  ? "上游连接失败时服务端会自动切到备用模型；这条提示会一直保留，直到你切换模型或关闭"
+                  : "本会话的模型被本窗口以外的操作切换了（例如另一个标签页/窗口修改了模型偏好）；这条提示会一直保留，直到你切换模型或关闭"}
+              >
+                <Icon name="warning" size={11} />
+                <span>{modelFallbackNotice.kind === "fallback" ? "通道回退为" : "模型被切换为"} {modelFallbackNotice.to}</span>
+                {modelFallbackNotice.from && modelFallbackNotice.from !== modelFallbackNotice.to && (
+                  <button type="button" className="btn-link" onClick={() => changeModel(modelFallbackNotice.from)}>切回 {modelFallbackNotice.from}</button>
+                )}
+                <button type="button" className="btn-link" aria-label="关闭模型变化提示" onClick={() => setModelFallbackNotice(null)}>知道了</button>
+              </span>
+            )}
           </div>
           </div>
         </div>

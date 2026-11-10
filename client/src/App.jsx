@@ -2575,7 +2575,6 @@ export default function App() {
        mapProject={boundMapProject || null}
       models={models}
       defaultModel={defaultModel}
-      selectedModel={selectedModel}
       onModelChange={setSelectedModel}
       onAgentEnd={() => {
         handleAgentEnd();

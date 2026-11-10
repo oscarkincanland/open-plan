@@ -77,6 +77,7 @@
     "test:context-single-read": "node scripts/上下文单次读取测试.mjs",
     "test:workspace-init": "node scripts/工作区初始化测试.mjs",
     "test:workspace-switch-fail": "node scripts/工作区切换失败保留会话回归测试.mjs",
+    "test:model-switch": "node scripts/模型切换与会话隔离回归测试.mjs",
     "test:task-complexity": "node scripts/任务复杂度与技能策略测试.mjs",
     "test:icon-system": "node scripts/图标体系契约测试.mjs",
     "test:interrupt-chain": "node scripts/中断链路回归测试.mjs",
