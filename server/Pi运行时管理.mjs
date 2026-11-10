@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs";
 import crypto from "node:crypto";
 import {
   calculateContextTokens,
@@ -30,7 +31,19 @@ import {
 } from "./Pi网络代理.mjs";
 
 const RUNTIME_RECORD_FILE = process.env.OAW_RUNTIME_RECORD_FILE || path.join(PROJECT_DIR, ".oaw", "运行时记录.json");
-export const PI_PACKAGE_VERSION = "1.1.0";
+// 内核版本以“实际安装的包”为准（2026-11-10 升级 1.1.0 → 1.5.1）：避免 package.json 与
+// node_modules 不一致时 /api/status 显示错误版本；读取失败时返回 unknown，不阻塞启动。
+export const PI_PACKAGE_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(
+      path.join(PROJECT_DIR, "node_modules", "@earendil-works", "pi-coding-agent", "package.json"),
+      "utf8",
+    ));
+    return String(pkg.version || "unknown");
+  } catch {
+    return "unknown";
+  }
+})();
 /**
  * Pi 原生上下文压缩策略（唯一事实来源）。
  * reserveTokens：接近窗口上限时预留的输出/工具空间，压缩线 = contextWindow − reserveTokens；
@@ -259,10 +272,11 @@ export class PiRuntimeManager {
       // 上下文压缩交给 Pi 按当前模型的 contextWindow 自动判断；
       // 明确保留输出/工具调用空间，避免工作台另设固定 token 线与 Pi 竞争。
       compaction: { enabled: true, reserveTokens: PI_COMPACTION_POLICY.reserveTokens, keepRecentTokens: PI_COMPACTION_POLICY.keepRecentTokens },
-      // U10（flag 控制）：Pi 原生 CacheWarmer——Run 进行中以一次 1-token 请求保活
-      // 提示词缓存（streaming 模式），用户思考/审批期间缓存不失效，下一请求省去
-      // 全量 cache miss 重算。off（默认）不配置，行为与基线一致。
-      ...(RUNTIME_FLAGS.cacheWarming ? { cacheWarming: "streaming" } : {}),
+      // U10（flag 控制）：Pi 原生 CacheWarmer。
+      // 2026-11-10 升级 Pi 1.5.1 后注意：SDK 默认 cacheWarming 由 1.1.0 的 "streaming" 改为
+      // "idle"（Run 之间也保活、最长 30 分钟），不显式指定会静默增加后台请求与费用。
+      // 这里保持 1.1.0 基线：开关关闭 → "streaming"（仅运行中保活）；开关开启 → "idle"（跨 Run 保活）。
+      cacheWarming: RUNTIME_FLAGS.cacheWarming ? "idle" : "streaming",
       // 工作台自己负责备用模型和最终失败收敛；Pi 只保留一次短重试，
       // 避免供应商不可达时叠加多层指数退避，把界面长时间卡在“连接模型”。
       retry: { enabled: true, maxRetries: 1, baseDelayMs: 800, provider: { maxRetries: 0 } },

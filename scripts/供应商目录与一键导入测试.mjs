@@ -46,18 +46,18 @@ const catalog = loadBuiltinCatalog();
 const list = builtinProviderList();
 const builtinTotalModels = catalog.providers.reduce((sum, provider) => sum + provider.models.length, 0);
 
-// 计数口径：内置快照 server/Pi内置供应商.json 是入库的确定性数据（41 家 / 1142 模型）；
-// 合并列表 builtinProviderList() 还会叠加本地未入库的 models.dev 拉取缓存
-// （server/models-dev-目录.json），开发者一旦拉过目录就会变成几百家。
+// 计数口径：内置快照 server/Pi内置供应商.json 是入库的确定性数据（42 家 / 1208 模型，
+// 2026-11-10 由 pi-coding-agent 1.5.1 重新提取）；合并列表 builtinProviderList() 还会叠加
+// 本地未入库的 models.dev 拉取缓存（server/models-dev-目录.json），开发者一旦拉过目录就会变成几百家。
 // 因此规模类断言必须落在内置快照上，合并列表只断言结构与能力。
 const builtinList = {
   providers: catalog.providers,
   totalModels: catalog.providers.reduce((count, provider) => count + provider.models.length, 0),
 };
 
-场景("内置目录快照：41 个供应商 / 1142 个模型 / 有生成时间", () => {
-  assert.equal(builtinList.providers.length, 41, `内置快照供应商数量应为 41，实际 ${builtinList.providers.length}`);
-  assert.equal(builtinList.totalModels, 1142, `内置快照模型总数应为 1142，实际 ${builtinList.totalModels}`);
+场景("内置目录快照：42 个供应商 / 1208 个模型 / 有生成时间", () => {
+  assert.equal(builtinList.providers.length, 42, `内置快照供应商数量应为 42，实际 ${builtinList.providers.length}`);
+  assert.equal(builtinList.totalModels, 1208, `内置快照模型总数应为 1208，实际 ${builtinList.totalModels}`);
   assert.ok(catalog.generatedAt, "目录应带生成时间，便于判断是否需要重新提取");
   assert.equal(catalog.error, null);
 });
@@ -157,7 +157,7 @@ const builtinList = {
 场景("详情接口数据：模型清单带能力，单个供应商可查", () => {
   const detail = builtinProviderDetail("anthropic");
   assert.ok(detail, "anthropic 详情应存在");
-  assert.equal(detail.models.length, 17);
+  assert.equal(detail.models.length, 18);
   assert.ok(detail.models.every((model) => model.id && typeof model.vision === "boolean"));
   assert.equal(builtinProviderDetail("不存在"), null);
 });
