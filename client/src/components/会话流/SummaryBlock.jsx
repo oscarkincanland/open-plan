@@ -19,7 +19,9 @@ export default function SummaryBlock({ body = "", onOpenFile = null, artifacts =
     <div className="sum-block">
       <div className="sum-body">
         {text.length <= MAX_MARKDOWN_CHARS
-          ? <MarkdownBody onOpenFile={onOpenFile} artifacts={artifacts}>{text}</MarkdownBody>
+          // 结论正文是"分节文档"，开启二级标题自动编号（一、二、三）：
+          // 这是用户可见的最终结论区，编号在渲染层确定性生成，不依赖模型是否听话。
+          ? <MarkdownBody onOpenFile={onOpenFile} artifacts={artifacts} numberSections>{text}</MarkdownBody>
           : <pre className="large-msg-raw">{text}</pre>}
       </div>
     </div>

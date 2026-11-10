@@ -20,11 +20,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const { normalizeAtxHeadings } = await import("../client/src/markdown规范化.js");
+const { normalizeAtxHeadings, numberTopLevelSections, toChineseNumber } = await import("../client/src/markdown规范化.js");
 
 const md = fs.readFileSync(path.join(ROOT, "client/src/components/MarkdownBody.jsx"), "utf8");
 const css = fs.readFileSync(path.join(ROOT, "client/src/styles.css"), "utf8");
 const agent = fs.readFileSync(path.join(ROOT, "server/agent.mjs"), "utf8");
+const chat = fs.readFileSync(path.join(ROOT, "client/src/components/ChatPanel.jsx"), "utf8");
 
 let failed = 0;
 function test(name, fn) {
@@ -62,8 +63,9 @@ test("无井号文本原样返回（不引入改动）", () => {
 console.log("▶ 渲染接线");
 
 test("MarkdownBody 在解析前调用规范化（不是只在某条分支）", () => {
-  assert.match(md, /import \{ normalizeAtxHeadings \} from "\.\.\/markdown规范化\.js";/);
-  assert.match(md, /const source = normalizeAtxHeadings\(children\);/);
+  assert.match(md, /import \{ normalizeAtxHeadings, numberTopLevelSections \} from "\.\.\/markdown规范化\.js";/);
+  assert.match(md, /const normalized = normalizeAtxHeadings\(children\);/, "渲染前必须先纠偏标题");
+  assert.match(md, /const source = numberSections \? numberTopLevelSections\(normalized\) : normalized;/, "结论区在纠偏之后编号");
 });
 
 console.log("▶ 标题层级排版");
@@ -80,6 +82,52 @@ test("标题上间距按层级递减，且明显大于段距", () => {
   assert.match(block, /margin: 20px 0 8px;/, "h1/h2 上间距 20px");
   assert.match(css, /\.markdown-body h3, \.markdown-body h4 \{ margin: 16px 0 4px; \}/, "h3/h4 上间距 16px、下间距 4px");
   assert.match(css, /\.markdown-body > :first-child \{ margin-top: 0; \}/, "首个标题不吃容器顶部留白");
+});
+
+console.log("▶ 二级标题自动编号（渲染层确定性兜底）");
+
+test("两个以上无编号 h2 自动补「一、二、三」", () => {
+  const source = ["## 结论", "正文", "## 依据", "正文", "## 风险", "正文"].join("\n");
+  const out = numberTopLevelSections(source);
+  assert.match(out, /^## 一、结论$/m);
+  assert.match(out, /^## 二、依据$/m);
+  assert.match(out, /^## 三、风险$/m);
+});
+
+test("单节、已自带编号、代码块内都不动", () => {
+  assert.equal(numberTopLevelSections("## 只有一个"), "## 只有一个");
+  const numbered = "## 一、结论\n## 二、依据";
+  assert.equal(numberTopLevelSections(numbered), numbered);
+  const arabic = "## 1. 结论\n## 2. 依据";
+  assert.equal(numberTopLevelSections(arabic), arabic);
+  const fenced = "```md\n## 代码里的标题\n## 第二个\n```\n## 真标题\n## 另一个";
+  const out = numberTopLevelSections(fenced);
+  assert.match(out, /## 代码里的标题/);
+  assert.match(out, /^## 一、真标题$/m);
+});
+
+test("先纠偏无空格标题再编号（顺序不能反）", () => {
+  const out = numberTopLevelSections(normalizeAtxHeadings("##结论\n正文\n##依据"));
+  assert.match(out, /^## 一、结论$/m);
+  assert.match(out, /^## 二、依据$/m);
+});
+
+test("中文序号转换覆盖 1/10/11/23", () => {
+  assert.equal(toChineseNumber(1), "一");
+  assert.equal(toChineseNumber(10), "十");
+  assert.equal(toChineseNumber(11), "十一");
+  assert.equal(toChineseNumber(23), "二十三");
+});
+
+test("只在结论区启用：SafeMarkdown 透传、最终答复/兜底总结开启，阶段小结不开启", () => {
+  assert.match(chat, /function SafeMarkdown\(\{ text, onOpenFile, artifacts, numberSections = false \}\)/);
+  assert.match(chat, /<SafeMarkdown text=\{clampAnswer\(authoritativeFinalText\)\}[^>]*numberSections \/>/);
+  assert.match(chat, /<SafeMarkdown text=\{fallbackSummary\}[^>]*numberSections \/>/);
+  assert.doesNotMatch(chat, /<SafeMarkdown text=\{item\.text\}[^>]*numberSections/, "时间流阶段小结不编号");
+  // 历史/已完成轮次的结论走 SummaryBlock（.sum-body），同样必须编号——
+  // 这是用户实际看到的"结论"路径（2026-11-09 实机确认 finals=0 但 sum-body 有 h2）。
+  const summaryBlock = fs.readFileSync(path.join(ROOT, "client/src/components/会话流/SummaryBlock.jsx"), "utf8");
+  assert.match(summaryBlock, /<MarkdownBody onOpenFile=\{onOpenFile\} artifacts=\{artifacts\} numberSections>/, "SummaryBlock 必须开启编号");
 });
 
 console.log("▶ 提示词约束");

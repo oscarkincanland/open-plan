@@ -1239,6 +1239,17 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 .markdown-body h3, .markdown-body h4 { margin: 16px 0 4px; }
 /* 首个标题不额外吃到容器顶部留白。 */
 .markdown-body > :first-child { margin-top: 0; }
+/* 结论正文的二级标题（渲染层自动补「一、二、三」编号后）加一条极细分隔线：
+   比加粗块更"轻"，但能一眼看出分节边界（2026-11-09 用户反馈"不够纤细"）。
+   结论有两个渲染路径：历史轮次走 SummaryBlock（.sum-body），运行结束/兜底走
+   .assistant-final-answer，两者都要生效。 */
+.sum-body .markdown-body h2,
+.assistant-final-answer .markdown-body h2 {
+  padding-bottom: 4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
 .markdown-body ul, .markdown-body ol {
   padding-left: 20px;
   margin: 6px 0;

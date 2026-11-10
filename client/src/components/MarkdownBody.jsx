@@ -6,7 +6,7 @@ import rehypeSlug from "rehype-slug";
 import remarkToc from "remark-toc";
 import Icon from "./Icon.jsx";
 import { buildArtifactIndex, resolveArtifactTarget, normalizeLocalFileHref } from "../产物类型.js";
-import { normalizeAtxHeadings } from "../markdown规范化.js";
+import { normalizeAtxHeadings, numberTopLevelSections } from "../markdown规范化.js";
 
 /**
  * 统一 Markdown 渲染组件（聊天消息 + MD 文档共用）
@@ -133,7 +133,7 @@ function MdCodeBlock({ lang, text, children }) {
   );
 }
 
-export default function MarkdownBody({ children, className = "", withToc = false, onTagClick, onWikilinkHover, onOpenFile, artifacts }) {
+export default function MarkdownBody({ children, className = "", withToc = false, onTagClick, onWikilinkHover, onOpenFile, artifacts, numberSections = false }) {
   const [heavyPlugins, setHeavyPlugins] = useState(null);
   const [lightbox, setLightbox] = useState(null);
 
@@ -158,7 +158,10 @@ export default function MarkdownBody({ children, className = "", withToc = false
   // 预处理：[[目标]] → 内部 wikilink 标记链接（保留显示文本，供 a 组件拦截渲染）
   // 以及把正文里提到的本轮产物转成 #artifact: 链接（同样由 a 组件渲染为文件条）。
   const processed = useMemo(() => {
-    const source = normalizeAtxHeadings(children);
+    // 先纠偏无空格标题，再（可选）给二级标题补「一、二、三」编号：
+    // 顺序不能反，否则 `##结论` 不会被识别成 h2，也就拿不到编号。
+    const normalized = normalizeAtxHeadings(children);
+    const source = numberSections ? numberTopLevelSections(normalized) : normalized;
     const withWikilinks = onWikilinkHover
       ? source.replace(/\[\[([^\]]+)\]\]/g, (_, target) => {
         const label = target.split("|")[0] || target;
@@ -167,7 +170,7 @@ export default function MarkdownBody({ children, className = "", withToc = false
       : source;
     if (!artifactIndex?.list.length) return withWikilinks;
     return linkifyArtifactMentions(withWikilinks, artifactIndex);
-  }, [children, onWikilinkHover, artifactIndex]);
+  }, [children, onWikilinkHover, artifactIndex, numberSections]);
 
   const rehypePlugins = useMemo(() => {
     const plugins = [];

@@ -47,7 +47,7 @@ await test("总结不再有 cap / 分节标签 / 做了什么行", () => {
 
 await test("结论与详细展开合并为一段连续正文", () => {
   assert.match(summaryBlock, /className="sum-body"/);
-  assert.match(summaryBlock, /<MarkdownBody onOpenFile=\{onOpenFile\} artifacts=\{artifacts\}>/);
+  assert.match(summaryBlock, /<MarkdownBody onOpenFile=\{onOpenFile\} artifacts=\{artifacts\} numberSections>/);
   assert.match(chatPanel, /\[summaryParts\.conclusion, summaryParts\.detail\]\.filter\(Boolean\)\.join\("\\n\\n"\)/);
 });
 
