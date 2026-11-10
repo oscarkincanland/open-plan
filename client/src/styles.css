@@ -2210,6 +2210,21 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 .model-switch-divider b { color: var(--muted); font-weight: 600; }
 /* 运行中切换模型：提示保持可见（排队到本轮结束），用警示色区别于普通状态提示 */
 .model-msg.pending { color: var(--warning); }
+/* 计划 007 块 C：通道回退持久提示（不自动消失），带“切回原模型/知道了”两个动作。 */
+.model-fallback-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 420px;
+  padding: 1px 8px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+  font-size: 11px;
+  color: var(--warning);
+  line-height: 1.5;
+}
+.model-fallback-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .execution-flow-dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--warning); }
 .execution-flow-item.success .execution-flow-dot { background: var(--success); }
 /* 部分完成/受阻/取消：客观降级态用 warning，不用 success 色 */
