@@ -286,7 +286,11 @@ try {
   assert.match(markdownSource, /function linkifyArtifactMentions\(/, "正文里的产物名应转成 #artifact 链接");
   assert.match(markdownSource, /className="artifact-inline"/, "行内文件条应渲染为可点击按钮");
   assert.match(markdownSource, /const localTarget = normalizeLocalFileHref\(href\)/, "指向本地文件的 Markdown 链接应改走预览而不是新开标签页");
-  assert.match(markdownSource, /artifactIndex = useMemo\(\(\) => \(onOpenFile && artifacts\?\.length/, "没有可打开的文件时不改写正文");
+  // 2026-11-10：artifactIndex 改用 hasOpenFile（回调经 ref 传，避免每次渲染重建 components）；
+  // 同时锁定"组件映射只建一次 + MarkdownBody 按正文 memo"这两条性能契约。
+  assert.match(markdownSource, /artifactIndex = useMemo\(\(\) => \(hasOpenFile && artifacts\?\.length/, "没有可打开的文件时不改写正文");
+  assert.match(markdownSource, /const components = useMemo\(\(\) => \(\{/, "Markdown 组件映射必须只建一次，否则每次渲染都会卸载重建 DOM");
+  assert.match(markdownSource, /export default memo\(MarkdownBody, sameMarkdownProps\)/, "MarkdownBody 必须按正文 memo，避免父级高频重渲染带动整段重排");
   assert.match(artifactTypeSource, /export function buildArtifactIndex/, "产物索引应集中在 产物类型.js");
   assert.match(artifactTypeSource, /export function formatFileSize/, "文件大小应有统一格式化（不编造未知大小）");
   // harness 提醒不得显示为可见消息（恢复 + 实时兜底各一道）

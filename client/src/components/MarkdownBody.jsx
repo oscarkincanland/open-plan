@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { memo, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -133,9 +133,15 @@ function MdCodeBlock({ lang, text, children }) {
   );
 }
 
-export default function MarkdownBody({ children, className = "", withToc = false, onTagClick, onWikilinkHover, onOpenFile, artifacts, numberSections = false }) {
+function MarkdownBody({ children, className = "", withToc = false, onTagClick, onWikilinkHover, onOpenFile, artifacts, numberSections = false }) {
   const [heavyPlugins, setHeavyPlugins] = useState(null);
   const [lightbox, setLightbox] = useState(null);
+  // 回调经 ref 取最新值：下面 components 映射只建一次，避免每次渲染都生成新的组件函数——
+  // 否则 react-markdown 会把 table/code/img 等自定义节点整体卸载重建（实测闲聊页
+  // 每秒产生约 500 次 DOM 变动，主线程长期占用导致界面"非常卡"）。2026-11-10。
+  const handlersRef = useRef({});
+  handlersRef.current = { onTagClick, onWikilinkHover, onOpenFile };
+  const hasOpenFile = typeof onOpenFile === "function";
 
   // 图片灯箱：Esc 关闭（点击遮罩也会关闭），避免大图只能靠放大页面看。
   useEffect(() => {
@@ -153,7 +159,7 @@ export default function MarkdownBody({ children, className = "", withToc = false
     return () => { cancelled = true; };
   }, []);
 
-  const artifactIndex = useMemo(() => (onOpenFile && artifacts?.length ? buildArtifactIndex(artifacts) : null), [onOpenFile, artifacts]);
+  const artifactIndex = useMemo(() => (hasOpenFile && artifacts?.length ? buildArtifactIndex(artifacts) : null), [hasOpenFile, artifacts]);
 
   // 预处理：[[目标]] → 内部 wikilink 标记链接（保留显示文本，供 a 组件拦截渲染）
   // 以及把正文里提到的本轮产物转成 #artifact: 链接（同样由 a 组件渲染为文件条）。
@@ -180,91 +186,100 @@ export default function MarkdownBody({ children, className = "", withToc = false
     return plugins;
   }, [heavyPlugins]);
 
+  // 组件映射只建一次（依赖 artifactIndex）：回调一律经 handlersRef 取最新值。
+  // 每次渲染都新建这个对象会让 react-markdown 把 table/code/img 等节点卸载重建，
+  // 实测闲聊页每秒约 500 次 DOM 变动、主线程长期满载（"非常卡"）。2026-11-10。
+  const components = useMemo(() => ({
+    // 行内 #tag → 可点击（仅知识库模式启用，排除 hex 颜色/纯数字）
+    text: ({ children: kids }) => {
+      const onTagClickNow = handlersRef.current.onTagClick;
+      if (!onTagClickNow) return kids;
+      const text = String(kids);
+      const parts = text.split(/(#[\p{L}\p{N}_-]+)/gu);
+      if (parts.length === 1) return text;
+      return parts.map((p, i) => {
+        if (i % 2 === 1) {
+          const t = p.slice(1);
+          if (/^\d/.test(t) || /^[0-9a-fA-F]{3,8}$/.test(t)) return p; // 排除颜色/数字
+          return <span key={i} className="md-tag" role="button" tabIndex={0} aria-label={`按标签 ${t} 搜索`} onClick={(e) => { e.stopPropagation(); onTagClickNow(t); }} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); onTagClickNow(t); } }}>{p}</span>;
+        }
+        return p;
+      });
+    },
+    // 表格容器：允许横向滚动
+    table: ({ children: kids }) => (
+      <div className="md-table-wrap">
+        <table>{kids}</table>
+      </div>
+    ),
+    // 图片：最大宽度 + 圆角；点击打开灯箱（Esc / 点遮罩关闭）
+    img: ({ src, alt }) => (
+      <button
+        type="button"
+        className="md-img-btn"
+        onClick={() => setLightbox({ src, alt: alt || "图片预览" })}
+        title="点击放大"
+      >
+        <img src={src} alt={alt} loading="lazy" className="md-img" />
+      </button>
+    ),
+    // 链接：[[目标]] 悬浮预览（知识库）；本轮产物 → 行内文件条；普通链接新窗口打开
+    a: ({ href, children: kids }) => {
+      const openFile = handlersRef.current.onOpenFile;
+      const onWikilinkHoverNow = handlersRef.current.onWikilinkHover;
+      if (href?.startsWith("#wikilink:")) {
+        const target = decodeURIComponent(href.slice(10));
+        return (
+          <span
+            className="kb-wikilink"
+            onMouseEnter={(e) => onWikilinkHoverNow?.(target, e)}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onWikilinkHoverNow?.(target, e); }}
+          >{kids}</span>
+        );
+      }
+      if (openFile) {
+        if (href?.startsWith("#artifact:")) {
+          const target = decodeURIComponent(href.slice(10));
+          const artifact = resolveArtifactTarget(target, artifactIndex);
+          return <ArtifactFileChip path={target} artifact={artifact} onOpenFile={openFile} />;
+        }
+        // 指向工作区文件的普通链接（模型自己写的相对路径）也走预览，不再新开标签页 404。
+        const localTarget = normalizeLocalFileHref(href);
+        if (localTarget) {
+          const artifact = resolveArtifactTarget(localTarget, artifactIndex);
+          const label = typeof kids === "string" ? kids : "";
+          return <ArtifactFileChip path={localTarget} artifact={artifact} label={label} onOpenFile={openFile} />;
+        }
+      }
+      return <a href={href} target="_blank" rel="noopener noreferrer">{kids}</a>;
+    },
+    // 行内代码：整段就是一个本地产物文件名时，同样渲染为文件条（正常内容保持不变）。
+    code: ({ node, children: kids, ...props }) => {
+      const openFile = handlersRef.current.onOpenFile;
+      const text = typeof kids === "string"
+        ? kids
+        : Array.isArray(kids) && kids.every((k) => typeof k === "string") ? kids.join("") : "";
+      if (openFile && text && !String(props.className || "").includes("language-")) {
+        const artifact = resolveArtifactTarget(text.trim(), artifactIndex);
+        if (artifact) return <ArtifactFileChip artifact={artifact} onOpenFile={openFile} />;
+      }
+      return <code {...props}>{kids}</code>;
+    },
+    // 代码块：语言标签 + 复制（对 DSH 的代码条做轻量对齐）
+    pre: ({ children: kids }) => {
+      const codeEl = React.Children.toArray(kids)[0];
+      const className = String(codeEl?.props?.className || "");
+      const lang = /language-([\w-]+)/.exec(className)?.[1] || "";
+      return <MdCodeBlock lang={lang} text={extractText(codeEl?.props?.children)}>{kids}</MdCodeBlock>;
+    },
+  }), [artifactIndex]);
+
   return (
     <div className={`markdown-body ${className}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath, ...(withToc ? [[remarkToc, { maxDepth: 3 }]] : [])]}
         rehypePlugins={rehypePlugins}
-        components={{
-          // 行内 #tag → 可点击（仅知识库模式启用，排除 hex 颜色/纯数字）
-          text: ({ children: kids }) => {
-            if (!onTagClick) return kids;
-            const text = String(kids);
-            const parts = text.split(/(#[\p{L}\p{N}_-]+)/gu);
-            if (parts.length === 1) return text;
-            return parts.map((p, i) => {
-              if (i % 2 === 1) {
-                const t = p.slice(1);
-                if (/^\d/.test(t) || /^[0-9a-fA-F]{3,8}$/.test(t)) return p; // 排除颜色/数字
-                return <span key={i} className="md-tag" role="button" tabIndex={0} aria-label={`按标签 ${t} 搜索`} onClick={(e) => { e.stopPropagation(); onTagClick(t); }} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); onTagClick(t); } }}>{p}</span>;
-              }
-              return p;
-            });
-          },
-          // 表格容器：允许横向滚动
-          table: ({ children: kids }) => (
-            <div className="md-table-wrap">
-              <table>{kids}</table>
-            </div>
-          ),
-          // 图片：最大宽度 + 圆角；点击打开灯箱（Esc / 点遮罩关闭）
-          img: ({ src, alt }) => (
-            <button
-              type="button"
-              className="md-img-btn"
-              onClick={() => setLightbox({ src, alt: alt || "图片预览" })}
-              title="点击放大"
-            >
-              <img src={src} alt={alt} loading="lazy" className="md-img" />
-            </button>
-          ),
-          // 链接：[[目标]] 悬浮预览（知识库）；本轮产物 → 行内文件条；普通链接新窗口打开
-          a: ({ href, children: kids }) => {
-            if (href?.startsWith("#wikilink:")) {
-              const target = decodeURIComponent(href.slice(10));
-              return (
-                <span
-                  className="kb-wikilink"
-                  onMouseEnter={(e) => onWikilinkHover?.(target, e)}
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); onWikilinkHover?.(target, e); }}
-                >{kids}</span>
-              );
-            }
-            if (onOpenFile) {
-              if (href?.startsWith("#artifact:")) {
-                const target = decodeURIComponent(href.slice(10));
-                const artifact = resolveArtifactTarget(target, artifactIndex);
-                return <ArtifactFileChip path={target} artifact={artifact} onOpenFile={onOpenFile} />;
-              }
-              // 指向工作区文件的普通链接（模型自己写的相对路径）也走预览，不再新开标签页 404。
-              const localTarget = normalizeLocalFileHref(href);
-              if (localTarget) {
-                const artifact = resolveArtifactTarget(localTarget, artifactIndex);
-                const label = typeof kids === "string" ? kids : "";
-                return <ArtifactFileChip path={localTarget} artifact={artifact} label={label} onOpenFile={onOpenFile} />;
-              }
-            }
-            return <a href={href} target="_blank" rel="noopener noreferrer">{kids}</a>;
-          },
-          // 行内代码：整段就是一个本地产物文件名时，同样渲染为文件条（正常内容保持不变）。
-          code: ({ node, children: kids, ...props }) => {
-            const text = typeof kids === "string"
-              ? kids
-              : Array.isArray(kids) && kids.every((k) => typeof k === "string") ? kids.join("") : "";
-            if (onOpenFile && text && !String(props.className || "").includes("language-")) {
-              const artifact = resolveArtifactTarget(text.trim(), artifactIndex);
-              if (artifact) return <ArtifactFileChip artifact={artifact} onOpenFile={onOpenFile} />;
-            }
-            return <code {...props}>{kids}</code>;
-          },
-          // 代码块：语言标签 + 复制（对 DSH 的代码条做轻量对齐）
-          pre: ({ children: kids }) => {
-            const codeEl = React.Children.toArray(kids)[0];
-            const className = String(codeEl?.props?.className || "");
-            const lang = /language-([\w-]+)/.exec(className)?.[1] || "";
-            return <MdCodeBlock lang={lang} text={extractText(codeEl?.props?.children)}>{kids}</MdCodeBlock>;
-          },
-        }}
+        components={components}
       >
         {processed}
       </ReactMarkdown>
@@ -282,3 +297,20 @@ export default function MarkdownBody({ children, className = "", withToc = false
     </div>
   );
 }
+
+/**
+ * 只在「正文或渲染选项真的变了」时重渲染。
+ * 父级（消息/run 卡）因计时等状态高频重渲染时，同一段 Markdown 不再反复解析与重建 DOM
+ * —— 这是 2026-11-10 实测"闲聊页每秒 ~500 次 DOM 变动、主线程长期满载"的直接修复。
+ * 点击类回调经 handlersRef 取最新值，所以这里忽略函数身份是安全的。
+ */
+function sameMarkdownProps(prev, next) {
+  return prev.children === next.children
+    && prev.className === next.className
+    && prev.withToc === next.withToc
+    && prev.numberSections === next.numberSections
+    && prev.artifacts === next.artifacts
+    && (typeof prev.onOpenFile === "function") === (typeof next.onOpenFile === "function");
+}
+
+export default memo(MarkdownBody, sameMarkdownProps);
