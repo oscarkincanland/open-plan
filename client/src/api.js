@@ -64,7 +64,14 @@ export async function apiControl(path, opts = {}, { timeoutMs = CONTROL_TIMEOUT_
     if (!isTimeoutError(error)) throw error;
     const reclaimed = closeOptionalStreams(`控制面请求超时：${path}`);
     if (!reclaimed) {
-      throw new Error(`本地服务 ${Math.round(timeoutMs / 1000)} 秒未响应（${path}）。服务可能正在处理其他任务，请稍后重试。`);
+      // 没有可放弃的流 = 占住连接的是"必需流"（每个窗口的对话流/全局事件流）。
+      // 浏览器同源只有 6 个连接槽，3 个以上窗口就可能全部占满；给出可执行的处置建议，
+      // 而不是让用户对着"未响应"干等（2026-11-10 实测：6 条同源 SSE 即可让本接口全部超时）。
+      throw new Error(
+        `本地服务 ${Math.round(timeoutMs / 1000)} 秒未响应（${path}）。`
+        + "常见原因是同时打开了多个窗口/标签页，每个窗口都占用实时连接（浏览器同源只有 6 个连接槽）。"
+        + "关闭不用的窗口后点重试即可；若只有一个窗口，请刷新本页。",
+      );
     }
     try {
       return await api(path, withTimeout(opts, timeoutMs));
