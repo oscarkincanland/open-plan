@@ -81,7 +81,7 @@ for (const text of ["写个方案", "做个网页", "写个通知", "随便聊�
 
 console.log("\n▶ 结构抽取（8 例）");
 test("工可十章", () => assert.equal(structure.chapters.length, 10));
-test("必备图 11 张", () => assert.equal(structure.figures.length, 11));
+test("必备图 10 张", () => assert.equal(structure.figures.length, 10)); // 04 的 4.1 改为引用 图 1-1，删去重复的 图 4-1
 test("必备表 8 张", () => assert.equal(structure.tables.length, 8));
 test("必备小节 ≥ 30", () => assert.ok(structure.requiredSections.length >= 30));
 test("可选小节 ≥ 3", () => assert.ok(structure.optionalSections.length >= 3));
