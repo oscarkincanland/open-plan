@@ -343,10 +343,16 @@ export function describeRunFold({ interrupted = false, failed = false, risky = f
 /**
  * 结论文本 → { what, conclusion, detail }。
  *  - 来源：Run 完成摘要（source:"inferred"，取模型最终答复）或历史会话的显式声明；
- *  - conclusion：优先取「结论」分节首段；无标题结构时取全文首段；
+ *  - conclusion：**只**取标题以「结论」开头的分节首段；无该分节时为空串；
  *  - what：取「做了什么/完成工作/工作内容」分节（R-C 落地前可能缺失，缺失即空串不渲染）；
- *  - detail：完整 Markdown（结论分节已并入 conclusion 时从 detail 中移除，避免重复）。
+ *  - detail：完整 Markdown（结论节并入 conclusion 时从 detail 中移除，避免重复）。
  * 不编造内容：summary 与 finalText 都为空时三个字段均为空串。
+ *
+ * 2026-11-10（计划 007 块 A）：此前「有分节但没有结论节」时会把**首个分节首段**提升为
+ * conclusion，渲染层又按「结论 + detail」拼接，导致首段被搬到开场白和 `##` 标题之前
+ * （实测：`## “没更新”最可能的原因` 被拖到「一是…」之后，读者以为标题坏了）。
+ * 现在只有显式「结论」节才提升，其余情况 detail 保持模型终稿的原始顺序；
+ * 唯一例外是无任何标题的纯文本，仍按「首段是结语」的旧行为处理（顺序不变）。
  */
 export function splitCompletionSummary(summary = "", finalText = "") {
   const source = String(summary || "").trim() || String(finalText || "").trim();
@@ -359,17 +365,19 @@ export function splitCompletionSummary(summary = "", finalText = "") {
     else sections[sections.length - 1].lines.push(line);
   }
   const bodyOf = (section) => section.lines.join("\n").trim();
-  const firstParagraph = (text) => text.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean)[0] || "";
   const titled = sections.filter((section) => section.title);
   const conclusionSection = titled.find((section) => /^结论/.test(section.title)) || null;
   const whatSection = titled.find((section) => /^(做了什么|完成工作|工作内容)/.test(section.title)) || null;
   let conclusion = "";
   let detail = source;
   // 被单独展示的分节（结论 → 大字、做了什么 → what 行）从 detail 中移除，避免同一段文字出现两次。
+  // 2026-11-10（计划 007）：原正则 `^#{1,3}` 的 `^` 只在文首成立，分节不在开头时整段匹配失败，
+  // 于是「结论/做了什么」会在 detail 里重复渲染（新回归测试捕获）。这里改为“行首或换行”起点。
   const removeSection = (section) => {
     if (!section) return;
-    const pattern = new RegExp(`^#{1,3}\\s+${section.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?(?=\\n#{1,3}\\s|$)`);
-    detail = detail.replace(pattern, "").trim();
+    const title = section.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(`(?:^|\\n)#{1,3}\\s+${title}[\\s\\S]*?(?=\\n#{1,3}\\s|$)`);
+    detail = detail.replace(pattern, "").replace(/\n{3,}/g, "\n\n").trim();
   };
   if (conclusionSection) {
     // 只把「结论」节的首段提到结论位；其余段落必须留在详细内容里。
@@ -389,12 +397,9 @@ export function splitCompletionSummary(summary = "", finalText = "") {
     conclusion = paragraphs[0] || source.slice(0, 200);
     // 单段结语已被结论完整展示，详细展开保持为空，避免同一段文字出现两次。
     detail = paragraphs.slice(1).join("\n\n").trim();
-  } else {
-    // 有分节但没有「结论」：结论取首个分节首段，detail 保留全文。
-    conclusion = firstParagraph(bodyOf(titled[0])) || source.slice(0, 200);
-    // 该段已作为结论展示，从详细展开中移除首次出现，避免重复。
-    if (conclusion) detail = detail.replace(conclusion, "").trim();
   }
+  // 有分节但没有「结论」节：不提升任何段落为结论，detail 原样保留模型顺序。
+  // （旧实现会把首个分节首段搬到最前面，见本函数顶部说明。）
   removeSection(whatSection);
   const what = whatSection ? bodyOf(whatSection) : "";
   return { what, conclusion, detail };
