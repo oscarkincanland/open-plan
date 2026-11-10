@@ -136,6 +136,7 @@ import {
   browserType,
   browserWaitFor,
   getBrowserSession,
+  recordBrowserStep,
 } from "./内置浏览器.mjs";
 import { CHANNEL_HISTORY_LIMIT, PROTOCOL_VERSION, createStreamId, pushChannelEvent } from "./事件协议.mjs";
 import { evaluateMemoryCandidate } from "./记忆准入.mjs";
@@ -2533,15 +2534,37 @@ execute: async (_toolCallId, params, signal) => {
     const withBrowserStep = (kind, execute) => async (toolCallId, params = {}) => {
       const startedAt = Date.now();
       const view = browserCurrentView();
-      emitBrowserStep("browser_step_start", { toolCallId, kind, url: view.url, title: view.title });
+      // 开始记录优先使用请求 URL：导航类工具否则会短暂显示“正在打开上一个站点”。
+      const requestedUrl = String(params?.url || "");
+      const startUrl = requestedUrl || view.url;
+      emitBrowserStep("browser_step_start", { toolCallId, kind, url: startUrl, title: view.title });
+      try { recordBrowserStep(browserKeyOf(), { toolCallId, kind, status: "running", url: startUrl, title: view.title, at: startedAt }); } catch {}
       try {
         const result = await execute(toolCallId, params);
         const viewAfter = browserCurrentView();
-        emitBrowserStep("browser_step_end", { toolCallId, kind, status: "done", durationMs: Date.now() - startedAt, url: viewAfter.url, title: viewAfter.title });
+        const navigation = result?.details?.navigation || null;
+        const warning = String(navigation?.reason || "");
+        const failed = Boolean(navigation?.failed);
+        const durationMs = Date.now() - startedAt;
+        emitBrowserStep("browser_step_end", {
+          toolCallId, kind, status: failed ? "error" : "done", durationMs,
+          url: viewAfter.url, title: viewAfter.title,
+          ...(warning ? { warning } : {}),
+          ...(failed ? { error: warning } : {}),
+        });
+        try {
+          recordBrowserStep(browserKeyOf(), {
+            toolCallId, kind, status: failed ? "error" : "done", durationMs,
+            url: viewAfter.url, title: viewAfter.title,
+            note: warning ? String(warning).slice(0, 120) : "",
+          });
+        } catch {}
         return result;
       } catch (error) {
         const viewAfter = browserCurrentView();
-        emitBrowserStep("browser_step_end", { toolCallId, kind, status: "error", durationMs: Date.now() - startedAt, url: viewAfter.url, title: viewAfter.title, error: String(error?.message || error).slice(0, 200) });
+        const durationMs = Date.now() - startedAt;
+        emitBrowserStep("browser_step_end", { toolCallId, kind, status: "error", durationMs, url: viewAfter.url, title: viewAfter.title, error: String(error?.message || error).slice(0, 200) });
+        try { recordBrowserStep(browserKeyOf(), { toolCallId, kind, status: "error", durationMs, url: viewAfter.url, title: viewAfter.title, note: "操作失败" }); } catch {}
         throw error;
       }
     };
@@ -2588,7 +2611,17 @@ execute: async (_toolCallId, params, signal) => {
       execute: async (_toolCallId, params) => {
         try {
           const state = await browserOpen(browserKeyOf(), params.url, { agent: true });
-          return browserToolResult(`已打开：${state.url}\n标题：${state.title || "（加载中）"}\n下一步用 browser_snapshot 查看页面元素。`, state);
+          const navigation = state?.navigation || null;
+          if (navigation?.failed) {
+            return browserToolResult(
+              `已打开失败：${navigation.reason || "页面加载失败"}\n目标：${params.url}\n当前显示的是浏览器错误页；请换用可访问的地址或搜索引擎结果页，或请用户接管处理。`,
+              state,
+            );
+          }
+          const redirectNote = navigation?.redirected
+            ? `\n注意：已重定向到 ${navigation.finalHost || state.url}`
+            : "";
+          return browserToolResult(`已打开：${state.url}\n标题：${state.title || "（加载中）"}${redirectNote}\n下一步用 browser_snapshot 查看页面元素。`, state);
         } catch (error) {
           return browserToolResult(browserErrorText(error));
         }

@@ -49,6 +49,10 @@ const MAX_FRAME_BYTES = Math.max(120_000, Number(process.env.OAW_BROWSER_FRAME_M
 const SUBSCRIBER_WATCHDOG_MS = 1500; // 面板空白时的恢复巡检间隔
 const SCREENCAST_RETRY_MS = 4000; // 推流恢复的最小重试间隔
 const FIRST_FRAME_GRACE_MS = 1200; // 启动推流后等待首帧的宽限期
+// 操作记录：面板“操作记录”只展示数据，不做摘要。
+// 明细保留最近 20 步；站点聚合单独累计（最多 50），避免长流程把最早访问的站点挤掉。
+export const BROWSER_ACTION_LOG_LIMIT = 20;
+export const BROWSER_SITE_LIMIT = 50;
 
 const sessions = new Map(); // key -> BrowserSession
 const subscribers = new Map(); // key -> Set<fn(type, data)>
@@ -544,6 +548,83 @@ function assertUrlAllowed(url) {
   }
 }
 
+/**
+ * 浏览器动作记录：按 toolCallId upsert，开始→结束只占一行。
+ * 返回 created / urlChanged 供上层决定是否累计总步数与站点。
+ */
+export function upsertBrowserAction(log, entry, limit = BROWSER_ACTION_LOG_LIMIT) {
+  const list = Array.isArray(log) ? log.slice() : [];
+  const item = {
+    toolCallId: String(entry?.toolCallId || ""),
+    kind: String(entry?.kind || ""),
+    url: String(entry?.url || ""),
+    title: String(entry?.title || ""),
+    status: String(entry?.status || "done"),
+    note: String(entry?.note || ""),
+    durationMs: Number(entry?.durationMs) || 0,
+    at: Number(entry?.at) || Date.now(),
+  };
+  const index = item.toolCallId ? list.findIndex((row) => row?.toolCallId === item.toolCallId) : -1;
+  const created = index < 0;
+  const urlChanged = !created && String(list[index]?.url || "") !== item.url;
+  if (created) list.push(item);
+  else list[index] = { ...list[index], ...item };
+  const cap = Math.max(1, Number(limit) || BROWSER_ACTION_LOG_LIMIT);
+  while (list.length > cap) list.shift();
+  return { list, created, urlChanged, entry: item };
+}
+
+/**
+ * 站点聚合：只统计 http/https；同一站点合并计数并移到末尾（最近访问序）。
+ * 与 20 条明细上限解耦，长流程不会丢最早访问的站点。
+ */
+export function mergeBrowserSites(sites, entry, limit = BROWSER_SITE_LIMIT) {
+  const list = Array.isArray(sites) ? sites.slice() : [];
+  let host = "";
+  try {
+    const parsed = new URL(String(entry?.url || ""));
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") host = parsed.host.replace(/^www\./, "");
+  } catch {}
+  if (!host) return list;
+  const at = Number(entry?.at) || Date.now();
+  const index = list.findIndex((row) => row?.host === host);
+  if (index >= 0) {
+    const next = { ...list[index], count: Number(list[index].count || 0) + 1, lastAt: at };
+    list.splice(index, 1);
+    list.push(next);
+  } else {
+    list.push({ host, count: 1, lastAt: at });
+  }
+  const cap = Math.max(1, Number(limit) || BROWSER_SITE_LIMIT);
+  while (list.length > cap) list.shift();
+  return list;
+}
+
+/**
+ * 导航结果分类：只用于“站点归属”提示，不阻断导航。
+ * chrome-error 是浏览器错误页的稳定信号；跨站跳转只提示，不拦截。
+ */
+export function classifyNavigation({ requestedUrl = "", finalUrl = "" } = {}) {
+  const final = String(finalUrl || "");
+  if (/^chrome-error:\/\//i.test(final)) {
+    return { failed: true, code: "NAV_ERROR_PAGE", redirected: false, finalUrl: final, reason: "页面加载失败（站点不可达/证书/网络）" };
+  }
+  let requestedHost = "";
+  let finalHost = "";
+  try { requestedHost = new URL(String(requestedUrl)).host.replace(/^www\./, ""); } catch {}
+  try { finalHost = new URL(final).host.replace(/^www\./, ""); } catch {}
+  const redirected = Boolean(requestedHost && finalHost && requestedHost !== finalHost);
+  return {
+    failed: false,
+    code: redirected ? "NAV_REDIRECTED" : "",
+    redirected,
+    finalUrl: final,
+    requestedHost,
+    finalHost,
+    reason: redirected ? `已重定向到 ${finalHost}` : "",
+  };
+}
+
 class BrowserSession {
   constructor(key) {
     this.key = key;
@@ -573,7 +654,11 @@ class BrowserSession {
     this.activeTargetId = null;
     this.tabs = [];
     this.tabsTimer = null;
-    this.state = { active: false, url: "about:blank", title: "", loading: false, phase: "", viewport: { ...VIEWPORT }, startedAt: null, error: null };
+    // 面板“操作记录”：只存数据，不做摘要。明细 20 条 + 站点聚合 50 个。
+    this.actionLog = [];
+    this.actionTotal = 0;
+    this.actionSites = [];
+    this.state = { active: false, url: "about:blank", title: "", loading: false, phase: "", viewport: { ...VIEWPORT }, startedAt: null, error: null, navigation: null };
   }
 
   queueFrameBroadcast(frame) {
@@ -937,7 +1022,12 @@ class BrowserSession {
       viewport: this.state.viewport,
       frameSize: this.frame ? { width: this.frame.width || null, height: this.frame.height || null } : null,
       error: this.state.error,
+      navigation: this.state.navigation || null,
       hasFrame: Boolean(this.frame),
+      // 面板“操作记录”（无摘要）：最近 20 步 + 站点聚合 + 总步数徽标
+      actions: this.actionLog || [],
+      actionTotal: this.actionTotal || 0,
+      actionSites: this.actionSites || [],
       // 接管仲裁状态：前端据此显示“你在操作/等待交还”，而不是本地布尔值
       ownership: this.ownershipView(),
     };
@@ -945,6 +1035,22 @@ class BrowserSession {
 
   emitState() {
     broadcast(this.key, "state", this.stateView());
+  }
+
+  /** 记录一条浏览器动作（开始/结束都调用，按 toolCallId 合并）。 */
+  recordAction(entry) {
+    const result = upsertBrowserAction(this.actionLog, entry);
+    this.actionLog = result.list;
+    if (result.created) this.actionTotal += 1;
+    // 开始与结束 URL 不同（点击后导航/重定向）时，目标站点也要计入。
+    if (result.created || result.urlChanged) {
+      this.actionSites = mergeBrowserSites(this.actionSites, result.entry);
+    }
+    broadcast(this.key, "actions", {
+      actions: this.actionLog,
+      total: this.actionTotal,
+      sites: this.actionSites,
+    });
   }
 
   /**
@@ -1291,6 +1397,7 @@ class BrowserSession {
     await this.ensureStarted();
     this.state.loading = true;
     this.state.url = url;
+    this.state.navigation = null;
     this.state.phase = "navigating"; // T5
     this.emitAgentAction({ kind: "navigate", url }); // T4
     this.emitState();
@@ -1305,6 +1412,16 @@ class BrowserSession {
     this.state.phase = ""; // T5：导航等待结束（含超时）统一清零
     if (this.state.error && this.state.error.startsWith("页面加载超时")) this.state.error = null;
     await this.refreshTitle().catch(() => {});
+    // 站点归属：错误页/重定向必须如实呈现，不能把 chrome-error 或登录页当成目标站点。
+    let finalUrl = this.state.url;
+    try {
+      const observed = await this.evaluate("location.href");
+      if (observed) finalUrl = String(observed);
+    } catch {}
+    const navigation = classifyNavigation({ requestedUrl: url, finalUrl });
+    this.state.navigation = navigation;
+    if (navigation.failed) this.state.error = navigation.reason;
+    else if (this.state.error && this.state.error.startsWith("页面加载失败")) this.state.error = null;
     this.emitState();
     this.scheduleTabsRefresh();
     return this.stateView();
@@ -1492,6 +1609,11 @@ class BrowserSession {
     this.clearFrameBroadcast();
     this.frame = null;
     this.lastFrameAt = 0;
+    // 关闭即清空操作记录：下次打开不应看到上一次会话的站点。
+    this.actionLog = [];
+    this.actionTotal = 0;
+    this.actionSites = [];
+    this.state.navigation = null;
     this.emitState();
     broadcast(this.key, "closed", {});
     try { this.cdp?.close(); } catch {}
@@ -1537,6 +1659,17 @@ class BrowserSession {
 
 export function getBrowserSession(key) {
   return sessions.get(key) || null;
+}
+
+/**
+ * 记录浏览器动作到面板“操作记录”（找不到会话时静默忽略）。
+ * 关闭动作不是“访问的网站”，不入记录。
+ */
+export function recordBrowserStep(key, entry = {}) {
+  if (String(entry.kind || "") === "close") return;
+  const session = sessions.get(key);
+  if (!session) return;
+  try { session.recordAction(entry); } catch {}
 }
 
 /**

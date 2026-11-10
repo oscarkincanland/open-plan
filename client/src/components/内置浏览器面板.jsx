@@ -5,6 +5,7 @@ import { browserClose, browserFullpage, browserInput, browserOpen, browserPdf, b
 import { acquireStream, waitForStreamSlot } from "../长连接预算.js";
 import { flag } from "../运行开关.js";
 import { setBrowserStreamState } from "../浏览器联动.js";
+import { BROWSER_STEP_VERBS, browserStepHost, formatClock } from "../浏览器动作.js";
 import { 是内嵌浏览器视图, 浏览器会话键, 上报视图边界, 设置视图可见 } from "../平台/内嵌浏览器.js";
 
 // 只有「启动 / profile 锁 / CDP 归属」这类异常才值得重置浏览器；
@@ -43,7 +44,7 @@ function resolveTarget(draft) {
 }
 
 export default function BrowserPanel({ clientId, threadId, visible = true, fullscreen = false, onToggleFullscreen }) {
-  const [state, setState] = useState({ active: false, url: "", title: "", loading: false, viewport: { width: 1280, height: 800 }, hasFrame: false, ownership: null });
+  const [state, setState] = useState({ active: false, url: "", title: "", loading: false, viewport: { width: 1280, height: 800 }, hasFrame: false, ownership: null, actions: [], actionTotal: 0, actionSites: [] });
   const [tabs, setTabs] = useState([]);
   const [frame, setFrame] = useState(null);
   const [frameSize, setFrameSize] = useState({ width: 0, height: 0 });
@@ -51,6 +52,7 @@ export default function BrowserPanel({ clientId, threadId, visible = true, fulls
   const [openDraft, setOpenDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [connected, setConnected] = useState(false);
   const imgRef = useRef(null);
   const viewRef = useRef(null);
@@ -60,6 +62,10 @@ export default function BrowserPanel({ clientId, threadId, visible = true, fulls
   // 画面是否已出现：img 元素只在有帧后渲染，监听器必须等它挂载后再绑定；
   // 用布尔值而不是 frame 字符串做依赖，避免每 100ms 一帧导致监听器反复重建、拖拽状态被重置。
   const hasFrame = Boolean(frame);
+  // 操作记录：只展示数据（站点 chip + 逐条动作），收起态不写摘要。
+  const actions = Array.isArray(state.actions) ? state.actions : [];
+  const actionSites = Array.isArray(state.actionSites) ? state.actionSites : [];
+  const actionTotal = Number(state.actionTotal) || 0;
 
   // T3：帧改走 Blob URL。data URL 每帧 200–330KB 字符串解析并整块替换；
   // Blob URL 让浏览器走同源 blob 加载路径，旧对象在保留 3 帧（防闪白）后回收。
@@ -201,6 +207,14 @@ export default function BrowserPanel({ clientId, threadId, visible = true, fulls
           if (payload.type === "state") {
             setState((previous) => ({ ...previous, ...(payload.data || {}) }));
             if (payload.data?.frameSize) setFrameSize(payload.data.frameSize);
+          } else if (payload.type === "actions") {
+            // 操作记录只推数据，不拼摘要句。
+            setState((previous) => ({
+              ...previous,
+              actions: Array.isArray(payload.data?.actions) ? payload.data.actions : [],
+              actionTotal: Number(payload.data?.total) || 0,
+              actionSites: Array.isArray(payload.data?.sites) ? payload.data.sites : [],
+            }));
           } else if (payload.type === "tabs") {
             setTabs(Array.isArray(payload.data?.tabs) ? payload.data.tabs : []);
           } else if (payload.type === "frame" && payload.data?.data) {
@@ -217,7 +231,7 @@ export default function BrowserPanel({ clientId, threadId, visible = true, fulls
             setFrame(null);
             setFrameSize({ width: 0, height: 0 });
             setTabs([]);
-            setState((previous) => ({ ...previous, active: false, hasFrame: false }));
+            setState((previous) => ({ ...previous, active: false, hasFrame: false, actions: [], actionTotal: 0, actionSites: [] }));
           }
         } catch {}
       };
@@ -721,6 +735,38 @@ export default function BrowserPanel({ clientId, threadId, visible = true, fulls
         </提示气泡>
         <提示气泡 label="关闭浏览器"><button className="btn-icon" onClick={handleClose} disabled={busy} aria-label="关闭浏览器"><Icon name="close" size={14} /></button></提示气泡>
       </div>
+      {actions.length > 0 && (
+        <details
+          className="browser-actions-log"
+          open={actionsOpen}
+          onToggle={(event) => setActionsOpen(event.currentTarget.open)}
+        >
+          <summary>
+            <Icon name="history" size={12} /> 操作记录
+            {actionTotal > 0 && <span className="bal-count">{actionTotal}</span>}
+          </summary>
+          {actionSites.length > 0 && (
+            <div className="bal-sites">
+              {actionSites.map((site) => (
+                <span key={site.host} className="bal-site" title={`${site.host} · 访问 ${site.count} 次`}>
+                  {site.host}{Number(site.count) > 1 ? ` ×${site.count}` : ""}
+                </span>
+              ))}
+            </div>
+          )}
+          <ol className="bal-list">
+            {actions.map((row, index) => (
+              <li key={row.toolCallId || `${row.at}-${index}`} className={row.status === "error" ? "err" : ""}>
+                <span className="bal-time">{formatClock(row.at)}</span>
+                <span className="bal-verb">{BROWSER_STEP_VERBS[row.kind] || String(row.kind || "操作")}</span>
+                <span className="bal-host" title={row.url || ""}>{browserStepHost(row.url)}</span>
+                {row.status === "running" && <span className="bal-live" aria-label="进行中" />}
+                {row.note && <span className="bal-note">{row.note}</span>}
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
       {state.title && <div className="browser-title" title={state.title}>{state.title}</div>}
       <div ref={viewRef} className="browser-view" title="滚轮滚动 · 单击接管 · 按住拖动可操作滑块">
         <textarea
@@ -769,7 +815,14 @@ export default function BrowserPanel({ clientId, threadId, visible = true, fulls
         )}
       </div>
       <div className="browser-hint"><Icon name="cursor" size={12} /> {userOwns ? "你正在接管：Agent 写操作已暂停，点击「交还 Agent」后恢复" : "点击网页控件后直接键盘输入 · 滚轮滚动 · 按住拖动滑块/验证码 · 回车提交"}</div>
-      {state.error && <div className="browser-msg">{state.error}</div>}
+      {state.error && (
+        <div className="browser-msg browser-msg-error">
+          <span>{state.error}</span>
+          {state.navigation?.failed && (
+            <button type="button" className="btn-sm" onClick={() => send({ action: "reload" })} disabled={busy}>重试</button>
+          )}
+        </div>
+      )}
       {message && <div className="browser-msg">{message}</div>}
     </div>
   );

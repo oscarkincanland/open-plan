@@ -54,6 +54,9 @@ npm run desktop:smoke    # 5) 冒烟：对打包目录真发 HTTP 请求（28 �
 
 **业务代码只问能力、不问形态**：`if (平台能力.原生文件对话框) …`，而不是 `if (isDesktop) …`。
 
+> 桌面形态的内置浏览器由 `WebContentsView` 原生绘制，DOM 层的 Agent 虚拟鼠标/动作气泡会被原生视图遮挡；
+> Agent 访问了哪些网站以“会话流 · 浏览器任务卡”和“浏览器面板 · 操作记录”为准（两者都是普通前端渲染）。
+
 ## 边界与门禁
 
 `npm run test:platform-boundary`（已并入 `npm run verify`）会拦下：

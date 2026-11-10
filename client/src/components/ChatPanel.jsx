@@ -43,6 +43,7 @@ import RunChangesCard from "./会话流/RunChangesCard.jsx";
 import { TypewriterText } from "./会话流/useTypewriter.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
 import { assignTimelineTurns, buildRunTimeline, describeRunFold, splitCompletionSummary, summarizeTimeline } from "../会话流投影.js";
+import { BROWSER_STEP_VERBS, browserStepHost } from "../浏览器动作.js";
 import { applyToolMetadata, toolPresentationOf } from "../工具展示.js";
 import { reduceTeamEvent, teamFromEvents } from "../团队投影.js";
 import { stripAnswerPrefill, stripToolMarkup, hasToolMarkup } from "../工具标签清洗.js";
@@ -51,9 +52,8 @@ import InteractionDock from "./交互/InteractionDock.jsx";
 import InteractionCard from "./交互/InteractionCard.jsx";
 import { isActiveInteraction, mergeInteractionEvent, normalizeInteraction, normalizeInteractions, sortInteractions } from "./交互/交互模型.js";
 
-// O-P3：浏览器"写操作类"工具白名单 —— 只有这些会拉起内置浏览器侧栏；
-// browser_close / browser_tabs / browser_snapshot / browser_screenshot 等查看或收尾动作不拉起。
-const BROWSER_PANEL_OPEN_TOOLS = new Set(["browser_open", "browser_click", "browser_type", "browser_press", "browser_scroll"]);
+// 浏览器活动统一拉起面板（用户要求实时看到访问了哪些站点）；browser_close 是收尾动作，不拉起。
+// 用户本轮手关后由 App 的 browserAutoOpenBlockedRef 拦住，不会反复弹开。
 
 /** canvas_* 工具活动：从工具入参里取 slug/board，供画布工具条按画布/板显示“正在编辑”。 */
 function canvasToolMeta(data) {
@@ -3162,11 +3162,12 @@ case "runtime_connecting":
         // 否则同一句话会被工具卡切成两截（前半句在工具卡前，后半句在工具卡后）。
         if (aid) flushTextReveal(aid);
         setAgentPhase(`调用工具：${data.name || "处理中"}`);
-        // 浏览器"写操作类"工具开始执行时通知外层展开内置浏览器侧栏（O-P3 判定修正：
-        // browser_close / browser_tabs / browser_snapshot 等查看或收尾动作不再把面板拉起）。
+        // 浏览器活动统一通知外层拉起内置浏览器侧栏（2026-11-09：仅 browser_close 除外）：
+        // 用户要实时看到 Agent 访问了哪些站点，snapshot/back 等只读浏览同样需要面板。
         // 这条通知替代了原先 App 常驻的 /api/browser/stream（只用它判断"浏览器活跃"），
         // 少一条长连接就少占一个同源连接槽位。
-        if (BROWSER_PANEL_OPEN_TOOLS.has(String(data.name || ""))) onBrowserActivity?.();
+        const browserToolName = String(data.name || "");
+        if (browserToolName.startsWith("browser_") && browserToolName !== "browser_close") onBrowserActivity?.();
         if (aid) {
           if (streamBufRef.current) flushNow(aid);
           patch(aid, (m) => {
@@ -7012,6 +7013,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     }
     if (block.type === "subagent") return <SubagentCard key={key} block={block} onOpenDetail={onOpenSubagent} />;
     if (block.type === "pipeline") return <PipelineCard key={key} block={block} onOpenFile={onOpenFile} />;
+    if (block.type === "browser-steps") return <BrowserStepsCard key={key} steps={block.steps || []} />;
     if (block.type === "ask") return <AskBlock key={key} block={block} clientId={clientId} threadId={threadId} onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)} onExpired={(blockId) => onAskExpired?.(m.id, blockId)} />;
     if (block.type === "approval") return <ApprovalBlock key={key} block={block} />;
     if (block.type === "text") return (
@@ -8588,7 +8590,7 @@ function reduceBrowserSteps(steps, type, data) {
   const next = [...steps];
   let row = next.find((item) => item.toolCallId === id);
   if (!row) {
-    row = { toolCallId: id, kind: String(data.kind || ""), status: "running", url: "", title: "", chars: 0, elementCount: 0, preview: "", durationMs: 0, error: "" };
+    row = { toolCallId: id, kind: String(data.kind || ""), status: "running", url: "", title: "", chars: 0, elementCount: 0, preview: "", durationMs: 0, error: "", warning: "" };
     next.push(row);
   }
   if (type === "browser_step_start") {
@@ -8607,21 +8609,10 @@ function reduceBrowserSteps(steps, type, data) {
     if (data.url) row.url = String(data.url);
     if (data.title) row.title = String(data.title);
     row.error = String(data.error || "");
+    row.warning = String(data.warning || "");
   }
   while (next.length > 30) next.shift(); // 单轮护栏：极端长流程不无限增长
   return next;
-}
-
-const BROWSER_STEP_VERBS = {
-  open: "打开", snapshot: "读取页面", click: "点击", type: "输入", press: "按键",
-  scroll: "滚动", screenshot: "截图", tabs: "标签页", back: "后退", close: "关闭",
-  wait: "等待", act: "点击并等待", extract: "抽取正文", select: "选择下拉",
-};
-
-function browserStepHost(url) {
-  const value = String(url || "");
-  if (!value) return "";
-  try { return new URL(value).host.replace(/^www\./, ""); } catch { return value.slice(0, 40); }
 }
 
 /**
@@ -8637,7 +8628,7 @@ function BrowserStepsCard({ steps }) {
     <div className="browser-steps-card" role="list" aria-label="浏览器任务时间线">
       <button type="button" className="bsc-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
         <Icon name="globe" size={12} />
-        <span className="bsc-title">浏览器任务 · {steps.length} 步{running ? "（进行中）" : ""}</span>
+        <span className="bsc-title">浏览器任务</span>
         {running && <Icon name="loading" size={12} className="icon-loading bsc-live" />}
         <span className={`tool-chevron ${open ? "open" : ""}`}><Icon name="chevronRight" size={12} /></span>
       </button>
@@ -8645,7 +8636,10 @@ function BrowserStepsCard({ steps }) {
         <ol className="bsc-list">
           {steps.map((row, index) => {
             const verb = BROWSER_STEP_VERBS[row.kind] || String(row.kind || "浏览器操作");
-            const target = String(row.title || browserStepHost(row.url) || "");
+            const host = browserStepHost(row.url);
+            const title = String(row.title || "").trim();
+            // 站点是主线索：有标题时“标题 · 站点”，标题过长只截标题，不丢站点。
+            const target = [title.slice(0, 48), host].filter(Boolean).join(" · ");
             const isRunning = row.status === "running";
             const readable = Number(row.chars) > 0 || Number(row.elementCount) > 0;
             const showPreview = previewId === row.toolCallId && row.preview;
@@ -8667,7 +8661,9 @@ function BrowserStepsCard({ steps }) {
                   {!isRunning && row.durationMs > 0 && <span className="bsc-chip">{(row.durationMs / 1000).toFixed(1)}s</span>}
                 </button>
                 {showPreview && <div className="bsc-preview">{row.preview}{row.preview.length >= 300 ? "…" : ""}</div>}
-                {row.status === "error" && row.error && <div className="bsc-error">{row.error}</div>}
+                {(row.warning || (row.status === "error" && row.error)) && (
+                  <div className="bsc-error">{row.warning || row.error}</div>
+                )}
                 {row.url && <div className="bsc-url">{row.url}</div>}
               </li>
             );

@@ -28,7 +28,10 @@ const {
   browserType,
   browserUserInput,
   browserWaitFor,
+  classifyNavigation,
   getBrowserSession,
+  mergeBrowserSites,
+  upsertBrowserAction,
   shutdownBrowsers,
 } = await import("../server/内置浏览器.mjs");
 
@@ -562,16 +565,73 @@ await test("步骤/读取事件：契约登记且 browser_* 工具统一包装",
   assert.match(agent, /emitBrowserRead\(_toolCallId, "extract"/, "extract 应发布 browser_read");
 });
 
-await test("前端时间线：browser-steps 过程卡聚合三类事件", () => {
+await test("前端时间线：browser-steps 卡可投影、可回放、无摘要", () => {
   const chat = fs.readFileSync(path.join(ROOT, "client", "src", "components", "ChatPanel.jsx"), "utf8");
+  const projection = fs.readFileSync(path.join(ROOT, "client", "src", "会话流投影.js"), "utf8");
+  const actions = fs.readFileSync(path.join(ROOT, "client", "src", "浏览器动作.js"), "utf8");
   assert.match(chat, /case "browser_step_start":[\s\S]{0,80}?case "browser_read":/, "SSE 分发应接步骤/读取事件");
   assert.match(chat, /reduceBrowserSteps\(block\.steps \|\| \[\], type, data\)/, "聚合器应按 toolCallId 归并行");
   assert.match(chat, /"browser-steps"[\]]\)[;,]?/, "过程块类型应包含 browser-steps");
-  assert.match(chat, /case "browser-steps":/, "过程区渲染应支持 browser-steps");
+  assert.match(chat, /case "browser-steps":/, "新路径渲染应支持 browser-steps");
+  assert.match(chat, /block\.type === "browser-steps"/, "旧路径渲染应支持 browser-steps");
   assert.match(chat, /function BrowserStepsCard\(/, "时间线卡组件应存在");
-  assert.match(chat, /BROWSER_STEP_VERBS/, "动词映射应存在");
+  assert.match(chat, /from "\.\.\/浏览器动作\.js"/, "动词/站点工具应走共享模块");
+  assert.doesNotMatch(chat, /bsc-title">浏览器任务 · \{steps\.length\} 步/, "卡片标题不得带步数摘要");
+  assert.match(projection, /case "browser-steps":/, "buildRunTimeline 必须投影 browser-steps");
+  assert.match(actions, /BROWSER_STEP_VERBS/, "共享动词映射应存在");
+  assert.match(actions, /browserStepHost/, "共享站点归一化应存在");
   const css = fs.readFileSync(path.join(ROOT, "client", "src", "styles.css"), "utf8");
   assert.match(css, /\.browser-steps-card/, "时间线样式应存在");
+});
+
+await test("投影回归：browser-steps 块产出时间线条目，空块不产出", async () => {
+  const { buildRunTimeline } = await import("../client/src/会话流投影.js");
+  const steps = [{ toolCallId: "t1", kind: "open", status: "done", url: "https://a.example/x", title: "A" }];
+  const items = buildRunTimeline({ blocks: [{ type: "browser-steps", id: "browser-steps", steps }], trace: null });
+  assert.equal(items.length, 1, "应产出一条浏览器条目");
+  assert.equal(items[0].kind, "browser-steps");
+  assert.equal(items[0].block.steps.length, 1);
+  const empty = buildRunTimeline({ blocks: [{ type: "browser-steps", id: "browser-steps", steps: [] }], trace: null });
+  assert.equal(empty.length, 0, "空步骤块不应产出条目");
+});
+
+await test("操作记录：按 toolCallId 合并、20 条上限、站点独立累计", () => {
+  let result = upsertBrowserAction([], { toolCallId: "t1", kind: "open", status: "running", url: "https://a.example/x", at: 1 });
+  assert.equal(result.created, true);
+  assert.equal(result.list.length, 1);
+  result = upsertBrowserAction(result.list, { toolCallId: "t1", kind: "open", status: "done", url: "https://a.example/x", durationMs: 12, at: 2 });
+  assert.equal(result.created, false, "同 toolCallId 不应新增行");
+  assert.equal(result.list.length, 1);
+  assert.equal(result.list[0].status, "done");
+  result = upsertBrowserAction(result.list, { toolCallId: "t1", kind: "click", status: "done", url: "https://b.example/y", at: 3 });
+  assert.equal(result.urlChanged, true, "开始/结束 URL 不同应标记 urlChanged");
+  for (let i = 0; i < 25; i += 1) {
+    result = upsertBrowserAction(result.list, { toolCallId: `t${i}`, kind: "snapshot", url: `https://h${i}.example/`, at: i + 10 });
+  }
+  assert.equal(result.list.length, 20, "明细只保留最近 20 条");
+  const sites = mergeBrowserSites([], { url: "https://a.example/p", at: 1 });
+  const sites2 = mergeBrowserSites(sites, { url: "https://www.a.example/q", at: 2 });
+  assert.deepEqual(sites2.map((item) => [item.host, item.count]), [["a.example", 2]], "同站点应合并计数");
+  assert.equal(mergeBrowserSites(sites2, { url: "chrome-error://chromewebdata/" }).length, 1, "错误页不是站点");
+});
+
+await test("导航分类：错误页 / 跨站重定向 / 同站", () => {
+  assert.equal(classifyNavigation({ requestedUrl: "https://a.cn/x", finalUrl: "chrome-error://chromewebdata/" }).failed, true);
+  const redirected = classifyNavigation({ requestedUrl: "https://a.cn/x", finalUrl: "https://b.cn/y" });
+  assert.equal(redirected.redirected, true);
+  assert.equal(redirected.finalHost, "b.cn");
+  assert.equal(classifyNavigation({ requestedUrl: "https://a.cn/x", finalUrl: "https://www.a.cn/y" }).redirected, false);
+});
+
+await test("浏览器面板：操作记录默认收起、只渲染数据、无摘要句", () => {
+  const panel = fs.readFileSync(path.join(ROOT, "client", "src", "components", "内置浏览器面板.jsx"), "utf8");
+  assert.match(panel, /const \[actionsOpen, setActionsOpen\] = useState\(false\)/, "默认收起");
+  assert.match(panel, /payload\.type === "actions"/, "应消费 actions 事件");
+  assert.match(panel, /操作记录/, "应有操作记录标题");
+  assert.match(panel, /bal-sites/, "应有站点 chip");
+  assert.doesNotMatch(panel, /操作记录[^\n]*最近/, "收起态不得写最近访问摘要");
+  const chat = fs.readFileSync(path.join(ROOT, "client", "src", "components", "ChatPanel.jsx"), "utf8");
+  assert.match(chat, /browserToolName\.startsWith\("browser_"\) && browserToolName !== "browser_close"/, "任何浏览动作都应拉起面板（close 除外）");
 });
 
 await new Promise((resolve) => setTimeout(resolve, 400));

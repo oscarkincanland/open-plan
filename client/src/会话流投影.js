@@ -200,6 +200,13 @@ export function buildRunTimeline({ blocks = [], trace = null } = {}) {
         if (text) items.push({ kind: "sys", id, icon: "info", verb: "系统提醒", obj: text.slice(0, 60), state: "ok", text });
         break;
       }
+      case "browser-steps": {
+        // 浏览器任务时间线：steps 由 ChatPanel 的 reduceBrowserSteps 按 toolCallId 归并。
+        // 空块不产生条目；卡片标题不带步数（全局不要摘要）。
+        const steps = Array.isArray(block.steps) ? block.steps : [];
+        if (steps.length) items.push({ kind: "browser-steps", id, icon: "globe", block });
+        break;
+      }
       default:
         break;
     }

@@ -409,10 +409,10 @@ try {
   // App 不再为"浏览器活跃"常驻第二条 /api/browser/stream，改由对话流的工具事件驱动。
   assert.ok(!/new EventSource\(`\/api\/browser\/stream/.test(appSource), "App 不应再常驻浏览器流（改由 ChatPanel 工具事件通知）");
   assert.match(appSource, /onBrowserActivity=\{handleBrowserActivity\}/, "App 应把浏览器活动回调接给 ChatPanel");
-  // O-P3 起改为白名单：只有写操作类 browser_* 工具拉起侧栏，
-  // browser_close / browser_tabs / browser_snapshot / browser_screenshot 等查看或收尾动作不拉起。
-  assert.match(chatPanelSource, /const BROWSER_PANEL_OPEN_TOOLS = new Set\(\["browser_open",[\s\S]{0,160}?"browser_scroll"\]\)/, "应有写操作类 browser_* 工具白名单");
-  assert.match(chatPanelSource, /if \(BROWSER_PANEL_OPEN_TOOLS\.has\(String\(data\.name \|\| ""\)\)\) onBrowserActivity\?\.\(\)/, "写操作类 browser_* 工具开始时应通知外层展开内置浏览器");
+  // 2026-11-09 起改为“任何 browser_*（close 除外）都拉起面板”：
+  // 浏览站点要实时可见，snapshot/back 等只读动作同样需要面板。
+  assert.match(chatPanelSource, /browserToolName\.startsWith\("browser_"\) && browserToolName !== "browser_close"/, "浏览器活动应拉起面板（close 除外）");
+  assert.match(chatPanelSource, /if \(browserToolName\.startsWith\("browser_"\) && browserToolName !== "browser_close"\) onBrowserActivity\?\.\(\)/, "browser_* 工具开始时应通知外层展开内置浏览器");
   assert.match(chatPanelSource, /acquireStream\("chat", \{ essential: true, priority: 1, label: "对话流" \}\)/, "对话流应登记为必需长连接");
   assert.match(appSource, /acquireStream\("agent-events", \{ essential: true, priority: 2, label: "全局事件流" \}\)/, "全局事件流应登记为必需长连接");
   assert.match(apiSource, /import \{ closeOptionalStreams \} from "\.\/长连接预算\.js"/, "api.js 超时应能回收可放弃的长连接");
