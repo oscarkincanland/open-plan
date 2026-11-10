@@ -274,7 +274,7 @@
     "desktop:smoke": "node scripts/桌面/产物冒烟.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.5.1",
     "@modelcontextprotocol/client": "^2.1.0",
     "docx": "^9.7.1",
     "express": "^5.2.1",
