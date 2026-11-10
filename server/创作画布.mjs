@@ -1148,6 +1148,347 @@ function buildTemplateBoards({ title, kind, template }) {
   };
 }
 
+// ---------- 用户模板库（2026-11-10） ----------
+
+/**
+ * 模板 = 与画布同构的目录包：designs/.templates/<slug>/project/（canvas.json + boards/ + assets/）。
+ * format 固定 "oaw-canvas-template"；`.` 前缀目录天然不进 listCanvases。
+ * 模板不参与 rev/版本历史/导出；实例化时 deep clone 并替换 {{title}} 占位符。
+ */
+const TEMPLATES_DIR = ".templates";
+const TEMPLATE_FORMAT = "oaw-canvas-template";
+// 模板 slug 与画布 slug 同规则（允许中文，禁空格/点/斜杠）：模板目录就是普通本地目录。
+const TEMPLATE_SLUG_PATTERN = SLUG_PATTERN;
+const TEMPLATE_PLACEHOLDER = "{{title}}";
+
+/** 内置模板清单（与 buildTemplateBoards 的 id 一一对应，供前端下拉展示）。 */
+export const BUILTIN_CANVAS_TEMPLATES = Object.freeze([
+  { id: "blank", name: "默认（按类型）", description: "普通画布给空白板，deck 给封面", kind: "board" },
+  { id: "cover", name: "封面页", description: "标题 + 强调色块", kind: "board" },
+  { id: "onepager", name: "一页纸", description: "单页汇报版式", kind: "board" },
+  { id: "deck", name: "演示 deck（16:9）", description: "封面 + 页分组的放映版式", kind: "deck" },
+]);
+
+function templatesRoot(root) {
+  return path.join(designsRoot(root), TEMPLATES_DIR);
+}
+
+function assertTemplateSlug(value) {
+  const slug = String(value ?? "").trim();
+  if (!TEMPLATE_SLUG_PATTERN.test(slug)) {
+    fail("CANVAS_INVALID", `模板 slug 非法：${slug}（与画布 slug 同规则：允许中文，禁空格/点/斜杠）`);
+  }
+  return slug;
+}
+
+function templateProjectDirOf(root, templateSlug) {
+  const dir = path.join(templatesRoot(root), assertTemplateSlug(templateSlug), PROJECT_DIR_NAME);
+  if (!isInside(templatesRoot(root), dir)) fail("CANVAS_PATH_DENIED", `模板路径越界：${templateSlug}`);
+  return dir;
+}
+
+function readTemplateIndex(root, templateSlug) {
+  const projectDir = templateProjectDirOf(root, templateSlug);
+  const file = path.join(projectDir, CANVAS_FILE);
+  if (!fs.existsSync(file)) fail("CANVAS_NOT_FOUND", `模板不存在：${templateSlug}`);
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    fail("CANVAS_INVALID", `模板 canvas.json 不是合法 JSON：${templateSlug}`);
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    fail("CANVAS_INVALID", `模板 canvas.json 结构无效：${templateSlug}`);
+  }
+  return { raw, projectDir, file };
+}
+
+/** 文本元素与板标题里的 {{title}} 占位符 → 画布标题。 */
+function applyTemplatePlaceholders(board, { title }) {
+  const replaced = String(title || "");
+  for (const element of Array.isArray(board?.elements) ? board.elements : []) {
+    if (element?.type === "text" && typeof element.text === "string" && element.text.includes(TEMPLATE_PLACEHOLDER)) {
+      element.text = element.text.split(TEMPLATE_PLACEHOLDER).join(replaced);
+    }
+  }
+  return board;
+}
+
+/** 列出模板：内置 4 条 + 用户模板（.templates 目录下的画布包）。 */
+export function listCanvasTemplates(workspace) {
+  const root = workspaceRoot(workspace);
+  const dir = templatesRoot(root);
+  const user = [];
+  if (fs.existsSync(dir)) {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { entries = []; }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      if (!TEMPLATE_SLUG_PATTERN.test(entry.name)) continue;
+      const file = path.join(dir, entry.name, PROJECT_DIR_NAME, CANVAS_FILE);
+      if (!fs.existsSync(file)) continue;
+      try {
+        const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+        user.push({
+          slug: entry.name,
+          title: String(raw.title || entry.name),
+          description: String(raw.description || ""),
+          kind: raw.kind === "deck" ? "deck" : "board",
+          boards: Object.keys(raw.boards || {}).length,
+          builtin: false,
+          updatedAt: String(raw.updatedAt || ""),
+        });
+      } catch { /* 损坏模板跳过，不阻断列表 */ }
+    }
+  }
+  user.sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+  const builtin = BUILTIN_CANVAS_TEMPLATES.map((item) => ({
+    slug: item.id,
+    title: item.name,
+    description: item.description,
+    kind: item.kind,
+    boards: null,
+    builtin: true,
+    updatedAt: "",
+  }));
+  return { templates: [...builtin, ...user] };
+}
+
+/** 模板 canvas.json 骨架（无 rev/版本字段；boards 条目由调用方填）。 */
+function templateCanvasDoc({ title, description, kind, pages, boardsMap, order }) {
+  const at = nowIso();
+  return {
+    v: 3,
+    format: TEMPLATE_FORMAT,
+    title: normalizeTitle(title) || "未命名模板",
+    ...(String(description ?? "").trim() ? { description: String(description).trim().slice(0, 300) } : {}),
+    kind: kind === "deck" ? "deck" : "board",
+    pages: Array.isArray(pages) ? pages : [],
+    boards: boardsMap,
+    order,
+    notes: {},
+    designSystems: [],
+    createdAt: at,
+    updatedAt: at,
+  };
+}
+
+/**
+ * 把源画布目录（含 project/canvas.json）导入为用户模板。
+ * 对象板逐块校验重写；html/svg 兼容板与 assets 原样复制；失败回滚半成品目录。
+ */
+export function importCanvasTemplate(workspace, options = {}) {
+  const root = workspaceRoot(workspace);
+  const actor = normalizeActor(options?.actor);
+  const source = resolveImportSource(root, options?.sourcePath);
+  let sourceIndex;
+  try {
+    sourceIndex = JSON.parse(fs.readFileSync(source.canvasFile, "utf8"));
+  } catch {
+    fail("CANVAS_INVALID", `导入来源的 canvas.json 不是合法 JSON：${options?.sourcePath}`);
+  }
+  if (!sourceIndex || typeof sourceIndex !== "object" || Array.isArray(sourceIndex)) {
+    fail("CANVAS_INVALID", `导入来源的 canvas.json 结构无效：${options?.sourcePath}`);
+  }
+  const sourceBoards = sourceIndex.boards && typeof sourceIndex.boards === "object" && !Array.isArray(sourceIndex.boards)
+    ? sourceIndex.boards : {};
+  const sourceKeys = Object.keys(sourceBoards);
+  if (!sourceKeys.length) fail("CANVAS_INVALID", "导入来源画布没有画板，不能作为模板");
+
+  const title = normalizeTitle(options?.title) || normalizeTitle(sourceIndex.title) || "导入模板";
+  const rawSlug = String(options?.slug ?? "").trim();
+  const slug = rawSlug ? assertTemplateSlug(rawSlug) : assertTemplateSlug(slugifyTitle(title) || fallbackSlug().replace("canvas-", "tpl-"));
+  const templateDir = path.join(templatesRoot(root), slug);
+  if (fs.existsSync(templateDir)) fail("CANVAS_EXISTS", `模板已存在：${slug}`);
+
+  try {
+    ensureDirectory(templateDir);
+    const projectDir = ensureDirectory(path.join(templateDir, PROJECT_DIR_NAME));
+    for (const sub of [BOARD_DIR, ASSETS_DIR]) ensureDirectory(path.join(projectDir, sub));
+
+    const boardsMap = {};
+    const order = [];
+    const sourceOrder = Array.isArray(sourceIndex.order) ? sourceIndex.order.map(String) : [];
+    const orderedKeys = [...sourceOrder.filter((key) => sourceKeys.includes(key)), ...sourceKeys.filter((key) => !sourceOrder.includes(key))];
+    for (const key of orderedKeys) {
+      let rel;
+      try { rel = normalizeProjectRelativePath(key); } catch { continue; }
+      const sourceFile = path.join(source.projectDir, rel);
+      if (!fs.existsSync(sourceFile) || !fs.statSync(sourceFile).isFile()) continue;
+      const entrySource = sourceBoards[key] || {};
+      // html 兼容板不进模板（只读渲染、常位于 legacy/，实例化语义不明）；svg 矢量板原样复制。
+      if (boardKindOf(rel, entrySource) === "html") continue;
+      if (boardKindOf(rel, entrySource) === "object") {
+        let board;
+        try { board = JSON.parse(fs.readFileSync(sourceFile, "utf8")); } catch {
+          fail("CANVAS_INVALID", `来源画板 JSON 无法解析：${rel}`);
+        }
+        delete board.rev; // 模板不带运行时 rev
+        const boardDir = path.dirname(path.join(projectDir, rel));
+        const { board: validated } = validateBoardPayload(board, { projectDir, boardDir, boardPath: rel });
+        ensureDirectory(path.dirname(path.join(projectDir, rel)));
+        atomicWriteJson(path.join(projectDir, rel), validated);
+        boardsMap[rel] = normalizeBoardEntry(entrySource, rel);
+      } else {
+        ensureDirectory(path.dirname(path.join(projectDir, rel)));
+        fs.copyFileSync(sourceFile, path.join(projectDir, rel));
+        boardsMap[rel] = normalizeBoardEntry(entrySource, rel);
+      }
+      order.push(rel);
+    }
+    if (!order.length) fail("CANVAS_INVALID", "导入来源没有可复制的画板文件");
+
+    const sourceAssets = path.join(source.projectDir, ASSETS_DIR);
+    if (fs.existsSync(sourceAssets) && fs.statSync(sourceAssets).isDirectory()) {
+      copyTree(sourceAssets, path.join(projectDir, ASSETS_DIR));
+    }
+
+    const doc = templateCanvasDoc({
+      title,
+      description: options?.description,
+      kind: sourceIndex.kind,
+      pages: Array.isArray(sourceIndex.pages) && sourceIndex.pages.length ? validatePages(sourceIndex.pages) : [],
+      boardsMap,
+      order,
+    });
+    atomicWriteJson(path.join(projectDir, CANVAS_FILE), doc);
+    appendOperation(templateDir, {
+      action: "import",
+      actor,
+      summary: `导入画布模板「${title}」（${order.length} 块板）`,
+      detail: { source: relativeOf(root, source.canvasRoot), boards: order },
+    });
+    return { slug, title: doc.title, kind: doc.kind, boards: order.length, dir: `${DESIGNS_DIR}/${TEMPLATES_DIR}/${slug}` };
+  } catch (error) {
+    try { fs.rmSync(templateDir, { recursive: true, force: true }); } catch { /* 回滚失败不掩盖原错误 */ }
+    throw error;
+  }
+}
+
+/** 把现有画布另存为用户模板（板内容经校验重写；assets 与兼容板原样复制）。 */
+export function saveCanvasAsTemplate(workspace, slug, options = {}) {
+  const root = workspaceRoot(workspace);
+  const cleanSlug = assertSlug(slug);
+  const { canvas, boards } = readCanvas(root, cleanSlug);
+  const actor = normalizeActor(options?.actor);
+  const title = normalizeTitle(options?.title) || `${canvas.title} 模板`;
+  const rawSlug = String(options?.templateSlug ?? "").trim();
+  const templateSlug = rawSlug ? assertTemplateSlug(rawSlug) : assertTemplateSlug(slugifyTitle(title) || fallbackSlug().replace("canvas-", "tpl-"));
+  const templateDir = path.join(templatesRoot(root), templateSlug);
+  if (fs.existsSync(templateDir)) fail("CANVAS_EXISTS", `模板已存在：${templateSlug}`);
+
+  try {
+    ensureDirectory(templateDir);
+    const projectDir = ensureDirectory(path.join(templateDir, PROJECT_DIR_NAME));
+    for (const sub of [BOARD_DIR, ASSETS_DIR]) ensureDirectory(path.join(projectDir, sub));
+    const boardsMap = {};
+    const order = [];
+    for (const entry of boards) {
+      // html 兼容板不进模板（只读渲染、常位于 legacy/，实例化语义不明）。
+      if (entry.kind === "html") continue;
+      const targetFile = path.join(projectDir, entry.path);
+      if (entry.kind === "object") {
+        const { board } = readBoard(root, cleanSlug, entry.path);
+        delete board.rev;
+        const boardDir = path.dirname(targetFile);
+        const { board: validated } = validateBoardPayload(board, { projectDir, boardDir, boardPath: entry.path });
+        ensureDirectory(path.dirname(targetFile));
+        atomicWriteJson(targetFile, validated);
+      } else {
+        const sourceFile = path.join(path.join(root, canvas.dir), PROJECT_DIR_NAME, entry.path);
+        ensureDirectory(path.dirname(targetFile));
+        fs.copyFileSync(sourceFile, targetFile);
+      }
+      boardsMap[entry.path] = normalizeBoardEntry(canvas.boards?.[entry.path] || {}, entry.path);
+      order.push(entry.path);
+    }
+    if (!order.length) fail("CANVAS_INVALID", "画布没有可入模板的画板（html 兼容板不进模板）");
+    const sourceAssets = path.join(path.join(root, canvas.dir), PROJECT_DIR_NAME, ASSETS_DIR);
+    if (fs.existsSync(sourceAssets) && fs.statSync(sourceAssets).isDirectory()) {
+      copyTree(sourceAssets, path.join(projectDir, ASSETS_DIR));
+    }
+    const doc = templateCanvasDoc({
+      title,
+      description: options?.description,
+      kind: canvas.kind,
+      pages: canvas.pages,
+      boardsMap,
+      order,
+    });
+    atomicWriteJson(path.join(projectDir, CANVAS_FILE), doc);
+    appendOperation(path.join(root, canvas.dir), {
+      action: "save",
+      actor,
+      summary: `画布「${canvas.title}」另存为模板「${title}」`,
+      detail: { scope: "template", templateSlug, boards: order },
+    });
+    return { slug: templateSlug, title: doc.title, kind: doc.kind, boards: order.length, dir: `${DESIGNS_DIR}/${TEMPLATES_DIR}/${templateSlug}` };
+  } catch (error) {
+    try { fs.rmSync(templateDir, { recursive: true, force: true }); } catch { /* 回滚失败不掩盖原错误 */ }
+    throw error;
+  }
+}
+
+/** 删除用户模板（软删到 .templates/.trash/，需 confirmed: true）。内置模板不可删。 */
+export function deleteCanvasTemplate(workspace, templateSlug, options = {}) {
+  if (options?.confirmed !== true) fail("CANVAS_CONFIRM_REQUIRED", "删除模板需要显式 confirmed: true");
+  const root = workspaceRoot(workspace);
+  const cleanSlug = assertTemplateSlug(templateSlug);
+  if (BUILTIN_CANVAS_TEMPLATES.some((item) => item.id === cleanSlug)) {
+    fail("CANVAS_INVALID", `内置模板不可删除：${cleanSlug}`);
+  }
+  const templateDir = path.join(templatesRoot(root), cleanSlug);
+  if (!fs.existsSync(templateDir)) fail("CANVAS_NOT_FOUND", `模板不存在：${cleanSlug}`);
+  const trashRoot = ensureDirectory(path.join(templatesRoot(root), ".trash"));
+  const target = path.join(trashRoot, `${cleanSlug}-${stamp()}`);
+  try {
+    fs.renameSync(templateDir, target);
+  } catch {
+    fs.cpSync(templateDir, target, { recursive: true });
+    fs.rmSync(templateDir, { recursive: true, force: true });
+  }
+  return { ok: true, slug: cleanSlug, trash: relativeOf(root, target) };
+}
+
+/**
+ * 从用户模板实例化板集合：deep clone 元素、替换 {{title}}、对象板复检，兼容板读字节。
+ * @returns {{kind: string, pages: Array, boards: Array<{path, entry, board?: object, bytes?: Buffer}>}}
+ */
+function instantiateTemplateBoards(root, templateSlug, { title }) {
+  const { raw, projectDir } = readTemplateIndex(root, templateSlug);
+  const entries = orderedBoardEntries(raw, projectDir);
+  if (!entries.length) fail("CANVAS_INVALID", `模板没有画板：${templateSlug}`);
+  const boards = [];
+  for (const entry of entries) {
+    if (!entry.exists) continue;
+    const file = path.join(projectDir, entry.path);
+    if (entry.kind === "object") {
+      let board;
+      try { board = JSON.parse(fs.readFileSync(file, "utf8")); } catch {
+        fail("CANVAS_INVALID", `模板画板 JSON 无法解析：${templateSlug}/${entry.path}`);
+      }
+      board.rev = 1; // 实例化板 rev 从 1 起算（与内置模板一致）
+      applyTemplatePlaceholders(board, { title });
+      const boardEntry = { ...entry };
+      if (typeof boardEntry.title === "string" && boardEntry.title.includes(TEMPLATE_PLACEHOLDER)) {
+        boardEntry.title = boardEntry.title.split(TEMPLATE_PLACEHOLDER).join(String(title || ""));
+      }
+      delete boardEntry.exists;
+      boards.push({ path: entry.path, entry: boardEntry, board });
+    } else {
+      const boardEntry = { ...entry };
+      delete boardEntry.exists;
+      boards.push({ path: entry.path, entry: boardEntry, bytes: fs.readFileSync(file) });
+    }
+  }
+  if (!boards.length) fail("CANVAS_INVALID", `模板画板文件全部缺失：${templateSlug}`);
+  return {
+    kind: raw.kind === "deck" ? "deck" : "board",
+    pages: Array.isArray(raw.pages) && raw.pages.length ? validatePages(raw.pages) : [],
+    boards,
+  };
+}
+
 // ---------- 公开 API：列表 / 读取 ----------
 
 /**
@@ -1282,7 +1623,8 @@ export function listOperations(workspace, slug, { limit = 200 } = {}) {
 /**
  * 新建画布。
  * @param {string} workspace 工作区绝对路径
- * @param {{slug?: string, title?: string, kind?: "board"|"deck", template?: ""|"blank"|"cover"|"onepager"|"deck", actor?: string}} options
+ * @param {{slug?: string, title?: string, kind?: "board"|"deck", template?: ""|"blank"|"cover"|"onepager"|"deck", templateSlug?: string, actor?: string}} options
+ *   templateSlug：用户模板（designs/.templates/<slug>/），提供时优先于 template，且 kind 以模板为准。
  * @returns {{slug: string, path: string, title: string, kind: string, boards: number, rev: number, dir: string}}
  *   path = 工作区相对路径（`designs/<slug>/project/canvas.json`）。
  */
@@ -1302,7 +1644,18 @@ export function createCanvas(workspace, options = {}) {
   }
   const dir = canvasDirOf(root, slug);
   if (fs.existsSync(dir)) fail("CANVAS_EXISTS", `画布已存在：${slug}`);
-  const template = buildTemplateBoards({ title, kind, template: options?.template });
+
+  // 模板解析：templateSlug（用户模板）优先于 template（内置 id）；用户模板的 kind 以模板为准。
+  const templateSlug = String(options?.templateSlug ?? "").trim();
+  let effectiveKind = kind;
+  let template;
+  if (templateSlug) {
+    const instantiated = instantiateTemplateBoards(root, templateSlug, { title });
+    effectiveKind = instantiated.kind;
+    template = instantiated;
+  } else {
+    template = buildTemplateBoards({ title, kind, template: options?.template });
+  }
 
   return withCanvasLock(root, dir, slug, () => {
     if (fs.existsSync(dir)) fail("CANVAS_EXISTS", `画布已存在：${slug}`);
@@ -1311,25 +1664,46 @@ export function createCanvas(workspace, options = {}) {
       `${PROJECT_DIR_NAME}/${LEGACY_DIR}`, EXPORTS_DIR, TRASH_DIR]) {
       ensureDirectory(path.join(dir, sub));
     }
+    // 用户模板自带 assets：整树复制，保证对象板 ../assets/... 引用有效。
+    if (templateSlug) {
+      const templateAssets = path.join(templateProjectDirOf(root, templateSlug), ASSETS_DIR);
+      if (fs.existsSync(templateAssets) && fs.statSync(templateAssets).isDirectory()) {
+        copyTree(templateAssets, path.join(projectDir, ASSETS_DIR));
+      }
+    }
     const createdAt = nowIso();
     const boardsMap = {};
     const writtenBoards = {};
     const order = [];
     for (const item of template.boards) {
-      const boardRel = assertWritableBoardPath(normalizeProjectRelativePath(item.path));
-      assertInsideProject(projectDir, path.join(projectDir, boardRel), boardRel);
-      boardsMap[boardRel] = normalizeBoardEntry(item.entry, boardRel);
-      order.push(boardRel);
-      const boardDir = path.dirname(path.join(projectDir, boardRel));
-      const validated = validateBoardPayload(item.board, { projectDir, boardDir, boardPath: boardRel }).board;
-      atomicWriteJson(path.join(projectDir, boardRel), validated);
-      writtenBoards[boardRel] = validated;
+      const boardRel = normalizeProjectRelativePath(item.path);
+      if (item.bytes !== undefined) {
+        // 矢量板：文件名 ASCII + .svg 结尾、禁 legacy/，字节原样落盘（无 rev，不参与 CAS）。
+        const leaf = boardRel.split("/").pop();
+        if (!/^[A-Za-z0-9_-]{1,64}\.svg$/i.test(leaf) || boardRel.toLowerCase().startsWith(`${LEGACY_DIR}/`)) {
+          fail("CANVAS_PATH_DENIED", `模板矢量板路径非法：${boardRel}（需 [A-Za-z0-9_-]{1,64}.svg，且不得位于 legacy/ 下）`);
+        }
+        assertInsideProject(projectDir, path.join(projectDir, boardRel), boardRel);
+        boardsMap[boardRel] = normalizeBoardEntry(item.entry, boardRel);
+        order.push(boardRel);
+        ensureDirectory(path.dirname(path.join(projectDir, boardRel)));
+        atomicWriteFile(path.join(projectDir, boardRel), item.bytes);
+        continue;
+      }
+      const objRel = assertWritableBoardPath(boardRel);
+      assertInsideProject(projectDir, path.join(projectDir, objRel), objRel);
+      boardsMap[objRel] = normalizeBoardEntry(item.entry, objRel);
+      order.push(objRel);
+      const boardDir = path.dirname(path.join(projectDir, objRel));
+      const validated = validateBoardPayload(item.board, { projectDir, boardDir, boardPath: objRel }).board;
+      atomicWriteJson(path.join(projectDir, objRel), validated);
+      writtenBoards[objRel] = validated;
     }
     const canvasDoc = {
       v: 3,
       format: "oaw-canvas",
       title,
-      kind,
+      kind: effectiveKind,
       rev: 1,
       pages: template.pages,
       boards: boardsMap,
@@ -1344,15 +1718,15 @@ export function createCanvas(workspace, options = {}) {
     recordCanvasVersion(dir, projectDir, {
       writes: { [CANVAS_FILE]: canvasDoc, ...writtenBoards },
       actor,
-      summary: `新建画布「${title}」（${order.length} 块板）`,
+      summary: `新建画布「${title}」（${order.length} 块板${templateSlug ? `，模板 ${templateSlug}` : ""}）`,
     });
     appendOperation(dir, {
       action: "create",
       actor,
       summary: `新建画布「${title}」（${order.length} 块板）`,
-      detail: { kind, template: String(options?.template || ""), boards: order },
+      detail: { kind: effectiveKind, template: String(options?.template || ""), templateSlug, boards: order },
     });
-    return { slug, path: `${DESIGNS_DIR}/${slug}/${PROJECT_DIR_NAME}/${CANVAS_FILE}`, dir: `${DESIGNS_DIR}/${slug}`, title, kind, boards: order.length, rev: 1 };
+    return { slug, path: `${DESIGNS_DIR}/${slug}/${PROJECT_DIR_NAME}/${CANVAS_FILE}`, dir: `${DESIGNS_DIR}/${slug}`, title, kind: effectiveKind, boards: order.length, rev: 1 };
   });
 }
 

@@ -4,7 +4,7 @@ import 模型设置页 from "./模型设置页.jsx";
 import { useTheme, SKINS } from "../theme.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
 import { ACTIVITY_DISPLAY_OPTIONS, ANSWER_DETAIL_OPTIONS, MARQUEE_COLORS, MARQUEE_SPEEDS, MARQUEE_STYLES, MOTION_LEVELS, PREVIEW_AUTO_OPEN_OPTIONS, useAppearance, useAppearanceSetter } from "../界面外观.js";
-import { agentDiagnostics, agentNetworkSettings, agentNetworkSettingsSave, archiveProject, archiveSession, archiveSessions, classifyProjects, createProject, deleteSession, deleteSessions, getPermissionRules, listSessions, mapSettings, mapSettingsSave, pinProject, removePermissionRule, searchSettings, searchSettingsSave, searchSettingsTest, updateProject, updateProjectSettings } from "../api.js";
+import { agentDiagnostics, agentNetworkSettings, agentNetworkSettingsSave, archiveProject, archiveSession, archiveSessions, classifyProjects, createProject, createWorkspaceFolder, deleteSession, deleteSessions, getPermissionRules, listSessions, mapSettings, mapSettingsSave, pinProject, pickWorkspace, removePermissionRule, searchSettings, searchSettingsSave, searchSettingsTest, updateProject, updateProjectSettings } from "../api.js";
 import { notifyError, askConfirm } from "./Feedback.jsx";
 
 /**
@@ -88,7 +88,7 @@ const SETTINGS_NAV = [
   },
 ];
 
-function ProjectSettingsSection({ project, projects = [], currentWorkspace = "", models = [], onProjectUpdated, onProjectSelect }) {
+function ProjectSettingsSection({ project, projects = [], currentWorkspace = "", models = [], onProjectUpdated, onProjectSelect, createSeed = null, onSeedConsumed }) {
   const [projectDraft, setProjectDraft] = useState({ name: "", type: "综合项目", status: "进行中", description: "" });
   const [settingsDraft, setSettingsDraft] = useState({ defaultModel: "", agentProfile: "通用 Agent", skills: [], skillsPolicy: "on", allowSkillDrafts: "on", memoryPolicy: "approval_required", artifactPolicy: "validation_required" });
   const [projectFilter, setProjectFilter] = useState({ query: "", type: "", status: "", pinned: false, pending: false, sort: "recent" });
@@ -97,6 +97,11 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [classifying, setClassifying] = useState(false);
+  // 新建项目表单的文件夹选择/创建状态（2026-11-10 流程简化）：
+  // pickingFolder=等待系统文件夹对话框；existingProject=路径已绑定现有项目时不静默切换，就地提示。
+  const [pickingFolder, setPickingFolder] = useState(false);
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [existingProject, setExistingProject] = useState(null);
 
   useEffect(() => {
     setProjectDraft({
@@ -119,6 +124,57 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
   useEffect(() => {
     setNewProject((value) => ({ ...value, rootPath: value.rootPath || currentWorkspace }));
   }, [currentWorkspace]);
+
+  // 侧栏"+"直达：选择文件夹后带着路径打开本表单（seed 由 App 传入，消费后回调清空）
+  useEffect(() => {
+    if (!createSeed?.path) return;
+    setCreateOpen(true);
+    setMessage("");
+    setExistingProject(null);
+    setNewProject((value) => ({ ...value, rootPath: createSeed.path }));
+    onSeedConsumed?.();
+  }, [createSeed?.nonce, createSeed?.path, onSeedConsumed]);
+
+  // 打开系统文件夹选择器填入路径；取消时保持原值并提示，不视为错误
+  const pickProjectFolder = async () => {
+    if (pickingFolder || creatingFolder || saving) return;
+    setPickingFolder(true);
+    setMessage("已打开系统文件夹对话框：请在弹出的窗口里选择文件夹（若没看到，请查看任务栏）。");
+    try {
+      const result = await pickWorkspace();
+      if (result.canceled) { setMessage("已取消选择。"); return; }
+      if (!result.ok) {
+        setMessage(`无法将此目录用作项目工作区：${result.writeAccess?.message || result.error || "无效目录"}`);
+        return;
+      }
+      setExistingProject(null);
+      setNewProject((value) => ({ ...value, rootPath: result.workspace }));
+      setMessage("");
+    } catch (e) {
+      setMessage("选择文件夹失败：" + (e.message || "网络错误"));
+    } finally {
+      setPickingFolder(false);
+    }
+  };
+
+  // 新建文件夹：只允许在已存在父目录下创建一层（服务端强制），路径自动改写为规范化结果
+  const createProjectFolder = async () => {
+    const target = newProject.rootPath.trim();
+    if (!target || pickingFolder || creatingFolder || saving) return;
+    setCreatingFolder(true);
+    setMessage("");
+    try {
+      const result = await createWorkspaceFolder(target);
+      if (!result.ok) { setMessage(result.error || "创建文件夹失败"); return; }
+      setExistingProject(null);
+      setNewProject((value) => ({ ...value, rootPath: result.workspace }));
+      setMessage("文件夹已创建，可直接创建项目。");
+    } catch (e) {
+      setMessage("创建文件夹失败：" + (e.message || "网络错误"));
+    } finally {
+      setCreatingFolder(false);
+    }
+  };
 
   const visibleProjects = projects
     .filter((item) => !projectFilter.query || `${item.name} ${item.description} ${item.rootPath}`.toLowerCase().includes(projectFilter.query.toLowerCase()))
@@ -174,11 +230,18 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
     setMessage("");
     try {
       const result = await createProject(newProject);
-      setCreateOpen(false);
-      setNewProject({ name: "", rootPath: currentWorkspace, type: "综合项目", status: "进行中", description: "" });
       onProjectUpdated?.();
+      if (result.existing) {
+        // 路径已绑定现有项目：不静默切换、不关表单（此前会直接关面板切走，用户输入的名称被丢弃且看不到原因）。
+        setExistingProject(result.project || null);
+        setMessage(`该路径已有项目「${result.project?.name || "未知"}」，未创建新项目；可改名换路径，或切换到现有项目。`);
+        return;
+      }
+      setCreateOpen(false);
+      setExistingProject(null);
+      setNewProject({ name: "", rootPath: currentWorkspace, type: "综合项目", status: "进行中", description: "" });
       if (result.project?.id) onProjectSelect?.(result.project.id);
-      setMessage(result.existing ? "该工作区已有项目，已切换到现有项目" : "项目已创建");
+      setMessage("项目已创建");
     } catch (error) { setMessage(`创建失败：${error.message}`); }
     finally { setSaving(false); }
   };
@@ -219,11 +282,25 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
       </div>
       {createOpen && (
         <div className="project-create-form">
-          <input className="sp-input" placeholder="项目名称" value={newProject.name} onChange={(e) => setNewProject((value) => ({ ...value, name: e.target.value }))} />
-          <input className="sp-input" placeholder="项目工作区绝对路径" value={newProject.rootPath} onChange={(e) => setNewProject((value) => ({ ...value, rootPath: e.target.value }))} />
+          <input className="sp-input" placeholder="项目名称" value={newProject.name} onChange={(e) => { setNewProject((value) => ({ ...value, name: e.target.value })); setExistingProject(null); }} />
+          <div className="project-create-path-row">
+            <input className="sp-input" placeholder="项目工作区绝对路径" value={newProject.rootPath} onChange={(e) => { setNewProject((value) => ({ ...value, rootPath: e.target.value })); setExistingProject(null); }} />
+            <button className="btn-sm" onClick={pickProjectFolder} disabled={pickingFolder || creatingFolder || saving} title="打开系统文件夹选择器">
+              <Icon name="folderOpen" size={12} /> {pickingFolder ? "等待选择…" : "选择文件夹"}
+            </button>
+            <button className="btn-sm" onClick={createProjectFolder} disabled={pickingFolder || creatingFolder || saving} title="按此路径新建一层文件夹（上级目录需已存在）">
+              <Icon name="plus" size={12} /> {creatingFolder ? "创建中…" : "新建文件夹"}
+            </button>
+          </div>
           <select className="sp-select" value={newProject.type} onChange={(e) => setNewProject((value) => ({ ...value, type: e.target.value }))}>{PROJECT_TYPES.map((item) => <option key={item}>{item}</option>)}</select>
           <select className="sp-select" value={newProject.status} onChange={(e) => setNewProject((value) => ({ ...value, status: e.target.value }))}>{PROJECT_STATUSES.map((item) => <option key={item}>{item}</option>)}</select>
           <input className="sp-input" placeholder="项目说明（可选）" value={newProject.description} onChange={(e) => setNewProject((value) => ({ ...value, description: e.target.value }))} />
+          {existingProject && (
+            <div className="project-create-existing" role="status">
+              <span>已存在项目：{existingProject.name}</span>
+              <button className="btn-sm" onClick={() => { setCreateOpen(false); setExistingProject(null); onProjectSelect?.(existingProject.id); }}>切换到现有项目</button>
+            </div>
+          )}
           <button className="btn-sm primary" onClick={create} disabled={saving}>创建</button>
         </div>
       )}
@@ -404,7 +481,7 @@ function ArchiveSettingsSection({ onSessionsChanged, onRestoredSession }) {
   );
 }
 
-export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], defaultModel = "", activeModel = "", clientId = "", threadId = "", initialSection = "model", onSessionsChanged, onRestoredSession, onModelChange, onModelsRefresh, onProjectUpdated, onProjectSelect }) {
+export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], defaultModel = "", activeModel = "", clientId = "", threadId = "", initialSection = "model", onSessionsChanged, onRestoredSession, onModelChange, onModelsRefresh, onProjectUpdated, onProjectSelect, projectCreateSeed = null, onSeedConsumed }) {
   const { theme, setTheme, skin, setSkin } = useTheme();
   const [settingsSection, setSettingsSection] = useState("model");
   const appearance = useAppearance();
@@ -706,6 +783,8 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
         models={models}
         onProjectUpdated={onProjectUpdated}
         onProjectSelect={onProjectSelect}
+        createSeed={projectCreateSeed}
+        onSeedConsumed={onSeedConsumed}
       />}
 
       {settingsSection === "appearance" && <>

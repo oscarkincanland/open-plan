@@ -58,9 +58,10 @@
   /* 时间流竖线缩进（唯一来源）：时间流条目、已决 ask 事件行共用。
      未决 ask 卡片是全宽交互块，与输入框同宽，不参与这个缩进。 */
   --tl-indent: 12px;
-  /* 加粗字体栈：OPPO Sans 4.0 是 100–700 可变字体，600 为真实字重，不需要合成加粗。
+  /* 加粗字体栈：拉丁字母/数字由系统字体（Segoe UI）承担，与系统界面观感一致；
+     中文回落 OPPO Sans 4.0（100–700 可变字体，600 为真实字重，不需要合成加粗）。
      保留系统栈兜底，字体加载失败时仍能显示清晰加粗。 */
-  --font-emphasis: "OPPO Sans 4.0", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+  --font-emphasis: "Segoe UI Variable Text", "Segoe UI", system-ui, "OPPO Sans 4.0", "Microsoft YaHei UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
   /* 全局滚动条宽度（见下方 ::-webkit-scrollbar）；输入框宽度用它抵消消息区滚动条占位 */
   --scrollbar-w: 8px;
   --chat-min: 280px;
@@ -187,12 +188,13 @@
 html, body, #root { height: 100%; }
 /*
  * 字体策略：
- *   OPPO Sans 4.0 以可变字体（font-weight: 100 700）随包内嵌，400/600 都是真实字重，
- *   不再需要系统字体承担加粗；系统栈只作为字体加载失败或生僻字缺字时的回退。
+ *   拉丁字母、数字、半角标点由系统字体（Segoe UI Variable Text / Segoe UI）优先渲染，
+ *   与 Windows 系统界面观感一致（用户反馈：MD 渲染里英文数字与系统格式不统一）；
+ *   中文回落到随包内嵌的 OPPO Sans 4.0 可变字体（font-weight: 100 700），400/600 都是真实字重。
  *   代码、路径、参数仍走独立等宽栈（见 .markdown-body code / pre）。
  */
 body {
-  font-family: "OPPO Sans 4.0", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, "Microsoft YaHei UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, "OPPO Sans 4.0", "Microsoft YaHei UI", "PingFang SC", "Hiragino Sans GB", -apple-system, BlinkMacSystemFont, sans-serif;
   font-size: var(--font-base);
   line-height: 1.7;
   letter-spacing: 0.01em;
@@ -261,7 +263,11 @@ body.resizing { cursor: col-resize; user-select: none; }
   display: flex;
   flex-direction: column;
   background: var(--panel-bg);
-  height: 100vh;
+  /* 侧栏卡片化（2026-11-10-003 §7）：与对话/预览卡同一语言；高度由 flex stretch
+     提供（去掉 100vh），上下 margin 才能生效。 */
+  margin: 6px 0 6px 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
 }
 /* resizer bars */
 .resizer {
@@ -630,6 +636,11 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .file-type-icon[data-kind="archive"] { --file-tone: var(--file-archive); }
 .file-type-icon[data-kind="folder"] { --file-tone: var(--accent); background: transparent; }
 .file-type-icon.small { border-radius: 4px; }
+/* 新建项目表单：路径行（输入 + 选择文件夹/新建文件夹）与已存在项目提示 */
+.project-create-path-row { display: flex; gap: 6px; align-items: center; }
+.project-create-path-row .sp-input { flex: 1; min-width: 0; }
+.project-create-path-row .btn-sm { flex: 0 0 auto; white-space: nowrap; }
+.project-create-existing { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--warning) 10%, transparent); color: var(--text); font-size: 11px; }
 .crumb-bar {
   display: flex;
   align-items: center;
@@ -5822,10 +5833,6 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   --user-bg: #eaf2e3;
   --user-fg: #16240f;
 }
-.sidebar {
-  border-right: 1px solid var(--border);
-  box-shadow: 4px 0 18px color-mix(in srgb, var(--body-bg) 55%, transparent);
-}
 .sidebar-brand {
   display: flex;
   align-items: center;
@@ -6679,14 +6686,17 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   align-items: center;
   gap: 4px;
   padding: 4px 2px 0;
-  border-top: 1px dashed var(--border);
+  /* 恒单行工具条（2026-11-10-003 D3=A）：不换行，超宽时按分级收纳压缩文字，
+     overflow 只作最后兜底；分隔线由 dashed 改细实线，增强输入区整卡一体感。 */
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
   margin-top: 6px;
-  flex-wrap: wrap;
-  row-gap: 4px;
-  overflow: visible;
+  flex-wrap: nowrap;
+  overflow: hidden;
   min-width: 0;
 }
 .chat-toolbar > * { flex: 0 0 auto; }
+/* Agent 组（模型触发器）允许收缩：窄宽度下靠模型名截断让出空间，而不是裁切 */
+.chat-toolbar > .toolbar-agent-group { flex: 0 1 auto; min-width: 0; }
 /* 2026-11-03：工具条内所有可点控件的点击区严格等高于 28px（图标 14px），避免 27/29px 抖动。 */
 .chat-toolbar .ct-btn,
 .chat-toolbar .approval-mode-control,
@@ -6708,7 +6718,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .chat-toolbar-label {
   display: none;
 }
-.chat-toolbar-spacer { flex: 1 1 12px !important; min-width: 8px; }
+.chat-toolbar-spacer { flex: 1 1 12px !important; min-width: 0; }
 /* 顶栏模式组搬进输入栏后收敛为 24px 胶囊：和 28px 工具条控件同排，
    容器宽度不足时只留图标（容器查询按输入框实际宽度，而不是视口宽度）。 */
 .chat-toolbar .composer-mode-switch {
@@ -6727,9 +6737,21 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .chat-toolbar .composer-mode-switch .conversation-mode-option.active { box-shadow: none; }
 .chat-compose { container-type: inline-size; }
-@container (max-width: 560px) {
+/* 输入栏工具条分级收纳（2026-11-10-003 D3=A）：全部以输入框实际宽度（容器查询）为准，
+   替代旧的视口媒体查询——输入框宽度由三栏布局决定，与视口解耦。 */
+@container (max-width: 600px) {
+  .model-control-current small { display: none; }
+  .approval-mode-control span { display: none; }
   .composer-mode-switch .conversation-mode-option span { display: none; }
   .composer-mode-switch .conversation-mode-option { padding: 0 7px; }
+}
+@container (max-width: 520px) {
+  .context-ring-label { display: none; }
+  .context-ring-button { padding-right: 4px; }
+  .model-control-current strong { max-width: 110px; }
+}
+@container (max-width: 440px) {
+  .model-control-current strong { max-width: 88px; }
 }
 .ct-btn {
   display: inline-flex;
@@ -6755,13 +6777,6 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   background: var(--accent);
 }
 .ct-sep { width: 1px; height: 16px; background: var(--border); margin: 0 2px; flex: 0 0 auto; }
-
-@media (max-width: 520px) {
-  .context-ring-label { display: none; }
-  .context-ring-button { padding-right: 4px; }
-  .approval-mode-control span { display: none; }
-  .chat-toolbar-group { padding: 1px; }
-}
 
 /* 浮层 */
 .ct-popwrap { position: relative; }
@@ -6791,7 +6806,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .effort-pop { left: auto; right: 0; min-width: 172px; }
 .model-control-wrap { min-width: 0; }
 .model-control-trigger {
-  display: inline-flex; align-items: center; gap: 6px; min-width: 132px; max-width: 230px; height: 28px;
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; height: 28px;
   padding: 2px 7px 2px 4px; border: 1px solid transparent; border-radius: 6px;
   background: transparent; color: var(--text); cursor: pointer; text-align: left; font: inherit;
 }
@@ -9179,14 +9194,28 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   background: var(--body-bg);
   color: var(--text);
 }
+/* 主版面卡片化（DESIGN §5.7）：对话区改为圆角卡片浮在版面上，
+   槽位用 --body-bg 承托，卡片本体用 --panel-bg。弹层走 portal，overflow 裁剪不影响。 */
+.center-chat-slot { padding: 0 2px 6px; }
+.center-chat-slot > .chat {
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+  overflow: hidden;
+}
 
 .sidebar { width: var(--sidebar-w); min-width: var(--sidebar-min); max-width: var(--sidebar-max); }
 .center-content > .topbar {
+  /* 顶栏融合为对话卡片卡头（2026-11-10-003 D1=A）：与对话卡同宽（左右 2px）、
+     顶部圆角，底边框作为卡头/卡身分隔线。 */
   min-height: 66px;
+  margin: 6px 2px 0;
   padding: 0 20px;
   gap: 9px;
   background: var(--panel-bg);
-  border-bottom: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
 }
 .center-content > .topbar .topbar-title {
   min-width: 0;
@@ -12220,8 +12249,10 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   flex-direction: column;
   height: 100vh;
   min-height: 0;
-  background: var(--panel-bg);
-  border-left: 1px solid var(--border);
+  /* 主版面卡片化（DESIGN §5.7）：槽位用版面底色承托卡片，页签行与卡体拼成一张卡；
+     通栏 border-left 已移除——卡片自带边框，通栏线在间隙里悬空（用户反馈竖线）。 */
+  background: var(--body-bg);
+  padding: 0 2px 6px;
   animation: oaw-pop-in 170ms ease-out both;
 }
 .app-canvas-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; min-height: 50px; }
@@ -12245,7 +12276,20 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .app-canvas-tabs button.active { color: var(--accent); background: var(--selected); border-color: color-mix(in srgb, var(--accent) 32%, var(--border)); font-weight: 600; }
 .app-canvas-tabs .browser-activity-dot { position: absolute; top: 3px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--panel-bg); }
 .canvas-hidden { display: none !important; }
-.app-canvas-body { display: flex; flex-direction: column; flex: 1; min-height: 0; width: 100%; min-width: 0; }
+.app-canvas-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  min-width: 0;
+  /* 预览画布卡片化：与页签行（卡头）拼成一张卡，顶边框/顶圆角由页签行承担 */
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+  overflow: hidden;
+}
 /* 旧直接子代选择器桥接：DocViewer 现在位于 canvas-body 一层之下，补齐同样的弹性填充 */
 .app-canvas-body > .docview { width: 100%; min-width: 0; height: auto; flex: 1; background: var(--panel-bg); }
 .app-canvas-body > .docview .docview-body { background: var(--panel-bg); }
@@ -12883,9 +12927,13 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   align-items: center;
   gap: 6px;
   min-height: 44px;
+  /* 页签行融合为预览卡片卡头（2026-11-10-003 D1=A）：与卡体同宽、顶部圆角，
+     底边框作为卡头/卡身分隔线。 */
+  margin-top: 6px;
   padding: 5px 8px;
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--panel-bg) 92%, var(--body-bg));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  background: var(--panel-bg);
   flex: 0 0 auto;
 }
 .canvas-tabbar-scroll {

@@ -244,6 +244,9 @@ export const pickWorkspace = () =>
 export const cancelWorkspacePick = () =>
   api("/api/workspace/pick/cancel", { method: "POST", body: JSON.stringify({}) });
 export const workspacePickState = () => api("/api/workspace/pick/state");
+// 在已存在的父目录下新建一层文件夹作为新工作区（服务端只建一层、不递归、不删除）。
+export const createWorkspaceFolder = (path) =>
+  api("/api/workspace/create", { method: "POST", body: JSON.stringify({ path }) });
 
 // 本机原生能力（macOS Finder / Windows 资源管理器）
 export const pickNativeFiles = (options = {}) =>
@@ -517,6 +520,14 @@ export const deleteCanvas = (workspace, slug, { confirmed = false } = {}) =>
   api(`/api/canvas/${encodeURIComponent(slug)}`, { method: "DELETE", body: JSON.stringify({ confirmed, workspace }) });
 export const importCanvas = (workspace, payload = {}) =>
   api("/api/canvas/import", { method: "POST", body: JSON.stringify({ ...payload, workspace }) });
+// 画布模板（2026-11-10）：内置 + 用户模板（designs/.templates/<slug>/）。
+export const listCanvasTemplates = (workspace = "") => api(`/api/canvas/templates${canvasWorkspaceQuery(workspace)}`);
+export const importCanvasTemplate = (workspace, payload = {}) =>
+  api("/api/canvas/templates/import", { method: "POST", body: JSON.stringify({ ...payload, workspace }) });
+export const deleteCanvasTemplate = (workspace, slug, { confirmed = false } = {}) =>
+  api(`/api/canvas/templates/${encodeURIComponent(slug)}`, { method: "DELETE", body: JSON.stringify({ confirmed, workspace }) });
+export const saveCanvasAsTemplate = (workspace, slug, payload = {}) =>
+  api(`/api/canvas/${encodeURIComponent(slug)}/save-as-template`, { method: "POST", body: JSON.stringify({ ...payload, workspace }) });
 export const exportCanvas = (workspace, slug, payload = {}) =>
   api(`/api/canvas/${encodeURIComponent(slug)}/export`, { method: "POST", body: JSON.stringify({ ...payload, workspace }) });
 export const getCanvasExport = (workspace, jobId) =>

@@ -463,6 +463,8 @@ export default function App() {
   const [activeModule, setActiveModule] = useState(null); // 0.10 统一模块入口
   const [settingsModuleTab, setSettingsModuleTab] = useState("settings");
   const [settingsSection, setSettingsSection] = useState("model");
+  // 侧栏"+"直达新建项目：选择文件夹后把路径作为种子传给设置面板的创建表单（nonce 保证同一路径也能重复触发）
+  const [projectCreateSeed, setProjectCreateSeed] = useState(null); // { path, nonce }
   const [mapChatVisible, setMapChatVisible] = useState(true); // 地图模式保留 Agent 对话，可独立隐藏
   // B03：右栏页签（预览 / 改动 / 产物）；改动与产物默认看“本轮”，可切回“会话”
   const [changesRunId, setChangesRunId] = useState("");
@@ -1636,6 +1638,9 @@ export default function App() {
   }, []);
 
   // 切换工作区
+  // 缺陷修复（2026-11-10）：会话/历史/预览标签的清空原来发生在服务端校验之前，
+  // 切换失败（目录不存在/不可写/点了失效项目）会把聊天区历史一起清空，
+  // 表现为"整个项目历史崩溃"。现在只在切换成功后清空，失败时保留原会话仅提示错误。
   const handleWorkspaceChange = useCallback(async (dir) => {
     const requestedPath = String(dir || "").trim();
     if (!requestedPath || sameWorkspacePath(requestedPath, currentWorkspace)) return;
@@ -1645,17 +1650,10 @@ export default function App() {
     // 记下失败时要恢复的原状态：切换未成功前不应让用户丢掉当前目录。
     const previousDir = currentDirRef.current;
     const previousFiles = filesRef.current;
-    // 先清空旧工作区的视图，避免等待服务端时继续操作旧文件。
+    // 文件视图可以先清（失败时恢复），避免等待服务端时继续操作旧文件。
     currentDirRef.current = "";
     setCurrentDir("");
     setFiles([]);
-    // 切工作区时中止在途打开请求并清空标签，旧工作区的预览结果不得写入。
-    docRequestSeqRef.current += 1;
-    if (docAbortRef.current) { try { docAbortRef.current.abort(); } catch {} docAbortRef.current = null; }
-    clearDocumentTabs();
-    setHistoryMessages(null);
-    setHistoryWindow(null);
-    setCurrentSessionId(null);
     try {
       const r = await switchWorkspace(requestedPath);
       if (switchSeq !== workspaceSwitchSeqRef.current) return;
@@ -1663,6 +1661,13 @@ export default function App() {
       // currentWorkspaceRef 取身份，晚一拍就会把新工作区的请求发到旧路径上。
       currentWorkspaceRef.current = r.workspace;
       setCurrentWorkspace(r.workspace);
+      // 切换成功后才丢弃旧工作区的会话视图与预览标签。
+      docRequestSeqRef.current += 1;
+      if (docAbortRef.current) { try { docAbortRef.current.abort(); } catch {} docAbortRef.current = null; }
+      clearDocumentTabs();
+      setHistoryMessages(null);
+      setHistoryWindow(null);
+      setCurrentSessionId(null);
       // 新工作区加入下拉列表（自定义路径切换后也能在下拉中看到）
       setWorkspaces((prev) => {
         if (prev.some((w) => w.path === r.workspace)) return prev;
@@ -1675,7 +1680,7 @@ export default function App() {
       void handleNewSession(r.workspace);
     } catch (e) {
       if (switchSeq === workspaceSwitchSeqRef.current) {
-        // 切换失败保留原有效状态：恢复原目录与文件列表，只提示失败原因。
+        // 切换失败保留原有效状态：恢复原目录与文件列表，会话/历史/预览标签不动，只提示失败原因。
         currentDirRef.current = previousDir;
         setCurrentDir(previousDir);
         setFiles(previousFiles);
@@ -2784,7 +2789,7 @@ export default function App() {
                onOpenTasks={() => openExternalModule("tasks")}
                onOpenMcp={() => openExternalModule("mcp")}
                onOpenPiPlugins={() => openExternalModule("piPlugins")}
-               onOpenSettings={(tab = "settings") => { if (tab === "memory") setSettingsModuleTab("memory"); else { setSettingsModuleTab("settings"); setSettingsSection(tab === "project" ? "project" : "model"); } openExternalModule("settings"); }}
+               onOpenSettings={(tab = "settings", projectSeed = null) => { if (tab === "memory") setSettingsModuleTab("memory"); else { setSettingsModuleTab("settings"); setSettingsSection(tab === "project" ? "project" : "model"); } setProjectCreateSeed(projectSeed ? { path: projectSeed, nonce: Date.now() } : null); openExternalModule("settings"); }}
                onOpenArtifacts={() => openExternalModule("artifacts")}
               onBeforeOpenModal={closeExternalModules}
               onOpenCommandPalette={() => setPaletteOpen(true)}
@@ -3286,7 +3291,7 @@ export default function App() {
              <div className="module-body module-settings-body">
                {settingsModuleTab === "memory"
                  ? <MemoryTab workspace={currentWorkspace} projectId={currentProject?.id || ""} />
-                 : <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} defaultModel={defaultModel} activeModel={selectedModel} clientId={clientId} threadId={threadId} initialSection={settingsSection} onSessionsChanged={refreshSessions} onRestoredSession={handleSessionsRestored} onModelChange={setSelectedModel} onModelsRefresh={refreshModelCatalog} onProjectUpdated={refreshProjects} onProjectSelect={(id) => { closeExternalModules(); handleProjectChange(id); }} />}
+                 : <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} defaultModel={defaultModel} activeModel={selectedModel} clientId={clientId} threadId={threadId} initialSection={settingsSection} onSessionsChanged={refreshSessions} onRestoredSession={handleSessionsRestored} onModelChange={setSelectedModel} onModelsRefresh={refreshModelCatalog} onProjectUpdated={refreshProjects} projectCreateSeed={projectCreateSeed} onSeedConsumed={() => setProjectCreateSeed(null)} onProjectSelect={(id) => { closeExternalModules(); handleProjectChange(id); }} />}
              </div>
            </div>
          )}

@@ -100,6 +100,8 @@ test("缺 Python → blocked 且提示运行时缺失", () => {
     pathEnv: path.join(tempRoot, "empty-path"),
   });
   assert.equal(deps.status, "blocked");
+  assert.equal(deps.code, "SKILL_DEP_RUNTIME_MISSING");
+  assert.ok(deps.reasons.length > 0);
   assert.match(deps.reasons.join(" "), /Python/);
 });
 
@@ -131,6 +133,21 @@ test("已就绪的隔离 venv + 假 runner → 预检 ready", () => {
   const deps = probeSkillDeps({ skill, workspace: tempRoot, mode: "full", runner: () => {} });
   assert.equal(deps.status, "ready");
   assert.match(deps.checks.map((check) => check.id).join(","), /python/);
+});
+
+test("PATH 设备级解释器 + 包全可导入 → ready（设备级依赖也算数，计划 2026-11-10-001 V3）", () => {
+  const bin = path.join(tempRoot, "device-python");
+  fs.mkdirSync(bin, { recursive: true });
+  const fakePython = path.join(bin, process.platform === "win32" ? "python.exe" : "python");
+  fs.writeFileSync(fakePython, "x");
+  const skill = { name: "device-skill", path: "x/SKILL.md", requiresText: "runtime: [{ kind: python, version: \">=3.10\" }]\npython: [alpha, beta]" };
+  const deps = probeSkillDeps({ skill, workspace: tempRoot, mode: "full", pathEnv: bin, runner: () => {} });
+  assert.equal(deps.status, "ready");
+  assert.equal(deps.code, "SKILL_DEPS_OK");
+  // Windows 大小写不敏感：PATHEXT 命中的扩展名可能是 .EXE，用大小写无关断言
+  assert.ok(deps.python && path.resolve(deps.python).toLowerCase().startsWith(bin.toLowerCase()));
+  assert.equal(path.basename(deps.python).toLowerCase().replace(/\.exe$/, ""), "python");
+  assert.ok(deps.checks.some((check) => check.id === "python" && /PATH/.test(check.detail)));
 });
 
 test("缺包 → blocked（SKILL_DEP_PACKAGE_MISSING）", () => {

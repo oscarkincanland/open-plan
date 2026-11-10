@@ -31,6 +31,16 @@ const DEFAULT_PROJECT_SETTINGS = Object.freeze({
 
 function now() { return new Date().toISOString(); }
 
+/** 只读探测项目目录是否仍存在（不校验可写）：前端据此显示"目录缺失"并拦截静默切换。 */
+function rootPathMissing(rootPath) {
+  try {
+    const value = String(rootPath || "");
+    return !value || !fs.existsSync(value);
+  } catch {
+    return true;
+  }
+}
+
 function readProjects() {
   try {
     const value = JSON.parse(fs.readFileSync(PROJECTS_FILE, "utf8"));
@@ -174,7 +184,7 @@ export function listProjects({ type = "", status = "", pinned = null, sort = "re
     ? [...projects, defaultProject]
     : projects;
   const filtered = all
-    .map((project) => ({ ...project, settings: normalizeSettings(project.settings) }))
+    .map((project) => ({ ...project, settings: normalizeSettings(project.settings), rootMissing: rootPathMissing(project.rootPath) }))
     .filter((project) => !type || project.type === type)
     .filter((project) => !status || project.status === status)
     .filter((project) => pinned === null || Boolean(project.pinned) === Boolean(pinned));

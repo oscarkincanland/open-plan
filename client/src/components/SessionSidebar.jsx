@@ -620,6 +620,20 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
     finally { setApplying(false); setPicking(false); }
   };
 
+  // 侧栏"+"直达（2026-11-10 流程简化）：先选文件夹，选完直接打开新建项目表单并填入路径；
+  // 取消选择视为放弃，不报错、不打开面板。
+  const handleNewProjectPick = async () => {
+    try {
+      const result = await pickWorkspace();
+      if (result.canceled) return;
+      if (!result.ok) {
+        notifyError(`无法将此目录用作项目工作区：${result.writeAccess?.message || result.error || "无效目录"}`);
+        return;
+      }
+      onOpenSettings?.("project", result.workspace);
+    } catch (e) { notifyError("选择文件夹失败: " + e.message); }
+  };
+
   // 取消等待：把那个已经打开的系统对话框收掉（服务端持有选择器进程）。
   const cancelPick = async () => {
     setPickNotice("正在取消…");
@@ -950,9 +964,10 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                   <div key={type}>
                     <div className="workspace-switcher-type">{type}</div>
                     {projects.filter((project) => (project.type || "综合项目") === type).map((project) => (
-                      <button type="button" key={project.id} className={"workspace-switcher-option " + (project.id === currentProjectId ? "active" : "")} onClick={() => { onProjectChange?.(project.id); setSwitcherOpen(false); }}>
+                      <button type="button" key={project.id} className={"workspace-switcher-option " + (project.id === currentProjectId ? "active" : "")} onClick={() => { if (project.rootMissing) { notifyError(`项目目录已不存在（${project.rootPath}），未切换`); return; } onProjectChange?.(project.id); setSwitcherOpen(false); }}>
                         <Icon name="folder" size={14} />
                         <span><strong>{project.name}</strong><small>{project.status || "进行中"} · 会话 {project.sessionCount ?? projectSessions(project).length}</small></span>
+                        {project.rootMissing && <em title={`目录已不存在：${project.rootPath}`}>目录缺失</em>}
                         {project.pendingMemoryCount > 0 && <em>待沉淀 {project.pendingMemoryCount}</em>}
                       </button>
                     ))}
@@ -1010,11 +1025,13 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
             <span>项目 <em>{projects.length}</em></span>
             <span className="sidebar-project-actions">
               <button type="button" onClick={() => { setSwitcherOpen(true); setCustomMode(true); }} title="打开本地项目"><Icon name="folderOpen" size={12} /></button>
-              <button type="button" onClick={() => onOpenSettings?.("project")} title="新建项目"><Icon name="plus" size={12} /></button>
+              <button type="button" onClick={handleNewProjectPick} title="新建项目（选择文件夹后进入创建表单）"><Icon name="plus" size={12} /></button>
             </span>
           </div>
           {projects.map((project) => (
-            <div key={project.id} className={"sidebar-project-card " + (project.id === currentProjectId ? "active" : "") + (projectMenuId === project.id ? " menu-open" : "")} role="button" tabIndex={0} onClick={() => onProjectChange?.(project.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onProjectChange?.(project.id); }} onMouseLeave={() => setProjectMenuId(null)}>
+            <div key={project.id} className={"sidebar-project-card " + (project.id === currentProjectId ? "active" : "") + (projectMenuId === project.id ? " menu-open" : "")} role="button" tabIndex={0}
+              onClick={() => { if (project.rootMissing) { notifyError(`项目目录已不存在（${project.rootPath}），未切换；可归档该项目或重新指向有效目录`); return; } onProjectChange?.(project.id); }}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { if (project.rootMissing) { notifyError(`项目目录已不存在（${project.rootPath}），未切换；可归档该项目或重新指向有效目录`); return; } onProjectChange?.(project.id); } }} onMouseLeave={() => setProjectMenuId(null)}>
               <Icon name="folder" size={15} />
               <span className="sidebar-project-main">
                 <跑马灯文本
@@ -1043,6 +1060,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                   </div>
                 )}
               </span>
+              {project.rootMissing && <span className="sidebar-project-badge" title={`目录已不存在：${project.rootPath}`}>目录缺失</span>}
               {project.pendingMemoryCount > 0 && <span className="sidebar-project-badge">待沉淀 {project.pendingMemoryCount}</span>}
               <span className="sidebar-project-count">会话 {project.sessionCount ?? projectSessions(project).length}</span>
               {project.id === currentProjectId && projectSessions(project).length > 0 && (

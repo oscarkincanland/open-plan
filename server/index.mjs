@@ -4148,6 +4148,33 @@ app.get("/api/workspace/pick/state", (_req, res) => {
   res.json({ picker: activePickerInfo() });
 });
 
+// POST /api/workspace/create - 在已存在的父目录下新建一层文件夹作为新工作区。
+// 边界：只允许绝对路径、父目录必须已存在、目标不能已存在（recursive=false 保证只建一层），
+// 不做递归批量创建、不删除任何内容；创建成功后复用同一套可写探针。
+app.post("/api/workspace/create", (req, res) => {
+  try {
+    const raw = String(req.body?.path || "").trim();
+    if (!raw) return res.status(400).json({ ok: false, error: "path required" });
+    if (!path.isAbsolute(raw)) return res.status(400).json({ ok: false, error: "需要绝对路径", code: "PATH_NOT_ABSOLUTE" });
+    const target = path.resolve(raw);
+    if (fs.existsSync(target)) return res.status(400).json({ ok: false, error: "该文件夹已存在，可直接打开", code: "WORKSPACE_EXISTS" });
+    const parent = path.dirname(target);
+    if (!fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) {
+      return res.status(400).json({ ok: false, error: "上级目录不存在，请先创建上级目录", code: "PARENT_MISSING" });
+    }
+    fs.mkdirSync(target, { recursive: false });
+    const workspace = normalizeWorkspace(target);
+    if (!workspace) return res.status(500).json({ ok: false, error: "文件夹已创建但校验失败" });
+    const write = evaluateWorkspaceWrite(workspace);
+    if (write.status !== "passed") {
+      return res.json({ ok: false, workspace, code: write.code || "WORKSPACE_WRITE_UNAVAILABLE", error: write.message || "文件夹已创建，但当前服务进程没有写权限", writeAccess: write });
+    }
+    res.json({ ok: true, workspace, writeAccess: write });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: `创建文件夹失败：${error?.message || error}` });
+  }
+});
+
 // POST /api/workspace/validate - 验证自定义路径是否可作为工作区
 app.post("/api/workspace/validate", async (req, res) => {
   const { path: dir } = req.body || {};
@@ -6404,6 +6431,56 @@ app.get("/api/canvas/list", async (req, res) => {
   } catch (e) { canvasError(res, e); }
 });
 
+// ---- 画布模板（2026-11-10）：字面量路由必须注册在 /api/canvas/:slug 之前 ----
+app.get("/api/canvas/templates", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    res.json({ ok: true, ...cvs.listCanvasTemplates(canvasWorkspaceFrom(req)) });
+  } catch (e) { canvasError(res, e); }
+});
+
+app.post("/api/canvas/templates/import", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    const saved = cvs.importCanvasTemplate(canvasWorkspaceFrom(req), {
+      sourcePath: req.body?.sourcePath,
+      slug: req.body?.slug,
+      title: req.body?.title,
+      description: req.body?.description,
+      actor: "ui",
+    });
+    res.json({ ok: true, ...saved });
+  } catch (e) { canvasError(res, e); }
+});
+
+app.delete("/api/canvas/templates/:slug", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  if (req.body?.confirmed !== true && req.query?.confirmed !== "true") {
+    return res.status(409).json({ ok: false, error: "删除模板需要 confirmed:true", code: "CANVAS_CONFIRM_REQUIRED" });
+  }
+  try {
+    const cvs = await import("./创作画布.mjs");
+    const deleted = cvs.deleteCanvasTemplate(canvasWorkspaceFrom(req), req.params.slug, { confirmed: true, actor: "ui" });
+    res.json({ ok: true, ...deleted });
+  } catch (e) { canvasError(res, e); }
+});
+
+app.post("/api/canvas/:slug/save-as-template", async (req, res) => {
+  if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
+  try {
+    const cvs = await import("./创作画布.mjs");
+    const saved = cvs.saveCanvasAsTemplate(canvasWorkspaceFrom(req), req.params.slug, {
+      templateSlug: req.body?.templateSlug,
+      title: req.body?.title,
+      description: req.body?.description,
+      actor: "ui",
+    });
+    res.json({ ok: true, ...saved });
+  } catch (e) { canvasError(res, e); }
+});
+
 app.get("/api/canvas/exports/:jobId", (req, res) => {
   if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
   const job = canvasExportJobs.get(String(req.params.jobId || ""));
@@ -6420,6 +6497,7 @@ app.post("/api/canvas", async (req, res) => {
       title: req.body?.title,
       kind: req.body?.kind === "deck" ? "deck" : "board",
       template: req.body?.template,
+      templateSlug: req.body?.templateSlug,
       actor: "ui",
     });
     canvasEvent("canvas_created", {

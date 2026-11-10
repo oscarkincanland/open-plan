@@ -15,6 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseFrontmatter } from "../server/技能目录.mjs";
+import { parseRequires } from "../server/技能依赖.mjs";
 import { buildSkillCatalog, buildSkillReadPayload } from "../server/Skill注入.mjs";
 import { searchSkills, rankSkills, scoreSkill } from "../server/技能检索.mjs";
 import { expandToken, tokenizeQuery } from "../server/技能别名.mjs";
@@ -179,6 +180,43 @@ test("agent.mjs 使用新模块接线（别名为准、后台提示为 Buffer、
   assert.match(agent, /writeEvent\("skill_search"/, "skills_search 应写事件");
   assert.match(agent, /writeEvent\("skill_read"/, "skills_read 应写事件");
   assert.match(agent, /skillSearchAttempts/, "应有同 Run 搜索次数上限");
+});
+
+// ---------- 6. 真实技能 requires 声明守护（2026-11-10，计划 2026-11-10-001 V1） ----------
+// 核心技能必须在 frontmatter 声明 requires；未声明会得到"假绿灯"（SKILL_DEPS_NONE/ready），
+// 预检无法发现真实缺失（见 docs/plans/2026-11-10-001）。以磁盘文件为准（.claude/skills 不入 git）。
+const PPT_SKILL_FILE = path.join(ROOT, ".claude", "skills", "ultimate-ppt-master-skill", "SKILL.md");
+const REQUIREMENTS_FILE = path.join(ROOT, ".claude", "skills", "ultimate-ppt-master-skill", "requirements.txt");
+
+test("ultimate-ppt-master 声明 Python>=3.10 与 requirements.txt 全部 15 包", () => {
+  const frontmatter = parseFrontmatter(fs.readFileSync(PPT_SKILL_FILE, "utf8"));
+  const parsed = parseRequires(frontmatter.requires || "", frontmatter.install || "");
+  assert.ok(parsed, "frontmatter 必须声明 requires");
+  assert.equal(parsed.runtime[0]?.kind, "python");
+  assert.match(parsed.runtime[0]?.version || "", />=3\.10/);
+  const expected = fs.readFileSync(REQUIREMENTS_FILE, "utf8")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/[><=~!].*$/, "").trim());
+  assert.deepEqual(parsed.python, expected, "requires.python 应与 requirements.txt 一致");
+  assert.equal(parsed.python.length, 15);
+  assert.equal(parsed.network, true);
+  assert.deepEqual(parsed.platform, ["win32", "darwin", "linux"]);
+});
+
+test("pptx/docx/powerpoint 技能已声明 requires（防假绿灯回归）", () => {
+  const files = [
+    path.join(ROOT, ".claude", "skills", "pptx", "SKILL.md"),
+    path.join(ROOT, ".claude", "skills", "docx", "SKILL.md"),
+    path.join(process.env.USERPROFILE || "", ".claude", "skills", "powerpoint", "SKILL.md"),
+  ];
+  for (const file of files) {
+    const frontmatter = parseFrontmatter(fs.readFileSync(file, "utf8"));
+    const parsed = parseRequires(frontmatter.requires || "", frontmatter.install || "");
+    assert.ok(parsed, `${path.basename(path.dirname(file))} 必须声明 requires`);
+    assert.ok(parsed.python.length || parsed.npm.length || parsed.exec.length, `${file} 声明不能为空`);
+  }
 });
 
 console.log(failed ? "\n技能发现与依赖测试：存在失败" : "\n技能发现与依赖测试：全部通过");

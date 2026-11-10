@@ -11,12 +11,12 @@ import PptxViewer from "./PptxViewer.jsx";
 import ImageViewer from "./ImageViewer.jsx";
 import CommentMarker from "./CommentMarker.jsx";
 import Icon from "./Icon.jsx";
+import 文件类型图标 from "./文件类型图标.jsx";
 import CodeViewerBoundary from "./CodeViewerBoundary.jsx";
 import { previewCapability } from "../预览能力.js";
 
 // 源码查看器按需加载：CodeMirror 与语言包只在打开代码文件时才进入页面。
 const CodeViewer = React.lazy(() => import("./CodeViewer.jsx"));
-const ICONS = { docx: "doc", xlsx: "xls", xls: "xls", pptx: "ppt", md: "md", html: "html", htm: "html", txt: "txt", pdf: "pdf", png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", bmp: "image", svg: "image", avif: "image" };
 const ANNO_SAVE_DEBOUNCE = 800;
 
 // ===== 标注定位模型（2026-11-06，替换「纯文本首匹配」）=====
@@ -1021,7 +1021,8 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
               }}
               title={workspaceHint(t) ? `${t.name} — ${workspaceHint(t)}` : t.name}
             >
-              <span className="doc-tab-icon"><Icon name={ICONS[t.ext] || "file"} size={12} /></span>
+              {/* 页签图标与文件树共用同一套扁平类型图标（DESIGN §5.8），避免预览区图标漂移 */}
+              <span className="doc-tab-icon"><文件类型图标 file={{ name: t.name }} size={14} /></span>
               <span className="doc-tab-name">{t.name}</span>
               <button
                 type="button"
@@ -1037,7 +1038,7 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
       {/* 本机原生操作条：与预览器无关，任何格式都可用（图片/Excel/PDF 等用系统应用打开） */}
       {doc && (
         <div className="doc-native-actions">
-          <span className="doc-native-name" title={doc.name}><Icon name={ICONS[doc.ext] || "file"} size={12} /> {doc.name}</span>
+          <span className="doc-native-name" title={doc.name}><文件类型图标 file={{ name: doc.name }} size={14} /> {doc.name}</span>
           <span className="doc-native-spacer" />
           <button type="button" className="btn-xs" onClick={() => handleNative("open")} title="用系统默认应用打开（例如 WPS/Word/预览/浏览器）">
             <Icon name="externalLink" size={12} /> 用系统应用打开

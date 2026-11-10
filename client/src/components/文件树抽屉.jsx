@@ -134,7 +134,8 @@ export default function 文件树抽屉({
                   }}
                   title={relPath}
                 >
-                  {entry.isDir ? <Icon name="folder" size={15} /> : <文件类型图标 file={entry} size={15} />}
+                  {/* 目录与文件统一走扁平类型图标（DESIGN §5.8）：目录为强调色字形，不再混用线框图标 */}
+                  <文件类型图标 file={entry} size={15} />
                   <span className="canvas-filetree-name">{entry.name}</span>
                   {entry.isDir
                     ? <Icon name="chevronRight" size={11} className="canvas-filetree-chevron" />

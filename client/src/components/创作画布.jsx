@@ -72,6 +72,9 @@ const 接口别名 = Object.freeze({
   createCanvas: ["createCanvas", "canvasCreate"],
   deleteCanvas: ["deleteCanvas", "canvasDelete"],
   importCanvas: ["importCanvas", "canvasImport"],
+  listCanvasTemplates: ["listCanvasTemplates", "canvasTemplates"],
+  importCanvasTemplate: ["importCanvasTemplate", "canvasImportTemplate"],
+  saveCanvasAsTemplate: ["saveCanvasAsTemplate", "canvasSaveAsTemplate"],
   exportCanvas: ["exportCanvas", "canvasExport"],
   getCanvasExport: ["getCanvasExport", "canvasExportStatus", "getCanvasExportStatus"],
   listCanvasHistory: ["listCanvasHistory", "canvasHistory", "listCanvasVersions"],
@@ -382,6 +385,9 @@ export default function 创作画布({
   // ── 无 slug 时的入口表单 ──
   const [新建标题, set新建标题] = useState("");
   const [新建类型, set新建类型] = useState("board");
+  // 画布模板（2026-11-10）：""=默认（按类型）；`builtin:<id>`=内置模板；其余为用户模板 slug
+  const [模板列表, set模板列表] = useState([]);
+  const [新建模板, set新建模板] = useState("");
 
   // ── refs（供定时器/事件回调读取最新值，避免闭包旧值） ──
   const 外壳引用 = useRef(null);
@@ -473,6 +479,14 @@ export default function 创作画布({
     } catch (错误) {
       set加载错误(错误文本(错误, "读取画布列表失败"));
       set加载态("失败");
+    }
+    // 模板列表失败静默置空：模板是增强能力，不阻断画布列表本身。
+    try {
+      const 模板应答 = await 调用("listCanvasTemplates", 工作区);
+      const 模板原始 = 取字段(模板应答, ["templates", "list", "items"]) || [];
+      set模板列表(Array.isArray(模板原始) ? 模板原始 : []);
+    } catch {
+      set模板列表([]);
     }
   }, [工作区]);
 
@@ -1287,8 +1301,15 @@ export default function 创作画布({
       notifyWarn("请先填写画布标题");
       return;
     }
+    // 模板取值：`builtin:<id>` 走服务端内置 template；其余非空值为用户模板 slug（kind 由模板决定）。
+    const 模板值 = String(新建模板 || "").trim();
+    const 模板参数 = !模板值
+      ? {}
+      : 模板值.startsWith("builtin:")
+        ? { template: 模板值.slice("builtin:".length) }
+        : { templateSlug: 模板值 };
     try {
-      const 应答 = await 调用("createCanvas", 工作区, { title: 标题, kind: 新建类型 });
+      const 应答 = await 调用("createCanvas", 工作区, { title: 标题, kind: 新建类型, ...模板参数 });
       const 新画布 = 取字段(应答, ["canvas"]);
       const 标识 = String(新画布?.slug || 新画布?.id || "").trim();
       set新建标题("");
@@ -1304,7 +1325,7 @@ export default function 创作画布({
     } catch (错误) {
       notifyError(`新建画布失败：${错误文本(错误)}`);
     }
-  }, [新建标题, 新建类型, 工作区, onCreated, onOpenCanvas, 载入画布列表]);
+  }, [新建标题, 新建类型, 新建模板, 工作区, onCreated, onOpenCanvas, 载入画布列表]);
 
   /** 导入兼容画布：只复制到当前工作区，原目录字节不变（由服务端完成复制）。 */
   const 导入画布 = useCallback(async () => {
@@ -1325,6 +1346,37 @@ export default function 创作画布({
       notifyError(`导入画布失败：${错误文本(错误)}`);
     }
   }, [工作区, onCreated, onOpenCanvas, 载入画布列表]);
+
+  /** 导入画布为模板：来源须是当前工作区内含 project/canvas.json 的画布目录。 */
+  const 导入模板 = useCallback(async () => {
+    const 来源 = await askText("要导入为模板的画布目录（含 project/canvas.json，须在工作区内）", "");
+    if (来源 === null) return;
+    const 目录 = String(来源).trim();
+    if (!目录) return;
+    try {
+      const 应答 = await 调用("importCanvasTemplate", 工作区, { sourcePath: 目录 });
+      notifySuccess(`模板「${取字段(应答, ["title"]) || 目录}」已导入，新建画布时可选`);
+      载入画布列表();
+    } catch (错误) {
+      notifyError(`导入模板失败：${错误文本(错误)}`);
+    }
+  }, [工作区, 载入画布列表]);
+
+  /** 当前画布另存为模板：模板名缺省为「<画布标题> 模板」，slug 自动推导。 */
+  const 存为模板 = useCallback(async () => {
+    if (!画布键) return;
+    const 名称 = await askText("模板名称（保存到当前工作区的模板库）", `${画布?.title || 画布键} 模板`);
+    if (名称 === null) return;
+    const 模板名 = String(名称).trim();
+    if (!模板名) return;
+    try {
+      await 调用("saveCanvasAsTemplate", 工作区, 画布键, { title: 模板名 });
+      notifySuccess(`已保存为模板「${模板名}」，新建画布时可选`);
+      载入画布列表();
+    } catch (错误) {
+      notifyError(`保存模板失败：${错误文本(错误)}`);
+    }
+  }, [画布键, 画布?.title, 工作区, 载入画布列表]);
 
   /* ── 导出 ── */
 
@@ -1754,6 +1806,9 @@ export default function 创作画布({
           <button type="button" className="oaw-canvas-tool" onClick={打开历史} aria-label="版本历史" title="查看画布级版本时间线并恢复">
             <Icon name="history" size={14} /> 版本
           </button>
+          <button type="button" className="oaw-canvas-tool" onClick={存为模板} disabled={只读} aria-label="另存为模板" title="把当前画布保存为模板，新建画布时可套用版式">
+            <Icon name="bookmark" size={14} /> 存为模板
+          </button>
           <button type="button" className={`oaw-canvas-tool ${设置面板 ? "active" : ""}`} onClick={() => set设置面板(true)} aria-pressed={设置面板} aria-label="页面主题与间距" title="页面主题、网格与板间距">
             <Icon name="palette" size={14} /> 页面
           </button>
@@ -1841,15 +1896,28 @@ export default function 创作画布({
               placeholder="新画布标题"
               aria-label="新画布标题"
             />
-            <select className="oaw-canvas-field" value={新建类型} onChange={(事件) => set新建类型(事件.target.value)} aria-label="画布类型">
+            <select className="oaw-canvas-field" value={新建类型} onChange={(事件) => set新建类型(事件.target.value)} aria-label="画布类型" disabled={新建模板.startsWith("builtin:deck") || (!新建模板.startsWith("builtin:") && Boolean(新建模板))}>
               <option value="board">普通画布</option>
               <option value="deck">演示 deck（16:9）</option>
+            </select>
+            <select className="oaw-canvas-field" value={新建模板} onChange={(事件) => set新建模板(事件.target.value)} aria-label="画布模板" title="选择模板：内置模板或已导入的用户模板（用户模板的类型以模板为准）">
+              <option value="">模板：默认（按类型）</option>
+              {模板列表.map((项) => {
+                const 值 = 项?.builtin ? `builtin:${项?.slug || 项?.id}` : String(项?.slug || 项?.id || "");
+                if (!值 || (项?.builtin && 值 === "builtin:blank")) return null;
+                const 标签前缀 = 项?.builtin ? "内置 · " : "模板 · ";
+                const 名称 = String(项?.title || 项?.name || 值);
+                return <option key={值} value={值}>{标签前缀}{名称}</option>;
+              })}
             </select>
             <button type="button" className="btn-xs" onClick={新建画布} disabled={!工作区} title={工作区 ? "新建画布" : "请先选择工作区"}>
               <Icon name="plus" size={12} /> 新建
             </button>
             <button type="button" className="btn-xs" onClick={导入画布} disabled={!工作区} title="导入 claude-design / baoyu-design 兼容画布（复制到当前工作区，不改原目录）">
               <Icon name="upload" size={12} /> 导入
+            </button>
+            <button type="button" className="btn-xs" onClick={导入模板} disabled={!工作区} title="把工作区内的画布目录导入为模板，新建画布时可套用">
+              <Icon name="copy" size={12} /> 导入模板
             </button>
           </div>
           <div className="oaw-canvas-list">
