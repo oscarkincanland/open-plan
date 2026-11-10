@@ -54,6 +54,23 @@ function 存字节缓存(key, bytes) {
  *  - 缩放/窗口变化只重渲染，不重新加载文件。
  * 关键点是给 pptxviewjs 传入明确的 px 尺寸；传入 100% 会被库解析为 100px，导致整页内容缩成一点。
  */
+/**
+ * 兼容两种 renderSlide 签名（2026-11-10）：
+ * pptxviewjs 1.1.9 里公开类声明为 `renderSlide(slideIndex, canvas)`，
+ * 但同包内层渲染器实际是 `renderSlide(canvas, slideIndex)`；两者混用时报
+ * "Invalid render input"（实测所有 PPTX 都会掉到 OfficeCLI 高保真、首开要 3–8 秒）。
+ * 这里先用文档签名，失败再按另一种顺序重试，保证浏览器内直接出图。
+ */
+async function renderSlideCompat(viewer, index, canvas) {
+  try {
+    await viewer.renderSlide(index, canvas);
+    return;
+  } catch (error) {
+    if (!/Invalid render input/i.test(String(error?.message || ""))) throw error;
+    await viewer.renderSlide(canvas, index);
+  }
+}
+
 export default function PptxViewer({ name, revision = 0, identity, onPreviewState, onPreviewError }) {
   const hostRef = useRef(null);
   const canvasRef = useRef(null);
@@ -135,6 +152,11 @@ export default function PptxViewer({ name, revision = 0, identity, onPreviewStat
     const canvas = canvasRef.current;
     if (!canvas) return;
     const { width, height } = canvasSizeRef.current();
+    // 缓冲区尺寸必须一起设：releaseViewer() 会把 canvas.width/height 归零，
+    // 只改 CSS 会让库的 "Canvas must have positive dimensions" 校验失败，
+    // 于是所有 PPTX 都掉到 OfficeCLI 高保真（首开 3–8 秒）。顺带让画面不再被拉伸发虚。
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
     canvas.style.width = `${width}px`;
     canvas.style.height = `${height}px`;
   }, []);
@@ -168,7 +190,7 @@ export default function PptxViewer({ name, revision = 0, identity, onPreviewStat
         if (!pending || pending.token !== token) return;      // 已有更新的页码，跳过旧渲染
         if (viewerRef.current !== viewer) return;             // 已切换实例/文档
         applyCanvasSize();
-        await viewer.renderSlide(index, canvasRef.current);
+        await renderSlideCompat(viewer, index, canvasRef.current);
         if (index === 0 && 缓存标识) {
           try {
             const 图片 = canvasRef.current.toDataURL("image/jpeg", 0.72);
