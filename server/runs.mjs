@@ -1480,6 +1480,16 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
     }
     const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
     run.eventSeq = seq;
+    // 计划 007 块 B：staging 后被再次修改而跳过落盘的文件（artifact_materialize_skipped）
+    // 过去只写事件、界面完全看不到，用户会以为产物凭空消失。这里随终态一并下发，供会话卡告警。
+    const materializeSkipped = (Array.isArray(run.events) ? run.events : [])
+      .filter((event) => event?.type === "artifact_materialize_skipped")
+      .map((event) => ({
+        path: String(event?.data?.path || "").replace(/\\/g, "/"),
+        reason: String(event?.data?.reason || ""),
+      }))
+      .filter((item) => item.path)
+      .filter((item, index, list) => list.findIndex((other) => other.path === item.path) === index);
     // run_finished 的 artifacts 与 SSE / 客户端投影同形状（数组），此前写的是数量，
     // 与事件注册表 schema（array）以及前端 run 总结卡（读 .path）不一致。
     const finishedData = {
@@ -1493,6 +1503,7 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
         size: Number.isFinite(item?.size) ? item.size : null,
       })),
       artifactCount: artifacts.length,
+      materializeSkipped,
       verificationStatus: run.verificationStatus,
       completion: run.completion || null,
       finalText: run.finalText || null,
@@ -1832,12 +1843,30 @@ export function classifyRunInterruption(view = {}) {
 
 // 任务中心列表、徽标计数只需要状态摘要：完整 Run 视图（步骤/待办/事件/引用）
 // 单条可达数十 KB，列表一次 50 条就是 1MB 级响应，而明细点击时另有单条加载。
+/**
+ * 计划 007 块 B：从 Run 的 `artifact_materialize_skipped` 事件提取“暂存后被改、未落盘”的文件。
+ * 详情接口/列表接口/终态事件三处共用同一口径（去重、路径统一正斜杠）。
+ */
+export function materializeSkippedOf(view) {
+  const events = Array.isArray(view?.events) ? view.events : [];
+  return events
+    .filter((event) => event?.type === "artifact_materialize_skipped")
+    .map((event) => ({
+      path: String(event?.data?.path || "").replace(/\\/g, "/"),
+      reason: String(event?.data?.reason || ""),
+    }))
+    .filter((item) => item.path)
+    .filter((item, index, list) => list.findIndex((other) => other.path === item.path) === index);
+}
+
 export function runSummaryView(view) {
   if (!view) return null;
   const startedAt = Date.parse(String(view.startedAt || "")) || 0;
   const endedAt = Date.parse(String(view.finishedAt || view.updatedAt || "")) || 0;
   const durationMs = startedAt && endedAt && endedAt >= startedAt ? endedAt - startedAt : 0;
   const artifacts = Array.isArray(view.artifacts) ? view.artifacts : [];
+  // 计划 007 块 B：与 run_finished 同口径，把“暂存后目标被改、未落盘”的文件带到摘要里。
+  const materializeSkipped = materializeSkippedOf(view);
   return {
     id: view.id,
     status: view.status,
@@ -1878,6 +1907,7 @@ export function runSummaryView(view) {
     })),
     acceptanceStatus: view.acceptanceStatus || null,
     verificationStatus: view.verificationStatus || null,
+    materializeSkipped,
     progress: view.progress || null,
     todoProgress: view.todoProgress || null,
     actions: view.actions || null,

@@ -445,6 +445,10 @@ export function upsertRunSummaryMessage(messages = [], data = {}, {
     : (artifacts || []).map((item) => item?.path).filter(Boolean);
   const nextArtifacts = artifacts || previous?.artifacts || [];
   const nextProducts = products.length ? products : (previous?.products || []);
+  // 计划 007 块 B：staging 后被改而跳过落盘的文件必须能看见，否则用户会以为产物凭空消失。
+  const nextMaterializeSkipped = Array.isArray(data.materializeSkipped)
+    ? data.materializeSkipped
+    : (previous?.materializeSkipped || []);
   const next = {
     ...(previous || {}),
     id: previous?.id || id || `run-summary:${runId}`,
@@ -452,6 +456,7 @@ export function upsertRunSummaryMessage(messages = [], data = {}, {
     text: summaryText,
     products: nextProducts,
     artifacts: nextArtifacts,
+    materializeSkipped: nextMaterializeSkipped,
     runId,
     runStatus: status || "unknown",
     // 本轮实际使用的模型（服务端 run.model）：会话按轮显示"由谁执行"、以及模型切换分割线都读它。

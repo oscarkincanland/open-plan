@@ -26,7 +26,7 @@ import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves, startOwnerHeartbeat, stopOwnerHeartbeat, setRunLifecycleInvalidator } from "./runs.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, materializeSkippedOf, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves, startOwnerHeartbeat, stopOwnerHeartbeat, setRunLifecycleInvalidator } from "./runs.mjs";
 import { markInterruptedJobs } from "./后台任务.mjs";
 import { attachRunTimingMeta, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
@@ -3720,7 +3720,8 @@ app.post("/api/agent/events/read", (req, res) => {
 app.get("/api/runs/:id", (req, res) => {
   const run = getRun(req.params.id);
   if (!run) return res.status(404).json({ error: "run not found" });
-  res.json({ run });
+  // 计划 007 块 B：详情也带“未落盘文件”，历史回放时才提示得到（原始事件仍保留在 run.events）。
+  res.json({ run: { ...run, materializeSkipped: materializeSkippedOf(run) } });
 });
 
 app.get("/api/runs/:id/workflow-journal", (req, res) => {

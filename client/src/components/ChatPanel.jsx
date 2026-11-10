@@ -6323,6 +6323,20 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
           )}
           {!!completion?.incomplete?.length && <div className="run-result-note warn">未完成：{completion.incomplete.join("；")}</div>}
           {!!completion?.blockers?.length && <div className="run-result-note warn">受阻：{completion.blockers.join("；")}</div>}
+          {/* 计划 007 块 B：staging 后被再次修改而跳过落盘的文件，过去只写事件，界面完全看不到。 */}
+          {Array.isArray(m.materializeSkipped) && m.materializeSkipped.length > 0 && (
+            <div className="run-result-note warn" role="note">
+              <strong>有 {m.materializeSkipped.length} 份文件未落盘：</strong>
+              {m.materializeSkipped.map((item) => item.path).join("、")}
+              <small>暂存后目标被再次修改，为避免覆盖已跳过写入；这不是展示问题，文件确实不在磁盘上，需要重新生成或换一个文件名。</small>
+            </div>
+          )}
+          {/* 计划 007 块 B：中断/取消的一轮仍可能已写入文件，明确“文件在磁盘”，避免被当成产物丢失。 */}
+          {interrupted && attributedProducts.length > 0 && (
+            <div className="run-result-note" role="note">
+              本轮已中断，但已写入的 {attributedProducts.length} 份文件已保存在磁盘，可在右侧「工作产物」面板查看与验收。
+            </div>
+          )}
           {!embedded && (trace?.tools?.length > 0 || view.progress.toolTotal > 0) && (
             <section className="run-process-details" aria-label="工具调用明细">
               <div className="run-process-heading"><Icon name="flow" size={12} /> 执行过程</div>
@@ -6379,6 +6393,10 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
         {/* 本轮用时与 token：明确到每一轮（回合）——总量常驻可见，逐轮明细一键展开 */}
         {hasTurnMetrics && (
           <div className="run-metrics" aria-label="本轮用时与 token">
+            {/* 计划 007 块 B：纯回答/只读轮不写文件时明确说明，避免用户把“没有产物卡”当成产物丢失。 */}
+            {!runIsLive && !products.length && !fileChanges.length && !interrupted && (
+              <span className="run-metrics-text run-metrics-note">本轮没有写入文件（回答/只读轮）{onOpenArtifacts ? "；本会话已有产物可在「工作产物」查看" : ""}</span>
+            )}
             {/* 一行小字：用时 · 轮数 · 输入/输出 token · 上下文；逐轮明细收在后面的小折叠里 */}
             <span className="run-metrics-text" title={metricsText}>
               用时 <b>{formatDuration(trace?.durationMs || turnTotals.durationMs || 0)}</b>

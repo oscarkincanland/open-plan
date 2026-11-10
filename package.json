@@ -50,6 +50,8 @@
     "test:pi-config-api": "node scripts/Pi配置接口测试.mjs",
     "test:closure": "node scripts/遗留十项测试.mjs",
     "test:chat-flow": "node scripts/对话流性能回归测试.mjs",
+    "test:chat-summary-order": "node scripts/会话结论渲染顺序测试.mjs",
+    "test:session-artifact-truth": "node scripts/会话产物归属测试.mjs",
     "test:stream-recovery": "node scripts/流恢复冻结回归测试.mjs",
     "test:discussion-archive": "node scripts/讨论记录归档测试.mjs",
     "test:ava-trust": "node scripts/AVA对话状态可信测试.mjs",
