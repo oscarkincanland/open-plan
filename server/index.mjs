@@ -2437,6 +2437,16 @@ function invalidateSessionsListCache() {
   sessionsListCache = { at: 0, payload: null };
 }
 const SESSION_LIST_FIELDS = new Set(["label", "pinned", "frozen", "freezeReason", "archived", "archivedAt", "projectId", "cwd", "parentSessionId", "agentId", "threadId", "mapProject", "creativeCanvas"]);
+
+// 任务中心/徽标热缓存（计划 007 块 D）：`/api/runs?fields=summary` 过去每次都要解析
+// 全部 Run JSON（本机实测 412 个 Run / 146MB，单次 1–4s），而任务中心开着时每 3s 轮询一次，
+// 多窗口叠加会直接把事件循环拖慢，客户端表现为“读取列表失败，已保留上一次可用数据”。
+// 这里按查询参数缓存 1.5s：同一轮询周期内多窗口只算一次，Run 生命周期变化立即失效。
+const RUNS_SUMMARY_CACHE_MS = Math.max(300, Number.parseInt(process.env.OAW_RUNS_SUMMARY_CACHE_MS || "1500", 10) || 1500);
+const runsSummaryCache = new Map();
+function invalidateRunsSummaryCache() {
+  runsSummaryCache.clear();
+}
 const sessionHeaderCache = new Map();
 const sessionMetaCache = new Map();
 const persistedSessionMeta = new Map();
@@ -2446,7 +2456,7 @@ let sessionMetaFlushTimer = null;
 
 // Run 开始/结束/取消时由 runs.mjs 反向回调：会话列表 runStatus 即时变化，
 // 这里失效热缓存，否则侧栏与项目卡的多任务运行动画要等 5s TTL（2026-11-03-001 P0-3）。
-setRunLifecycleInvalidator(() => invalidateSessionsListCache());
+setRunLifecycleInvalidator(() => { invalidateSessionsListCache(); invalidateRunsSummaryCache(); });
 
 
 function loadPersistedSessionMeta() {
@@ -3627,6 +3637,16 @@ app.get("/api/runs", (req, res) => {
     ? String(req.query.includeEvents)
     : "latest";
   const includeEvents = summaryOnly ? "none" : requestedEvents;
+  // 摘要视图按查询参数热缓存：任务中心 3s 轮询、多窗口并发时不再重复解析全部 Run。
+  const summaryCacheKey = summaryOnly ? JSON.stringify([
+    String(req.query.thread || ""), String(req.query.session || ""), cwd,
+    String(req.query.projectId || ""), String(req.query.status || ""),
+    String(req.query.mode || ""), String(req.query.query || ""), parseInt(req.query.limit, 10) || 50,
+  ]) : "";
+  if (summaryCacheKey) {
+    const hit = runsSummaryCache.get(summaryCacheKey);
+    if (hit && Date.now() - hit.at <= RUNS_SUMMARY_CACHE_MS) return res.json(hit.payload);
+  }
   const runs = listRuns({
     threadId: String(req.query.thread || ""),
     sessionId: String(req.query.session || ""),
@@ -3638,7 +3658,16 @@ app.get("/api/runs", (req, res) => {
     limit: parseInt(req.query.limit, 10) || 50,
     includeEvents,
   });
-  res.json({ runs: summaryOnly ? runs.map(runSummaryView) : runs });
+  const payload = summaryOnly
+    ? { runs: runs.map(runSummaryView) }
+    // 非摘要视图（会话恢复/轮询带事件）同样补上未落盘清单，口径与详情/终态事件一致。
+    : { runs: runs.map((run) => ({ ...run, materializeSkipped: materializeSkippedOf(run) })) };
+  if (summaryCacheKey) {
+    // 简单上限保护：查询组合通常只有几种，超限整体清空即可。
+    if (runsSummaryCache.size > 32) runsSummaryCache.clear();
+    runsSummaryCache.set(summaryCacheKey, { at: Date.now(), payload });
+  }
+  res.json(payload);
 });
 
 // 根级持久事件流：跨所有 thread 订阅当前 client 的可恢复状态事件。
