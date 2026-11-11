@@ -896,6 +896,9 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .chat-history-skeleton-row.is-user { align-items: flex-end; background: color-mix(in srgb, var(--user-bg) 22%, transparent); }
 .chat-history-skeleton-row .oaw-skeleton-block { height: 10px; }
 .chat-empty { color: var(--muted); text-align: center; padding: 40px 0; font-size: 13px; }
+/* Work 空态顶部少留白：小窗口下标题+步骤+建议卡片+提示一共 450px 左右，
+   40px 顶距会让最后一行提示正好被输入区裁掉（2026-11-11 实拍"挤在一起"）。 */
+.chat-empty.mode-agent { padding: 20px 0 14px; }
 .vision-hint { padding: 4px 12px; font-size: 11px; color: var(--warning); background: #2a2410; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 /* messages */
 .msg { display: flex; gap: 0; }
@@ -2215,7 +2218,10 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  max-width: 420px;
+  /* 窄输入框里不能把工具条顶出去：允许收缩 + 文本省略（2026-11-11 实拍溢出到框外）。 */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(320px, 100%);
   padding: 1px 8px;
   border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
   border-radius: 999px;
@@ -2224,7 +2230,8 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   color: var(--warning);
   line-height: 1.5;
 }
-.model-fallback-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-fallback-chip > span { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-fallback-chip > button { flex: 0 0 auto; white-space: nowrap; }
 .execution-flow-dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--warning); }
 .execution-flow-item.success .execution-flow-dot { background: var(--success); }
 /* 部分完成/受阻/取消：客观降级态用 warning，不用 success 色 */
@@ -10949,6 +10956,30 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .chat-empty-example:hover { color: var(--text); border-color: var(--accent); background: var(--accent-soft, var(--selected)); }
 .chat-empty-example:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* 智能体建议（Work 空态）：描述较长，旧样式沿用胶囊按钮 → 每个占 3–4 行、整屏被挤满，
+   输入区一出现就像"卡片和输入框叠在一起"（2026-11-11 实拍）。改为两列卡片 + 两行截断。 */
+.chat-empty-examples:has(.welcome-agent-suggestion) {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  max-width: 680px;
+  margin-inline: auto;
+  text-align: left;
+}
+@media (max-width: 720px) {
+  .chat-empty-examples:has(.welcome-agent-suggestion) { grid-template-columns: minmax(0, 1fr); }
+}
+.welcome-agent-suggestion {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-align: left;
+  border-radius: var(--radius-md, 10px);
+  padding: 8px 11px;
+  line-height: 1.55;
+  max-width: 100%;
+}
 .chat-empty .hint { max-width: 620px; margin: 0 auto; line-height: 1.7; }
 .chat-empty-project-note { margin-top: 10px; color: var(--dim); font-size: 11px; }
 
