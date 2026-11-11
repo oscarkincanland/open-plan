@@ -481,7 +481,7 @@ function ArchiveSettingsSection({ onSessionsChanged, onRestoredSession }) {
   );
 }
 
-export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], defaultModel = "", activeModel = "", clientId = "", threadId = "", initialSection = "model", onSessionsChanged, onRestoredSession, onModelChange, onModelsRefresh, onProjectUpdated, onProjectSelect, projectCreateSeed = null, onSeedConsumed }) {
+export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], defaultModel = "", activeModel = "", clientId = "", threadId = "", initialSection = "model", modelPageIntent = null, onSessionsChanged, onRestoredSession, onModelChange, onModelsRefresh, onProjectUpdated, onProjectSelect, projectCreateSeed = null, onSeedConsumed }) {
   const { theme, setTheme, skin, setSkin } = useTheme();
   const [settingsSection, setSettingsSection] = useState("model");
   const appearance = useAppearance();
@@ -982,6 +982,7 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
           onModelChange={onModelChange}
           onModelsRefresh={onModelsRefresh}
           integration={integration}
+          intent={modelPageIntent}
         />
       )}
 

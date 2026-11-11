@@ -463,6 +463,14 @@ export default function App() {
   const [activeModule, setActiveModule] = useState(null); // 0.10 统一模块入口
   const [settingsModuleTab, setSettingsModuleTab] = useState("settings");
   const [settingsSection, setSettingsSection] = useState("model");
+  // 2026-11-11-002：从模型浮层打开“模型与供应商”设置；at 用于重复点击同一入口也重新触发。
+  const [modelPageIntent, setModelPageIntent] = useState(null); // { mode: "manage"|"new", at }
+  const openModelSettings = (mode = "manage") => {
+    setSettingsModuleTab("settings");
+    setSettingsSection("providers");
+    setModelPageIntent({ mode: mode === "new" ? "new" : "manage", at: Date.now() });
+    setActiveModule("settings");
+  };
   // 侧栏"+"直达新建项目：选择文件夹后把路径作为种子传给设置面板的创建表单（nonce 保证同一路径也能重复触发）
   const [projectCreateSeed, setProjectCreateSeed] = useState(null); // { path, nonce }
   const [mapChatVisible, setMapChatVisible] = useState(true); // 地图模式保留 Agent 对话，可独立隐藏
@@ -2586,6 +2594,7 @@ export default function App() {
       onOpenSubagent={openSubagentDetail}
       onSubagentUpdate={handleSubagentUpdate}
       onOpenSettings={() => setActiveModule("settings")}
+      onOpenModelSettings={openModelSettings}
       onTeamChange={handleTeamChange}
       onModeChange={setConversationMode}
       onPhaseChange={setConversationPhase}
@@ -3290,7 +3299,7 @@ export default function App() {
              <div className="module-body module-settings-body">
                {settingsModuleTab === "memory"
                  ? <MemoryTab workspace={currentWorkspace} projectId={currentProject?.id || ""} />
-                 : <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} defaultModel={defaultModel} activeModel={selectedModel} clientId={clientId} threadId={threadId} initialSection={settingsSection} onSessionsChanged={refreshSessions} onRestoredSession={handleSessionsRestored} onModelChange={setSelectedModel} onModelsRefresh={refreshModelCatalog} onProjectUpdated={refreshProjects} projectCreateSeed={projectCreateSeed} onSeedConsumed={() => setProjectCreateSeed(null)} onProjectSelect={(id) => { closeExternalModules(); handleProjectChange(id); }} />}
+                 : <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} defaultModel={defaultModel} activeModel={selectedModel} clientId={clientId} threadId={threadId} initialSection={settingsSection} modelPageIntent={modelPageIntent} onSessionsChanged={refreshSessions} onRestoredSession={handleSessionsRestored} onModelChange={setSelectedModel} onModelsRefresh={refreshModelCatalog} onProjectUpdated={refreshProjects} projectCreateSeed={projectCreateSeed} onSeedConsumed={() => setProjectCreateSeed(null)} onProjectSelect={(id) => { closeExternalModules(); handleProjectChange(id); }} />}
              </div>
            </div>
          )}

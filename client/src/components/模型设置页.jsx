@@ -96,6 +96,7 @@ export default function 模型设置页({
   onModelChange,
   onModelsRefresh,
   integration = null,
+  intent = null,
 }) {
   const [configs, setConfigs] = useState([]);
   const [catalog, setCatalog] = useState(null);
@@ -112,7 +113,7 @@ export default function 模型设置页({
   const [message, setMessage] = useState("");
   const [draft, setDraft] = useState(null);
   const [modelQuery, setModelQuery] = useState("");
-  const [newModel, setNewModel] = useState({ id: "", name: "", contextWindow: "" });
+  const [newModel, setNewModel] = useState({ id: "", name: "", contextWindow: "", vision: false, reasoning: true });
   const [addModelOpen, setAddModelOpen] = useState(false);
   const [probeMsg, setProbeMsg] = useState("");
   const [fetchOpen, setFetchOpen] = useState(false);
@@ -304,6 +305,13 @@ export default function 模型设置页({
   const saveConfig = async () => {
     if (!draft || busy) return;
     if (!draft.provider.trim()) { setMessage("请先填写供应商 ID"); return; }
+    // 2026-11-11-002：新建时若 ID 已存在，转为打开现有配置，避免静默覆盖。
+    const providerId = draft.provider.trim();
+    if (selection.type === "new" && configs.some((item) => item.provider === providerId)) {
+      setMessage(`供应商 ${providerId} 已存在，已为你打开现有配置`);
+      setSelection({ type: "config", id: providerId });
+      return;
+    }
     if (!/^https?:\/\//i.test(draft.baseUrl.trim())) { setMessage("接口地址必须以 http:// 或 https:// 开头"); return; }
     if (!draft.models.length) { setMessage("至少保留一个模型"); return; }
     setBusy("save");
@@ -563,11 +571,30 @@ export default function 模型设置页({
     if (!newModel.id.trim()) { setMessage("请填写模型 ID"); return; }
     setDraft((value) => value ? {
       ...value,
-      models: [...value.models, { id: newModel.id.trim(), name: newModel.name.trim(), contextWindow: newModel.contextWindow.trim(), reasoning: true, vision: false, enabled: true }],
+      models: [...value.models, { id: newModel.id.trim(), name: newModel.name.trim(), contextWindow: newModel.contextWindow.trim(), reasoning: newModel.reasoning !== false, vision: newModel.vision === true, enabled: true }],
     } : value);
-    setNewModel({ id: "", name: "", contextWindow: "" });
+    setNewModel({ id: "", name: "", contextWindow: "", vision: false, reasoning: true });
     setAddModelOpen(false);
   };
+
+  // 2026-11-11-002 D1：从零新建自定义供应商（不依赖内置目录）。
+  // 后端 POST /api/agent/model-configs 已支持任意 provider；这里只负责给出空白草稿入口。
+  const startBlankProvider = () => {
+    if (busy) return;
+    setDraft({ provider: "", name: "", api: "openai-completions", baseUrl: "", key: "", enabled: true, models: [] });
+    setSelection({ type: "new", id: "" });
+    setModelQuery("");
+    setProbeMsg("");
+    setAddModelOpen(true);
+    setMessage("填写供应商信息，并至少添加一个模型后保存。");
+  };
+
+  // 从模型选择浮层跳转过来时预选“新建供应商”（intent 由 App 传入，at 保证重复点击也生效）。
+  useEffect(() => {
+    if (!intent?.at) return;
+    if (intent.mode === "new") startBlankProvider();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intent?.at]);
 
   const renderNavItem = (type, id, label, sublabel, state = {}) => {
     const identity = providerIdentity(id);
@@ -618,6 +645,7 @@ export default function 模型设置页({
         <div className="model-detail">
           <div className="model-detail-head">
             <div className="model-detail-title"><h4>全部供应商</h4><p>Pi 内置目录 + models.dev 合并结果；添加时自动带出协议、地址与模型能力。</p></div>
+            <button type="button" className="btn-sm primary" onClick={startBlankProvider}><Icon name="plus" size={12} /> 自定义供应商</button>
             <button type="button" className="btn-sm" onClick={() => select("", "")}>返回精选</button>
           </div>
           <供应商库
@@ -825,6 +853,8 @@ export default function 模型设置页({
                 <input className="sp-input" value={newModel.id} onChange={(event) => setNewModel((value) => ({ ...value, id: event.target.value }))} placeholder="模型 ID" aria-label="模型 ID" />
                 <input className="sp-input" value={newModel.name} onChange={(event) => setNewModel((value) => ({ ...value, name: event.target.value }))} placeholder="显示名称（可选）" aria-label="模型显示名称" />
                 <input className="sp-input" type="number" min="1" value={newModel.contextWindow} onChange={(event) => setNewModel((value) => ({ ...value, contextWindow: event.target.value }))} placeholder="上下文 tokens" aria-label="上下文 tokens" />
+                <label className="model-check-row model-check-row-inline"><input type="checkbox" checked={newModel.vision === true} onChange={(event) => setNewModel((value) => ({ ...value, vision: event.target.checked }))} /><span className="model-check-name">支持图片</span></label>
+                <label className="model-check-row model-check-row-inline"><input type="checkbox" checked={newModel.reasoning !== false} onChange={(event) => setNewModel((value) => ({ ...value, reasoning: event.target.checked }))} /><span className="model-check-name">支持推理</span></label>
                 <button type="button" className="btn-sm primary" onClick={addDraftModel}>添加</button>
               </div>
             )}
@@ -852,6 +882,7 @@ export default function 模型设置页({
         <Icon name="robot" size={22} />
         <strong>选择或添加一个供应商</strong>
         <span>左栏按「已接入 / 套餐 / 国内 / 国际 / 自定义」分组；也可以浏览全部供应商。</span>
+        <button type="button" className="btn-sm primary" onClick={startBlankProvider}><Icon name="plus" size={12} /> 自定义供应商</button>
       </div>
     );
   };
@@ -884,6 +915,7 @@ export default function 模型设置页({
         </>
       )}
       <div className="model-nav-footer">
+        <button type="button" className="btn-sm primary" onClick={startBlankProvider}><Icon name="plus" size={12} /> 自定义供应商</button>
         <button type="button" className="btn-sm" onClick={() => select("library", "all")}><Icon name="grid" size={12} /> 全部供应商 {catalog?.providers?.length ? `(${catalog.providers.length})` : ""}</button>
         <button type="button" className="btn-sm" onClick={openMaintenance}><Icon name="download" size={12} /> 导入与凭据</button>
       </div>

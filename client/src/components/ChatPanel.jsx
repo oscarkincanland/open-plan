@@ -709,7 +709,7 @@ export function extractSessionLinks(messages = []) {
   return [...seen.values()];
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, agentReady = true, onFileChanged, onMapAction, onDraftChanged, onCanvasChanged, onCanvasActivity, currentDoc, mapContext, models: modelsProp, defaultModel, onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "", onTeamChange, onOpenSettings }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, agentReady = true, onFileChanged, onMapAction, onDraftChanged, onCanvasChanged, onCanvasActivity, currentDoc, mapContext, models: modelsProp, defaultModel, onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "", onTeamChange, onOpenSettings, onOpenModelSettings }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   // 供非渲染事件（重试复用气泡、终态清理）同步读取最新消息，避免依赖异步 state。
   const messagesRef = useRef([]);
@@ -886,6 +886,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [allModelsOpen, setAllModelsOpen] = useState(false);
   // 供应商过滤（2026-11-03）：弹层顶部供应商条显式切换，默认「全部」。
   const [modelProviderFilter, setModelProviderFilter] = useState("all");
+  // 2026-11-11-002 D3：模型浮层的“管理/添加模型与供应商”入口；优先走专用回调，退化到设置入口。
+  const openModelSettings = (mode = "manage") => {
+    setModelOpen(false);
+    if (onOpenModelSettings) onOpenModelSettings(mode);
+    else onOpenSettings?.("providers");
+  };
   // 目标上下文里的当前文件可以按轮移除：移除只影响本轮的 [当前打开文件] 注入，
   // 不改变真正打开的文件，也不代表授权写入。
   const [contextFileDismissed, setContextFileDismissed] = useState(false);
@@ -6002,7 +6008,20 @@ case "runtime_connecting":
                           )}
                         </>
                       )}
-                      {modelQ.trim() && !modelGroups.length && <div className="ct-pop-empty">没有匹配的模型</div>}
+                      {modelQ.trim() && !modelGroups.length && (
+                        <div className="ct-pop-empty">
+                          没有匹配的模型
+                          <button type="button" className="ct-pop-add-model" onClick={() => openModelSettings("new")}>+ 添加模型 / 供应商</button>
+                        </div>
+                      )}
+                    </div>
+                    <div className="model-pop-footer">
+                      <button type="button" className="ct-pop-refresh" onClick={() => openModelSettings("manage")}>
+                        <Icon name="gear" size={12} /> 管理模型与供应商
+                      </button>
+                      <button type="button" className="ct-pop-refresh" onClick={() => openModelSettings("new")}>
+                        <Icon name="plus" size={12} /> 添加供应商
+                      </button>
                     </div>
                     <div className="model-thinking-control">
                       <div className="model-thinking-head"><span><Icon name="info" size={12} /> 思考深度</span><strong>{selectedEffort.label}</strong></div>

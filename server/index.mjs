@@ -2203,6 +2203,8 @@ app.post("/api/agent/model", async (req, res) => {
 });
 
 // 保存 OpenAI/Anthropic 兼容的自定义供应商模型配置；API Key 仍单独存入凭据文件。
+// legacy（2026-11-11-002）：工作台前端已统一走 /api/agent/model-configs（支持任意 provider 与多模型），
+// 此接口保留仅用于外部脚本兼容，不再新增前端调用。
 app.post("/api/agent/custom-provider", (req, res) => {
   const provider = String(req.body?.provider || "").trim();
   const baseUrl = String(req.body?.baseUrl || "").trim().replace(/\/+$/, "");
