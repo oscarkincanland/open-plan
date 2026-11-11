@@ -8,10 +8,10 @@
   "baseProject": null,
   "crs": "EPSG:4326",
   "center": [
-    120.1,
-    29.15
+    119.75,
+    29.14
   ],
-  "zoom": 7.2,
+  "zoom": 10.6,
   "basemap": "esri-sat",
   "groups": [
     {
@@ -230,6 +230,6 @@
     }
   ],
   "createdAt": "2026-11-01T09:11:07.785Z",
-  "updatedAt": "2026-11-07T15:14:21.753Z",
+  "updatedAt": "2026-11-08T06:39:30.711Z",
   "archivedAt": null
 }

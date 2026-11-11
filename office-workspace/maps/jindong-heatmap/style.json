@@ -1,0 +1,546 @@
+{
+  "version": 8,
+  "name": "jindong-heatmap 地图样式",
+  "sources": {
+    "blank": {
+      "name": "无底图",
+      "type": "raster",
+      "tileSize": 256,
+      "tiles": [],
+      "attribution": "",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "gaode-road": {
+      "name": "高德路网",
+      "type": "raster",
+      "tileSize": 256,
+      "tiles": [
+        "https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+        "https://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+        "https://webrd03.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+        "https://webrd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}"
+      ],
+      "attribution": "&copy; <a href=\"https://www.amap.com/\">高德地图</a>",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "gaode-sat": {
+      "name": "高德卫星",
+      "type": "raster",
+      "tileSize": 256,
+      "tiles": [
+        "https://webst01.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
+        "https://webst02.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
+        "https://webst03.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
+        "https://webst04.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}"
+      ],
+      "attribution": "&copy; <a href=\"https://www.amap.com/\">高德地图</a>",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "gaode-sat-label": {
+      "name": "高德卫星注记",
+      "type": "raster",
+      "tileSize": 256,
+      "tiles": [
+        "https://webst01.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}",
+        "https://webst02.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}",
+        "https://webst03.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}",
+        "https://webst04.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}"
+      ],
+      "attribution": "&copy; <a href=\"https://www.amap.com/\">高德地图</a>",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "osm-standard": {
+      "name": "OSM 标准",
+      "type": "raster",
+      "tileSize": 256,
+      "maxzoom": 19,
+      "tiles": [
+        "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+      ],
+      "attribution": "&copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap contributors</a>",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "carto-positron": {
+      "name": "CARTO 浅色",
+      "type": "raster",
+      "tileSize": 256,
+      "maxzoom": 20,
+      "tiles": [
+        "https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"
+      ],
+      "attribution": "&copy; <a href=\"https://carto.com/attributions\">CARTO</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "carto-dark": {
+      "name": "CARTO 暗色",
+      "type": "raster",
+      "tileSize": 256,
+      "maxzoom": 20,
+      "tiles": [
+        "https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
+      ],
+      "attribution": "&copy; <a href=\"https://carto.com/attributions\">CARTO</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "carto-voyager": {
+      "name": "CARTO Voyager",
+      "type": "raster",
+      "tileSize": 256,
+      "maxzoom": 20,
+      "tiles": [
+        "https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"
+      ],
+      "attribution": "&copy; <a href=\"https://carto.com/attributions\">CARTO</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "opentopomap": {
+      "name": "OpenTopoMap 地形",
+      "type": "raster",
+      "tileSize": 256,
+      "maxzoom": 17,
+      "tiles": [
+        "https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
+        "https://b.tile.opentopomap.org/{z}/{x}/{y}.png",
+        "https://c.tile.opentopomap.org/{z}/{x}/{y}.png"
+      ],
+      "attribution": "&copy; <a href=\"https://opentopomap.org/\">OpenTopoMap</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "tencent-road": {
+      "name": "腾讯路网（GCJ-02）",
+      "type": "raster",
+      "tileSize": 256,
+      "maxzoom": 18,
+      "scheme": "tms",
+      "tiles": [
+        "https://rt0.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0",
+        "https://rt1.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0",
+        "https://rt2.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0",
+        "https://rt3.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0"
+      ],
+      "attribution": "&copy; <a href=\"https://map.qq.com/\">腾讯地图</a>（GCJ-02）",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "tencent-satellite": {
+      "name": "腾讯卫星（GCJ-02）",
+      "type": "raster",
+      "tileSize": 256,
+      "maxzoom": 18,
+      "scheme": "tms",
+      "tiles": [
+        "https://p0.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg",
+        "https://p1.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg",
+        "https://p2.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg",
+        "https://p3.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg"
+      ],
+      "attribution": "&copy; <a href=\"https://map.qq.com/\">腾讯地图</a>（GCJ-02）",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "esri-sat": {
+      "name": "Esri 卫星",
+      "type": "raster",
+      "tileSize": 256,
+      "tiles": [
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+      ],
+      "attribution": "&copy; Esri, Maxar, Earthstar Geographics",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "esri-street": {
+      "name": "Esri 街道",
+      "type": "raster",
+      "tileSize": 256,
+      "tiles": [
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"
+      ],
+      "attribution": "&copy; Esri, HERE, Garmin, OpenStreetMap contributors",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "boundary-city": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/boundary-city/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 9
+    },
+    "boundary-county": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/boundary-county/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 11
+    },
+    "highways": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/highways/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 13
+    },
+    "roads-trunk": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/roads-trunk/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 13
+    },
+    "roads-rural": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/roads-rural/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 14
+    },
+    "toll-stations": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/toll-stations/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 14
+    },
+    "junctions": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/junctions/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 14
+    }
+  },
+  "layers": [
+    {
+      "id": "basemap-blank",
+      "type": "background",
+      "layout": {
+        "visibility": "none"
+      },
+      "paint": {
+        "background-color": "rgba(0,0,0,0)"
+      }
+    },
+    {
+      "id": "basemap-gaode-road",
+      "type": "raster",
+      "source": "gaode-road",
+      "layout": {
+        "visibility": "none"
+      },
+      "paint": {
+        "raster-opacity": 1
+      }
+    },
+    {
+      "id": "basemap-gaode-sat",
+      "type": "raster",
+      "source": "gaode-sat",
+      "layout": {
+        "visibility": "none"
+      },
+      "paint": {
+        "raster-opacity": 1
+      }
+    },
+    {
+      "id": "basemap-gaode-sat-label",
+      "type": "raster",
+      "source": "gaode-sat-label",
+      "layout": {
+        "visibility": "none"
+      },
+      "paint": {
+        "raster-opacity": 1
+      }
+    },
+    {
+      "id": "basemap-osm-standard",
+      "type": "raster",
+      "source": "osm-standard",
+      "layout": {
+        "visibility": "none"
+      },
+      "paint": {
+        "raster-opacity": 1
+      }
+    },
+    {
+      "id": "basemap-carto-positron",
+      "type": "raster",
+      "source": "carto-positron",
+      "layout": {
+        "visibility": "none"
+      },
+      "paint": {
+        "raster-opacity": 1
+      }
+    },
+    {
+      "id": "basemap-carto-dark",
+      "type": "raster",
+      "source": "carto-dark",
+      "layout": {
+        "visibility": "none"
+      },
+      "paint": {
+        "raster-opacity": 1
+      }
+    },
+    {
+      "id": "basemap-carto-voyager",
+      "type": "raster",
+      "source": "carto-voyager",
+      "layout": {
+        "visibility": "none"
+      },
+      "paint": {
+        "raster-opacity": 1
+      }
+    },
+    {
+      "id": "basemap-opentopomap",
+      "type": "raster",
+      "source": "opentopomap",
+      "layout": {
+        "visibility": "none"
+      },
+      "paint": {
+        "raster-opacity": 1
+      }
+    },
+    {
+      "id": "basemap-tencent-road",
+      "type": "raster",
+      "source": "tencent-road",
+      "layout": {
+        "visibility": "none"
+      },
+      "paint": {
+        "raster-opacity": 1
+      }
+    },
+    {
+      "id": "basemap-tencent-satellite",
+      "type": "raster",
+      "source": "tencent-satellite",
+      "layout": {
+        "visibility": "none"
+      },
+      "paint": {
+        "raster-opacity": 1
+      }
+    },
+    {
+      "id": "basemap-esri-sat",
+      "type": "raster",
+      "source": "esri-sat",
+      "layout": {
+        "visibility": "visible"
+      },
+      "paint": {
+        "raster-opacity": 1
+      }
+    },
+    {
+      "id": "basemap-esri-street",
+      "type": "raster",
+      "source": "esri-street",
+      "layout": {
+        "visibility": "none"
+      },
+      "paint": {
+        "raster-opacity": 1
+      }
+    },
+    {
+      "id": "boundary-city",
+      "source": "boundary-city",
+      "source-layer": "boundary-city",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "line",
+      "paint": {
+        "line-color": "#e4572e",
+        "line-width": 2,
+        "line-opacity": 0.9,
+        "line-dasharray": [
+          1,
+          0
+        ]
+      }
+    },
+    {
+      "id": "boundary-county",
+      "source": "boundary-county",
+      "source-layer": "boundary-county",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "line",
+      "paint": {
+        "line-color": "#b8b8c8",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          7,
+          0.8,
+          10,
+          1.3,
+          13,
+          1.8
+        ],
+        "line-opacity": 0.9,
+        "line-dasharray": [
+          2,
+          1.2
+        ]
+      }
+    },
+    {
+      "id": "highways",
+      "source": "highways",
+      "source-layer": "highways",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "line",
+      "paint": {
+        "line-color": "#d62728",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          5,
+          1,
+          10,
+          2.5,
+          13,
+          4.5
+        ],
+        "line-opacity": 0.85
+      }
+    },
+    {
+      "id": "roads-trunk",
+      "source": "roads-trunk",
+      "source-layer": "roads-trunk",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "line",
+      "paint": {
+        "line-color": "#ff7f0e",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          5,
+          0.8,
+          10,
+          1.8,
+          13,
+          3.2
+        ],
+        "line-opacity": 0.85
+      }
+    },
+    {
+      "id": "roads-rural",
+      "source": "roads-rural",
+      "source-layer": "roads-rural",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "line",
+      "paint": {
+        "line-color": "#2ca02c",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          5,
+          0.8,
+          10,
+          1.8,
+          13,
+          3.2
+        ],
+        "line-opacity": 0.85
+      }
+    },
+    {
+      "id": "toll-stations",
+      "source": "toll-stations",
+      "source-layer": "toll-stations",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "circle",
+      "paint": {
+        "circle-radius": 4,
+        "circle-color": "#2ca02c",
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-opacity": 0.9
+      }
+    },
+    {
+      "id": "junctions",
+      "source": "junctions",
+      "source-layer": "junctions",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "circle",
+      "paint": {
+        "circle-radius": 4.5,
+        "circle-color": "#9467bd",
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-opacity": 0.9
+      }
+    }
+  ],
+  "glyphs": "/glyphs/{fontstack}/{range}.pbf"
+}

@@ -419,7 +419,7 @@
       "source": "junctions",
       "source-layer": "junctions",
       "layout": {
-        "visibility": "none"
+        "visibility": "visible"
       },
       "type": "circle",
       "paint": {
@@ -720,7 +720,7 @@
       "source": "gis_osm_railways_free_1",
       "source-layer": "gis_osm_railways_free_1",
       "layout": {
-        "visibility": "none"
+        "visibility": "visible"
       },
       "type": "line",
       "paint": {
@@ -771,7 +771,7 @@
         ],
         "text-rotation-alignment": "map",
         "text-allow-overlap": false,
-        "visibility": "none"
+        "visibility": "visible"
       },
       "paint": {
         "text-color": "#ffffff",
@@ -839,6 +839,155 @@
         "circle-stroke-color": "#ffffff",
         "circle-stroke-width": 1,
         "circle-opacity": 0.9
+      }
+    },
+    {
+      "id": "jd-township-fill",
+      "type": "fill",
+      "source": "jd-township",
+      "source-layer": "jd-township",
+      "layout": {
+        "visibility": "visible"
+      },
+      "paint": {
+        "fill-color": "#93c5fd",
+        "fill-opacity": 0.16
+      }
+    },
+    {
+      "id": "jd-village-road-label",
+      "type": "symbol",
+      "source": "jd-village-road",
+      "source-layer": "jd-village-road",
+      "minzoom": 7,
+      "layout": {
+        "symbol-placement": "line",
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "ref"
+          ],
+          [
+            "get",
+            "name"
+          ],
+          ""
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          8,
+          10,
+          13,
+          12
+        ],
+        "text-font": [
+          "Noto Sans Regular"
+        ],
+        "text-rotation-alignment": "map",
+        "text-allow-overlap": false,
+        "visibility": "visible"
+      },
+      "paint": {
+        "text-color": "#ffffff",
+        "text-halo-color": "rgba(0,0,0,0.75)",
+        "text-halo-width": 1.2
+      }
+    },
+    {
+      "id": "jd-town-road-label",
+      "type": "symbol",
+      "source": "jd-town-road",
+      "source-layer": "jd-town-road",
+      "minzoom": 7,
+      "layout": {
+        "symbol-placement": "line",
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "ref"
+          ],
+          [
+            "get",
+            "name"
+          ],
+          ""
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          8,
+          10,
+          13,
+          12
+        ],
+        "text-font": [
+          "Noto Sans Regular"
+        ],
+        "text-rotation-alignment": "map",
+        "text-allow-overlap": false
+      },
+      "paint": {
+        "text-color": "#ffffff",
+        "text-halo-color": "rgba(0,0,0,0.75)",
+        "text-halo-width": 1.2
+      }
+    },
+    {
+      "id": "jd-county-road-label",
+      "type": "symbol",
+      "source": "jd-county-road",
+      "source-layer": "jd-county-road",
+      "minzoom": 7,
+      "layout": {
+        "symbol-placement": "line",
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "ref"
+          ],
+          [
+            "get",
+            "name"
+          ],
+          ""
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          8,
+          10,
+          13,
+          12
+        ],
+        "text-font": [
+          "Noto Sans Regular"
+        ],
+        "text-rotation-alignment": "map",
+        "text-allow-overlap": false
+      },
+      "paint": {
+        "text-color": "#ffffff",
+        "text-halo-color": "rgba(0,0,0,0.75)",
+        "text-halo-width": 1.2
       }
     }
   ],

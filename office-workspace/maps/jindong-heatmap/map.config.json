@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 2,
+  "kind": "project",
+  "name": "金东区建制村热力图",
+  "project": "jindong-heatmap",
+  "description": "金东区建制村分布密度热力图测试工程（复用浙江省路网样式源）",
+  "archived": false,
+  "baseProject": "zhejiang-map",
+  "crs": "EPSG:4326",
+  "center": [
+    120,
+    29.2
+  ],
+  "zoom": 7,
+  "basemap": "esri-sat",
+  "groups": [
+    {
+      "name": "行政区划",
+      "collapsed": false
+    },
+    {
+      "name": "公路网",
+      "collapsed": false
+    },
+    {
+      "name": "设施点",
+      "collapsed": false
+    }
+  ],
+  "sharedLayers": [],
+  "layers": [
+    {
+      "id": "boundary-city",
+      "name": "地市边界",
+      "type": "boundary",
+      "group": "行政区划",
+      "visible": true,
+      "opacity": 1,
+      "minzoom": 0,
+      "maxzoom": 9,
+      "locked": false,
+      "source": {
+        "kind": "builtin",
+        "path": "",
+        "format": "geojson",
+        "importedAt": "2026-11-11T06:27:28.961Z"
+      }
+    },
+    {
+      "id": "boundary-county",
+      "name": "区县边界",
+      "type": "boundary",
+      "group": "行政区划",
+      "visible": true,
+      "opacity": 1,
+      "minzoom": 0,
+      "maxzoom": 11,
+      "locked": false,
+      "source": {
+        "kind": "builtin",
+        "path": "",
+        "format": "geojson",
+        "importedAt": "2026-11-11T06:27:28.961Z"
+      }
+    },
+    {
+      "id": "highways",
+      "name": "高速公路",
+      "type": "road",
+      "group": "公路网",
+      "visible": true,
+      "opacity": 1,
+      "minzoom": 5,
+      "maxzoom": 13,
+      "locked": false,
+      "source": {
+        "kind": "builtin",
+        "path": "",
+        "format": "geojson",
+        "importedAt": "2026-11-11T06:27:28.961Z"
+      }
+    },
+    {
+      "id": "roads-trunk",
+      "name": "国省道",
+      "type": "road",
+      "group": "公路网",
+      "visible": true,
+      "opacity": 1,
+      "minzoom": 5,
+      "maxzoom": 13,
+      "locked": false,
+      "source": {
+        "kind": "builtin",
+        "path": "",
+        "format": "geojson",
+        "importedAt": "2026-11-11T06:27:28.961Z"
+      }
+    },
+    {
+      "id": "roads-rural",
+      "name": "农村公路",
+      "type": "road",
+      "group": "公路网",
+      "visible": true,
+      "opacity": 1,
+      "minzoom": 7,
+      "maxzoom": 14,
+      "locked": false,
+      "source": {
+        "kind": "builtin",
+        "path": "",
+        "format": "geojson",
+        "importedAt": "2026-11-11T06:27:28.961Z"
+      }
+    },
+    {
+      "id": "toll-stations",
+      "name": "收费站",
+      "type": "point",
+      "group": "设施点",
+      "visible": true,
+      "opacity": 1,
+      "minzoom": 5,
+      "maxzoom": 14,
+      "locked": false,
+      "source": {
+        "kind": "builtin",
+        "path": "",
+        "format": "geojson",
+        "importedAt": "2026-11-11T06:27:28.961Z"
+      }
+    },
+    {
+      "id": "junctions",
+      "name": "枢纽",
+      "type": "point",
+      "group": "设施点",
+      "visible": true,
+      "opacity": 1,
+      "minzoom": 5,
+      "maxzoom": 14,
+      "locked": false,
+      "source": {
+        "kind": "builtin",
+        "path": "",
+        "format": "geojson",
+        "importedAt": "2026-11-11T06:27:28.961Z"
+      }
+    }
+  ],
+  "bookmarks": [],
+  "createdAt": "2026-11-11T06:27:28.961Z",
+  "updatedAt": "2026-11-11T06:32:57.680Z"
+}

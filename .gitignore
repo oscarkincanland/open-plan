@@ -157,6 +157,7 @@ desktop/dist-app2/
 /.claude/skills/*
 !/.claude/skills/echarts-canvas-chart/
 # 工作区运行时产物（地图回收站/临时项目/Agent 输出/测试截图）
+/.screenshots/
 /gui-test-screenshots/
 /office-workspace/maps/.trash/
 /office-workspace/maps/*/.trash/
