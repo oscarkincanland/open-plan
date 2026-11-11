@@ -103,7 +103,8 @@ for (const 名称 of 全部关键帧) {
 const 期望持续动画 = [
   "activity-marquee-sweep", "blink", "brain-pulse", "dot-breathe-soft",
   "marquee-neon", "marquee-scroll", "marquee-shine",
-  "mp-spin", "pulse", "pulse-status", "pulse-status-soft", "session-pulse", "spin", "streaming-label-breathe", "thinking-caret-blink", "task-orb-spin",
+  "mp-spin", "oaw-agent-glow", "oaw-agent-pulse", "oaw-agent-tab-glow", "oaw-strip-shimmer",
+  "pulse", "pulse-status", "pulse-status-soft", "session-pulse", "spin", "streaming-label-breathe", "thinking-caret-blink", "task-orb-spin",
 ];
 assert.deepEqual(
   [...无限动画].sort(),
@@ -128,6 +129,10 @@ const 持续动画宿主 = {
   "activity-marquee-sweep": [".message-process-fold.run-activity-fold.is-live > summary::after"],
   "thinking-caret-blink": [".thinking-process-inline.is-streaming .thinking-text::after"],
   "mp-spin": [".mp-spin"],
+  "oaw-agent-pulse": [".canvas-tab-agent", ".oaw-canvas-deck-agent"],
+  "oaw-agent-glow": [".oaw-canvas-board.agent-editing .oaw-canvas-board-scale", ".oaw-canvas-status.agent-live"],
+  "oaw-agent-tab-glow": [".canvas-tab.agent-editing"],
+  "oaw-strip-shimmer": [".oaw-canvas-strip-skeleton"],
   "task-orb-spin": [".task-orb.running .task-orb-ring"],
 };
 const 宿主清单 = new Set();

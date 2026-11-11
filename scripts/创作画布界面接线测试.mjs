@@ -593,11 +593,9 @@ test("无障碍：纯图标按钮都有 aria-label，弹层有 dialog 语义", (
 test("Agent 实时刷新接线：全局事件按 slug/board 增量刷新（有脏只提示）", () => {
   const app源码 = read("client/src/App.jsx");
   const chat源码 = read("client/src/components/ChatPanel.jsx");
-  // ChatPanel：canvas_changed 不再转发（App 全局流统一消费），工具活动仍上报
+  // ChatPanel：canvas_changed 不再转发（App 全局流统一消费）
   assert.match(chat源码, /case "canvas_changed":[\s\S]{0,220}?break;/, "canvas_changed 应由 App 全局流消费，ChatPanel 只保留占位分支");
   assert.doesNotMatch(chat源码, /case "canvas_changed":[\s\S]{0,160}?onCanvasChanged\?\.\(data\)/, "ChatPanel 不得再转发 canvas_changed，避免双重刷新");
-  assert.match(chat源码, /startsWith\("canvas_"\)[\s\S]{0,160}?onCanvasActivity\?\.\(\{ active: true/, "canvas_* 工具开始要上报活动");
-  assert.match(chat源码, /startsWith\("canvas_"\)[\s\S]{0,160}?onCanvasActivity\?\.\(\{ active: false/, "canvas_* 工具结束要清除活动");
   // App：全局 /api/agent/events 消费 canvas_changed / created / exported，并按 slug 路由
   assert.match(app源码, /event\.type === "canvas_changed"[\s\S]{0,600}?canvasRefreshPendingRef/, "App 必须在全局事件里累积 canvas_changed");
   assert.match(app源码, /canvasRefreshTimerRef[\s\S]{0,220}?window\.setTimeout/, "canvas 事件必须走定时合并");
@@ -617,6 +615,49 @@ test("Agent 实时刷新接线：全局事件按 slug/board 增量刷新（有�
   assert.match(画布源码, /手动刷新/, "工具条必须有手动刷新兜底");
   assert.match(画布源码, /Agent 正在编辑/, "Agent 活动时工具条必须有可见状态");
   assert.match(画布源码, /远端更新 &&/, "远端更新提示横幅必须渲染");
+});
+
+test("Agent 编辑活动生命周期（2026-11-11-009）：全局流单一事实源、canvas_changed 不杀标识、Run 终态权威收口", () => {
+  const app源码 = read("client/src/App.jsx");
+  const chat源码 = read("client/src/components/ChatPanel.jsx");
+  const 状态源码 = read("client/src/画布状态.js");
+  // R1：canvas_changed 旧 active:false 写入必须移除（实测元凶：标识存活 < 1s）
+  assert.match(app源码, /canvas_changed 只负责内容刷新，不再触碰 canvasActivity/, "canvas_changed 分支必须带说明注释");
+  assert.doesNotMatch(app源码, /\[data\.slug\]: \{ active: false, boardPath: String\(data\.boardPath \|\| ""\)/, "canvas_changed 的 active:false 写入必须移除");
+  // R2：全局流跟踪 tool_start/tool_end + Run 终态清理
+  assert.match(app源码, /event\.type === "tool_start" \|\| event\.type === "tool_end"[\s\S]{0,500}?canvasToolMeta\(data\)/, "App 全局流必须跟踪 canvas_* 工具活动");
+  assert.match(app源码, /threadId: String\(event\.threadId \|\| prev\[meta\.slug\]\?\.threadId \|\| ""\)/, "活动条目必须带 threadId 戳记");
+  assert.match(app源码, /\["run_finished", "agent_error", "run_recovered"\]\.includes\(event\.type\)[\s\S]{0,600}?setCanvasActivity/, "Run 终态必须权威清理画布活动");
+  assert.match(app源码, /info\?\.active && \(!info\.threadId \|\| info\.threadId === finishedThreadId\)/, "终态清理必须按 threadId 匹配");
+  // R3：ChatPanel 上报链路移除（双流乱序会复活标识）
+  assert.doesNotMatch(chat源码, /onCanvasActivity/, "ChatPanel 不得再上报 canvas 活动（单一事实源在 App 全局流）");
+  // R4：canvasToolMeta 由画布状态.js 导出且 App 引用
+  assert.match(状态源码, /export function canvasToolMeta/, "canvasToolMeta 必须从画布状态.js 导出");
+  assert.match(app源码, /canvasToolMeta \} from "\.\/画布状态\.js"/, "App 必须引用共享 canvasToolMeta");
+});
+
+test("Agent 编辑显著性与跟随（2026-11-11-009）：自动定位带不抢守卫、视口跟随带让位戳、动效降级清单", () => {
+  const app源码 = read("client/src/App.jsx");
+  const 样式源码 = read("client/src/styles.css");
+  const 动效测试源码 = read("scripts/动效治理测试.mjs");
+  // R5a：自动定位 effect——新激活 slug 自动打开/激活标签，10s 内手动切换过则不抢
+  assert.match(app源码, /agentActiveSlugRef/, "App 必须记录上一次处理的激活 slug（去重）");
+  assert.match(app源码, /Date\.now\(\) - canvasTabManualAtRef\.current < 10000/, "自动定位必须带 10s 手动切换守卫");
+  assert.match(app源码, /openDesignCanvas\(slug, slug\)/, "无标签时自动打开该画布");
+  assert.match(app源码, /setCanvasActiveId\(tabId\);\s*\n\s*setCanvasCollapsed\(false\);/, "已有标签但非激活时自动激活并展开画布槽");
+  // R5b：视口跟随——agent 换板且板不在视野时平移居中，用户 5s 内操作过则让位
+  assert.match(画布源码, /agent跟随板引用/, "创作画布必须记录 agent 跟随板（去重）");
+  assert.match(画布源码, /Date\.now\(\) - 最后视口操作引用\.current < 5000/, "视口跟随必须带 5s 用户操作让位");
+  assert.match(画布源码, /视野内板\(\[目标\], 视图引用\.current, 视口尺寸引用\.current, 40\)/, "只对不在视野内的板跟随");
+  assert.match(画布源码, /定位板视图\(板列表, agent编辑板, 视口尺寸引用\.current, 48\)/, "跟随用定位板视图平移");
+  // R5c：顶栏 pill 加 agent-live 类
+  assert.match(画布源码, /oaw-canvas-status agent-live/, "顶栏状态必须切换到 agent-live 类");
+  // R6：动效治理——三个 oaw-agent 动画与骨架 shimmer 登记进清单与宿主映射
+  for (const 动画 of ["oaw-agent-pulse", "oaw-agent-glow", "oaw-agent-tab-glow", "oaw-strip-shimmer"]) {
+    assert.match(动效测试源码, new RegExp(`"${动画}"`), `动效清单必须登记 ${动画}`);
+    assert.match(样式源码, new RegExp(`@keyframes ${动画}`), `样式表必须定义 ${动画}`);
+  }
+  assert.match(样式源码, /\[data-motion-level="calm"\] \.canvas-tab\.agent-editing/, "克制档必须关掉标签发光呼吸（静态描边保留）");
 });
 
 test("最近画布入口：空态列表点击会打开真实画布，而不是只给提示", () => {

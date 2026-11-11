@@ -423,6 +423,8 @@ export default function 创作画布({
   const 导出轮询 = useRef({ 取消: false });
   const 已适配 = useRef("");
   const 卸载 = useRef(false);
+  // 用户最近一次手动平移/缩放视口的时间戳（2026-11-11-009）：agent 跟随的让位依据。
+  const 最后视口操作引用 = useRef(0);
 
   const 只读 = Boolean(只读原因) || Boolean(画布?.readOnly);
   const agent活动 = agentBusy && typeof agentBusy === "object" ? agentBusy : { active: Boolean(agentBusy) };
@@ -696,6 +698,7 @@ export default function 创作画布({
     if (!节点) return undefined;
     const 处理 = (事件) => {
       事件.preventDefault();
+      最后视口操作引用.current = Date.now();
       const 矩形 = 节点.getBoundingClientRect();
       以点缩放(事件.deltaY > 0 ? 1 / 1.12 : 1.12, { x: 事件.clientX - 矩形.left, y: 事件.clientY - 矩形.top });
     };
@@ -1094,6 +1097,23 @@ export default function 创作画布({
     const 结果 = 定位板视图(板列表, 路径, 视口尺寸引用.current, 48);
     if (结果) set视图(结果);
   }, [板列表]);
+
+  // Agent 编辑板视口跟随（2026-11-11-009）：agent 换板编辑且该板不在可视范围时
+  // 自动平移居中，让“正在改哪块板”可见；不改当前选中板，用户 5s 内手动
+  // 平移/缩放过则让位（最后视口操作引用）。
+  const agent跟随板引用 = useRef("");
+  useEffect(() => {
+    if (!agent活动.active || !agent编辑板) return;
+    if (agent编辑板 === agent跟随板引用.current) return;
+    agent跟随板引用.current = agent编辑板;
+    if (Date.now() - 最后视口操作引用.current < 5000) return;
+    const 目标 = 板列表.find((项) => 项.path === agent编辑板);
+    if (!目标) return;
+    const 在视野 = 视野内板([目标], 视图引用.current, 视口尺寸引用.current, 40).length > 0;
+    if (在视野) return;
+    const 结果 = 定位板视图(板列表, agent编辑板, 视口尺寸引用.current, 48);
+    if (结果) set视图(结果);
+  }, [agent活动.active, agent编辑板, 板列表]);
   const 切换板条折叠 = useCallback(() => {
     set板条折叠((旧) => {
       const 下一 = !旧;
@@ -1487,6 +1507,7 @@ export default function 创作画布({
   const 开始平移 = (事件) => {
     if (事件.button !== 0 && 事件.button !== 1) return;
     事件.preventDefault();
+    最后视口操作引用.current = Date.now();
     拖拽引用.current = {
       类型: "平移",
       起点: { x: 事件.clientX, y: 事件.clientY },
@@ -1855,7 +1876,7 @@ export default function 创作画布({
             <Icon name="refresh" size={14} />
           </button>
           {agent活动.active ? (
-            <span className="oaw-canvas-status saving" role="status" title="Agent 正在通过 canvas_* 工具编辑画布，完成后自动增量刷新">
+            <span className="oaw-canvas-status agent-live" role="status" title="Agent 正在通过 canvas_* 工具编辑画布，完成后自动增量刷新">
               <Icon name="loading" size={12} /> Agent 正在编辑{agent编辑板 ? `《${默认板标题(agent编辑板)}》` : ""}…
             </span>
           ) : 只读 ? (

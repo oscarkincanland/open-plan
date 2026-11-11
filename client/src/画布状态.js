@@ -89,6 +89,23 @@ export function createDesignTab({ workspace = "", slug = "", title = "" } = {}) 
   };
 }
 
+/**
+ * canvas_* 工具活动元数据（2026-11-11-008）：从工具入参里取 slug/board，
+ * 供全局流按画布/板显示“正在编辑”。input 可能是 JSON 字符串或已解析对象。
+ */
+export function canvasToolMeta(data) {
+  const raw = data?.input;
+  let input = raw;
+  if (typeof raw === "string") {
+    try { input = JSON.parse(raw); } catch { input = null; }
+  }
+  return {
+    slug: String(input?.slug || data?.slug || ""),
+    boardPath: String(input?.board || data?.boardPath || ""),
+    action: String(input?.action || data?.action || ""),
+  };
+}
+
 export function createSubagentTab(block = {}) {  const childId = String(block?.id || block?.childId || "");
   return {
     id: `subagent:${childId || Math.random().toString(36).slice(2)}`,

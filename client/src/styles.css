@@ -10844,7 +10844,13 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 [data-motion-level="calm"] .msg-streaming-label,
 [data-motion-level="calm"] .avatar.agent-avatar.is-streaming,
 [data-motion-level="calm"] .session-item .session-indicator,
-[data-motion-level="calm"] .project-session-open > i { animation: none; }
+[data-motion-level="calm"] .project-session-open > i,
+/* Agent 编辑中呼吸/发光（2026-11-11-009）：克制档落定为静态描边（--map-accent 色保留） */
+[data-motion-level="calm"] .canvas-tab.agent-editing,
+[data-motion-level="calm"] .canvas-tab-agent,
+[data-motion-level="calm"] .oaw-canvas-deck-agent,
+[data-motion-level="calm"] .oaw-canvas-board.agent-editing .oaw-canvas-board-scale,
+[data-motion-level="calm"] .oaw-canvas-status.agent-live { animation: none; }
 
 /* 关闭动效：静态颜色标识 */
 [data-motion-level="off"] .execution-flow-live i,
@@ -12010,6 +12016,66 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   background: color-mix(in srgb, var(--error) 10%, transparent);
 }
 
+/* ── Agent 编辑中（2026-11-11-004 §3.5 / 2026-11-11-009 强化整合） ──
+   agent 正在编辑画布的三处联动标识：画布标签（发光呼吸）、画板（蓝色发光）、
+   顶栏状态 pill。整段置于统一动效闸门之前：持续动画宿主必须先于闸门定义，
+   scripts/动效治理测试.mjs 按此校验。发光色沿用 --map-accent 既有令牌。 */
+.canvas-tab.agent-editing {
+  border-color: var(--map-accent);
+  animation: oaw-agent-tab-glow 1.6s ease-in-out infinite;
+}
+.canvas-tab-agent,
+.oaw-canvas-deck-agent {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--map-accent);
+  flex: 0 0 auto;
+  animation: oaw-agent-pulse 1.6s ease-in-out infinite;
+}
+.oaw-canvas-deck-agent { position: absolute; top: 3px; right: 3px; flex: initial; }
+.oaw-canvas-deck-item.agent-editing .oaw-canvas-deck-thumb { border-color: var(--map-accent); }
+.oaw-canvas-deck-item.agent-editing .oaw-canvas-deck-index { color: var(--map-accent); }
+.oaw-canvas-board.agent-editing .oaw-canvas-board-scale {
+  outline: 2px solid var(--map-accent);
+  outline-offset: 2px;
+  border-color: var(--map-accent);
+  animation: oaw-agent-glow 1.6s ease-in-out infinite;
+}
+.oaw-canvas-board.agent-editing .oaw-canvas-board-head { color: var(--map-accent); }
+.oaw-canvas-status.agent-live {
+  color: var(--map-accent);
+  background: color-mix(in srgb, var(--map-accent) 12%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--map-accent) 40%, transparent);
+  animation: oaw-agent-glow 1.6s ease-in-out infinite;
+}
+@keyframes oaw-agent-pulse {
+  0%, 100% { opacity: 0.45; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+@keyframes oaw-agent-glow {
+  0%, 100% { box-shadow: 0 0 10px 2px rgba(74, 144, 217, 0.35); }
+  50% { box-shadow: 0 0 18px 6px rgba(74, 144, 217, 0.55); }
+}
+@keyframes oaw-agent-tab-glow {
+  0%, 100% { box-shadow: 0 0 4px 0 rgba(74, 144, 217, 0.25); }
+  50% { box-shadow: 0 0 10px 2px rgba(74, 144, 217, 0.5); }
+}
+/* 全览浮层加载骨架（2026-11-11-004 引入，2026-11-11-009 补登记）：
+   持续动画宿主按治理规则先于闸门定义。 */
+.oaw-canvas-strip-skeleton {
+  position: absolute;
+  inset: 4px;
+  border-radius: var(--radius-xs);
+  background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--border) 70%, transparent) 50%, transparent 70%);
+  background-size: 200% 100%;
+  animation: oaw-strip-shimmer 1.2s linear infinite;
+}
+@keyframes oaw-strip-shimmer {
+  from { background-position: 180% 0; }
+  to { background-position: -80% 0; }
+}
+
 /* ==========================================================================
    P3 · 统一动效闸门与一次性反馈（动效治理）
    命中条件（二者任一，属性写在 <html> 上）：
@@ -12047,7 +12113,13 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   .icon-loading,
   .task-orb.running .task-orb-ring,
   .marquee-inner,
-  .marquee-text
+  .marquee-text,
+  .canvas-tab.agent-editing,
+  .canvas-tab-agent,
+  .oaw-canvas-deck-agent,
+  .oaw-canvas-board.agent-editing .oaw-canvas-board-scale,
+  .oaw-canvas-status.agent-live,
+  .oaw-canvas-strip-skeleton
 ) { animation: none !important; }
 :is([data-reduce-motion="1"], [data-motion-level="off"]) .thinking-process-inline.is-streaming .thinking-text::after,
 :is([data-reduce-motion="1"], [data-motion-level="off"]) .message-process-fold.run-activity-fold.is-live > summary::after { animation: none !important; }
@@ -13500,20 +13572,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   flex: 0 0 auto;
 }
 
-/* ── Agent 编辑中（2026-11-11-004 §3.5）：画布标签呼吸点与边框微光 ── */
-.canvas-tab.agent-editing { border-color: color-mix(in srgb, var(--map-accent) 45%, var(--border)); }
-.canvas-tab-agent {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--map-accent);
-  flex: 0 0 auto;
-  animation: oaw-agent-pulse 1.6s ease-in-out infinite;
-}
-@keyframes oaw-agent-pulse {
-  0%, 100% { opacity: 0.45; transform: scale(0.9); }
-  50% { opacity: 1; transform: scale(1.15); }
-}
+/* ── Agent 编辑中样式已整合至统一动效闸门之前（2026-11-11-009） ── */
 
 .canvas-body-team {
   flex: 1;
@@ -14142,18 +14201,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   background: var(--oaw-canvas-paper);
 }
 .oaw-canvas-board.active .oaw-canvas-board-scale { border-color: var(--accent); }
-/* ── Agent 编辑中（2026-11-11-004 §3.5）：被编辑画板蓝色发光标识（--map-accent 既有令牌） ── */
-.oaw-canvas-board.agent-editing .oaw-canvas-board-scale {
-  outline: 2px solid var(--map-accent);
-  outline-offset: 2px;
-  border-color: var(--map-accent);
-  animation: oaw-agent-glow 1.6s ease-in-out infinite;
-}
-.oaw-canvas-board.agent-editing .oaw-canvas-board-head { color: var(--map-accent); }
-@keyframes oaw-agent-glow {
-  0%, 100% { box-shadow: 0 0 10px 2px rgba(74, 144, 217, 0.35); }
-  50% { box-shadow: 0 0 18px 6px rgba(74, 144, 217, 0.55); }
-}
+/* ── Agent 编辑中画板样式已整合至统一动效闸门之前（2026-11-11-009） ── */
 
 /* ── 画板缩略条增量（2026-11-11-004 §3.6；同日去重合并入 oaw-canvas-deck 条） ── */
 .oaw-canvas-deck-toggle {
@@ -14174,18 +14222,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .oaw-canvas-deck-toggle:hover { color: var(--text); background: var(--surface); }
 .oaw-canvas-deck.collapsed .oaw-canvas-deck-toggle svg { transform: rotate(180deg); }
 .oaw-canvas-deck.collapsed .oaw-canvas-deck-item { display: none; }
-.oaw-canvas-deck-item.agent-editing .oaw-canvas-deck-thumb { border-color: var(--map-accent); }
-.oaw-canvas-deck-item.agent-editing .oaw-canvas-deck-index { color: var(--map-accent); }
-.oaw-canvas-deck-agent {
-  position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--map-accent);
-  animation: oaw-agent-pulse 1.6s ease-in-out infinite;
-}
+/* Agent 编辑中板条样式已整合至统一动效闸门之前（2026-11-11-009） */
 
 /* ── 缩略色块（全览浮层卡片复用；类名沿用 strip 前缀以减少迁移面） ── */
 .oaw-canvas-strip-thumb {
@@ -14199,18 +14236,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 }
 .oaw-canvas-strip-block { position: absolute; border-radius: 1px; opacity: 0.72; background: var(--muted); }
 .oaw-canvas-strip-block.text { height: 2px; min-height: 2px; }
-.oaw-canvas-strip-skeleton {
-  position: absolute;
-  inset: 4px;
-  border-radius: var(--radius-xs);
-  background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--border) 70%, transparent) 50%, transparent 70%);
-  background-size: 200% 100%;
-  animation: oaw-strip-shimmer 1.2s linear infinite;
-}
-@keyframes oaw-strip-shimmer {
-  from { background-position: 180% 0; }
-  to { background-position: -80% 0; }
-}
+/* .oaw-canvas-strip-skeleton 骨架样式已整合至统一动效闸门之前（2026-11-11-009） */
 
 /* ── 全览浮层（2026-11-11-004 §3.6）：网格总览 ── */
 .oaw-canvas-overview-mask {

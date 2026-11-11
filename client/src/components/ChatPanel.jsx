@@ -56,19 +56,8 @@ import { isActiveInteraction, mergeInteractionEvent, normalizeInteraction, norma
 // 浏览器活动统一拉起面板（用户要求实时看到访问了哪些站点）；browser_close 是收尾动作，不拉起。
 // 用户本轮手关后由 App 的 browserAutoOpenBlockedRef 拦住，不会反复弹开。
 
-/** canvas_* 工具活动：从工具入参里取 slug/board，供画布工具条按画布/板显示“正在编辑”。 */
-function canvasToolMeta(data) {
-  const raw = data?.input;
-  let input = raw;
-  if (typeof raw === "string") {
-    try { input = JSON.parse(raw); } catch { input = null; }
-  }
-  return {
-    slug: String(input?.slug || data?.slug || ""),
-    boardPath: String(input?.board || data?.boardPath || ""),
-    action: String(input?.action || data?.action || ""),
-  };
-}
+// canvas_* 工具活动（2026-11-11-009）：上报链路已迁至 App 全局流（/api/agent/events）
+// 单一事实源——thread 流随会话切换开合，tool_end 会丢，导致“编辑中”标识卡死。
 
 // 错误边界包装器
 class ErrorBoundary extends React.Component {
@@ -3266,7 +3255,7 @@ case "runtime_connecting":
       // 工具调用开始：推入新 tool block（按 toolCallId 去重，重放不产生重复卡片）
       case "tool_start":
         if (data.name === "run_subagent") break;
-        if (String(data.name || "").startsWith("canvas_")) onCanvasActivity?.({ active: true, tool: data.name, ...canvasToolMeta(data) });
+        // canvas_* 活动上报已迁全局流（2026-11-11-009），此处不再重复上报。
         // 历史 hydrate 已包含同一 toolCallId（回放的旧事件）：只更新那一块，不再新建，
         // 避免把旧工具追加到新内容后面造成错位/重复。
         if (findToolBlockOwner(data.toolCallId)) break;
@@ -3325,7 +3314,6 @@ case "runtime_connecting":
       // 工具结束：标记完成；找不到对应 start（历史被截断/重连丢失）时创建恢复卡片
       case "tool_end":
         if (data.name === "run_subagent") break;
-        if (String(data.name || "").startsWith("canvas_")) onCanvasActivity?.({ active: false, tool: data.name, ...canvasToolMeta(data) });
         flushToolOutput();
         {
           // 先跨消息找同一 toolCallId 的卡片：hydrate 快照里已有该工具时，

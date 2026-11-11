@@ -32,7 +32,7 @@ import 子代理详情面板 from "./components/子代理详情面板.jsx";
 import TeamHeaderChip from "./components/TeamHeaderChip.jsx";
 import TeamPanel from "./components/TeamPanel.jsx";
 import MiniMapPreview from "./components/MiniMapPreview.jsx";
-import { createDocTab, createViewTab, createDesignTab, designTabId, createSubagentTab, openCanvasTab, closeCanvasTab, reorderCanvasTabs, loadCanvasState, saveCanvasState, saveCanvasWidth, docTabId } from "./画布状态.js";
+import { createDocTab, createViewTab, createDesignTab, designTabId, createSubagentTab, openCanvasTab, closeCanvasTab, reorderCanvasTabs, loadCanvasState, saveCanvasState, saveCanvasWidth, docTabId, canvasToolMeta } from "./画布状态.js";
 import { sideDrawerAllowed } from "./画布抽屉.js";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
@@ -512,7 +512,8 @@ export default function App() {
   const [mapPreviewRevision, setMapPreviewRevision] = useState(0);
   // 创作画布实时：按 slug 保存增量刷新信息与 Agent 活动（不再用全局标量）。
   const [canvasRefresh, setCanvasRefresh] = useState({}); // slug -> { rev, scope, boardPath, changedPaths, at }
-  const [canvasActivity, setCanvasActivity] = useState({}); // slug -> { active, boardPath, action }
+  // 2026-11-11-009：slug -> { active, boardPath, action, threadId }（全局流驱动，Run 终态权威收口）。
+  const [canvasActivity, setCanvasActivity] = useState({});
   const [pendingCanvasOpen, setPendingCanvasOpen] = useState(null); // { slug, title, workspace }
   const canvasRefreshPendingRef = useRef(new Map()); // 150ms 合并窗口：slug -> 刷新信息
   const canvasRefreshTimerRef = useRef(null);
@@ -867,6 +868,29 @@ export default function App() {
     if (workspace && workspace !== currentWorkspace) return;
     openDesignCanvas(slug, title || slug);
   }, [pendingCanvasOpen, openDesignCanvas, currentWorkspace]);
+
+  // Agent 编辑画布自动定位（2026-11-11-009）：出现新的激活 slug 时自动打开/激活对应
+  // 设计标签，让“agent 正在操作哪个画布”一眼可见。用户 10s 内手动切换过画布标签则
+  // 不抢焦点（语义同 autoTab）；活动结束不清标签、不动焦点。
+  const agentActiveSlugRef = useRef("");
+  useEffect(() => {
+    const entry = Object.entries(canvasActivity).find(([, info]) => info?.active);
+    const slug = String(entry?.[0] || "");
+    if (!slug || slug === agentActiveSlugRef.current) return;
+    agentActiveSlugRef.current = slug;
+    if (!flag("creativeCanvas") || !currentWorkspace) return;
+    if (Date.now() - canvasTabManualAtRef.current < 10000) return;
+    const tabId = designTabId(currentWorkspace, slug);
+    const existing = (canvasTabsRef.current || []).find((tab) => tab.id === tabId);
+    if (existing) {
+      if (canvasActiveId !== tabId) {
+        setCanvasActiveId(tabId);
+        setCanvasCollapsed(false);
+      }
+    } else {
+      openDesignCanvas(slug, slug);
+    }
+  }, [canvasActivity, canvasActiveId, currentWorkspace, openDesignCanvas]);
 
   // 当前会话 id（用于界面恢复）。必须声明在使用它的回调/effect 之前：
   // 2026-11-09 空白页事故——下方 useCallback / useEffect 的依赖数组在渲染期读取该变量，
@@ -1341,10 +1365,49 @@ export default function App() {
                 });
               }, 150);
             }
-            setCanvasActivity((prev) => ({
-              ...prev,
-              [data.slug]: { active: false, boardPath: String(data.boardPath || ""), action: String(data.action || "") },
-            }));
+            // 2026-11-11-009：canvas_changed 只负责内容刷新，不再触碰 canvasActivity——
+            // 工具执行中写盘必发此事件，旧逻辑在这里把 active 置 false，
+            // “Agent 正在编辑”标识存活不到 1 秒（实测 22 次采样全程扑空）。
+          }
+        }
+        // canvas_* 工具活动跟踪（2026-11-11-009）：全局流单一事实源。
+        // thread 流随会话切换开合，tool_end 会丢，导致“编辑中”标识卡死；
+        // 全局流常驻且信封自带 threadId，服务端终态围栏（runs.mjs recordRunEvent）
+        // 已拦截 Run 收尾后的迟到 tool_start，不会复活已结束的标识。
+        if (event.type === "tool_start" || event.type === "tool_end") {
+          const data = event.data || {};
+          if (String(data.name || "").startsWith("canvas_")) {
+            const meta = canvasToolMeta(data);
+            if (meta.slug) {
+              const active = event.type === "tool_start";
+              setCanvasActivity((prev) => ({
+                ...prev,
+                [meta.slug]: {
+                  active,
+                  boardPath: String(meta.boardPath || (active ? "" : prev[meta.slug]?.boardPath || "")),
+                  action: String(meta.action || ""),
+                  threadId: String(event.threadId || prev[meta.slug]?.threadId || ""),
+                },
+              }));
+            }
+          }
+        }
+        // Run 终态权威收口（2026-11-11-009）：凡该 thread 的画布活动一律落定，
+        // 不再依赖逐个 tool_end；run_recovered 视为服务重启后的终态（原 Run 已收口）。
+        if (["run_finished", "agent_error", "run_recovered"].includes(event.type)) {
+          const finishedThreadId = String(event.threadId || "");
+          if (finishedThreadId) {
+            setCanvasActivity((prev) => {
+              let changed = false;
+              const next = { ...prev };
+              for (const [slug, info] of Object.entries(prev)) {
+                if (info?.active && (!info.threadId || info.threadId === finishedThreadId)) {
+                  next[slug] = { ...info, active: false };
+                  changed = true;
+                }
+              }
+              return changed ? next : prev;
+            });
           }
         }
         if (event.type === "canvas_created") {
@@ -2598,13 +2661,7 @@ export default function App() {
         // 草稿变更也驱动只读预览刷新（2026-11-09：预览回放未固化草稿）。
         setMapPreviewRevision((value) => value + 1);
       }}
-      onCanvasActivity={({ active, slug, boardPath, action }) => {
-        if (!slug) return;
-        setCanvasActivity((prev) => ({
-          ...prev,
-          [slug]: { active: Boolean(active), boardPath: String(boardPath || ""), action: String(action || "") },
-        }));
-      }}
+      // canvas_* 活动上报已迁全局流（2026-11-11-009）：不再从 ChatPanel 接收。
        // 地图项目不是“打开的文件”；不要再把「地图项目:x」塞进 currentDoc，
        // 否则提示词会同时出现伪文件与地图上下文，模型可能先尝试读取不存在的文件。
        // 地图模式下也不把画布里恰好打开的业务文档带进地图任务。
