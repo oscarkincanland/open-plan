@@ -29,7 +29,7 @@ function 摘要文本(message) {
   return "（空消息）";
 }
 
-export default function ChatTimeline({ messages, containerRef }) {
+export default function ChatTimeline({ messages, containerRef, hidden = false }) {
   const railRef = useRef(null);
   const popupRef = useRef(null);
   const closeTimerRef = useRef(0);
@@ -38,17 +38,19 @@ export default function ChatTimeline({ messages, containerRef }) {
   const [cursorIdx, setCursorIdx] = useState(null); // 弹层里高亮的消息下标
   const [activeIdx, setActiveIdx] = useState(null); // 当前阅读位置（跟随滚动）
   const [popupTop, setPopupTop] = useState(null);   // 弹层垂直位置（px，夹在轨道内）
-  // v0.13.8：显示门槛之一——容器宽 ≥900px 才挂载轨道（窄屏隐藏），
+  // 2026-11-11-008：显示门槛之一——容器宽 ≥640px 才挂载轨道。
+  // 右侧栏展开导致的收窄不再用宽度间接推导（那会把导轨整条藏掉），
+  // 改由上层传入 hidden 显式控制；640px 只兜极窄窗口。
   // 用 ResizeObserver 监听对话区宽度，跨过门槛时保持其余状态。
   const [wideEnough, setWideEnough] = useState(() => {
     const width = containerRef?.current?.clientWidth || 0;
-    return width === 0 ? true : width >= 900;
+    return width === 0 ? true : width >= 640;
   });
   useEffect(() => {
     const root = containerRef?.current;
     if (!root || typeof ResizeObserver === "undefined") return undefined;
     const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) setWideEnough(entry.contentRect.width >= 900);
+      for (const entry of entries) setWideEnough(entry.contentRect.width >= 640);
     });
     observer.observe(root);
     return () => observer.disconnect();
@@ -256,8 +258,9 @@ export default function ChatTimeline({ messages, containerRef }) {
     setPopupTop(clamped);
   }, [open, anchorBead, windowEntries.length]);
 
+  if (hidden) return null; // 右侧栏（工作区画布）展开：显式隐藏导轨，收起即恢复（2026-11-11-008）
   if (!messages || messages.length === 0 || !beads.length) return null;
-  // v0.13.8 门槛：用户轮次 ≥2 且容器 ≥900px；设置开关仍然优先（原有行为保留）。
+  // v0.13.8 门槛：用户轮次 ≥2 且容器 ≥640px；设置开关仍然优先（原有行为保留）。
   if (userTurnCount < 2 || !wideEnough) return null;
 
   const cursorEntry = entries.find((entry) => entry.idx === cursorIdx) || null;

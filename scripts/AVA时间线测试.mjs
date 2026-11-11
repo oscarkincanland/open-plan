@@ -3,10 +3,11 @@
  * AVA 时间线与运行态测试（v0.13.8）
  *
  * 守护：
- *   1) TurnRail 显示门槛：用户轮次 ≥2 且容器 ≥900px（ResizeObserver），窄屏隐藏；
+ *   1) TurnRail 显示门槛：右侧栏展开显式隐藏（hidden prop）；用户轮次 ≥2 且容器 ≥640px（ResizeObserver）兜极窄屏；
  *   2) 未读计数：离开底部期间新助手回复累计，回底 chip 显示"N 条未读"，回底/滚到底/切会话清零；
  *   3) 会话行运行态旋转图标（icon-loading），prefers-reduced-motion 由统一闸门关闭；
  *   4) 顶栏搜索按钮聚焦既有命令面板（不新建搜索后端）。
+ *   5) 导轨在对话区右侧、弹层向左展开（2026-11-11-007）。
  *
  * 用法：node scripts/AVA时间线测试.mjs
  */
@@ -30,18 +31,21 @@ const test = (name, fn) => {
   catch (error) { failed = 1; console.error(`  ✗ ${name}: ${error.message}`); }
 };
 
-test("TurnRail 门槛：用户轮次 ≥2 且容器 ≥900px（ResizeObserver）", () => {
-  assert.match(timeline, /entry\.contentRect\.width >= 900/, "ResizeObserver 回调按 900px 判定");
+test("TurnRail 门槛：右侧栏展开显式隐藏；用户轮次 ≥2 且容器 ≥640px（ResizeObserver）", () => {
+  assert.match(timeline, /if \(hidden\) return null/, "hidden 为 true 时显式隐藏（右侧栏展开）");
+  assert.match(chatPanel, /<ChatTimeline messages=\{visibleMessages\} containerRef=\{bodyRef\} hidden=\{Boolean\(canvasOpen\)\} \/>/, "ChatPanel 把右侧栏展开状态传给导轨");
+  assert.match(app, /canvasOpen=\{canvasOpen\}/, "App 向 ChatPanel 传入右侧栏展开状态");
+  assert.match(timeline, /entry\.contentRect\.width >= 640/, "ResizeObserver 回调按 640px 判定（只兜极窄屏）");
   assert.match(timeline, /observer\.observe\(root\)/);
   assert.match(timeline, /userTurnCount < 2 \|\| !wideEnough/, "双门槛判定");
   assert.match(timeline, /entries\.filter\(\(entry\) => entry\.role === "user"\)\.length/, "用户轮次数按 user 消息计");
 });
 
-test("TurnRail 左侧竖排等距（不按消息比例散开）", () => {
+test("TurnRail 右侧竖排等距（不按消息比例散开），弹层向左展开", () => {
   assert.match(timeline, /top: \(\(index \+ 0\.5\) \/ total\) \* 100/, "短杠应按序号均分");
   assert.doesNotMatch(timeline, /top: \(\(entry\.idx/, "不应再按消息下标比例定位");
-  assert.match(styles, /\.chat-timeline\.beads \{[\s\S]{0,80}?left: 3px;/, "导轨应在左侧");
-  assert.match(styles, /\.timeline-popup \{[\s\S]{0,80}?left: 28px;/, "左侧导轨的弹层应向右展开");
+  assert.match(styles, /\.chat-timeline\.beads \{[\s\S]{0,80}?right: 2px;/, "导轨应在右侧");
+  assert.match(styles, /\.timeline-popup \{[\s\S]{0,80}?right: 28px;/, "右侧导轨的弹层应向左展开");
 });
 
 test("未读计数：新助手回复累计、回底 chip 显示、多路清零", () => {

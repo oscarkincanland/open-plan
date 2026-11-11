@@ -2654,6 +2654,8 @@ export default function App() {
       onForkSession={handleForkSession}
       onPinSession={handlePinSession}
       onFreezeSession={handleFreezeSession}
+      // 历史定位导轨显隐（2026-11-11-008）：右侧栏（工作区画布）展开时导轨隐藏，收起即恢复。
+      canvasOpen={canvasOpen}
     />
   );
 

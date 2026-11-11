@@ -747,7 +747,7 @@ export function extractSessionLinks(messages = []) {
   return [...seen.values()];
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, agentReady = true, onFileChanged, onMapAction, onDraftChanged, onCanvasChanged, onCanvasActivity, currentDoc, mapContext, models: modelsProp, defaultModel, onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "", onTeamChange, onOpenSettings, onOpenModelSettings }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, agentReady = true, onFileChanged, onMapAction, onDraftChanged, onCanvasChanged, currentDoc, mapContext, models: modelsProp, defaultModel, onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "", onTeamChange, onOpenSettings, onOpenModelSettings, canvasOpen = false }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   // 供非渲染事件（重试复用气泡、终态清理）同步读取最新消息，避免依赖异步 state。
   const messagesRef = useRef([]);
@@ -5588,45 +5588,16 @@ case "runtime_connecting":
               <span>{unreadBelow > 0 ? `回到底部 · ${unreadBelow} 条未读` : "回到底部"}</span>
             </button>
           )}
-          {/* 会话消息目录栏：收纳在聊天滚动区右侧，靠近滚动条；悬停显示摘要 */}
-          {loadSettings().showTimeline !== false && <ChatTimeline messages={visibleMessages} containerRef={bodyRef} />}
+          {/* 会话消息目录栏：收纳在聊天滚动区右侧，靠近滚动条；悬停显示摘要。
+              右侧栏（工作区画布）展开时显式隐藏，收起即恢复（2026-11-11-008）。 */}
+          {loadSettings().showTimeline !== false && <ChatTimeline messages={visibleMessages} containerRef={bodyRef} hidden={Boolean(canvasOpen)} />}
         </div>
 
         {images.length > 0 && !modelVision && (
           <div className="vision-hint">当前模型可能不支持图片，建议切换 [V] 模型</div>
         )}
-        {images.length > 0 && (
-          <div className="img-preview-row">
-            {images.map((img, i) => (
-              <div
-                className="img-chip"
-                key={img.dedupeKey || i}
-                title={`${img.name}${img.originalBytes ? ` · ${formatBytes(img.originalBytes)}${img.compressedBytes && img.compressedBytes < img.originalBytes ? ` → ${formatBytes(img.compressedBytes)}` : ""}` : ""}`}
-              >
-                <img src={img.dataUrl} alt={img.name} />
-                <span className="img-chip-meta">{img.name}</span>
-                {img.originalBytes && img.compressedBytes && img.compressedBytes < img.originalBytes ? (
-                  <span className="img-chip-size">{formatBytes(img.originalBytes)} → {formatBytes(img.compressedBytes)}</span>
-                ) : null}
-                <button onClick={() => removeImageAt(i)} aria-label={`移除图片 ${img.name}`}>x</button>
-              </div>
-            ))}
-          </div>
-        )}
-        {attachments.length > 0 && (
-          <div className="att-preview-row">
-            {attachments.map((att, i) => (
-              <div className={`att-chip${att.mediaKind === "video" ? " media-video" : att.mediaKind === "audio" ? " media-audio" : ""}`} key={i} title={`${att.name}${att.size ? ` · ${formatBytes(att.size)}` : ""}${att.mediaKind === "video" ? "（视频附件，不自动播放）" : att.mediaKind === "audio" ? "（音频附件）" : ""}`}>
-                <Icon name={att.mediaKind === "video" ? "play" : att.mediaKind === "audio" ? "audio" : "file"} size={14} />
-                <span className="att-name">{att.name}</span>
-                {att.size ? <span className="att-size">{formatBytes(att.size)}</span> : null}
-                <button className="att-remove" onClick={() => setAttachments((at) => at.filter((_, j) => j !== i))}>
-                  <Icon name="close" size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+        {/* 2026-11-11-005：图片 / 附件 / 引用不再作为输入卡的兄弟节点飘在卡外，
+            统一收进卡内 token 行（只读小 tab），见下方 .chat-compose 内的 ComposerTokenBar。 */}
         {teamRequired && (
           <div className="reference-bar team-mode-bar" aria-label="团队模式">
             <span className="reference-bar-label">团队模式</span>

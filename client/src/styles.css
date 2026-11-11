@@ -7484,8 +7484,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
    当前位置的横杠加长变亮，悬停时再亮一档（点击仍可定位到该条消息）。 */
 .chat-timeline.beads {
   position: absolute;
-  left: 3px;
-  right: auto;
+  left: auto;
+  right: 2px;
   top: 0;
   bottom: 0;
   width: 26px;
@@ -7494,15 +7494,15 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .timeline-bead {
   position: absolute;
-  left: 0;
-  right: auto;
+  left: auto;
+  right: 0;
   transform: translateY(-50%);
   width: 26px;
   height: 16px;
   display: flex;
   align-items: center;
-  justify-content: flex-start;
-  padding-left: 4px;
+  justify-content: flex-end;
+  padding-right: 4px;
   pointer-events: auto;
   cursor: pointer;
 }
@@ -7523,8 +7523,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .timeline-bead.anchored .bead-dot { width: 20px; background: var(--accent); }
 .timeline-popup {
   position: absolute;
-  left: 28px;
-  right: auto;
+  left: auto;
+  right: 28px;
   width: 292px;
   transform: translateY(-50%);
   display: flex;
