@@ -1,0 +1,43 @@
+{
+  "title": { "text": "丽水市域 OD 出行流向（示例数据）", "left": "center", "textStyle": { "fontSize": 24, "fontFamily": "Microsoft YaHei" } },
+  "tooltip": { "trigger": "item", "formatter": "{b}: {c} 人次/日" },
+  "series": [
+    {
+      "name": "OD 流向",
+      "type": "sankey",
+      "left": 60,
+      "top": 90,
+      "right": 120,
+      "bottom": 50,
+      "nodeWidth": 16,
+      "nodeGap": 14,
+      "emphasis": { "focus": "adjacency" },
+      "label": { "fontFamily": "Microsoft YaHei", "fontSize": 13 },
+      "data": [
+        { "name": "莲都区" },
+        { "name": "龙泉市" },
+        { "name": "青田县" },
+        { "name": "缙云县" },
+        { "name": "遂昌县" },
+        { "name": "松阳县" },
+        { "name": "云和县" },
+        { "name": "庆元县" },
+        { "name": "景宁县" }
+      ],
+      "links": [
+        { "source": "龙泉市", "target": "莲都区", "value": 5200 },
+        { "source": "青田县", "target": "莲都区", "value": 6100 },
+        { "source": "缙云县", "target": "莲都区", "value": 5800 },
+        { "source": "遂昌县", "target": "莲都区", "value": 2600 },
+        { "source": "松阳县", "target": "莲都区", "value": 3100 },
+        { "source": "云和县", "target": "莲都区", "value": 2400 },
+        { "source": "庆元县", "target": "莲都区", "value": 1500 },
+        { "source": "景宁县", "target": "莲都区", "value": 1700 },
+        { "source": "青田县", "target": "缙云县", "value": 900 },
+        { "source": "松阳县", "target": "云和县", "value": 600 }
+      ],
+      "itemStyle": { "color": "#4a90d9" },
+      "lineStyle": { "color": "gradient", "opacity": 0.45 }
+    }
+  ]
+}

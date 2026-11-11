@@ -1,0 +1,13 @@
+{
+  "title": { "text": "2020-2024 年公铁水客运量趋势（示例数据）", "left": "center", "textStyle": { "fontSize": 24, "fontFamily": "Microsoft YaHei" } },
+  "tooltip": { "trigger": "axis" },
+  "legend": { "top": 40, "data": ["公路", "铁路", "水运"] },
+  "grid": { "left": 80, "right": 60, "top": 100, "bottom": 60 },
+  "xAxis": { "type": "category", "data": ["2020", "2021", "2022", "2023", "2024"] },
+  "yAxis": { "type": "value", "name": "万人次" },
+  "series": [
+    { "name": "公路", "type": "line", "smooth": true, "data": [3120, 3350, 3010, 3520, 3810], "itemStyle": { "color": "#4a90d9" } },
+    { "name": "铁路", "type": "line", "smooth": true, "data": [1180, 1290, 1120, 1410, 1580], "itemStyle": { "color": "#2a8c82" } },
+    { "name": "水运", "type": "line", "smooth": true, "data": [210, 230, 190, 250, 280], "itemStyle": { "color": "#e69138" } }
+  ]
+}

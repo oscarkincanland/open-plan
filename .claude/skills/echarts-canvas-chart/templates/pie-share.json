@@ -1,0 +1,22 @@
+{
+  "title": { "text": "居民出行方式占比（示例数据）", "left": "center", "textStyle": { "fontSize": 24, "fontFamily": "Microsoft YaHei" } },
+  "tooltip": { "trigger": "item", "formatter": "{b}: {c}% ({d}%)" },
+  "legend": { "orient": "vertical", "right": 40, "top": "middle" },
+  "series": [
+    {
+      "name": "出行方式",
+      "type": "pie",
+      "radius": ["42%", "68%"],
+      "center": ["42%", "56%"],
+      "itemStyle": { "fontFamily": "Microsoft YaHei" },
+      "label": { "fontFamily": "Microsoft YaHei" },
+      "data": [
+        { "value": 38.5, "name": "私人小汽车" },
+        { "value": 24.2, "name": "电动自行车" },
+        { "value": 16.8, "name": "公交" },
+        { "value": 11.4, "name": "步行" },
+        { "value": 9.1, "name": "其他" }
+      ]
+    }
+  ]
+}

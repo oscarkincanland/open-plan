@@ -1,0 +1,14 @@
+{
+  "title": { "text": "全天分时段出行发生量（示例数据）", "left": "center", "textStyle": { "fontSize": 24, "fontFamily": "Microsoft YaHei" } },
+  "tooltip": { "trigger": "axis" },
+  "legend": { "top": 40, "data": ["通勤", "通学", "生活", "公务"] },
+  "grid": { "left": 80, "right": 60, "top": 100, "bottom": 60 },
+  "xAxis": { "type": "category", "data": ["6-7时", "7-8时", "8-9时", "9-12时", "12-14时", "14-17时", "17-18时", "18-19时", "19-24时"] },
+  "yAxis": { "type": "value", "name": "万人次" },
+  "series": [
+    { "name": "通勤", "type": "bar", "stack": "total", "data": [42, 96, 74, 58, 36, 52, 88, 62, 24], "itemStyle": { "color": "#4a90d9" } },
+    { "name": "通学", "type": "bar", "stack": "total", "data": [18, 34, 12, 8, 10, 6, 20, 14, 4], "itemStyle": { "color": "#2a8c82" } },
+    { "name": "生活", "type": "bar", "stack": "total", "data": [12, 20, 26, 44, 38, 40, 32, 28, 18], "itemStyle": { "color": "#e69138" } },
+    { "name": "公务", "type": "bar", "stack": "total", "data": [6, 12, 18, 22, 14, 20, 14, 8, 4], "itemStyle": { "color": "#8abeb7" } }
+  ]
+}

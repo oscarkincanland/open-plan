@@ -1,0 +1,10 @@
+{
+  "title": { "text": "2024 年各县市公路客运量对比（示例数据）", "left": "center", "textStyle": { "fontSize": 24, "fontFamily": "Microsoft YaHei" } },
+  "tooltip": { "trigger": "axis" },
+  "grid": { "left": 80, "right": 60, "top": 80, "bottom": 60 },
+  "xAxis": { "type": "category", "data": ["莲都区", "龙泉市", "青田县", "云和县", "庆元县", "缙云县", "遂昌县", "松阳县", "景宁县"] },
+  "yAxis": { "type": "value", "name": "万人次" },
+  "series": [
+    { "name": "公路客运量", "type": "bar", "data": [860, 420, 510, 180, 150, 470, 210, 190, 130], "itemStyle": { "color": "#4a90d9" }, "barWidth": "55%" }
+  ]
+}

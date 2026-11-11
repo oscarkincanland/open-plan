@@ -153,6 +153,9 @@ desktop/dist-app2/
 # ===== 仓库整理（2026-11-06）：非运行时代码从版本库剔除，本地保留 =====
 # 本地 Agent 技能包（不属于应用运行时；模板库走 templates/）
 /.claude/skills/
+!/.claude/skills/
+/.claude/skills/*
+!/.claude/skills/echarts-canvas-chart/
 # 工作区运行时产物（地图回收站/临时项目/Agent 输出/测试截图）
 /gui-test-screenshots/
 /office-workspace/maps/.trash/
