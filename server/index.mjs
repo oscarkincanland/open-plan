@@ -32,7 +32,7 @@ import { attachRunTimingMeta, finishRunTiming, mergeClientTiming, latencySummary
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities, stripAutoContextPrefix } from "./task.mjs";
 import { workspaceTrustSummary, setWorkspaceTrust } from "./项目信任.mjs";
-import { runtimeFlagsSnapshot, RUNTIME_FLAGS } from "./运行开关.mjs";
+import { runtimeFlagsSnapshot, RUNTIME_FLAGS, flagSource, RUNTIME_FLAGS_FILE } from "./运行开关.mjs";
 import { readCadDocument, CAD_ENTITY_LIMIT } from "./CAD解析.mjs";
 import { summarizeRunUsage, exportObservabilityJson } from "./观测导出.mjs";
 import { listPlans, writePlan } from "./计划文件.mjs";
@@ -384,6 +384,9 @@ app.get("/api/status", (req, res) => {
     native: nativeCapabilities(),
     // 评审 R8：优化项 feature flag 快照统一经 /api/status 下发（前端据此决定面板可见性）。
     runtimeFlags: runtimeFlagsSnapshot(),
+    // 开关来源（env / file / default）与持久化文件路径：排查"为什么这次是关的"时一眼可见。
+    runtimeFlagSources: { creativeCanvas: flagSource("OAW_CREATIVE_CANVAS") },
+    runtimeFlagsFile: RUNTIME_FLAGS_FILE,
     // 是否有等待用户操作的系统选择器（前端可据此显示"等待选择/取消等待"）
     picker: activePickerInfo(),
     service: {

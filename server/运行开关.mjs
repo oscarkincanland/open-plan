@@ -7,14 +7,64 @@
  * 开关语义：
  *   - 每个开关只影响对应优化项的新路径；off（默认）时代码路径与历史基线行为一致。
  *   - 取值：环境变量命中 "1"/"true"/"on"（不区分大小写）视为开启，其余视为关闭。
+ *   - 优先级：**环境变量 > `.oaw/runtime-flags.json` > 代码默认值**。
+ *     过去只认启动进程的环境变量：服务重启、换一个终端/快捷方式启动，画布等能力就会
+ *     "时有时无"（2026-11-11 实测：10:40 那次重启没带 OAW_CREATIVE_CANVAS → 画布消失）。
+ *     `.oaw/` 已被 gitignore，配置文件属于本机用户选择，不进入仓库。
  */
+
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const TRUTHY = new Set(["1", "true", "on", "yes"]);
 const FALSY = new Set(["0", "false", "off", "no"]);
 
+const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// 测试可用 OAW_RUNTIME_FLAGS_FILE 指向临时文件，避免动到本机真实配置。
+export const RUNTIME_FLAGS_FILE = process.env.OAW_RUNTIME_FLAGS_FILE
+  ? path.resolve(String(process.env.OAW_RUNTIME_FLAGS_FILE))
+  : path.join(ROOT_DIR, ".oaw", "runtime-flags.json");
+
+/** OAW_CREATIVE_CANVAS → creativeCanvas：配置文件用语义名，可读性更好。 */
+function envToFlagKey(name) {
+  return String(name || "")
+    .replace(/^OAW_/, "")
+    .toLowerCase()
+    .replace(/_([a-z0-9])/g, (_, char) => char.toUpperCase());
+}
+
+let persistedFlags = {};
+let persistedFlagsLoaded = false;
+function loadPersistedFlags() {
+  if (persistedFlagsLoaded) return persistedFlags;
+  persistedFlagsLoaded = true;
+  try {
+    const raw = JSON.parse(fs.readFileSync(RUNTIME_FLAGS_FILE, "utf8"));
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) persistedFlags = raw;
+  } catch {
+    // 文件缺失/损坏 = 没有持久开关，语义与历史一致
+  }
+  return persistedFlags;
+}
+
+/** 开关取值来源（用于 /api/status 诊断与"为什么这次是关的"排查）。 */
+const flagSources = new Map();
+function noteSource(name, source) {
+  flagSources.set(envToFlagKey(name), source);
+  return source;
+}
+export function flagSource(name) {
+  return flagSources.get(envToFlagKey(name)) || "default";
+}
+
 function readFlag(name) {
   const raw = String(process.env?.[name] ?? "").trim().toLowerCase();
-  return TRUTHY.has(raw);
+  if (raw) return noteSource(name, "env"), TRUTHY.has(raw);
+  const stored = loadPersistedFlags()[envToFlagKey(name)];
+  if (typeof stored === "boolean") return noteSource(name, "file"), stored;
+  noteSource(name, "default");
+  return false;
 }
 
 /**
@@ -23,9 +73,15 @@ function readFlag(name) {
  */
 export function readFlagDefault(name, defaultValue = true) {
   const raw = String(process.env?.[name] ?? "").trim().toLowerCase();
-  if (!raw) return defaultValue;
-  if (TRUTHY.has(raw)) return true;
-  if (FALSY.has(raw)) return false;
+  if (raw) {
+    noteSource(name, "env");
+    if (TRUTHY.has(raw)) return true;
+    if (FALSY.has(raw)) return false;
+    return defaultValue;
+  }
+  const stored = loadPersistedFlags()[envToFlagKey(name)];
+  if (typeof stored === "boolean") return noteSource(name, "file"), stored;
+  noteSource(name, "default");
   return defaultValue;
 }
 
