@@ -272,13 +272,13 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 - 测量/绘制：距离、面积、标绘点；等时圈分析（高德服务）。
 - 数据导入：GeoJSON/JSON/SHP/CSV/ZIP；Agent 对话改图与热更新。
 - 地图只在 Work 模式可用：Chat/Review 不持有任何地图工具，地图模块入口只在 Work 开放（v0.13.x 增量，2026-11-07 决策）。
-- 地图 Agent 工具：`map_read/map_edit/map_import/map_analyze/map_template/map_save_analysis/map_clear_analysis/map_datasets`；工程化工具 `map_layer_info/map_reset/map_project_create`；草稿与固化工具 `map_draft_layer/map_fixate_layer`（草稿免审批；固化/导入/改样式/删除/重置需审批）。
+- 地图 Agent 工具：`map_read/map_edit/map_import/map_analyze/map_template/map_save_analysis/map_clear_analysis/map_datasets`；工程化工具 `map_layer_info/map_reset/map_project_create`；草稿与固化工具 `map_draft_layer/map_fixate_layer`（草稿免审批；固化/导入/改样式/删除/重置需审批）；导出工具 `map_export`（截图 PNG/PDF，受 `OAW_MAP_EXPORT`，产物落 `maps/{project}/agent/exports/` 并写 manifest，2026-11-11-004 增量）。
 - 地图模式对话栏紧凑呈现；草稿层有“未固化”提示与“演示数据”标记。
 - **工程化（v0.13.x 增量）**：每个地图项目 = 一个工程，`map.config.json` schema v2（来源/要素数/范围/锁定/时间/基线归属）、`map.baseline.json` 基线、`operations.jsonl` 操作日志、`.trash/` 回收站。
 - **图层注册表与属性对话框**：元数据可追溯（来源/格式/要素数/bbox/导入/更新时间/基线归属），支持改名、分组、透明度、锁定、单层导出、替换数据（旧数据进回收站）。
 - **三级重置**：重置图层树（恢复基线配置，保留新增层）/ 清空临时层 / 恢复基线并清理（新增正式层进回收站，需输入项目名确认）。
 - **草稿层与用户确认固化（v0.13.x 增量）**：Agent 生成点/线/面草稿层，只写 `agent/drafts/`，不进入 `layers/`、`style.json`、`tiles/` 与 `map.config.json`；用户预览后确认固化才转正式图层（名称/分组/来源/演示标记保留）。草稿可定位、显隐、单条丢弃、全部丢弃，刷新/重启后可恢复。
-- **AI 画布**：可创建只含底图的空白工程，绑定当前会话并注入可编辑起步提示；单活动画布，切换项目即切换画布。
+- **AI 画布**：可创建只含底图的空白工程，绑定当前会话并注入可编辑起步提示；单活动画布，切换项目即切换画布。**创建即绑定交付（2026-11-11-004 增量）**：Agent 经 `map_project_create` 新建项目成功后，服务端发 `map_action{action:"project_created"}`，前端自动把当前会话绑定到新项目（写会话 header `mapProject`）并被动打开/同步“地图预览”标签（不抢焦点）；绑定失败不阻断 Run，可手动切换。
 - **地图会话绑定**：会话 header 持久化 `mapProject` 与视口（center/zoom/bounds）；新建画布/切换项目后，对话提交的 `task.mapProject` 与 Agent 工具使用同一项目；重启后切回历史会话可恢复地图上下文。
 - **项目文件树**：地图面板提供文件树入口，分“项目文件 / 工作区文件”两页签；项目文件按文件夹分组、可搜索、可把 `maps/{project}/...` 路径 `@` 到对话；工作区文件复用既有目录导航与搜索。
 - **agent 生成内容归档**：新建项目自动创建 `agent/reports/`、`agent/exports/` 与 `agent/manifest.jsonl`；分析/导入写清单（数据仍在 `layers/`），地图报告落 `agent/reports/`。
@@ -304,6 +304,8 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 - 点选带地图绑定的会话即打开并激活只读“地图预览”标签；画布已有其他标签时追加而不替换；重启后 `mapProject/mapView` 仍可恢复且视口与上次一致；正式文件/草稿变更后由事件驱动刷新（不承诺秒数），手动刷新可恢复；草稿层以只读形式回放（不进入正式层，不提供固化）；预览内任何操作不得产生写入。
 - **草稿层**：Agent 生成点/线/面草稿后，正式库（`layers/`/`style.json`/`tiles/`/`map.config.json`）零变化；用户确认固化后正式层、瓦片、注册表、操作日志与 manifest 一致；丢弃草稿不影响正式层。
 - **审批边界**：`map_fixate_layer`/`map_import`/`map_save_analysis`/`map_template`/`map_reset`/`map_project_create` 必须走审批；`auto` 模式不得自动批准；破坏性 REST 缺 `confirmed:true` 返回 409；共享数据集写入被拒绝。
+- **创建即绑定交付（2026-11-11-004）**：Work 会话中 agent 新建地图项目（审批通过）后，无需手动切换——当前会话 header `mapProject` 自动指向新项目，“地图预览”标签被动打开且回放草稿；对话提交的 `task.mapProject` 随之指向新项目；多会话并行时只绑定事件归属的会话。
+- **地图截图导出（2026-11-11-004）**：`map_export` 仅 Work 可调、需审批；`OAW_MAP_EXPORT=0` 时返回明确错误不改行为；PNG/PDF 产物落 `maps/{project}/agent/exports/`，manifest 追加 `action:"export"` 记录，产物面板可见；G7 批量导出行为与产物位置不变；agent 导出与用户导出并发时后者等待并得到明确提示。
 
 ### R11 模板库
 
@@ -436,6 +438,8 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 - 画板/页：一个画布内可新建、复制、重命名、排序、软删除画板；`pages` 是画板分组（新建/重命名/排序/删除页，删除页不删除板）；空画布可直接从 UI 新建画板。
 - 画布切换：工具条常驻画布切换器，列出当前工作区全部画布并可切换；页标签条显示当前页上下文（工作区/画布/页/板由切换器与页标签表达）。
 - 实时：Agent 与 UI 的所有写路径都发画布事件；前端按 slug/boardPath 增量刷新，只拉变化的板，保留当前板/选中/撤销栈；脏画布只提示“查看版本/刷新/保留我的”；Agent 新建画布在当前会话自动开标签；工具条有手动刷新。
+- **Agent 编辑联动标识（2026-11-11-004 增量）**：Agent 调用 `canvas_*` 工具编辑期间，三处联动标识——被编辑画板加蓝色发光边框动画（`--map-accent` 令牌，`visualEffectsOff` 时降级为静态边框）、对应画布标签加呼吸点（多画布时可一眼定位）、工具条保留“Agent 正在编辑《板名》…”文字；编辑结束全部恢复。
+- **底部板条与一键全览（2026-11-11-004 增量）**：画布视图底部常驻画板缩略图条（可折叠，折叠状态按用户级偏好记忆；卡片含轻量色块缩略与"N · 片"序号标签，当前板高亮、Agent 编辑板叠加呼吸点）；点击卡片把该板设为当前板并居中定位；工具条“全览”打开网格浮层，按页分节展示全部画板缩略卡片，点击跳转定位并关闭，支持 Esc/遮罩关闭与“适应全部”（缩放适配显示全部画板）；播放态板条隐藏。
 - 选中加入对话：当前板或选中元素可作为 `@画布[...]` 引用加入对话；服务端解析为结构化上下文（画布/板/元素），Agent 只改引用范围。
 - 编辑体验补齐：抓手平移（快捷键 `H`）、全屏播放（deck 按页放映，←/→/空格/Esc 控制）、页面主题与间距（画板背景、网格/板距/安全边距、“整理画板”）。
 - 版本管理：画布级时间线（一次保存批次/Agent 一轮 = 一条版本，同 runId 合并），记录 actor/runId/文件级 changes（含删除）；支持文件级 diff、整画布/单板恢复、删除恢复、恢复前自动留存；最近 20 条不清理，最多 200 条/90 天。
@@ -462,6 +466,8 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 - 画布另存为模板后出现在新建画布模板下拉；选模板新建的画布含模板全部板、`{{title}}` 已替换、页分组与素材引用有效；导入工作区外目录为模板被拒绝；删除模板需确认且可从 `.templates/.trash` 人工恢复。
 - 工具条“对话”插入 `@画布[designs/<slug>/project/<boardPath>#element=<id>]`；最大化状态下插入后自动恢复布局。
 - 最大化画布隐藏中间对话区；取消最大化或关闭画布后对话区恢复可见。
+- **Agent 编辑联动标识（2026-11-11-004）**：Agent 编辑画布时被编辑画板出现蓝色发光边框动画、对应标签出现呼吸点，工具条文字提示保留；结束/失败后三处恢复；`visualEffectsOff` 开启时无动画仅静态边框；双主题下均可辨识。
+- **底部板条与一键全览（2026-11-11-004）**：多板画布点击板条卡片定位并高亮；折叠状态刷新后保持（用户级偏好）；全览浮层按页分节、点击卡片跳转并关闭；Esc/遮罩关闭；播放态板条隐藏；未加载板显示骨架占位不报错。
 
 ## 5. 非功能需求
 
@@ -516,7 +522,7 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 | R7 批注修订 | `client/src/components/CommentMarker.jsx`、`server/文档引擎.mjs` | `test:doc-engine`、手工验收 |
 | R8 主题/视觉 | `client/src/styles.css`、`theme.jsx`、`Icon.jsx`、`DESIGN.md` | `test:design-tokens`、`test:a11y`、`test:motion` |
 | R9 知识库 | `server/kb.mjs`、`KnowledgeBase.jsx`、`KnowledgeGraph.jsx`、`MindMap.jsx` | `npm run verify`、手工验收 |
-| R10 地图/GIS | `server/map.mjs`、`map-analysis.mjs`、`MapPanel.jsx`、`LayerPanel.jsx`、`AttributeTable.jsx` | `test:map-readonly`、`test:map-layers`、`test:map-visual`、`test:map-chat`、`test:spatial` |
+| R10 地图/GIS | `server/map.mjs`、`map-analysis.mjs`、`地图导出执行器.mjs`、`MapPanel.jsx`、`LayerPanel.jsx`、`AttributeTable.jsx`、`MiniMapPreview.jsx`、`预览策略.js` | `test:map-readonly`、`test:map-layers`、`test:map-visual`、`test:map-chat`、`test:spatial`、`test:map-export`、`test:map-export-executor`、`test:capability-contract` |
 | R11 模板库 | `server/tpl.mjs`、`TemplateLibrary.jsx` | `npm run verify`、手工验收 |
 | R12 工作区/项目 | `server/workspace.mjs`、`项目管理.mjs`、`项目信任.mjs` | `test:workspace-isolation`、`npm run verify` |
 | R13 任务/产物 | `server/runs.mjs`、`执行句柄.mjs`、`写入协调.mjs`、`成果管理.mjs`、`server/编辑流水线.mjs`、`server/轮次预算.mjs`、`server/运行预算.mjs` | `test:artifacts`、`test:run-budget`、`test:write-lock`、`test:writing-oneshot`、`test:writing-style` |
@@ -532,3 +538,4 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 | 2026-10-26 | 重写为 PRD v2.0，基线 v0.11.55；保留 R1–R9，新增 R10–R16；明确三模式与 `office` 仅历史兼容 | 产品范围、验收与追踪矩阵同步更新 |
 | 2026-11-09 | R10 地图预览口径调整（点会话即带出、草稿只读回放、手动入口、归档恢复联动）；新增 R17 创作画布（Work、默认关、多画布多标签、兼容 `.dc.html`、SVG/PNG/PDF/PPTX 导出）；R13 补画布导出产物验收 | 产品范围（新增 R17）、验收口径（R10/R13）、追踪矩阵同步更新 |
 | 2026-11-09 | R17 补画板/页、画布切换器、板级增量实时、选中加入对话、画布级版本时间线；验收口径与追踪矩阵同步 | 画布交互与版本范围扩大；新增 ADR-0033/0034/0035 |
+| 2026-11-11 | R10 补"创建即绑定交付"与 `map_export` 截图工具（[计划 2026-11-11-004](docs/plans/2026-11-11-004-Agent地图OD工作流与画布导航联动修改计划.md)）；R17 补 Agent 编辑三处联动标识与底部板条/一键全览 | 验收口径（R10/R17）扩大；新增 ADR-0038；追踪矩阵 R10 行补 `test:map-export-executor`/`test:capability-contract` |
