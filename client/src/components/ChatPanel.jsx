@@ -3827,6 +3827,8 @@ case "runtime_connecting":
             pushSystem("已清除地图临时分析结果");
             setLastMapVisual(null);
             setMapVisualHint("");
+          } else if (data.action === "project_created") {
+            // 创建即交付（2026-11-11-004 §3.1）：不弹“地图分析已生成”，交 App 绑定会话并开预览。
           } else {
             pushSystem(`地图分析已生成：${data.title || data.analysis || "分析结果"}${data.source === "demo" ? "（演示数据）" : ""}`);
             // 阶段 4.4：记住最近一次地图可视化，结果区据此提示"临时，未保存"。

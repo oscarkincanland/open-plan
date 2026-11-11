@@ -353,6 +353,18 @@ add([
     denyPriority: 70,
     resultBudget: budget(8 * KB, "head", "truncate"),
   }),
+  // 地图截图导出（2026-11-11-004）：写 agent/exports 产物文件，需用户审批；非破坏性。
+  meta("map_export", {
+    readOnly: false,
+    destructive: false,
+    sideEffectScope: "workspace",
+    riskLevel: "medium",
+    needsApproval: true,
+    forceConfirm: false,
+    patternSource: "input",
+    denyPriority: 70,
+    resultBudget: budget(8 * KB, "head", "truncate"),
+  }),
 
   // ---- 任务与记忆 ----
   meta("todo", {

@@ -3915,12 +3915,114 @@ execute: async (_toolCallId, params, signal) => {
             description: params.description,
           });
           emitChannelSafe(entry, "file_changed", { files: [`maps/${id}/map.config.json`] });
+          // 创建即交付（2026-11-11-004 §3.1 / ADR-0038）：通知前端绑定当前会话并被动打开地图预览。
+          // map_action 无 schema、persist:false，语义同属“地图动作实时通知”，不新增事件类型。
+          emitChannelSafe(entry, "map_action", {
+            action: "project_created",
+            id: `project_created-${Date.now()}`,
+            project: id,
+            name: created.config?.name || params.name || id,
+            kind,
+            sessionId: entry.sessionId || "",
+            threadId: ctx.threadId || "",
+            updatedAt: Date.now(),
+          });
           return {
-            content: [{ type: "text", text: `已创建${kind === "blank" ? "空白 AI 画布" : "地图项目"}「${created.config?.name || id}」（${id}）。请在地图项目菜单中切换到该项目后继续。` }],
+            content: [{ type: "text", text: `已创建${kind === "blank" ? "空白 AI 画布" : "地图项目"}「${created.config?.name || id}」（${id}）。当前会话已自动绑定该项目，地图预览已打开；请继续用 map_draft_layer 生成图层。` }],
             details: { project: id, kind },
           };
         } catch (e) {
           return { content: [{ type: "text", text: `创建失败：${e.message}` }], details: { code: e.code } };
+        }
+      },
+    });
+
+    // 地图截图导出（2026-11-11-004 §3.3 / ADR-0038）：G7 截图管线的 agent 侧入口。
+    // 产物落 maps/{project}/agent/exports/ 并写 manifest（R10 agent 归档惯例）；
+    // OAW_MAP_EXPORT 开关关闭时明确报错（开关默认值不变，见 ADR-0004）。
+    const mapExportTool = defineTool({
+      name: "map_export",
+      label: "地图截图导出",
+      description:
+        "把地图项目渲染为 PNG 截图或 PDF（服务端无头浏览器渲染，含底图与可见图层）。"
+        + "用于把 OD/客流/分析 demo 成图交付给用户，建议在工作流最后一步调用。"
+        + "产物写入项目 agent/exports/ 并记入 manifest。写操作，需用户审批；运行开关 OAW_MAP_EXPORT 关闭时不可用。",
+      parameters: Type.Object({
+        project: Type.Optional(Type.String({ description: "项目名；缺省使用当前任务的地图项目" })),
+        format: Type.Optional(Type.Union([Type.Literal("png"), Type.Literal("pdf")])),
+        size: Type.Optional(Type.Union([
+          Type.Literal("a4l"), Type.Literal("a4p"), Type.Literal("square"),
+        ], { description: "尺寸预设：a4l（1600×1131）/ a4p（1131×1600）/ square（1400×1400）；缺省 a4l；与 width/height 二选一" })),
+        width: Type.Optional(Type.Number({ description: "自定义宽度（400–2400px）；与 size 二选一" })),
+        height: Type.Optional(Type.Number({ description: "自定义高度（300–1600px）；与 size 二选一" })),
+        layers: Type.Optional(Type.String({ description: "可选：仅导出这些图层（逗号分隔图层 id）；缺省全部数据图层（底图始终保留）" })),
+        title: Type.Optional(Type.String({ description: "可选：图面标题条文字（建议中文）" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const 执行器 = await import("./地图导出执行器.mjs");
+        const 批量导出 = await import("./批量导出.mjs");
+        const map = await import("./map.mjs");
+        const name = String(params.project || entry.task?.mapProject || map.DEFAULT_PROJECT);
+        const ctx = activeWriteContext("map_export");
+        if (!RUNTIME_FLAGS.mapExport) {
+          return {
+            content: [{ type: "text", text: "地图导出能力未开启（运行开关 OAW_MAP_EXPORT=0）。请在启动配置中设置 OAW_MAP_EXPORT=1 后重启服务再试；本次未产生任何文件。" }],
+            details: { code: "MAP_EXPORT_DISABLED" },
+          };
+        }
+        await requireToolApproval({
+          entry, tool: "map_export", input: `${name} ${params.format || "png"}`,
+          runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+        });
+        if (!执行器.tryAcquireExportSlot("agent")) {
+          return {
+            content: [{ type: "text", text: `已有导出任务在执行（${执行器.currentExportOwner()}），请稍后再试。` }],
+            details: { code: "MAP_EXPORT_BUSY" },
+          };
+        }
+        try {
+          // 复用 planExportJobs 做参数校验与文件名生成：单项目单尺寸单格式 → 恰好 1 个 job。
+          const useSize = params.width && params.height
+            ? [{ id: "custom", width: params.width, height: params.height }]
+            : [String(params.size || "a4l")];
+          const layers = String(params.layers || "").split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean);
+          const plan = 批量导出.planExportJobs({
+            projects: name,
+            layerSets: layers.length ? [layers] : undefined,
+            sizes: useSize,
+            formats: [params.format === "pdf" ? "pdf" : "png"],
+            title: params.title,
+          });
+          if (plan.errors.length || !plan.jobs.length) {
+            return { content: [{ type: "text", text: `导出参数不合法：${(plan.errors || []).join("；") || "未生成导出任务"}` }], details: { code: "MAP_EXPORT_PLAN" } };
+          }
+          if (plan.skipped > 0) {
+            return { content: [{ type: "text", text: "导出请求超出单次任务上限，已跳过。" }], details: { code: "MAP_EXPORT_LIMIT" } };
+          }
+          const job = plan.jobs[0];
+          const projectDir = map.ensureProject(name);
+          if (!projectDir) return { content: [{ type: "text", text: `地图项目不存在：${name}` }], details: { code: "MAP_PROJECT_MISSING" } };
+          const outDir = path.join(projectDir, "agent", "exports");
+          const result = await 执行器.executeExportJob(job, { workspace: ctx.workspace, outDir });
+          const rel = path.relative(ctx.workspace, result.file).split(path.sep).join("/");
+          map.appendAgentManifest(name, {
+            action: "export",
+            title: params.title || name,
+            layerId: "",
+            paths: [rel],
+            bytes: result.bytes,
+            runId: ctx.runId || "",
+            sessionId: entry.sessionId || "",
+          });
+          emitChannelSafe(entry, "file_changed", { files: [rel] });
+          return {
+            content: [{ type: "text", text: `已导出 ${job.format.toUpperCase()}：${rel}（${Math.round(result.bytes / 1024)} KB）。可在产物面板查看，或直接在地图预览中确认效果。` }],
+            details: { file: rel, bytes: result.bytes, project: name, format: job.format, sizeId: job.sizeId },
+          };
+        } catch (e) {
+          return { content: [{ type: "text", text: `导出失败：${e.message}` }], details: { code: e.code || "MAP_EXPORT_FAILED" } };
+        } finally {
+          执行器.releaseExportSlot("agent");
         }
       },
     });
@@ -5797,7 +5899,7 @@ execute: async (_toolCallId, params, signal) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, jobStatusTool, jobCancelTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, skillDraftTool, contextReadTool, mapReadTool, mapDatasetsTool, mapLayerInfoTool, mapResetTool, mapProjectCreateTool, mapDraftLayerTool, mapFixateLayerTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, cadReadTool, cadEditTool, canvasReadTool, canvasWriteTool, canvasDeleteTool, canvasImportTool, canvasExportTool, memoryUpdateTool, webSearchTool, webFetchTool, wrapBrowserStepTool("open", browserOpenTool), wrapBrowserStepTool("snapshot", browserSnapshotTool), wrapBrowserStepTool("click", browserClickTool), wrapBrowserStepTool("type", browserTypeTool), wrapBrowserStepTool("press", browserPressTool), wrapBrowserStepTool("scroll", browserScrollTool), wrapBrowserStepTool("screenshot", browserScreenshotTool), wrapBrowserStepTool("tabs", browserTabsTool), wrapBrowserStepTool("back", browserBackTool), wrapBrowserStepTool("close", browserCloseTool), wrapBrowserStepTool("wait", browserWaitForTool), wrapBrowserStepTool("act", browserActTool), wrapBrowserStepTool("extract", browserExtractTool), wrapBrowserStepTool("select", browserSelectOptionTool), subagentTool, ...teamTools, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
+        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, jobStatusTool, jobCancelTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, skillDraftTool, contextReadTool, mapReadTool, mapDatasetsTool, mapLayerInfoTool, mapResetTool, mapProjectCreateTool, mapExportTool, mapDraftLayerTool, mapFixateLayerTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, cadReadTool, cadEditTool, canvasReadTool, canvasWriteTool, canvasDeleteTool, canvasImportTool, canvasExportTool, memoryUpdateTool, webSearchTool, webFetchTool, wrapBrowserStepTool("open", browserOpenTool), wrapBrowserStepTool("snapshot", browserSnapshotTool), wrapBrowserStepTool("click", browserClickTool), wrapBrowserStepTool("type", browserTypeTool), wrapBrowserStepTool("press", browserPressTool), wrapBrowserStepTool("scroll", browserScrollTool), wrapBrowserStepTool("screenshot", browserScreenshotTool), wrapBrowserStepTool("tabs", browserTabsTool), wrapBrowserStepTool("back", browserBackTool), wrapBrowserStepTool("close", browserCloseTool), wrapBrowserStepTool("wait", browserWaitForTool), wrapBrowserStepTool("act", browserActTool), wrapBrowserStepTool("extract", browserExtractTool), wrapBrowserStepTool("select", browserSelectOptionTool), subagentTool, ...teamTools, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
         tools: sessionToolNames,
       }));
     } catch (error) {

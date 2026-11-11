@@ -41,9 +41,11 @@ const AGENT_TOOLS = Object.freeze([
   "bash", "write", "edit",
   // Work 模式持有全部地图工具：只读查询 + 草稿层 + 正式写。
   // 草稿层（map_draft_layer）不落正式库、免审批；固化/导入/改样式/删除/重置需审批。
+  // map_export（2026-11-11-004）：截图导出 PNG/PDF，受 OAW_MAP_EXPORT 开关；审批 ask。
   "map_read", "map_analyze", "map_clear_analysis", "map_datasets", "map_layer_info",
   "map_draft_layer", "map_fixate_layer",
   "map_edit", "map_import", "map_save_analysis", "map_reset", "map_project_create",
+  "map_export",
   "memory_update", "todo",
   // 2026-11-04：后台任务（转后台的工具结果用 job_status 等待/读取，job_cancel 取消）
   "job_status", "job_cancel",
@@ -509,7 +511,7 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
       required: false,
       provider: "native",
       reason: mapWritable
-        ? "地图草稿层生成、查询、分析与用户确认后固化（正式写需审批）"
+        ? "地图草稿层生成、查询、分析、截图导出与用户确认后固化（正式写需审批）"
         : "地图仅在 Work 模式可用",
     });
   }
@@ -635,10 +637,11 @@ function mapCapabilityHint(task = {}) {
   const routing = plan?.routing?.map;
   if (routing !== "read_write") return "";
   return [
-    "地图能力（Work）：可查询数据集与图层、生成点/线/面草稿层（不落正式库、免审批）、分析出图。",
+    "地图能力（Work）：可查询数据集与图层、生成点/线/面草稿层（不落正式库、免审批）、分析出图、截图导出 PNG/PDF（map_export，需审批）。",
     "草稿层由 map_draft_layer 生成，用户在地图面板确认后才固化；固走 map_fixate_layer（需用户审批）。",
     "正式写入（固化 / 导入 / 改样式 / 删除 / 重置 / 新建项目）都需要审批；共享数据集只读，锁定图层禁止写入。",
     "演示数据必须在结果中明确标注，不得静默写成正式图层。",
+    "OD/客流 demo 工作流：map_project_create 新建空白 AI 画布（或沿用当前绑定项目）→ map_draft_layer 生成草稿（demo:true + expectedCount 校验，WGS84 中国范围）→ map_export 截图交付 → 提示用户可在地图预览查看、进地图模块固化精修。",
   ].join("\n");
 }
 

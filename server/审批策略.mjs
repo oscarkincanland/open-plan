@@ -81,6 +81,8 @@ const DEFAULT_RULES = [
   // 工程级写操作（重置 / 新建项目）会改变整个图层树，同样逐次确认
   { tool: "map_reset", pattern: "*", action: "ask" },
   { tool: "map_project_create", pattern: "*", action: "ask" },
+  // 地图截图导出（2026-11-11-004）：写工作区产物文件，与导入/模板同级逐次确认
+  { tool: "map_export", pattern: "*", action: "ask" },
   // 创作画布（2026-11-09）：写画布文件与 write 同类（默认 allow，受工作区边界）；
   // 删除/导入/导出属交付或破坏性动作，逐次确认。
   { tool: "canvas_read", pattern: "*", action: "allow" },

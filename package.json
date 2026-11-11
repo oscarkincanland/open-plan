@@ -148,6 +148,7 @@
     "test:map-preview": "node scripts/地图预览策略测试.mjs",
     "test:map-preview-drafts": "node scripts/地图预览草稿回放测试.mjs",
     "test:canvas-model": "node scripts/创作画布模型测试.mjs",
+    "test:map-export-executor": "node scripts/地图导出执行器测试.mjs",
     "test:canvas-template": "node scripts/创作画布模板测试.mjs",
     "test:canvas-export": "node scripts/创作画布导出测试.mjs",
     "test:canvas-ui": "node scripts/创作画布界面接线测试.mjs",

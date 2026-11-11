@@ -2562,7 +2562,37 @@ export default function App() {
         handleFileChanged(changed);
         mapBridgeRef.current?.onFileChanged?.(changed);
       }}
-      onMapAction={(action) => mapBridgeRef.current?.onMapAction?.(action)}
+      onMapAction={(action) => {
+        // 创建即交付（2026-11-11-004 §3.1 / ADR-0038）：agent 新建地图画布后，
+        // 自动绑定当前会话并被动打开地图预览；绑定失败不打断 Run（可手动切换）。
+        if (action?.action === "project_created" && String(action.project || "")) {
+          const sid = currentSessionId || "";
+          const matchesSession = sid && (!action.sessionId || String(action.sessionId) === String(sid));
+          if (matchesSession) {
+            const project = String(action.project);
+            // 本地 mapContext 立即生效（下一条消息的 task.mapProject 就指向新项目）。
+            setMapContexts((prev) => ({ ...prev, [threadId]: mergeMapContext(prev[threadId], { mapProject: project }) }));
+            fetch(`/api/sessions/${encodeURIComponent(sid)}/map-context`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ mapProject: project, mapView: null }),
+            })
+              .then((response) => (response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`))))
+              .then(() => refreshSessions())
+              .then(() => {
+                const previewTab = (canvasTabsRef.current || []).find((tab) => tab.kind === "mapPreview") || null;
+                const previewAction = resolveMapPreviewAction({
+                  session: { id: sid, mapProject: project, mapView: null },
+                  previewTab,
+                  userInitiated: false, // 被动路径：补建/同步，不抢用户正在看的标签
+                });
+                if (previewAction.type === "open" || previewAction.type === "update") openCanvasView("mapPreview", previewAction.payload);
+              })
+              .catch(() => { /* 绑定失败静默：用户仍可在地图项目菜单手动切换 */ });
+          }
+        }
+        mapBridgeRef.current?.onMapAction?.(action);
+      }}
       onDraftChanged={(payload) => {
         mapBridgeRef.current?.onDraftChanged?.(payload);
         // 草稿变更也驱动只读预览刷新（2026-11-09：预览回放未固化草稿）。

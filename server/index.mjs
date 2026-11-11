@@ -6322,38 +6322,17 @@ app.post("/api/map/report", async (req, res) => {
 // 专用浏览器会话（map-export|batch，独立实例不干扰用户面板）→ 打开 /?export=map 导出视图
 // → 视口设为目标尺寸 → 轮询就绪 → PNG 截图 / printToPDF → 产物落工作区 地图导出/{批次}/。
 const mapExportBatches = new Map(); // batchId → {id, status, plan, summary?, error?, createdAt, finishedAt?}
-let mapExportActiveBatch = null; // 同一浏览器会话串行复用：同一时刻只允许一个批次在跑
 let mapExportSeq = 0;
-
-function buildExportViewUrl(job) {
-  const qs = new URLSearchParams({ export: "map", project: job.project, title: job.title });
-  if (job.layers?.length) qs.set("layers", job.layers.join(","));
-  return `http://127.0.0.1:${PORT}/?${qs.toString()}`;
-}
-
-async function executeExportJob(job, workspace) {
-  const browser = await import("./内置浏览器.mjs");
-  const key = browser.browserSessionKey("map-export", "batch");
-  await browser.browserOpen(key, buildExportViewUrl(job));
-  await browser.browserResize(key, job.width, job.height);
-  await browser.browserWaitForExpression(key, "window.__OAW_EXPORT_READY === true", { timeoutMs: 45000 });
-  const pageError = await browser.browserEvaluateValue(key, "window.__OAW_EXPORT_ERROR || ''").catch(() => "");
-  if (pageError) throw new Error(`导出视图异常：${pageError}`);
-  const capture = job.format === "pdf"
-    ? await browser.browserPrintToPdf(key)
-    : await browser.browserScreenshot(key, { format: "png" });
-  const outDir = path.join(workspace, "地图导出");
-  fs.mkdirSync(outDir, { recursive: true });
-  const target = path.join(outDir, job.fileName);
-  if (!target.startsWith(path.resolve(workspace))) throw new Error("导出产物路径越界");
-  fs.writeFileSync(target, Buffer.from(capture.base64 || "", "base64"));
-  return { file: target, bytes: Buffer.byteLength(capture.base64 || "", "base64") };
-}
+// 执行器与单飞闸门抽取为 server/地图导出执行器.mjs（2026-11-11-004 §3.2）：G7 与 agent `map_export` 共用。
 
 app.post("/api/map/export/batch", async (req, res) => {
   if (!RUNTIME_FLAGS.mapExport) return res.status(404).json({ error: "not found" });
-  if (mapExportActiveBatch) {
-    return res.status(409).json({ ok: false, error: `已有导出批次在执行（${mapExportActiveBatch}），请等待完成后再发起` });
+  const 地图导出执行器 = await import("./地图导出执行器.mjs");
+  // 整个批次持有导出槽位（与原单飞变量语义一致：占用 → 响应 → 队列结束释放），闸门在执行器模块内。
+  const slotOwner = `batch-${Date.now()}`;
+  if (!地图导出执行器.tryAcquireExportSlot(slotOwner)) {
+    const owner = 地图导出执行器.currentExportOwner();
+    return res.status(409).json({ ok: false, error: `已有导出批次在执行（${owner}），请等待完成后再发起` });
   }
   const workspace = normalizeWorkspace(String(req.body?.workspace || "")) || getWorkspace();
   const 批量导出 = await import("./批量导出.mjs");
@@ -6364,7 +6343,10 @@ app.post("/api/map/export/batch", async (req, res) => {
     formats: req.body?.formats,
     title: req.body?.title,
   });
-  if (plan.errors.length) return res.status(400).json({ ok: false, errors: plan.errors });
+  if (plan.errors.length) {
+    地图导出执行器.releaseExportSlot(slotOwner);
+    return res.status(400).json({ ok: false, errors: plan.errors });
+  }
   const batchId = `batch-${Date.now()}-${++mapExportSeq}`;
   const batch = {
     id: batchId,
@@ -6376,9 +6358,8 @@ app.post("/api/map/export/batch", async (req, res) => {
     createdAt: new Date().toISOString(),
   };
   mapExportBatches.set(batchId, batch);
-  mapExportActiveBatch = batchId;
   // 后台串行执行（不阻塞响应）；进度实时写回 batch.summary 供轮询。
-  批量导出.runExportQueue(plan.jobs, (job) => executeExportJob(job, workspace), {
+  批量导出.runExportQueue(plan.jobs, (job) => 地图导出执行器.executeExportJob(job, { workspace, port: PORT }), {
     onProgress: (snapshot) => { batch.summary = snapshot; },
   })
     .then((summary) => {
@@ -6391,7 +6372,7 @@ app.post("/api/map/export/batch", async (req, res) => {
       batch.error = String(e?.message || e);
       batch.finishedAt = new Date().toISOString();
     })
-    .finally(() => { if (mapExportActiveBatch === batchId) mapExportActiveBatch = null; });
+    .finally(() => { 地图导出执行器.releaseExportSlot(slotOwner); });
   res.json({
     ok: true,
     batchId,
