@@ -3065,7 +3065,14 @@ export default function App() {
         {canvasOpen && (
           <aside className={`app-canvas-slot ${canvasMaximized ? "canvas-maximized" : ""}`} aria-label="工作区画布">
             <画布标签栏
-              tabs={canvasTabs}
+              // 2026-11-11-004 §3.5：agent 正在编辑的画布，标签加呼吸点（数据源 canvasActivity，渲染时注入，不改持久化 state）。
+              tabs={canvasTabs.map((tab) => (tab.kind === "design" && tab.payload?.slug
+                ? {
+                    ...tab,
+                    agentEditing: Boolean(canvasActivity[tab.payload.slug]?.active),
+                    agentBoard: String(canvasActivity[tab.payload.slug]?.boardPath || ""),
+                  }
+                : tab))}
               activeId={canvasActiveId}
               onActivate={activateCanvasTabById}
               onClose={closeCanvasTabById}

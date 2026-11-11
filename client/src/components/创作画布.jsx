@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
 import { askConfirm, askText, notifyError, notifySuccess, notifyWarn } from "./Feedback.jsx";
+import 画布板条 from "./画布板条.jsx";
+import 画布全览 from "./画布全览.jsx";
 import * as 接口 from "../api.js";
 import {
   板条目,
@@ -27,6 +29,7 @@ import {
   updateElement,
   命中元素,
   视野内板,
+  定位板视图,
   更新板布局,
   素材地址,
   调整矩形,
@@ -381,6 +384,11 @@ export default function 创作画布({
   const [当前页, set当前页] = useState("");
   const [页面面板, set页面面板] = useState(false);
   const [新建板中, set新建板中] = useState(false);
+  // 板条与全览（2026-11-11-004）：底部缩略导航条与全览浮层。
+  const [全览面板, set全览面板] = useState(false);
+  const [板条折叠, set板条折叠] = useState(() => {
+    try { return window.localStorage.getItem("oaw_canvas_strip_collapsed") === "1"; } catch { return false; }
+  });
 
   // ── 无 slug 时的入口表单 ──
   const [新建标题, set新建标题] = useState("");
@@ -1080,6 +1088,24 @@ export default function 创作画布({
   // 播放（deck 放映）：按 order 逐页；Esc 退出，←/→ 或空格翻页。
   const 播放列表 = useMemo(() => (deck模式 ? 幻灯列表 : 板列表), [deck模式, 幻灯列表, 板列表]);
   const 播放项 = 播放中 && 播放列表.length ? 播放列表[Math.min(播放序号, 播放列表.length - 1)] : null;
+  // 板条/全览共用定位（2026-11-11-004 §3.6）：设置当前板 + 单板居中适配。
+  const 定位到板 = useCallback((路径) => {
+    if (!路径) return;
+    set当前板路径(路径);
+    const 结果 = 定位板视图(板列表, 路径, 视口尺寸引用.current, 48);
+    if (结果) set视图(结果);
+  }, [板列表]);
+  const 切换板条折叠 = useCallback(() => {
+    set板条折叠((旧) => {
+      const 下一 = !旧;
+      try { window.localStorage.setItem("oaw_canvas_strip_collapsed", 下一 ? "1" : "0"); } catch { /* 隐私模式忽略 */ }
+      return 下一;
+    });
+  }, []);
+  const 适应全部画板 = useCallback(() => {
+    const 结果 = boardsFitViewport(板列表, 视口尺寸引用.current, 36);
+    if (结果) set视图(结果);
+  }, [板列表]);
   const 打开播放 = useCallback(() => {
     if (!播放列表.length) { notifyWarn("画布还没有画板"); return; }
     const 索引 = 播放列表.findIndex((项) => 项.path === 当前板引用.current);
@@ -1803,6 +1829,16 @@ export default function 创作画布({
           <button type="button" className="oaw-canvas-tool" onClick={打开播放} disabled={!板列表.length} aria-label="播放画布" title="全屏播放（←/→ 或空格翻页，Esc 退出）">
             <Icon name="play" size={14} /> 播放
           </button>
+          <button
+            type="button"
+            className={`oaw-canvas-tool ${全览面板 ? "active" : ""}`}
+            onClick={() => set全览面板(true)}
+            disabled={!板列表.length || 播放中}
+            aria-label="画板全览"
+            title="全览全部画板（点击缩略图定位，Esc 关闭）"
+          >
+            <Icon name="grid" size={14} /> 全览
+          </button>
           <button type="button" className="oaw-canvas-tool" onClick={打开历史} aria-label="版本历史" title="查看画布级版本时间线并恢复">
             <Icon name="history" size={14} /> 版本
           </button>
@@ -2029,13 +2065,15 @@ export default function 创作画布({
               {可见板.map((项) => {
                 const 缩放 = 视图.scale || 1;
                 const 是当前 = 项.path === 当前板路径;
+                // 2026-11-11-004 §3.5：agent 正在编辑的板，画板加蓝色发光标识（数据链路 agentBusy prop 既有）。
+                const 是agent编辑板 = Boolean(agent活动.active) && 项.path === agent编辑板;
                 const 板 = 板数据[项.path];
                 const 载入信息 = 板载入[项.path];
                 const 是对象板 = 项.type === "object";
                 return (
                   <div
                     key={项.path}
-                    className={`oaw-canvas-board ${是当前 ? "active" : ""}`}
+                    className={`oaw-canvas-board ${是当前 ? "active" : ""} ${是agent编辑板 ? "agent-editing" : ""}`}
                     style={{ left: 项.x * 缩放 + 视图.tx, top: 项.y * 缩放 + 视图.ty, width: 项.w * 缩放, height: 项.h * 缩放 }}
                     data-board={项.path}
                   >
@@ -2268,6 +2306,20 @@ export default function 创作画布({
                 );
               })}
             </div>
+
+            {/* 底部板条（2026-11-11-004 §3.6）：画板缩略导航（视口下方），播放态隐藏。 */}
+            {!播放中 && (
+              <画布板条
+                boards={板列表}
+                boardData={板数据}
+                activePath={当前板路径}
+                agentBoard={agent编辑板}
+                agentActive={Boolean(agent活动.active)}
+                collapsed={板条折叠}
+                onToggleCollapsed={切换板条折叠}
+                onSelect={定位到板}
+              />
+            )}
           </div>
 
           {选中对象 && !只读 && (
@@ -2503,6 +2555,19 @@ export default function 创作画布({
             <button type="button" className="btn-xs" onClick={关闭播放} aria-label="退出播放">退出（Esc）</button>
           </div>
         </div>
+      )}
+
+      {/* 全览浮层（2026-11-11-004 §3.6）：按页分节总览全部画板，点击定位；Esc/遮罩关闭。 */}
+      {全览面板 && !播放中 && (
+        <画布全览
+          boards={板列表}
+          boardData={板数据}
+          activePath={当前板路径}
+          pages={页分组(画布)}
+          onSelect={(路径) => { set全览面板(false); 定位到板(路径); }}
+          onFitAll={适应全部画板}
+          onClose={() => set全览面板(false)}
+        />
       )}
 
       {设置面板 && (

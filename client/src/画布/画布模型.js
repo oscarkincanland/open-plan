@@ -659,6 +659,52 @@ export function 视野内板(boards = [], view = {}, viewport = {}, 余量 = 160
   });
 }
 
+/* ───────────────────────────── 板条与全览（2026-11-11-004 §3.6） ───────────────────────────── */
+
+/**
+ * 单板居中适配：返回把 path 对应板放到视口中央所需的 `{ scale, tx, ty }`。
+ * 口径与 boardsFitViewport 一致（屏幕 = 世界 × scale + t），scale 上限 1（单板不放大超过 100%）。
+ * 找不到板或视口非法返回 null。
+ */
+export function 定位板视图(boards = [], path = "", viewport = {}, 边距 = 48) {
+  const 项 = (Array.isArray(boards) ? boards : []).find((b) => b?.path === path);
+  const 宽 = Number(viewport?.w);
+  const 高 = Number(viewport?.h);
+  if (!项 || !(宽 > 0) || !(高 > 0)) return null;
+  const w = Math.max(Number(项.w) || 1, 1);
+  const h = Math.max(Number(项.h) || 1, 1);
+  const 边 = Math.max(8, Number(边距) || 48);
+  const scale = 数值(Math.min((宽 - 边 * 2) / w, (高 - 边 * 2) / h, 1), 0.05, 1, 1);
+  return {
+    scale,
+    tx: (宽 - w * scale) / 2 - (Number(项.x) || 0) * scale,
+    ty: (高 - h * scale) / 2 - (Number(项.y) || 0) * scale,
+  };
+}
+
+/** 板条缩略的单块数据：kind ∈ rect|text|image|svg|other；无色元素 color 为空串（组件回退 CSS 底色）。 */
+export function 板缩略块(元素 = {}) {
+  const 类型 = String(元素?.type || "");
+  return {
+    x: Math.round(数值(元素?.x, -1000000, 1000000, 0)),
+    y: Math.round(数值(元素?.y, -1000000, 1000000, 0)),
+    w: Math.max(Math.round(数值(元素?.w, 0, 100000, 2)), 1),
+    h: Math.max(Math.round(数值(元素?.h, 0, 100000, 2)), 1),
+    color: 样式色值(元素?.style?.fill) || 样式色值(元素?.style?.color) || 样式色值(元素?.style?.stroke) || "",
+    kind: 类型 === "text" ? "text" : 类型 === "image" ? "image" : 类型 === "svg" ? "svg" : 类型 === "line" ? "other" : "rect",
+  };
+}
+
+/**
+ * 轻量缩略数据：把板元素压成色块列表（底部板条/全览导航用，不含文本内容细节）。
+ * 返回 `{ background, blocks, elementCount }`；板为空/非法返回 null；单板最多取前 120 个元素。
+ */
+export function 板缩略数据(board = null) {
+  if (!board || !Array.isArray(board.elements) || !board.elements.length) return null;
+  const blocks = board.elements.slice(0, 120).map((元素) => 板缩略块(元素));
+  return { background: 样式色值(board.background), blocks, elementCount: board.elements.length };
+}
+
 /* ───────────────────────────── 撤销栈 ───────────────────────────── */
 
 /** 新撤销栈：栈里存已提交的板快照，指针指向当前状态。 */

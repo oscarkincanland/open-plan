@@ -107,7 +107,7 @@ export default function 画布标签栏({
           return (
             <div
               key={tab.id}
-              className={`canvas-tab ${active ? "active" : ""}`}
+              className={`canvas-tab ${active ? "active" : ""} ${tab.agentEditing ? "agent-editing" : ""}`}
               draggable
               onDragStart={(event) => {
                 event.dataTransfer.effectAllowed = "move";
@@ -134,6 +134,7 @@ export default function 画布标签栏({
                 {tab.badge !== undefined && tab.badge !== null && tab.badge !== "" && (
                   <span className="canvas-tab-badge" title={tab.badgeTitle || `活跃 ${tab.badge}`}>{tab.badge}</span>
                 )}
+                {tab.agentEditing && <i className="canvas-tab-agent" title={`Agent 正在编辑${tab.agentBoard ? `《${tab.agentBoard}》` : "此画布"}`} aria-label="Agent 正在编辑此画布" />}
                 {tab.alert && <i className="canvas-tab-alert" title="团队需要关注" aria-label="团队需要关注" />}
                 {tab.dirty && <i className="canvas-tab-dirty" title="有未保存修改" aria-label="有未保存修改" />}
                 {isBrowser && browserActivityPing > 0 && !active && <i className="canvas-tab-dot" aria-hidden="true" />}

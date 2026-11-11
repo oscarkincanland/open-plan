@@ -191,6 +191,75 @@ test("适配窗口：把全部板放进视口并居中", () => {
   assert.equal(放大.length, 0, "完全移出视口的板不应渲染（性能裁剪）");
 });
 
+test("定位板视图：单板居中、scale 上限 1、非法输入返回 null（2026-11-11-004）", () => {
+  const 板们 = [
+    { path: "a", x: 120, y: 80, w: 1280, h: 720 },
+    { path: "b", x: 1480, y: 80, w: 4000, h: 3000 },
+  ];
+  const 视口 = { w: 800, h: 600 };
+  const 结果 = 模型.定位板视图(板们, "a", 视口, 48);
+  assert.ok(结果, "存在板与合法视口必须返回视图");
+  // scale = min((800-96)/1280, (600-96)/720, 1) = 0.55（宽度决定）
+  assert.ok(Math.abs(结果.scale - (800 - 96) / 1280) < 1e-6, "缩放应由宽度决定（0.55）且 ≤ 1");
+  // 屏幕坐标换算口径与 boardsFitViewport 一致：屏幕 = 世界 × scale + t
+  const 左 = 120 * 结果.scale + 结果.tx;
+  const 右 = (120 + 1280) * 结果.scale + 结果.tx;
+  const 上 = 80 * 结果.scale + 结果.ty;
+  const 下 = (80 + 720) * 结果.scale + 结果.ty;
+  assert.ok(左 >= 47.5 && 右 <= 800 - 47.5, "板水平方向必须落在边距内");
+  assert.ok(上 >= 47.5 && 下 <= 600 - 47.5, "板垂直方向必须落在边距内");
+  assert.ok(Math.abs((左 + 右) / 2 - 400) < 1e-6, "板中心必须接近视口水平中心");
+
+  // 小板不放大超过 100%：板小于视口时 scale = 1，仅居中
+  const 小板 = 模型.定位板视图([{ path: "s", x: 0, y: 0, w: 400, h: 300 }], "s", 视口, 48);
+  assert.equal(小板.scale, 1, "小板缩放不得放大超过 1");
+  const 小左 = 0 * 1 + 小板.tx;
+  const 小右 = 400 * 小板.scale + 小板.tx;
+  assert.ok(Math.abs((小左 + 小右) / 2 - 400) < 1e-6, "小板水平居中");
+
+  // 超大板缩放到边界内
+  const 大板 = 模型.定位板视图(板们, "b", 视口, 48);
+  const 大左 = 1480 * 大板.scale + 大板.tx;
+  const 大右 = (1480 + 4000) * 大板.scale + 大板.tx;
+  const 大上 = 80 * 大板.scale + 大板.ty;
+  const 大下 = (80 + 3000) * 大板.scale + 大板.ty;
+  assert.ok(大左 >= 47 && 大右 <= 800 - 47 && 大上 >= 47 && 大下 <= 600 - 47, "超大板必须缩放到边距内");
+
+  assert.equal(模型.定位板视图(板们, "不存在", 视口), null, "找不到板返回 null");
+  assert.equal(模型.定位板视图([], "a", 视口), null, "空板列表返回 null");
+  assert.equal(模型.定位板视图(板们, "a", { w: 0, h: 0 }), null, "视口非法返回 null");
+});
+
+test("板缩略数据：元素压成色块、kind 分类、截断与空板（2026-11-11-004）", () => {
+  assert.equal(模型.板缩略数据(null), null, "null 板返回 null");
+  assert.equal(模型.板缩略数据({ elements: [] }), null, "空元素板返回 null");
+  const 板 = {
+    background: "white",
+    elements: [
+      { id: "t", type: "text", x: 10, y: 20, w: 200, h: 40, style: { color: "#111111" } },
+      { id: "r", type: "rect", x: 0, y: 0, w: 100, h: 80, style: { fill: "#4a90d9" } },
+      { id: "i", type: "image", x: 5, y: 5, w: 60, h: 60 },
+      { id: "s", type: "svg", x: 5, y: 5, w: 60, h: 60 },
+      { id: "l", type: "line", x: 0, y: 0, w: 50, h: 50, style: { stroke: "#ff0000" } },
+      { id: "n", type: "rect", x: 0, y: 0, w: 10, h: 10, style: {} },
+    ],
+  };
+  const 缩略 = 模型.板缩略数据(板);
+  assert.equal(缩略.background, "white");
+  assert.equal(缩略.elementCount, 6);
+  assert.equal(缩略.blocks.length, 6);
+  assert.deepEqual(缩略.blocks.map((块) => 块.kind), ["text", "rect", "image", "svg", "other", "rect"]);
+  assert.equal(缩略.blocks[0].color, "#111111", "文本取 style.color");
+  assert.equal(缩略.blocks[1].color, "#4a90d9", "矩形取 style.fill");
+  assert.equal(缩略.blocks[4].color, "#ff0000", "线取 style.stroke");
+  assert.equal(缩略.blocks[5].color, "", "无色元素 color 为空串（组件回退 CSS 底色）");
+  // 超过 120 个元素截断
+  const 多板 = { elements: Array.from({ length: 150 }, (_, i) => ({ id: `e${i}`, type: "rect", x: i, y: 0, w: 10, h: 10 })) };
+  const 多缩略 = 模型.板缩略数据(多板);
+  assert.equal(多缩略.elementCount, 150, "elementCount 记录真实数量");
+  assert.equal(多缩略.blocks.length, 120, "色块最多 120 个");
+});
+
 test("导出计划：兼容板禁 SVG、混尺寸禁 PDF、图片页有提示", () => {
   const 画布 = {
     kind: "deck",
@@ -404,11 +473,13 @@ test("画布模型.js：纯模块（无 React / DOM / 网络）且导出契约�
   }
 });
 
-test("零新依赖：三个新文件只 import react 与仓内相对模块", () => {
+test("零新依赖：画布相关新文件只 import react 与仓内相对模块", () => {
   const 允许裸包 = new Set(["react"]);
   for (const [文件, 源码] of [
     ["client/src/components/创作画布.jsx", 画布源码],
     ["client/src/components/创作画布导出视图.jsx", 导出视图源码],
+    ["client/src/components/画布板条.jsx", read("client/src/components/画布板条.jsx")],
+    ["client/src/components/画布全览.jsx", read("client/src/components/画布全览.jsx")],
     ["client/src/画布/画布模型.js", 模型源码],
   ]) {
     const 说明符 = [...源码.matchAll(/^\s*import\s+(?:[^"']+from\s+)?["']([^"']+)["']/gm)].map((项) => 项[1]);

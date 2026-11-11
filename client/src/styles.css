@@ -13345,6 +13345,21 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   flex: 0 0 auto;
 }
 
+/* ── Agent 编辑中（2026-11-11-004 §3.5）：画布标签呼吸点与边框微光 ── */
+.canvas-tab.agent-editing { border-color: color-mix(in srgb, var(--map-accent) 45%, var(--border)); }
+.canvas-tab-agent {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--map-accent);
+  flex: 0 0 auto;
+  animation: oaw-agent-pulse 1.6s ease-in-out infinite;
+}
+@keyframes oaw-agent-pulse {
+  0%, 100% { opacity: 0.45; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
 .canvas-body-team {
   flex: 1;
   min-height: 0;
@@ -13972,6 +13987,176 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   background: var(--oaw-canvas-paper);
 }
 .oaw-canvas-board.active .oaw-canvas-board-scale { border-color: var(--accent); }
+/* ── Agent 编辑中（2026-11-11-004 §3.5）：被编辑画板蓝色发光标识（--map-accent 既有令牌） ── */
+.oaw-canvas-board.agent-editing .oaw-canvas-board-scale {
+  outline: 2px solid var(--map-accent);
+  outline-offset: 2px;
+  border-color: var(--map-accent);
+  animation: oaw-agent-glow 1.6s ease-in-out infinite;
+}
+.oaw-canvas-board.agent-editing .oaw-canvas-board-head { color: var(--map-accent); }
+@keyframes oaw-agent-glow {
+  0%, 100% { box-shadow: 0 0 10px 2px rgba(74, 144, 217, 0.35); }
+  50% { box-shadow: 0 0 18px 6px rgba(74, 144, 217, 0.55); }
+}
+
+/* ── 底部板条（2026-11-11-004 §3.6）：画板缩略导航条 ── */
+.oaw-canvas-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--panel-bg);
+}
+.oaw-canvas-strip-toggle {
+  flex: 0 0 auto;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.oaw-canvas-strip-toggle:hover { color: var(--text); background: var(--surface); }
+.oaw-canvas-strip-toggle.collapsed svg { transform: rotate(180deg); }
+.oaw-canvas-strip-scroll {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  padding-bottom: 2px;
+}
+.oaw-canvas-strip-card {
+  flex: 0 0 auto;
+  width: 96px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel2-bg);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.oaw-canvas-strip-card:hover { border-color: color-mix(in srgb, var(--map-accent) 45%, var(--border)); }
+.oaw-canvas-strip-card.active { border-color: var(--map-accent); box-shadow: 0 0 0 1px var(--map-accent); }
+.oaw-canvas-strip-card.active .oaw-canvas-strip-label { color: var(--map-accent); }
+.oaw-canvas-strip-card.agent-editing { border-color: var(--map-accent); }
+.oaw-canvas-strip-thumb {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border-radius: var(--radius-xs);
+  background: var(--oaw-canvas-paper, white);
+}
+.oaw-canvas-strip-block { position: absolute; border-radius: 1px; opacity: 0.72; background: var(--muted); }
+.oaw-canvas-strip-block.text { height: 2px; min-height: 2px; }
+.oaw-canvas-strip-skeleton {
+  position: absolute;
+  inset: 4px;
+  border-radius: var(--radius-xs);
+  background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--border) 70%, transparent) 50%, transparent 70%);
+  background-size: 200% 100%;
+  animation: oaw-strip-shimmer 1.2s linear infinite;
+}
+@keyframes oaw-strip-shimmer {
+  from { background-position: 180% 0; }
+  to { background-position: -80% 0; }
+}
+.oaw-canvas-strip-label {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--font-micro);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ── 全览浮层（2026-11-11-004 §3.6）：网格总览 ── */
+.oaw-canvas-overview-mask {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: color-mix(in srgb, var(--body-bg) 62%, transparent);
+}
+.oaw-canvas-overview {
+  display: flex;
+  flex-direction: column;
+  max-width: min(920px, 92vw);
+  max-height: min(640px, 84vh);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel-bg);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.35);
+}
+.oaw-canvas-overview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.oaw-canvas-overview-sub { color: var(--muted); font-size: var(--font-xs); }
+.oaw-canvas-overview-head .btn-xs:first-of-type { margin-left: auto; }
+.oaw-canvas-overview-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px 16px; }
+.oaw-canvas-overview-section + .oaw-canvas-overview-section { margin-top: 14px; }
+.oaw-canvas-overview-section-name {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: var(--font-xs);
+  font-weight: 600;
+}
+.oaw-canvas-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+.oaw-canvas-overview-card {
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel2-bg);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.oaw-canvas-overview-card:hover { border-color: color-mix(in srgb, var(--map-accent) 45%, var(--border)); }
+.oaw-canvas-overview-card.active { border-color: var(--map-accent); box-shadow: 0 0 0 1px var(--map-accent); }
+.oaw-canvas-overview-label {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  margin-top: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.oaw-canvas-overview-label b { flex: 0 0 auto; color: var(--text); font-size: var(--font-xs); font-weight: 600; }
+.oaw-canvas-overview-card.active .oaw-canvas-overview-label b { color: var(--map-accent); }
+.oaw-canvas-overview-label span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--font-xs);
+  text-overflow: ellipsis;
+}
+.oaw-canvas-overview-empty { padding: 24px; color: var(--muted); font-size: var(--font-xs); text-align: center; }
 .oaw-canvas-board-paper,
 .oaw-canvas-export-page {
   --oaw-canvas-paper: white;
