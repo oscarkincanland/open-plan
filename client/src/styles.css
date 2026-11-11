@@ -9488,6 +9488,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 @media (max-height: 470px) {
   .center-chat-slot .busy-input-mode { display: none; }
+  /* 2026-11-11-005：忙时提示行已被卡内 token 行里的投递控件替代，极矮窗口只收起该控件。 */
+  .center-chat-slot .composer-token-bar .busy-delivery { display: none; }
 }
 .center-chat-slot .chat-input-row { align-items: flex-end; }
 .center-chat-slot .chat-input textarea {
@@ -11023,6 +11025,128 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .chat-target-chip button:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; border-radius: 3px; }
 .chat-target-write { margin-left: auto; color: var(--dim); }
 .chat-target-write.auto { color: var(--warning); }
+
+/* ===== 输入区 token 行（计划 2026-11-11-005）=====
+   图片 / 附件 / 引用统一渲染成只读小 tab：图标 + 短名 + ×，完整路径只进 title。
+   忙碌时同一行右侧是「新输入投递方式」控件（替代原「当前任务中新输入」三按钮整行条）。 */
+.composer-token-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-height: 22px;
+  margin-bottom: 6px;
+}
+.composer-token {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+  height: 22px;
+  padding: 0 3px 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel2-bg);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.composer-token.reference { border-color: color-mix(in srgb, var(--accent) 42%, var(--border)); background: color-mix(in srgb, var(--accent) 8%, var(--panel2-bg)); }
+.composer-token.image { padding-left: 4px; }
+.composer-token .icon { flex: 0 0 auto; color: var(--muted); }
+.composer-token.reference .icon { color: var(--accent); }
+.composer-token-thumb {
+  width: 18px;
+  height: 18px;
+  object-fit: cover;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.composer-token-label {
+  min-width: 0;
+  max-width: 132px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 11px;
+}
+button.composer-token-label { border: 0; background: transparent; padding: 0; cursor: pointer; font: inherit; font-size: 11px; text-align: left; }
+button.composer-token-label:hover { color: var(--accent); text-decoration: underline; }
+.composer-token-meta { flex: 0 0 auto; color: var(--muted); font-size: 10px; }
+.composer-token-remove {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 1px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.composer-token-remove:hover { color: var(--error); background: var(--selected); }
+.composer-token-spacer { flex: 1 1 8px; min-width: 0; }
+
+/* 投递方式：折叠成一个 chip，向上弹出三选一 */
+.busy-delivery { position: relative; flex: 0 0 auto; }
+.busy-delivery-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-radius: var(--radius-md);
+  background: var(--panel2-bg);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.busy-delivery-trigger:hover,
+.busy-delivery.open .busy-delivery-trigger { color: var(--accent); border-color: var(--accent); background: var(--selected); }
+.busy-delivery-trigger:disabled { opacity: .5; cursor: not-allowed; }
+.busy-delivery-chevron { opacity: .7; }
+.busy-delivery-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  z-index: 90;
+  width: min(240px, calc(100vw - 28px));
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel-bg);
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--pure-black) 26%, transparent);
+}
+.busy-delivery-menu button {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  align-items: start;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 7px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+.busy-delivery-menu button:hover { background: var(--selected); color: var(--text); }
+.busy-delivery-menu button.on { color: var(--accent); }
+.busy-delivery-menu button span { display: flex; flex-direction: column; min-width: 0; }
+.busy-delivery-menu button strong { font-size: 11px; font-weight: 600; }
+.busy-delivery-menu button small { margin-top: 2px; color: var(--dim); font-size: 10px; line-height: 1.4; }
 
 /* 发送按钮：一次按下反馈，不做循环动画 */
 .send-btn, .pending-send-btn, .stop-btn { transition: transform .1s ease, background .12s ease, color .12s ease; }

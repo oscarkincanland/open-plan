@@ -206,6 +206,7 @@
     "test:final-answer": "node scripts/终稿与中断分类测试.mjs",
     "test:workspace-panel": "node scripts/工作区面板与输入栏收敛测试.mjs",
     "test:composer-popover-clip": "node scripts/输入栏浮层裁切回归测试.mjs",
+    "test:composer-tokens": "node scripts/输入区token与投递方式测试.mjs",
     "test:session-convergence": "node scripts/会话收敛与流水线状态测试.mjs",
     "test:ask-timeout": "node scripts/ask超时与跳过测试.mjs",
     "test:background-jobs": "node scripts/后台任务测试.mjs",

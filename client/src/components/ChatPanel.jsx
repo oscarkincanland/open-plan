@@ -8,6 +8,7 @@ import { detectMentionTrigger, filterAgentsForMention, buildMentionPrefix } from
 // 关闭时以下模块不参与任何渲染/请求，旧四触发器路径与基线完全一致。
 import { lintReferenceMarkers, parseAgentMentions, parseReferenceMarkers as parseUnifiedReferenceMarkers, REFERENCE_KIND_META, referenceChipLabel, referenceStatusTone, removeReferenceMarker, stripReferenceMarkers } from "../引用标记.js";
 import Composer from "./输入区/Composer.jsx";
+import ComposerTokenBar from "./输入区/ComposerTokenBar.jsx";
 import { applyComposerPick, resolveComposerKey, useComposerState } from "./输入区/useComposerState.js";
 import 欢迎卡片 from "./欢迎卡片.jsx";
 import { ATTACHMENT_SIZE_LIMIT, ATTACHMENT_ALLOWED_EXT, mediaKindFor, formatBytes } from "./媒体工具.js";
@@ -602,6 +603,23 @@ function referenceMarker(reference) {
   return reference.source || `@${kind}[${reference.target}]`;
 }
 
+/**
+ * 规范化标记（2026-11-11-005）：忽略 `source`，按 kind+target 重建结构化标记。
+ *
+ * 输入区 token 的 `source` 是裸 `@文件名`（选目录时也如此），直接展开会把裸路径
+ * 写进 prompt；结构化 `@文件[…]` 才能稳定表达“这是一个引用”，也便于服务端解析。
+ */
+function canonicalReferenceMarker(reference) {
+  if (!reference?.target) return "";
+  if (reference.kind === "session") return `&会话[${reference.target}]`;
+  const kind = reference.kind === "knowledge_dir" ? "知识库目录"
+    : reference.kind === "knowledge" ? "知识库"
+      : reference.kind === "template_dir" ? "模板目录"
+        : reference.kind === "template" ? "模板"
+          : "文件";
+  return `@${kind}[${reference.target}]`;
+}
+
 function loadEmbeddedMessages(threadId, embedded) {
   if (!embedded || !threadId) return [];
   try {
@@ -676,6 +694,26 @@ function parseReferenceMarkers(text = "") {
     if (target.includes("/") || target.includes("\\") || /\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i.test(target)) add("file", target, `@${target}`);
   }
   return refs;
+}
+
+/**
+ * 发送前把结构化引用展开成标记文本（计划 2026-11-11-005）。
+ *
+ * 输入框里只保留用户自己的文字：引用以卡内 token 呈现、由 references 状态承载。
+ * 真正发给内核与会话记录的文本仍要带 `@文件[…]` 等标记，否则
+ *   - 模型看不到引用；
+ *   - 会话 JSONL 里没有标记，重开会话时引用的 chip 无法还原。
+ * 已经在正文里的标记不重复追加。
+ */
+function expandReferenceMarkers(text = "", references = []) {
+  const source = String(text || "").trim();
+  if (!Array.isArray(references) || !references.length) return source;
+  const present = new Set(parseReferenceMarkers(source).map((ref) => ref.id));
+  const missing = references
+    .filter((ref) => ref?.target && !present.has(ref.id || referenceId(ref.kind || "file", ref.target)))
+    .map((ref) => canonicalReferenceMarker(ref))
+    .filter(Boolean);
+  return [source, ...missing].filter(Boolean).join(" ").trim();
 }
 
 // v0.13.2：从已加载的助手消息里提取外部链接（URL 去重，保留首次出现的消息 id）。
@@ -1398,6 +1436,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     else setComposerIndex((index) => Math.min(index, composerItems.length - 1));
   }, [composerItems]);
 
+  // 2026-11-11-005（S1）：`@` 曾同时弹出「文件候选」与「智能体候选」两个面板并互相压住。
+  // DESIGN §6 要求任一符号只出现一个面板：候选面板优先，提及面板只在没有候选面板时出现。
+  // 键盘处理必须与渲染用同一个判定，否则 Enter 会选中看不见的那一项。
+  const composerSuggestOpen = !composerUnified && Boolean(composerMenu && composerItems.length);
+  const mentionOpen = !composerUnified && !composerSuggestOpen && Boolean(mentionState && mentionFiltered.length);
+
   const composerTrigger = (value) => {
     const match = String(value || "").match(/(?:^|\s)([\/@&#])([^\s]*)$/);
     if (!match) return null;
@@ -1406,8 +1450,25 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
 
   const insertComposerItem = (item) => {
     if (!composerMenu || !item) return;
-    updateInput((value) => value.slice(0, composerMenu.start) + item.insert + " " + value.slice(value.length));
+    // 2026-11-11-005：`@` / `&` / `#` 选中的引用不再写进输入框，只登记成卡内 token；
+    // 发送时由 expandReferenceMarkers 展开成标记，气泡再把标记还原成 chip。
+    // `/` 命令（insert 以 / 开头）仍按原样插入文本。
+    const symbol = composerMenu.symbol;
+    let markers = parseReferenceMarkers(item.insert);
+    if (!markers.length && symbol === "@") {
+      // 目录名这类没有路径分隔符/扩展名的候选也要成为引用，否则又会退化成裸文本。
+      const target = String(item.insert || "").replace(/^@/, "").trim();
+      if (target) markers = [{ id: referenceId("file", target), kind: "file", target, source: `@${target}` }];
+    }
+    if (markers.length) {
+      setReferences((prev) => [...prev, ...markers.filter((r) => !prev.some((p) => p.id === r.id))]);
+      // 去掉刚输入、尚未闭合的触发器（`@…` / `&…` / `#…`），引用改由 token 承载。
+      updateInput((value) => value.slice(0, composerMenu.start).replace(/[ \t]+$/, ""));
+    } else {
+      updateInput((value) => value.slice(0, composerMenu.start) + item.insert + " " + value.slice(value.length));
+    }
     setComposerMenu(null);
+    setMentionState(null);
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
@@ -1580,12 +1641,21 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
 
   useEffect(() => {
     // 统一面板（flag 开）用共享解析器，补齐 #技能/#插件/#文件 等类型；关闭时走基线解析器。
-    // 统一模式即使没有任何标记也继续过滤（删文本/删标记边界时同步移除 chip），基线保持原提前返回。
+    // 2026-11-11-005：输入框不再承载结构化标记——引用以卡内 token 呈现、由 references 状态承载。
+    // 因此这里只做“文本里出现的标记 → 合并成引用”，不再用 `input.includes(source)` 反向清空，
+    // 否则 token 化引用（文本里本来就没有标记）会在下一次输入时被误删。
+    // 回收路径只有两条：token 上的 × 显式删除；或文本里曾经有标记、随后被删掉（textBound）。
     const found = composerUnified ? parseUnifiedReferenceMarkers(input) : parseReferenceMarkers(input);
-    if (!found.length && !composerUnified) return;
     setReferences((prev) => {
-      const merged = [...found, ...prev.filter((r) => input.includes(r.source || `@${r.target}`))];
-      return merged.filter((r, i, arr) => arr.findIndex((x) => x.id === r.id) === i);
+      const merged = [
+        ...found.map((ref) => ({ ...ref, textBound: true })),
+        ...prev.filter((ref) => {
+          const candidates = [ref.source, referenceMarker(ref), `@${ref.target || ""}`, `#文件[${ref.target || ""}]`].filter(Boolean);
+          if (candidates.some((item) => input.includes(item))) return true;
+          return !ref.textBound;
+        }),
+      ];
+      return merged.filter((ref, index, arr) => arr.findIndex((item) => item.id === ref.id) === index);
     });
   }, [input, composerUnified]);
 
@@ -2011,9 +2081,16 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     insertText(text) {
       const found = composerUnifiedRef.current ? parseUnifiedReferenceMarkers(text) : parseReferenceMarkers(text);
       if (found.length) setReferences((prev) => [...prev, ...found.filter((r) => !prev.some((p) => p.id === r.id))]);
+      // 2026-11-11-005：结构化标记不进输入框——它们在卡内渲染成只读 token，
+      // 发送前由 expandReferenceMarkers 展开（见 send）。这里只插入剩余的自然语言。
+      const prose = found.length ? stripReferenceMarkers(text) : String(text || "");
+      if (!prose.trim()) {
+        requestAnimationFrame(() => textareaRef.current?.focus());
+        return;
+      }
       updateInput((v) => {
         const sep = v && !v.endsWith(" ") ? " " : "";
-        return v + sep + text;
+        return v + sep + prose;
       });
     },
     insertContext(text) {
@@ -4343,7 +4420,10 @@ case "runtime_connecting":
     // v0.13.7：`@智能体[名称]` 提及在发送时注入角色指令与技能（注入层只在 prompt
     // 前缀，用户可见 text 与 task.goal 原文不变；@@ 转义形式不会被解析）。
     const mentionPrefix = buildMentionPrefix(rawText || text, agents);
-    const fullText = mentionPrefix + contextPrefix + mapContextPrefix + contextPrefixWithSpacing + attachPrefix + (rawText || text);
+    // 2026-11-11-005：引用在输入框里以 token 呈现，发出去的文本必须补回结构化标记——
+    // 模型靠标记定位文件，会话 JSONL 也靠标记在重开时还原 chip。
+    const expandedText = expandReferenceMarkers(rawText || text, sendReferences);
+    const fullText = mentionPrefix + contextPrefix + mapContextPrefix + contextPrefixWithSpacing + attachPrefix + expandedText;
 
     if (!mountedRef.current) return;
 
@@ -5001,7 +5081,50 @@ case "runtime_connecting":
   const emptyExample = EMPTY_EXAMPLES[normalizeUiMode(editMode)] || EMPTY_EXAMPLES.chat;
   // 目标上下文标签：只显示会随本轮发送的范围信息，且明确“引用≠授权写入”。
   const targetContextFile = contextFileDismissed ? "" : (currentDoc || "");
-  const targetReferenceCount = references.length;
+  // 2026-11-11-005：图片 / 附件 / 引用统一为卡内只读 token（图标 + 短名 + ×，完整信息走 title）。
+  // 引用不再在界面上展示完整路径；路径交给 title 与发送时的结构化 references。
+  const composerTokens = useMemo(() => {
+    const list = [];
+    images.forEach((img, index) => {
+      const bytes = Number(img.compressedBytes) || Number(img.originalBytes) || 0;
+      list.push({
+        key: `image:${img.dedupeKey || index}`,
+        kind: "image",
+        icon: "image",
+        label: img.name || `图片 ${index + 1}`,
+        meta: bytes ? formatBytes(bytes) : "",
+        thumb: img.dataUrl,
+        title: `${img.name || "图片"}${img.originalBytes ? ` · ${formatBytes(img.originalBytes)}` : ""}${img.compressedBytes && img.originalBytes && img.compressedBytes < img.originalBytes ? ` → ${formatBytes(img.compressedBytes)}（已压缩）` : ""}`,
+        onRemove: () => removeImageAt(index),
+      });
+    });
+    attachments.forEach((att, index) => {
+      const mediaHint = att.mediaKind === "video" ? "（视频附件，不自动播放）" : att.mediaKind === "audio" ? "（音频附件）" : "";
+      list.push({
+        key: `attachment:${index}:${att.name || ""}`,
+        kind: "file",
+        icon: att.mediaKind === "video" ? "play" : att.mediaKind === "audio" ? "file" : "file",
+        label: att.name || `附件 ${index + 1}`,
+        meta: att.size ? formatBytes(att.size) : "",
+        title: `${att.name || "附件"}${att.size ? ` · ${formatBytes(att.size)}` : ""}${mediaHint}`,
+        onRemove: () => setAttachments((prev) => prev.filter((_, itemIndex) => itemIndex !== index)),
+      });
+    });
+    references.forEach((ref) => {
+      const meta = REFERENCE_KIND_META[ref.kind] || REFERENCE_KIND_META.file;
+      const label = referenceChipLabel(ref) || pathBaseName(ref.target || "") || ref.target || "引用";
+      list.push({
+        key: `reference:${ref.id}`,
+        kind: "reference",
+        icon: meta.icon || "file",
+        label,
+        title: `${meta.label || "引用"}：${ref.target || label}（仅作为参考上下文，不等于授权写入）`,
+        onClick: ref.kind === "file" && onOpenFile ? () => onOpenFile(ref.metadata?.relativePath || ref.target) : undefined,
+        onRemove: () => removeUnifiedReference(ref),
+      });
+    });
+    return list;
+  }, [images, attachments, references, onOpenFile, removeImageAt, removeUnifiedReference]);
   // 待审批卡片：审批是阻塞动作，运行态需要能一键定位到同一张卡片，
   // 不能只在对话流深处静静躺着。
   const pendingApproval = useMemo(() => {
@@ -5513,17 +5636,6 @@ case "runtime_connecting":
             </span>
           </div>
         )}
-        {!composerUnified && references.length > 0 && (
-          <div className="reference-bar" aria-label="本轮引用">
-            <span className="reference-bar-label">引用</span>
-            {references.map((ref) => (
-              <span className="reference-chip" key={ref.id} title={ref.target}>
-                <span className="reference-chip-kind">{ref.kind === "session" ? "&" : "@"}</span>{ref.target}
-                <button type="button" onClick={() => setReferences((prev) => prev.filter((r) => r.id !== ref.id))} aria-label={`移除引用 ${ref.target}`}>×</button>
-              </span>
-            ))}
-          </div>
-        )}
         <QueueDock
           items={queuedMessages}
           busy={busy}
@@ -5572,15 +5684,14 @@ case "runtime_connecting":
           )}
           {todoItems.length > 0 && <TaskProgressCard tasks={todoItems} running={busy} />}
           <div className="chat-input">
-          {busy && (
-            <div className="busy-input-mode" role="group" aria-label="当前任务中的新输入处理方式">
-              <span>当前任务中新输入：</span>
-              <button type="button" className={busyInputMode === "steer" ? "active" : ""} onClick={() => setBusyInputMode("steer")} title="打断当前回合，立即执行新指令">立即执行</button>
-              <button type="button" className={busyInputMode === "queue" ? "active" : ""} onClick={() => setBusyInputMode("queue")}>排队执行</button>
-              <button type="button" className={busyInputMode === "context" ? "active" : ""} onClick={() => setBusyInputMode("context")}>注入上下文</button>
-              <small>{busyInputMode === "steer" ? "打断当前回合，插入新指令" : busyInputMode === "queue" ? "本轮完成后自动开始" : "保存到下一轮，不打断当前任务"}</small>
-            </div>
-          )}
+          {/* 本轮随输入发送的材料：图片 / 附件 / 引用统一为卡内只读 token（在输入卡边界内）；
+              忙碌时同一行右侧是「新输入投递方式」控件（原「当前任务中新输入」三按钮条已合并进来）。 */}
+          <ComposerTokenBar
+            tokens={composerTokens}
+            busy={busy}
+            busyMode={busyInputMode}
+            onBusyModeChange={setBusyInputMode}
+          />
           {/* 目标范围：发送前可检查这轮用哪个工作区、带上哪个文件、会不会写盘 */}
           <div className="chat-target-bar" aria-label="本轮目标范围">
             <span className="chat-target-label">本轮目标</span>
@@ -5600,11 +5711,6 @@ case "runtime_connecting":
                   aria-label={`本轮不再带上当前文件 ${pathBaseName(targetContextFile)}`}
                   title="本轮不带当前文件（不改变已打开的文件）"
                 >×</button>
-              </span>
-            )}
-            {targetReferenceCount > 0 && (
-              <span className="chat-target-chip ref" title="引用只作为参考上下文，不等于授权写入；写入仍受工作区与审批控制">
-                <Icon name="link" size={12} /> 参考文件 {targetReferenceCount}
               </span>
             )}
           </div>
@@ -5662,7 +5768,7 @@ case "runtime_connecting":
             />
           )}
           <div className="chat-input-row">
-            {!composerUnified && composerMenu && composerItems.length > 0 && (
+            {composerSuggestOpen && (
               <div className="composer-suggestions" role="listbox" aria-label="输入建议">
                 {composerItems.map((item, index) => (
                   <button
@@ -5680,7 +5786,7 @@ case "runtime_connecting":
                 ))}
               </div>
             )}
-            {!composerUnified && mentionState && mentionFiltered.length > 0 && (
+            {mentionOpen && (
               <提及菜单
                 agents={mentionFiltered}
                 query=""
@@ -5714,27 +5820,27 @@ case "runtime_connecting":
                   if (decision.action === "send") { e.preventDefault(); send(); return; }
                   return;
                 }
-                if (mentionState && mentionFiltered.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+                if (mentionOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
                   e.preventDefault();
                   setMentionIndex((index) => (index + (e.key === "ArrowDown" ? 1 : -1) + mentionFiltered.length) % mentionFiltered.length);
                   return;
                 }
-                if (mentionState && mentionFiltered.length && e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                if (mentionOpen && e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
                   pickMention(mentionFiltered[mentionIndex] || mentionFiltered[0]);
                   return;
                 }
-                if (mentionState && e.key === "Escape") {
+                if (mentionOpen && e.key === "Escape") {
                   e.preventDefault();
                   setMentionState(null);
                   return;
                 }
-                if (composerMenu && composerItems.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+                if (composerSuggestOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
                   e.preventDefault();
                   setComposerIndex((index) => (index + (e.key === "ArrowDown" ? 1 : -1) + composerItems.length) % composerItems.length);
                   return;
                 }
-                if (composerMenu && composerItems.length && e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                if (composerSuggestOpen && e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
                   insertComposerItem(composerItems[composerIndex]);
                   return;
@@ -6650,13 +6756,14 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     );
   }
   const isUser = m.role === "user";
-  // 统一输入区（D3，flag 开）：用户气泡用 chip 替代结构化标记原文，并补上 @智能体 提及 chip；
-  // flag 关闭时沿用基线文本与 references，渲染结果不变。
-  const bubbleReferences = isUser && unifiedComposer
-    ? [...(Array.isArray(m.references) ? m.references : []), ...parseAgentMentions(m.text || "")]
-      .filter((item, itemIndex, arr) => arr.findIndex((x) => x.id === item.id) === itemIndex)
-    : (Array.isArray(m.references) ? m.references : []);
-  const bubbleText = isUser && unifiedComposer ? stripReferenceMarkers(m.text || "") : m.text;
+  // 2026-11-11-005：引用在输入区以 token 承载，发送时再展开成 `@文件[…]` 写进消息文本。
+  // 因此用户气泡要反过来做一次“标记 → chip”：正文去掉结构化标记，chip 显示短名，
+  // 否则气泡里会重新冒出被刻意隐藏的长路径。按 kind+target 去重（历史引用 id 与解析 id 算法不同）。
+  const bubbleReferences = isUser
+    ? [...(Array.isArray(m.references) ? m.references : []), ...parseReferenceMarkers(m.text || ""), ...parseAgentMentions(m.text || "")]
+      .filter((item, itemIndex, arr) => arr.findIndex((x) => `${x.kind}:${x.target}` === `${item.kind}:${item.target}`) === itemIndex)
+    : [];
+  const bubbleText = isUser ? stripReferenceMarkers(m.text || "") : m.text;
   const blocks = m.blocks || [];
   const streaming = m.status === "streaming";
   const authoritativeFinalTextRaw = String(
@@ -7544,13 +7651,15 @@ function ReferenceChips({ references = [], onOpenFile, unified = false }) {
   return (
     <div className="msg-references" aria-label="本轮引用">
       {references.map((r) => {
-        const label = r.metadata?.name || r.metadata?.relativePath || r.target;
+        // 2026-11-11-005：气泡里的引用同样只显示短名（完整路径进 title），不再裸露 @长路径。
+        const meta = REFERENCE_KIND_META[r.kind] || REFERENCE_KIND_META.file;
+        const label = referenceChipLabel(r) || r.metadata?.name || r.metadata?.relativePath || pathBaseName(r.target || "") || r.target;
         const canOpen = r.kind === "file" && !!onOpenFile && r.status !== "missing";
-        const content = <><Icon name="file" size={12} /> @{label}</>;
+        const content = <><Icon name={meta.icon || "file"} size={12} /><span className="msg-reference-symbol">{meta.symbol || "@"}</span><span className="msg-reference-label">{label}</span></>;
         return canOpen ? (
-          <button type="button" className={`msg-reference-chip ${r.status || ""}`} key={r.id} onClick={() => onOpenFile(r.metadata?.relativePath || r.target)} title={`打开引用：${label}`}>{content}</button>
+          <button type="button" className={`msg-reference-chip ${r.status || ""}`} key={r.id} onClick={() => onOpenFile(r.metadata?.relativePath || r.target)} title={`打开引用：${r.target || label}`}>{content}</button>
         ) : (
-          <span className={`msg-reference-chip ${r.status || ""}`} key={r.id} title={r.message || label}>{content}</span>
+          <span className={`msg-reference-chip ${r.status || ""}`} key={r.id} title={r.message || `${meta.label || "引用"}：${r.target || label}`}>{content}</span>
         );
       })}
     </div>

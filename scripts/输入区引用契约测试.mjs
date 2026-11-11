@@ -64,8 +64,12 @@ test("ChatPanel 用 flag(\"composerUnified\")，默认 false，flagsReady 后补
 });
 
 test("flag 关闭时旧四触发器路径原样保留（旧菜单 + 提及菜单 + 旧解析器）", () => {
-  assert.match(chat, /\{!composerUnified && composerMenu && composerItems\.length > 0 && \(/, "旧 composer-suggestions 必须受 !composerUnified 保护");
-  assert.match(chat, /\{!composerUnified && mentionState && mentionFiltered\.length > 0 && \(/, "旧提及菜单必须受 !composerUnified 保护");
+  // 2026-11-11-002：渲染条件收敛为两个派生量（composerSuggestOpen / mentionOpen），
+  // 二者都在定义处带 !composerUnified，并额外保证「任一符号只出现一个面板」。
+  assert.match(chat, /const composerSuggestOpen = !composerUnified && Boolean\(composerMenu && composerItems\.length\)/, "旧 composer-suggestions 必须受 !composerUnified 保护");
+  assert.match(chat, /const mentionOpen = !composerUnified && !composerSuggestOpen && Boolean\(mentionState && mentionFiltered\.length\)/, "旧提及菜单必须受 !composerUnified 保护，且不与候选面板重叠");
+  assert.match(chat, /\{composerSuggestOpen && \(/, "旧 composer-suggestions 渲染出口变化");
+  assert.match(chat, /\{mentionOpen && \(/, "旧提及菜单渲染出口变化");
   assert.match(chat, /const composerTrigger = \(value\) =>/, "旧触发器保留");
   assert.match(chat, /function parseReferenceMarkers\(text = ""\)/, "旧解析器保留（flag 关基线）");
 });
@@ -162,7 +166,9 @@ test("chip 三态映射：已解析 / 待解析 / 缺失，状态不只靠颜色
 
 test("气泡 chip 扩展 skill/plugin/session/agent，并剥离原始标记文本", () => {
   assert.match(chat, /stripReferenceMarkers/, "气泡未剥离原始标记");
-  assert.match(chat, /const bubbleReferences = isUser && unifiedComposer/, "用户气泡 references 未按开关派生");
+  // 2026-11-11-002：引用改为「输入区 token → 发送时展开标记」后，气泡必须无条件
+  // 把标记还原成 chip（不再按 composerUnified 开关派生），否则 flag 关时气泡会重新露出长路径。
+  assert.match(chat, /const bubbleReferences = isUser\b/, "用户气泡 references 必须与开关解耦");
   assert.match(chat, /parseAgentMentions\(m\.text \|\| ""\)/, "气泡未补 @智能体 chip");
   const chipsStart = chat.indexOf("function ReferenceChips({ references = [], onOpenFile, unified = false })");
   assert.ok(chipsStart > 0, "ReferenceChips 缺少 unified 参数");
@@ -170,8 +176,9 @@ test("气泡 chip 扩展 skill/plugin/session/agent，并剥离原始标记文�
   assert.match(chipsBlock, /REFERENCE_KIND_META\[r\.kind\]/, "气泡 chip 未按类型渲染");
   assert.match(chipsBlock, /referenceStatusTone\(r\)/, "气泡 chip 未显示服务端解析状态");
   assert.match(chipsBlock, /unified\) \{/, "ReferenceChips 缺少统一分支");
-  // flag 关时保留旧的 @label 渲染
-  assert.match(chipsBlock, /@\{label\}/, "基线气泡 chip 渲染被破坏");
+  // flag 关时也按类型图标 + 短名渲染（不再裸露 @长路径）
+  assert.match(chipsBlock, /referenceChipLabel\(r\)/, "基线气泡 chip 未使用短名");
+  assert.match(chipsBlock, /msg-reference-symbol/, "基线气泡 chip 缺少类型符号");
 });
 
 console.log("\n▶ 键盘 / IME / Esc 分层");

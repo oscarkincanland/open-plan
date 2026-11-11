@@ -145,7 +145,7 @@ function 场景(name, fn) {
   assert.doesNotMatch(css, /\.chat-input > \.task-card/, "旧的「输入框内任务卡」选择器应已移除");
   assert.match(css, /\.center-chat-slot \.chat-body \{ min-height: 120px; \}/, "对话区要有高度下限");
   assert.match(css, /@media \(max-height: 560px\)[\s\S]{0,200}\.chat-target-bar \{ display: none; \}/, "矮窗口先收起目标范围行");
-  assert.match(css, /@media \(max-height: 470px\)[\s\S]{0,120}\.busy-input-mode \{ display: none; \}/, "更矮时收起忙时提示行");
+  assert.match(css, /@media \(max-height: 470px\)[\s\S]{0,200}\.composer-token-bar \.busy-delivery \{ display: none; \}/, "更矮时收起投递方式控件（原忙时提示行已并入卡内 token 行）");
 });
 
 场景("任务清单弹层：按卡片上方可用空间夹取高度，不再被外层裁掉", () => {
