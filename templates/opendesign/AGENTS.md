@@ -1,62 +1,33 @@
-# design-templates
+# OpenDesign 模板目录（本项目口径）
 
-This directory holds **design templates** — packaged "shapes" the agent
-renders into a project artifact (decks, prototypes, image/video/audio
-templates, …). Each entry is a folder with a `SKILL.md` (same shape as
-functional skills) plus rendering side files (`example.html`,
-`assets/`, `references/`, …).
+> 2026-11-11 整理后替换上游残留文档（原文描述上游的 design-templates 注册表与 `od.mode`，
+> 本项目不存在该机制）。整理依据：[模板库审查报告](../../docs/audits/2026-11-10-模板库审查/审查报告.md)、
+> [整理方案](../../docs/plans/2026-11-10-008-模板库整理方案.md)。
 
-If the entry primarily *does work* on user input — utilities, briefs,
-asset packagers, fidelity audits — it belongs under `../skills/`
-instead. See `specs/current/skills-and-design-templates.md` for the
-full split.
+## 这个目录在本项目里是什么
 
-## Daemon plumbing
+1. **模板库页面**（模板库「HTML PPT（OpenDesign）」分类）的数据源：`server/tpl.mjs` 扫描本目录，
+   只收录每个模板目录下的 `example.html` 作为预览入口（深度 ≤5，跳过 assets/themes/animations/fonts/scripts/docs/references/examples）。
+2. **Agent 的 HTML 风格参考库**：写 PPT/演示/海报/网页类产物时，agent 用 read 读取
+   `templates/opendesign/<模板名>/example.html` 照其风格与结构生成，产物写入当前工作区。
 
-- Listed under `/api/design-templates`. The shape mirrors `/api/skills`
-  (same `SkillSummary`/`SkillDetail` types) so the web client can
-  reuse a single `SkillSummary[]` consumer for both surfaces.
-- Asset and example routes (`/api/skills/:id/example`,
-  `/api/skills/:id/assets/*`) intentionally span both registries — the
-  example HTML rewrites to `/api/skills/<id>/...` regardless of which
-  root owns the folder, so URLs keep resolving after the split.
-- Surfaced in the New-project panel's per-mode "Start from" rail as the
-  rendering catalogue; the redesigned home has no top-level Templates tab.
+## 保留范围（整理后）
 
-## Adding a design template
+- **核心**：`html-ppt-*` 演示风格 47 款（32 款 zhangzara + 15 款专题）+ `html-ppt`、`guizang-ppt` 两个集合
+  ——对应"PPT 与 HTML 汇报材料"目标，是 agent 提示词点名的参考来源。
+- **通用汇报周边**：dashboard / docs-page / meeting-notes / magazine-poster / wireframe / web-prototype 等。
+- 2026-11-11 已移除 24 个与交通规划无关或无法预览的目录（open-design-landing 22.4MB、
+  dating-web、clinical-case-report、audio-jingle、invoice、orbit-gmail 等），目录体积 28.4MB → 5.2MB。
+  删除记录见 git 历史与整理方案 F 组清单。
 
-1. Create `design-templates/<my-template>/SKILL.md` with `name`,
-   `description`, `triggers`, and an explicit `od.mode` (one of
-   `prototype`, `deck`, `template`, `image`, `video`, `audio`).
-2. Ship a baked `example.html` (and any side files) so the shared example and
-   asset routes have preview content to serve.
-3. Optionally drop additional baked samples under `examples/<key>.html`
-   to surface them as derived `<parent>:<key>` cards.
+## 新增模板约定
 
-## Deck preview navigation contract
+1. 每个模板一个目录，**必须**提供 `example.html`（唯一预览入口），否则模板库不展示。
+2. 示例页的样式/脚本/字体放在目录内（`assets/` 等），保持自包含、可离线打开；单模板目录建议 ≤5MB。
+3. 上游自带的 `SKILL.md` 可保留作文档，但本项目不加载 `od.mode`、不注册到任何技能注册表。
+4. deck 类模板请自带翻页逻辑（键盘/滚轮/触摸），不要依赖宿主页面补导航。
 
-Any template with `od.mode: deck` must make its baked `example.html`
-usable inside the gallery iframe without relying on the host app to add
-navigation. Use a shared deck runtime where one is available; otherwise
-ship a tiny local runtime with the same minimum behavior.
+## 不要做的事
 
-- **Keyboard:** `ArrowRight` / `ArrowDown` / `PageDown` / `Space` move to
-  the next slide; `ArrowLeft` / `ArrowUp` / `PageUp` move to the previous
-  slide; `Home` and `End` jump to the first and last slide. Ignore events
-  from inputs, selects, textareas, and editable regions.
-- **Wheel / trackpad:** accumulated `deltaX + deltaY` past a small threshold
-  moves exactly one slide, then resets quickly so a single gesture does not
-  overshoot.
-- **Touch:** a horizontal swipe of roughly 50px or more, greater than the
-  vertical movement, moves previous / next.
-- **Dots:** render one clickable button per slide, update the active dot on
-  every navigation path, and mark it with `aria-current="true"`.
-- **Active slide state:** keep the visible slide marked with
-  `.slide.active`; adding `.is-active` as a compatibility alias is fine.
-  Open Design's preview bridge reads this state for the host slide counter,
-  so it must stay in sync with keyboard, wheel, touch, and dot navigation.
-- **Iframe safety:** focus the deck on load / pointer interaction so keyboard
-  navigation works after the gallery preview appears. Avoid
-  `scrollIntoView()` because it can move the parent page instead of the deck.
-- **Fallbacks:** no-script and print output should still expose every slide.
-  Hide non-active slides only after the runtime has booted.
+- 不要把本目录当成 `.claude/skills/` 的替代：需要"执行能力"的放技能，纯"版式参考"的放这里。
+- 不要放入含用户数据、真实项目截图或受版权限制的素材。

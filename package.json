@@ -151,6 +151,7 @@
     "test:canvas-template": "node scripts/创作画布模板测试.mjs",
     "test:canvas-export": "node scripts/创作画布导出测试.mjs",
     "test:canvas-ui": "node scripts/创作画布界面接线测试.mjs",
+    "test:template-integrity": "node scripts/规划模板完整性测试.mjs",
     "test:map-layers": "node scripts/地图图层模型与入口测试.mjs",
     "test:map-layers:live": "node scripts/地图图层入口场景测试.mjs",
     "test:map-visual": "node scripts/地图可视化统一与面板整合测试.mjs",

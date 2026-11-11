@@ -25,7 +25,7 @@ const AGENTS_MD = `# 项目规则（Open Plan 工作区）
 
 ## 2. 交付与文件
 - 所有产物写入当前工作区；中间文件放 \`.work/\`，收尾清理。
-- 写交通规划文体前，先读 \`templates/traffic-material/\` 对应模板（14 类），按其章节骨架写作，不凭记忆自造结构。
+- 写交通规划文体前，先读 \`templates/traffic-material/\` 对应模板（13 份写作模板 + 1 份素材库维护文档），按其章节骨架写作，不凭记忆自造结构。
 - 新建 Word/Excel/PPT 优先内置 OOXML 引擎；修改既有文档先用 officecli \`view/get\` 确认真实路径，再 \`set/add\`。
 - Word 批注先用 \`get/query\` 找真实段落路径，再 \`add --type comment\`，完成后回读校验。
 
@@ -51,7 +51,7 @@ const MEMORY_MD = `# 记忆索引
 
 ## 项目信息
 - 当前工作区默认用于交通规划文档、地图与数据分析；产物必须落在本工作区。
-- 规划素材模板在项目目录 \`templates/traffic-material/\`（不在工作区），共 14 类。
+- 规划素材模板在项目目录 \`templates/traffic-material/\`（不在工作区），共 13 份写作模板 + 1 份素材库维护文档。
 
 ## 工作规则
 - 写交通规划文体前先读对应模板，不要凭记忆自造章节结构。
