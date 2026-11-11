@@ -87,6 +87,7 @@ import {
   writeDefaultModel,
 } from "./Pi配置管理.mjs";
 import * as planCatalog from "./套餐目录.mjs";
+import { normalizeModelId } from "./模型标识.mjs";
 import { builtinProviderDetail, builtinProviderList, buildBuiltinImport, findBuiltinModel, invalidateMergedCatalog } from "./供应商目录.mjs";
 import { fetchModelsDevCatalog, readModelsDevCache, writeModelsDevCache } from "./模型目录dev.mjs";
 
@@ -1800,8 +1801,10 @@ function validateModelConfigInput(input = {}) {
   const models = Array.isArray(input.models) ? input.models : [];
   if (!models.length) throw new Error("至少配置一个模型");
   const normalizedModels = models.slice(0, 100).map((item) => {
-    const id = String(item?.id || "").trim();
-    if (!/^[^/\\\s]{1,160}$/.test(id)) throw new Error("模型 ID 不能为空，且不能包含斜线或空格");
+    // 2026-11-11-003：允许斜线（Command Code 的 deepseek/...、Qwen/...），
+    // 只拒绝空白、反斜线与路径穿越；运行时会按第一个斜线切分 provider。
+    const id = normalizeModelId(item?.id);
+    if (!id) throw new Error("模型 ID 不能为空，且不能包含空格、反斜线或路径穿越");
     const contextWindow = Number(item?.contextWindow);
     return {
       id,
@@ -1875,12 +1878,22 @@ app.post("/api/agent/model-configs", async (req, res) => {
     if (input.models.some((model) => !model.contextWindow)) {
       try {
         const catalog = await agentManager.listModelCatalog();
-        const known = new Map((catalog.models || []).map((m) => [String(m.id).split("/").pop(), Number(m.contextWindow || m.contextLength || 0)]));
+        const known = new Map();
+        for (const item of catalog.models || []) {
+          const window = Number(item.contextWindow || item.contextLength || 0);
+          if (window <= 0) continue;
+          const fullId = String(item.id || "");
+          if (!fullId) continue;
+          known.set(fullId, window);
+          const bareId = fullId.split("/").pop();
+          if (bareId && !known.has(bareId)) known.set(bareId, window);
+        }
         for (const model of input.models) {
-          if (!model.contextWindow && known.has(String(model.id).split("/").pop())) {
-            const window = known.get(String(model.id).split("/").pop());
-            if (window > 0) model.contextWindow = window;
-          }
+          if (model.contextWindow) continue;
+          const fullId = String(model.id);
+          // 先按完整 ID（provider/model）匹配；带斜线的模型 ID 再回退到最后一段。
+          const window = known.get(fullId) || known.get(fullId.split("/").pop()) || 0;
+          if (window > 0) model.contextWindow = window;
         }
       } catch {}
     }
@@ -2212,13 +2225,15 @@ app.post("/api/agent/custom-provider", (req, res) => {
   const provider = String(req.body?.provider || "").trim();
   const baseUrl = String(req.body?.baseUrl || "").trim().replace(/\/+$/, "");
   const api = String(req.body?.api || "openai-completions").trim();
-  const modelId = String(req.body?.modelId || "").trim();
-  const modelName = String(req.body?.modelName || modelId).trim() || modelId;
+  const modelIdInput = String(req.body?.modelId || "").trim();
+  const modelName = String(req.body?.modelName || modelIdInput).trim() || modelIdInput;
   const allowedApis = new Set(["openai-completions", "anthropic-messages", "openai-codex-responses"]);
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(provider)) return res.status(400).json({ ok: false, error: "供应商 ID 需为 2-64 位英文、数字、点、下划线或短横线", code: "CUSTOM_PROVIDER_INVALID" });
   if (!/^https?:\/\//i.test(baseUrl)) return res.status(400).json({ ok: false, error: "接口地址必须以 http:// 或 https:// 开头", code: "CUSTOM_BASE_URL_INVALID" });
   if (!allowedApis.has(api)) return res.status(400).json({ ok: false, error: "暂只支持 OpenAI Completions、Anthropic Messages 或 OpenAI Responses", code: "CUSTOM_API_INVALID" });
-  if (!/^[^/\\\s]{1,160}$/.test(modelId)) return res.status(400).json({ ok: false, error: "模型 ID 不能为空，且不能包含斜线或空格", code: "CUSTOM_MODEL_INVALID" });
+  // 2026-11-11-003：与 /api/agent/model-configs 共用斜线规则，避免两条保存路径行为不一致。
+  const modelId = normalizeModelId(modelIdInput);
+  if (!modelId) return res.status(400).json({ ok: false, error: "模型 ID 不能为空，且不能包含空格、反斜线或路径穿越", code: "CUSTOM_MODEL_INVALID" });
   try {
     const config = readModelsConfig() || {};
     const providers = config.providers && typeof config.providers === "object" ? config.providers : {};
