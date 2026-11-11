@@ -14000,17 +14000,8 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   50% { box-shadow: 0 0 18px 6px rgba(74, 144, 217, 0.55); }
 }
 
-/* ── 底部板条（2026-11-11-004 §3.6）：画板缩略导航条 ── */
-.oaw-canvas-strip {
-  display: flex;
-  align-items: stretch;
-  gap: 6px;
-  flex: 0 0 auto;
-  padding: 6px 8px;
-  border-top: 1px solid var(--border);
-  background: var(--panel-bg);
-}
-.oaw-canvas-strip-toggle {
+/* ── 画板缩略条增量（2026-11-11-004 §3.6；同日去重合并入 oaw-canvas-deck 条） ── */
+.oaw-canvas-deck-toggle {
   flex: 0 0 auto;
   align-self: center;
   display: inline-flex;
@@ -14025,31 +14016,23 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   color: var(--muted);
   cursor: pointer;
 }
-.oaw-canvas-strip-toggle:hover { color: var(--text); background: var(--surface); }
-.oaw-canvas-strip-toggle.collapsed svg { transform: rotate(180deg); }
-.oaw-canvas-strip-scroll {
-  display: flex;
-  gap: 8px;
-  min-width: 0;
-  overflow-x: auto;
-  scroll-behavior: smooth;
-  padding-bottom: 2px;
+.oaw-canvas-deck-toggle:hover { color: var(--text); background: var(--surface); }
+.oaw-canvas-deck.collapsed .oaw-canvas-deck-toggle svg { transform: rotate(180deg); }
+.oaw-canvas-deck.collapsed .oaw-canvas-deck-item { display: none; }
+.oaw-canvas-deck-item.agent-editing .oaw-canvas-deck-thumb { border-color: var(--map-accent); }
+.oaw-canvas-deck-item.agent-editing .oaw-canvas-deck-index { color: var(--map-accent); }
+.oaw-canvas-deck-agent {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--map-accent);
+  animation: oaw-agent-pulse 1.6s ease-in-out infinite;
 }
-.oaw-canvas-strip-card {
-  flex: 0 0 auto;
-  width: 96px;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--panel2-bg);
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
-}
-.oaw-canvas-strip-card:hover { border-color: color-mix(in srgb, var(--map-accent) 45%, var(--border)); }
-.oaw-canvas-strip-card.active { border-color: var(--map-accent); box-shadow: 0 0 0 1px var(--map-accent); }
-.oaw-canvas-strip-card.active .oaw-canvas-strip-label { color: var(--map-accent); }
-.oaw-canvas-strip-card.agent-editing { border-color: var(--map-accent); }
+
+/* ── 缩略色块（全览浮层卡片复用；类名沿用 strip 前缀以减少迁移面） ── */
 .oaw-canvas-strip-thumb {
   position: relative;
   display: block;
@@ -14072,15 +14055,6 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 @keyframes oaw-strip-shimmer {
   from { background-position: 180% 0; }
   to { background-position: -80% 0; }
-}
-.oaw-canvas-strip-label {
-  display: block;
-  margin-top: 4px;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: var(--font-micro);
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 /* ── 全览浮层（2026-11-11-004 §3.6）：网格总览 ── */

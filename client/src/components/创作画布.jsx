@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
 import { askConfirm, askText, notifyError, notifySuccess, notifyWarn } from "./Feedback.jsx";
-import 画布板条 from "./画布板条.jsx";
 import 画布全览 from "./画布全览.jsx";
 import * as 接口 from "../api.js";
 import {
@@ -2248,15 +2247,29 @@ export default function 创作画布({
               </div>
             )}
 
-            <div className={`oaw-canvas-deck ${deck模式 ? "" : "boards"}`} role="list" aria-label={deck模式 ? "幻灯片缩略条" : "画板列表"}>
-              {(deck模式 ? 幻灯列表 : 显示板列表).map((项, 序号) => {
+            <div className={`oaw-canvas-deck ${deck模式 ? "" : "boards"} ${板条折叠 ? "collapsed" : ""}`} role="list" aria-label={deck模式 ? "幻灯片缩略条" : "画板列表"}>
+              {/* 2026-11-11-004 增量（去重合并）：原缩略条并入折叠按钮；播放态隐藏整条。 */}
+              {!播放中 && (
+                <button
+                  type="button"
+                  className="oaw-canvas-deck-toggle"
+                  onClick={切换板条折叠}
+                  aria-expanded={!板条折叠}
+                  aria-label={板条折叠 ? "展开缩略条" : "折叠缩略条"}
+                  title={板条折叠 ? "展开缩略条" : "折叠缩略条"}
+                >
+                  <Icon name="chevronDown" size={12} />
+                </button>
+              )}
+              {!播放中 && (deck模式 ? 幻灯列表 : 显示板列表).map((项, 序号) => {
                 const 是当前 = 项.path === 当前板路径;
+                const 是agent板 = Boolean(agent活动.active) && 项.path === agent编辑板;
                 const 板 = 板数据[项.path];
                 return (
                   <div
                     key={项.path}
                     role="listitem"
-                    className={`oaw-canvas-deck-item ${是当前 ? "active" : ""}`}
+                    className={`oaw-canvas-deck-item ${是当前 ? "active" : ""} ${是agent板 ? "agent-editing" : ""}`}
                     draggable
                     onDragStart={(事件) => {
                       事件.dataTransfer.effectAllowed = "move";
@@ -2272,13 +2285,14 @@ export default function 创作画布({
                     <button
                       type="button"
                       className="oaw-canvas-deck-thumb"
-                      onClick={() => { set当前板路径(项.path); set选中元素(""); set编辑元素(""); }}
+                      onClick={() => { 定位到板(项.path); set选中元素(""); set编辑元素(""); }}
                       aria-current={是当前}
                       aria-label={`${deck模式 ? "幻灯片" : "画板"} ${序号 + 1}：${项.title}`}
                       title={项.title}
                       style={{ aspectRatio: `${项.w} / ${项.h}` }}
                     >
-                      {板 && Array.isArray(板.elements) ? (
+                    {是agent板 && <i className="oaw-canvas-deck-agent" title="Agent 正在编辑此画板" aria-label="Agent 正在编辑此画板" />}
+                    {板 && Array.isArray(板.elements) ? (
                         <span className="oaw-canvas-deck-mini">
                           {板.elements.slice(0, 12).map((元素) => (
                             <i
@@ -2306,20 +2320,6 @@ export default function 创作画布({
                 );
               })}
             </div>
-
-            {/* 底部板条（2026-11-11-004 §3.6）：画板缩略导航（视口下方），播放态隐藏。 */}
-            {!播放中 && (
-              <画布板条
-                boards={板列表}
-                boardData={板数据}
-                activePath={当前板路径}
-                agentBoard={agent编辑板}
-                agentActive={Boolean(agent活动.active)}
-                collapsed={板条折叠}
-                onToggleCollapsed={切换板条折叠}
-                onSelect={定位到板}
-              />
-            )}
           </div>
 
           {选中对象 && !只读 && (

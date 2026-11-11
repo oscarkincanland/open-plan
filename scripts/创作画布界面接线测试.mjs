@@ -478,7 +478,6 @@ test("零新依赖：画布相关新文件只 import react 与仓内相对模块
   for (const [文件, 源码] of [
     ["client/src/components/创作画布.jsx", 画布源码],
     ["client/src/components/创作画布导出视图.jsx", 导出视图源码],
-    ["client/src/components/画布板条.jsx", read("client/src/components/画布板条.jsx")],
     ["client/src/components/画布全览.jsx", read("client/src/components/画布全览.jsx")],
     ["client/src/画布/画布模型.js", 模型源码],
   ]) {
