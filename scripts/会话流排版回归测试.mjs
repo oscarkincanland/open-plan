@@ -47,7 +47,7 @@ await test("总结不再有 cap / 分节标签 / 做了什么行", () => {
 
 await test("结论与详细展开合并为一段连续正文", () => {
   assert.match(summaryBlock, /className="sum-body"/);
-  assert.match(summaryBlock, /<MarkdownBody onOpenFile=\{onOpenFile\} artifacts=\{artifacts\} numberSections>/);
+  assert.match(summaryBlock, /<MarkdownBody onOpenFile=\{onOpenFile\} artifacts=\{artifacts\} numberSections(?:[^>]*)>/);
   assert.match(chatPanel, /\[summaryParts\.conclusion, summaryParts\.detail\]\.filter\(Boolean\)\.join\("\\n\\n"\)/);
 });
 
@@ -145,9 +145,32 @@ await test("表格字号跟随宿主（不再写死 12px）", () => {
   assert.doesNotMatch(rule, /font-size: 12px/);
 });
 
-await test("总结区表格保持 display:table，滚动交给外层", () => {
-  assert.match(styles, /\.sum-body \.markdown-body table \{ display: table;/);
-  assert.match(styles, /\.sum-body \.markdown-body \{ overflow-x: auto; \}/);
+await test("总结区表格只保留一层滚动（不再叠加 overflow-x）", () => {
+  // 2026-11-14（计划 2026-11-14-002 P0）：删除 .sum-body 上多余的 overflow-x，
+  // 滚动只由 MarkdownBody 的 .md-table-wrap 提供，避免双滚动条与表头错位。
+  assert.doesNotMatch(styles, /\.sum-body \.markdown-body \{ overflow-x: auto; \}/);
+  assert.match(styles, /\.md-table-wrap \{ overflow-x: auto; \}/);
+});
+
+await test("文档表：只保留横线，不再全网格 + 表头实底", () => {
+  const cellRule = styles.match(/^\.markdown-body th, \.markdown-body td \{[^}]*\}/m)?.[0] || "";
+  assert.ok(cellRule, "未找到单元格规则");
+  assert.match(cellRule, /border: 0;/);
+  assert.match(cellRule, /border-bottom: 0\.5px solid/);
+  assert.doesNotMatch(cellRule, /border: 1px solid/);
+  const thRule = styles.match(/^\.markdown-body th \{[^}]*\}/m)?.[0] || "";
+  assert.ok(thRule, "未找到表头规则");
+  assert.doesNotMatch(thRule, /background:/, "表头不应再铺实底");
+});
+
+await test("结论区文档化：目录条 + 复制 Markdown", () => {
+  const md = read("client/src/components/MarkdownBody.jsx");
+  assert.match(md, /function extractTopSections/);
+  assert.match(md, /className="md-doc-bar"/);
+  assert.match(md, /className="md-doc-toc"/);
+  assert.match(md, /navigator\.clipboard\.writeText/);
+  assert.match(summaryBlock, /docToc copyable/);
+  assert.match(styles, /\.md-doc-toc-item/);
 });
 
 await test("表格数字列使用等宽数字", () => {

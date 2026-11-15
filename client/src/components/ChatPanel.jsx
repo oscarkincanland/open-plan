@@ -6218,12 +6218,12 @@ function normalizeThinkingText(value) {
     .trim();
 }
 
-function SafeMarkdown({ text, onOpenFile, artifacts, numberSections = false }) {
+function SafeMarkdown({ text, onOpenFile, artifacts, numberSections = false, docToc = false }) {
   const [showRaw, setShowRaw] = useState(false);
   if (!text) return null;
   // 结论正文开启「一、二、三」自动编号（渲染层确定性兜底，见 markdown规范化.js）：
   // 只有助手最终答复/结论才算分节文档；阶段小结、思考、工具输出不编号。
-  if (text.length <= MAX_MARKDOWN_CHARS) return <MarkdownBody onOpenFile={onOpenFile} artifacts={artifacts} numberSections={numberSections}>{text}</MarkdownBody>;
+  if (text.length <= MAX_MARKDOWN_CHARS) return <MarkdownBody onOpenFile={onOpenFile} artifacts={artifacts} numberSections={numberSections} docToc={docToc} copyable={docToc}>{text}</MarkdownBody>;
   if (!showRaw) {
     return (
       <button className="large-msg-reveal" onClick={() => setShowRaw(true)}>
@@ -6430,7 +6430,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
           {fallbackSummary && (
             <div className="run-result-fallback">
               <strong>本轮总结</strong>
-              <SafeMarkdown text={fallbackSummary} onOpenFile={onOpenFile} artifacts={products.length ? products : null} numberSections />
+              <SafeMarkdown text={fallbackSummary} onOpenFile={onOpenFile} artifacts={products.length ? products : null} numberSections docToc />
             </div>
           )}
           {!!completion?.incomplete?.length && <div className="run-result-note warn">未完成：{completion.incomplete.join("；")}</div>}
@@ -7499,7 +7499,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
             </div>
             {!streaming && authoritativeFinalText && !replaceLegacyFinalCandidate && !summaryCoversFinal && (
               <>
-                <div className="flow-markdown assistant-final-answer"><SafeMarkdown text={clampAnswer(authoritativeFinalText)} onOpenFile={onOpenFile} artifacts={answerArtifacts} numberSections /></div>
+                <div className="flow-markdown assistant-final-answer"><SafeMarkdown text={clampAnswer(authoritativeFinalText)} onOpenFile={onOpenFile} artifacts={answerArtifacts} numberSections docToc /></div>
                 {answerClamped && (
                   <button type="button" className="answer-detail-toggle" onClick={() => setAnswerExpanded((value) => !value)} aria-expanded={answerExpanded}>
                     {answerExpanded ? "收起完整答案" : "展开完整答案"}

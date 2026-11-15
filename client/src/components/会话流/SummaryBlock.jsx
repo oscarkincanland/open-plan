@@ -21,7 +21,9 @@ export default function SummaryBlock({ body = "", onOpenFile = null, artifacts =
         {text.length <= MAX_MARKDOWN_CHARS
           // 结论正文是"分节文档"，开启二级标题自动编号（一、二、三）：
           // 这是用户可见的最终结论区，编号在渲染层确定性生成，不依赖模型是否听话。
-          ? <MarkdownBody onOpenFile={onOpenFile} artifacts={artifacts} numberSections>{text}</MarkdownBody>
+          // 2026-11-14（计划 2026-11-14-002 P1）：结论区按"文档"呈现——二级标题 >= 3 时
+          // 在正文上方出本文目录，并提供"复制 Markdown"（复制模型终稿原文）。
+          ? <MarkdownBody onOpenFile={onOpenFile} artifacts={artifacts} numberSections docToc copyable>{text}</MarkdownBody>
           : <pre className="large-msg-raw">{text}</pre>}
       </div>
     </div>

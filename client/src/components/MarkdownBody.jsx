@@ -1,4 +1,4 @@
-import React, { memo, useEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -7,6 +7,7 @@ import remarkToc from "remark-toc";
 import Icon from "./Icon.jsx";
 import { buildArtifactIndex, resolveArtifactTarget, normalizeLocalFileHref } from "../产物类型.js";
 import { normalizeAtxHeadings, numberTopLevelSections } from "../markdown规范化.js";
+import { motionScrollBehavior } from "../界面外观.js";
 
 /**
  * 统一 Markdown 渲染组件（聊天消息 + MD 文档共用）
@@ -133,9 +134,55 @@ function MdCodeBlock({ lang, text, children }) {
   );
 }
 
-function MarkdownBody({ children, className = "", withToc = false, onTagClick, onWikilinkHover, onOpenFile, artifacts, numberSections = false }) {
+/**
+ * 从渲染前的 Markdown 源里提取二级标题，供结论区的"本文目录"使用。
+ * 编号（一、二、三）已经由 numberTopLevelSections 写在源里，所以目录文字直接可用；
+ * 围栏代码块里的 ## 不算标题。2026-11-14（计划 2026-11-14-002）。
+ */
+function extractTopSections(text) {
+  const sections = [];
+  let fenced = false;
+  for (const line of String(text || "").split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) { fenced = !fenced; continue; }
+    if (fenced) continue;
+    const match = /^##\s+(.+?)\s*#*\s*$/.exec(line);
+    if (match) {
+      const title = match[1].replace(/[*_`]/g, "").trim();
+      if (title) sections.push(title);
+    }
+  }
+  return sections;
+}
+
+/**
+ * 统计一张 Markdown 表格的列数（含 colSpan），写进 CSS 变量 `--md-table-cols`，
+ * 让样式层按列数给最小宽度：窄屏宁可横向滚动，也不把长标识压成碎词。
+ * 2026-11-14（计划 2026-11-14-002 P0）。
+ */
+function countTableColumns(children) {
+  const rows = [];
+  React.Children.forEach(children, (child) => {
+    if (!React.isValidElement(child)) return;
+    const type = child.type;
+    if (typeof type === "string" && (type === "thead" || type === "tbody" || type === "tfoot")) {
+      React.Children.forEach(child.props.children, (row) => { if (React.isValidElement(row)) rows.push(row); });
+    } else {
+      rows.push(child);
+    }
+  });
+  for (const row of rows) {
+    const cells = React.Children.toArray(row.props?.children).filter(React.isValidElement);
+    if (cells.length) return cells.reduce((total, cell) => total + (Number(cell.props.colSpan) || 1), 0);
+  }
+  return 1;
+}
+
+function MarkdownBody({ children, className = "", withToc = false, onTagClick, onWikilinkHover, onOpenFile, artifacts, numberSections = false, docToc = false, copyable = false }) {
   const [heavyPlugins, setHeavyPlugins] = useState(null);
   const [lightbox, setLightbox] = useState(null);
+  // 结论区文档化：本文目录 + 复制原文（计划 2026-11-14-002 P1）
+  const [copyState, setCopyState] = useState("");
+  const docRef = useRef(null);
   // 回调经 ref 取最新值：下面 components 映射只建一次，避免每次渲染都生成新的组件函数——
   // 否则 react-markdown 会把 table/code/img 等自定义节点整体卸载重建（实测闲聊页
   // 每秒产生约 500 次 DOM 变动，主线程长期占用导致界面"非常卡"）。2026-11-10。
@@ -178,6 +225,30 @@ function MarkdownBody({ children, className = "", withToc = false, onTagClick, o
     return linkifyArtifactMentions(withWikilinks, artifactIndex);
   }, [children, onWikilinkHover, artifactIndex, numberSections]);
 
+  // 结论区目录：只在显式要求（docToc）且二级标题 >= 3 时出现——少于三节时目录只是噪音。
+  const sections = useMemo(() => (docToc ? extractTopSections(processed) : []), [docToc, processed]);
+  // 目录：至少三节；复制：正文够长才给，避免一句话答复上面挂一排按钮。
+  const showToc = sections.length >= 3;
+  const showCopy = copyable && String(children || "").length > 240;
+  const showDocBar = showToc || showCopy;
+
+  const jumpToSection = useCallback((index) => {
+    const root = docRef.current;
+    if (!root) return;
+    const heading = root.querySelectorAll("h2")[index];
+    if (heading) heading.scrollIntoView({ behavior: motionScrollBehavior(), block: "start" });
+  }, []);
+
+  const copyDoc = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(String(children || ""));
+      setCopyState("ok");
+    } catch {
+      setCopyState("fail");
+    }
+    setTimeout(() => setCopyState(""), 1500);
+  }, [children]);
+
   const rehypePlugins = useMemo(() => {
     const plugins = [];
     if (heavyPlugins?.katex) plugins.push(heavyPlugins.katex);
@@ -209,7 +280,7 @@ function MarkdownBody({ children, className = "", withToc = false, onTagClick, o
     // 表格容器：允许横向滚动
     table: ({ children: kids }) => (
       <div className="md-table-wrap">
-        <table>{kids}</table>
+        <table style={{ "--md-table-cols": String(countTableColumns(kids)) }}>{kids}</table>
       </div>
     ),
     // 图片：最大宽度 + 圆角；点击打开灯箱（Esc / 点遮罩关闭）
@@ -275,7 +346,30 @@ function MarkdownBody({ children, className = "", withToc = false, onTagClick, o
   }), [artifactIndex]);
 
   return (
-    <div className={`markdown-body ${className}`}>
+    <div className={`markdown-body ${className}`} ref={docRef}>
+      {showDocBar && (
+        <div className="md-doc-bar">
+          {showToc ? (
+            <nav className="md-doc-toc" aria-label="本文目录">
+              <span className="md-doc-toc-label"><Icon name="list" size={13} />目录</span>
+              {sections.map((title, index) => (
+                <button
+                  key={`${index}-${title}`}
+                  type="button"
+                  className="md-doc-toc-item"
+                  onClick={() => jumpToSection(index)}
+                  title={`跳到：${title}`}
+                >{title}</button>
+              ))}
+            </nav>
+          ) : <span className="md-doc-toc-label" />}
+          {showCopy && (
+            <button type="button" className="md-doc-copy" onClick={copyDoc}>
+              {copyState === "ok" ? "已复制" : copyState === "fail" ? "复制失败" : "复制 Markdown"}
+            </button>
+          )}
+        </div>
+      )}
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath, ...(withToc ? [[remarkToc, { maxDepth: 3 }]] : [])]}
         rehypePlugins={rehypePlugins}
@@ -309,6 +403,8 @@ function sameMarkdownProps(prev, next) {
     && prev.className === next.className
     && prev.withToc === next.withToc
     && prev.numberSections === next.numberSections
+    && prev.docToc === next.docToc
+    && prev.copyable === next.copyable
     && prev.artifacts === next.artifacts
     && (typeof prev.onOpenFile === "function") === (typeof next.onOpenFile === "function");
 }

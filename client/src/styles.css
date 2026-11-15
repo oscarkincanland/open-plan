@@ -563,7 +563,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .task-center-completion-note.warn { color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); }
 .task-center-completion-markdown { color: var(--text); }
 .task-center-completion-label { margin-bottom: 3px; color: var(--muted); font-weight: 600; }
-.task-center-completion-markdown .markdown-body { font-size: 10.5px; line-height: 1.7; color: var(--text); }
+.task-center-completion-markdown .markdown-body { font-size: 12px; line-height: 1.7; color: var(--text); }
 .task-center-completion-markdown .markdown-body p { margin: 3px 0; }
 .task-center-completion-markdown .markdown-body ul,
 .task-center-completion-markdown .markdown-body ol { margin: 4px 0 4px 16px; padding-left: 4px; }
@@ -662,7 +662,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 }
 
 .mdview .markdown-body { 
-  font-size: 13px; 
+  font-size: 14px; 
   max-width: 800px;
 }
 /* 让 mdview 在 flex 容器中正确滚动 */
@@ -1231,8 +1231,11 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 
 /* ===== markdown 渲染（assistant 消息） ===== */
 .markdown-body {
-  font-size: 13px;
-  line-height: 1.8;
+  /* 2026-11-14（计划 2026-11-14-002）：Markdown 基座统一到文档尺度 14 / 1.75，
+     与结论区（.sum-body）同一口径；此前基座 13px/1.8 让文档预览、知识库、
+     模板库各自偏小一档，表格字高随之漂移。 */
+  font-size: 14px;
+  line-height: 1.75;
   word-break: break-word;
 }
 .markdown-body p { margin: 6px 0; }
@@ -1271,12 +1274,21 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 .markdown-body li { margin: 3px 0; }
 .markdown-body ul > li { list-style-type: disc; }
 .markdown-body ol > li { list-style-type: decimal; }
-.markdown-body a { color: var(--accent); text-decoration: underline; }
+.markdown-body a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.markdown-body a:hover,
+.markdown-body a:focus-visible {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
 .markdown-body blockquote {
-  border-left: 3px solid var(--border);
-  margin: 6px 0;
-  padding: 3px 12px;
-  color: var(--muted);
+  border-left: 2px solid color-mix(in srgb, var(--border) 85%, transparent);
+  margin: 10px 0;
+  padding: 2px 14px;
+  color: var(--text);
 }
 .markdown-body code {
   background: var(--panel2-bg);
@@ -1289,11 +1301,33 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 }
 .markdown-body pre {
   background: var(--panel2-bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 10px 12px;
+  border: 0.5px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: var(--radius-lg);
+  padding: 12px 14px;
   overflow-x: auto;
-  margin: 8px 0;
+  margin: 12px 0;
+}
+/* 带语言条/复制按钮的代码块：外层容器负责圆角、描边与裁切，内层 pre 只负责滚动。
+   2026-11-14（计划 2026-11-14-002）：此前 .md-code-wrap 没有任何样式，
+   语言条与 pre 各自成块、圆角与描边对不齐。 */
+.md-code-wrap {
+  margin: 12px 0;
+  border: 0.5px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: var(--radius-lg);
+  background: var(--panel2-bg);
+  overflow: hidden;
+}
+.md-code-wrap pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 12px 14px;
+}
+.md-code-wrap .md-code-bar {
+  padding: 6px 14px;
+  border-bottom: 0.5px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--panel-bg) 55%, transparent);
 }
 .markdown-body pre code {
   background: none;
@@ -1304,29 +1338,111 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 .markdown-body table {
   border-collapse: collapse;
   width: 100%;
-  margin: 8px 0;
+  /* 按列数给最小宽度（列数由 MarkdownBody 的 table 渲染器写入 --md-table-cols）：
+     窄屏时宁可横向滚动，也不把 "gis_osm_roads_free_1" 压成两行碎词。 */
+  min-width: max(100%, calc(var(--md-table-cols, 3) * 120px));
+  margin: 12px 0;
   /* 跟随宿主正文（规范 v2.0：会话流正文统一 14px）——此前写死 12px，表格字比正文小一档，
      同一屏里字高来回跳（用户反馈"格式奇怪"）。 */
   font-size: inherit;
-  line-height: 1.55;
+  line-height: 1.6;
 }
+/* 2026-11-14（计划 2026-11-14-002）：文档表取代"网格表"。
+   只保留横线、去掉竖线与表头实底，让中文长句不在 720px 内容列里被压成碎列；
+   单元格 min/max-width 让列宽既可读、又能在 ≥4 列时交给 .md-table-wrap 横向滚动。 */
 .markdown-body th, .markdown-body td {
-  border: 1px solid var(--border);
-  padding: 5px 10px;
+  border: 0;
+  border-bottom: 0.5px solid color-mix(in srgb, var(--border) 62%, transparent);
+  padding: 8px 12px;
   text-align: left;
-  vertical-align: middle;
-  overflow-wrap: anywhere;
+  vertical-align: top;
+  overflow-wrap: break-word;
+  word-break: normal;
+  min-width: 84px;
+  max-width: min(30vw, 320px);
 }
+/* 首列贴齐正文左缘、末列贴齐右缘，表格不再像一块悬空的网格 */
+.markdown-body th:first-child,
+.markdown-body td:first-child { padding-left: 0; }
+.markdown-body th:last-child,
+.markdown-body td:last-child { padding-right: 0; }
+/* 表头只靠字重与稍深的分隔线，不再铺底色 */
+.markdown-body th {
+  font-family: var(--font-emphasis);
+  font-weight: 600;
+  border-bottom-color: color-mix(in srgb, var(--border) 88%, transparent);
+}
+/* GFM 对齐（:---: / ---:）在表头与单元格上都生效 */
+.markdown-body th[align="right"], .markdown-body td[align="right"] { text-align: right; }
+.markdown-body th[align="center"], .markdown-body td[align="center"] { text-align: center; }
 /* 数字列对齐：等宽数字让"1,234"这类数据上下对齐 */
 .markdown-body td { font-variant-numeric: tabular-nums; }
-.markdown-body th { background: var(--panel2-bg); font-family: var(--font-emphasis); font-weight: 600; }
 /* 行内代码在表格内降一档，避免与中文正文抢视觉 */
 .markdown-body th code, .markdown-body td code { font-size: 0.92em; }
 /* markdown 里的加粗：OPPO Sans 4.0 的 600 为真实字重，不再合成加粗。
    系统栈仅作缺字回退。 */
 .markdown-body strong,
 .markdown-body b { font-family: var(--font-emphasis); font-weight: 600; }
-.markdown-body hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+/* 分割线用发丝线（0.5px），并给足上下留白，避免长文里出现"粗横杠" */
+.markdown-body hr { border: none; border-top: 0.5px solid color-mix(in srgb, var(--border) 70%, transparent); margin: 24px 0; }
+
+/* ===== 结论文档化（计划 2026-11-14-002 P1）=====
+   结论区在"连续正文"之上补一层文档导航：二级标题 >= 3 时出本文目录，
+   标题留出滚动锚点间距；复制按钮复制原始 Markdown（不是渲染后的文本）。 */
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 { scroll-margin-top: 28px; }
+.md-doc-bar {
+  /* 网格而不是 flex：minmax(0, 1fr) 让目录列可以被压到 0，复制按钮永远不会被挤出右缘。
+     窄到放不下时（容器查询）目录与按钮各占一行。 */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px 10px;
+  margin: 2px 0 14px;
+  padding-bottom: 8px;
+  border-bottom: 0.5px solid color-mix(in srgb, var(--border) 55%, transparent);
+  container-type: inline-size;
+}
+/* 容器查询只能作用于容器内部：目录与复制按钮各占一行，而不是去改容器自己的 grid 模板 */
+@container (max-width: 420px) {
+  .md-doc-toc { grid-column: 1 / -1; }
+  .md-doc-copy { grid-column: 1 / -1; justify-self: start; }
+}
+.md-doc-toc { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-width: 0; }
+.md-doc-toc-label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.md-doc-toc-item {
+  padding: 1px 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.md-doc-toc-item:hover,
+.md-doc-toc-item:focus-visible { color: var(--accent); }
+.md-doc-copy {
+  flex-shrink: 0;
+  white-space: nowrap;
+  padding: 1px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.md-doc-copy:hover { color: var(--text); }
+
 
 /* ===== 消息文件上下文（唯一锚点） ===== */
 .msg-context {
@@ -11909,11 +12025,10 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .sum-block { margin: 10px 0 4px; padding: 0; }
 .sum-body { min-width: 0; }
 .sum-body .markdown-body { background: transparent; border: none; padding: 0; font-size: 14px; line-height: 1.75; color: var(--text); }
-/* 总结区表格：保持 display:table（列宽按内容分配），横向滚动交给外层包裹。
-   此前直接给 table 设 display:block + overflow-x，表格脱离表格布局，
-   列宽不再按内容分配，横向滚动条常驻且表头与内容列错位。 */
-.sum-body .markdown-body { overflow-x: auto; }
-.sum-body .markdown-body table { display: table; max-width: 100%; }
+/* 总结区表格：横向滚动只保留 MarkdownBody 的 .md-table-wrap 一层。
+   2026-11-14（计划 2026-11-14-002）：删除此前叠加在 .markdown-body 上的
+   overflow-x:auto —— 外层与包裹层同时可滚会让窄屏出现双滚动条与表头错位；
+   table 也不再被 display:table 补丁夹住，宽表交给包裹层滚动。 */
 
 /* 本轮产物卡 */
 .ac-card {
