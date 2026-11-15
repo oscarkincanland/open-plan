@@ -50,6 +50,8 @@
     "test:pi-config-api": "node scripts/Pi配置接口测试.mjs",
     "test:closure": "node scripts/遗留十项测试.mjs",
     "test:chat-flow": "node scripts/对话流性能回归测试.mjs",
+    "test:scroll-fold": "node scripts/会话流滚动与折叠测试.mjs",
+    "test:process-groups": "node scripts/会话流过程分组测试.mjs",
     "test:chat-summary-order": "node scripts/会话结论渲染顺序测试.mjs",
     "test:session-artifact-truth": "node scripts/会话产物归属测试.mjs",
     "test:preview-render": "node scripts/预览渲染回归测试.mjs",

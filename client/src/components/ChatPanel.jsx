@@ -37,6 +37,10 @@ import { notifyError, askConfirm, askText } from "./Feedback.jsx";
 import { flag, flagsReady, numberFlag } from "../运行开关.js";
 import { getBrowserStreamState } from "../浏览器联动.js";
 import TimelineRow from "./会话流/TimelineRow.jsx";
+import ProcessGroup from "./会话流/ProcessGroup.jsx";
+import { buildProcessSegments, groupCallCount } from "../会话流/过程分组.js";
+import TextShimmer from "../会话流/TextShimmer.jsx";
+import { createScrollIntent, isNearBottom, FOLLOW_THRESHOLD_GRAY, FOLLOW_THRESHOLD_FINAL } from "../会话流/滚动意图.js";
 import RunFoldBar from "./会话流/RunFoldBar.jsx";
 import SummaryBlock from "./会话流/SummaryBlock.jsx";
 import ArtifactCard from "./会话流/ArtifactCard.jsx";
@@ -737,6 +741,9 @@ export function extractSessionLinks(messages = []) {
 }
 
 export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, agentReady = true, onFileChanged, onMapAction, onDraftChanged, onCanvasChanged, currentDoc, mapContext, models: modelsProp, defaultModel, onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, historyHydrating = false, sessionId = "", onLoadOlderHistory, onReloadHistory, onLinksChange, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onArchiveSession, onBatchArchiveSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity, onOpenSubagent, onSubagentUpdate, sessionAgentId = "", onTeamChange, onOpenSettings, onOpenModelSettings, canvasOpen = false }, ref) {
+  // 会话流 v3（计划 2026-11-14-001 / OAW_TRANSCRIPT_V3，默认关）：
+  // 行式过程区 + 运行扫光 + 折叠解析式补偿；关闭时下面的分支完全不生效。
+  const transcriptV3 = flag("transcriptV3");
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   // 供非渲染事件（重试复用气泡、终态清理）同步读取最新消息，避免依赖异步 state。
   const messagesRef = useRef([]);
@@ -4999,6 +5006,12 @@ case "runtime_connecting":
 
   // 滚动：用户向上滑动查看历史时暂停自动滚动；在底部才自动滚到最新
   const scrollTimerRef = useRef(null);
+  // v3：跟尾改为单帧写入；意图实例统一管理"跟尾/阅读"（阈值 40px 灰度）
+  const v3PinFrameRef = useRef(null);
+  const scrollIntentRef = useRef(null);
+  if (transcriptV3 && !scrollIntentRef.current) {
+    scrollIntentRef.current = createScrollIntent({ threshold: FOLLOW_THRESHOLD_GRAY });
+  }
   const textareaRef = useRef(null);
   // 按会话记录阅读位置：切回同一会话时恢复到上次停留处（只在用户主动滚离底部时记录，
   // 停在底部的会话下次仍跟到底部）。
@@ -5007,7 +5020,9 @@ case "runtime_connecting":
   const updateScrollFollowState = () => {
     const el = bodyRef.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    const atBottom = transcriptV3
+      ? isNearBottom({ scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }, FOLLOW_THRESHOLD_GRAY)
+      : el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     followLatestRef.current = atBottom;
     if (atBottom) scrollPositionsRef.current.delete(threadId);
     else scrollPositionsRef.current.set(threadId, el.scrollTop);
@@ -5039,6 +5054,17 @@ case "runtime_connecting":
     // messages → 定时器永远等不到触发 → 表现为"有时跟、有时不跟"。
     // 改为：已有排队就复用，不再重置；定时器自己触发一次后清位。
     if (!followLatestRef.current) return;
+    if (transcriptV3) {
+      // v3：一帧只写一次 scrollTop，避免每个 token 都触发布局与滚动回调。
+      if (v3PinFrameRef.current) return;
+      v3PinFrameRef.current = requestAnimationFrame(() => {
+        v3PinFrameRef.current = null;
+        const el = bodyRef.current;
+        if (!el || !followLatestRef.current) return;
+        el.scrollTop = el.scrollHeight - el.clientHeight;
+      });
+      return;
+    }
     if (scrollTimerRef.current) return;
     scrollTimerRef.current = setTimeout(() => {
       scrollTimerRef.current = null;
@@ -5437,7 +5463,7 @@ case "runtime_connecting":
         )}
 
         <div className="chat-stream-shell">
-          <div className="chat-body" data-task-orb={todoItems.length > 0 ? "true" : undefined} ref={bodyRef} onScroll={updateScrollFollowState} aria-busy={historyHydrating || undefined}>
+          <div className="chat-body" data-transcript-v3={transcriptV3 ? "1" : undefined} data-task-orb={todoItems.length > 0 ? "true" : undefined} ref={bodyRef} onScroll={updateScrollFollowState} onWheel={transcriptV3 ? () => { followLatestRef.current = false; setShowScrollToBottom(true); } : undefined} aria-busy={historyHydrating || undefined}>
           {/* 切换历史会话且缓存未命中：渲染骨架屏，替代此前的空白等待。
               只在还没有任何消息时出现，避免覆盖正在进行的对话。 */}
           {historyHydrating && messages.length === 0 && (
@@ -6681,6 +6707,10 @@ function LiveRunSummaryBar({ m }) {
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
 function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onAskExpired, onResend, onEditMessage, onForkMessage, onRegenerate, onSwitchVersion, isLastAssistant = false, versionSwitching = false, index, prevRole, clientId, threadId, sessionId = "", runSummary = null, executionFlow = null, onOpenSettings, unifiedComposer = false }) {
+  // 会话流 v3 开关（计划 2026-11-14-001）。Message 与 ChatPanel 是两个同级组件，
+  // 开关必须在各自作用域内读取；此前只在 ChatPanel 里声明，导致打开会话即
+  // "transcriptV3 is not defined" 被错误边界捕获。
+  const transcriptV3 = flag("transcriptV3");
   if (m.role === "system") {
     if (m.summary) {
       const runId = m.runId || null;
@@ -6912,6 +6942,11 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     () => (timelinePath ? assignTimelineTurns(runTimeline, timelineEventsSource) : []),
     [timelinePath, runTimeline, timelineEventsSource],
   );
+  // v3：把时间流切成「过程组 / 独立条目」。组头承载活动摘要（阶段 5，对标 DSH process-groups）。
+  const runTimelineSegments = useMemo(
+    () => (transcriptV3 && timelinePath ? buildProcessSegments(runTimelineView, { running: isTaskLive }) : null),
+    [transcriptV3, timelinePath, runTimelineView, isTaskLive],
+  );
   // 「已运行 xx」：运行中按 startedAt 实时累加，结束后用实测总时长。
   // 不能整轮隐藏——用户需要一眼看到这一轮跑了多久；也不能再包回运行框。
   //
@@ -7023,6 +7058,22 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   // 时间流锚点一次算清：避免每个条目都对整个时间流做两次 reduce（O(n²)）。
   const lastTextIndex = runTimeline.reduce((last, candidate, candidateIndex) => (candidate.kind === "text" ? candidateIndex : last), -1);
   const lastThinkingIndex = runTimeline.reduce((last, candidate, candidateIndex) => (candidate.kind === "thinking" ? candidateIndex : last), -1);
+  // v3 段落渲染：组 → ProcessGroup（组头摘要 + 组体），其它条目回退单条渲染。
+  // 注意 renderTimelineItem 定义在下方，这里只做闭包引用，调用发生在渲染期，不会踩 TDZ。
+  const renderTimelineSegment = (segment) => {
+    if (!segment || segment.type === "item") return renderTimelineItem(segment.item);
+    return (
+      <ProcessGroup
+        key={segment.id}
+        label={segment.label}
+        count={groupCallCount(segment.counts)}
+        running={segment.running}
+        defaultOpen={segment.running}
+      >
+        {segment.members.map(renderTimelineItem)}
+      </ProcessGroup>
+    );
+  };
   const renderTimelineItem = (item) => {
     switch (item.kind) {
       case "thinking": {
@@ -7035,7 +7086,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
           ? <span className="tl-think-preview"><跑马灯文本 text={previewText} active title={tail} /></span>
           : item.obj;
         return (
-          <TimelineRow key={item.id} icon={item.icon} verb={item.verb} obj={objNode} objTitle={item.obj} timeText={item.timeText} state={item.state}>
+          <TimelineRow key={item.id} icon={item.icon} verb={item.verb} obj={objNode} objTitle={item.obj} timeText={item.timeText} state={item.state} shimmer={transcriptV3 && isLiveThinking}>
             {isLiveThinking
               ? <TypewriterText text={thinkingText} enabled autoScroll className="tl-thinking-text" />
               : <div className="tl-thinking-text">{thinkingText}</div>}
@@ -7364,12 +7415,12 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                     不再单独占一行——否则结算瞬间这一行消失会让整段内容上跳。
                     compact/嵌入式隐藏消息头时仍保留独立行作为兜底。 */}
                 {runElapsedText && hideHeader && !showTimelineSummary && <div className="tl-elapsed">{runElapsedText}</div>}
-                <div className={`tl-list ${isTaskLive ? "is-live" : ""}`}>{runTimelineView.map(renderTimelineItem)}</div>
+                <div className={`tl-list ${isTaskLive ? "is-live" : ""}`}>{(runTimelineSegments || null) ? runTimelineSegments.map(renderTimelineSegment) : runTimelineView.map(renderTimelineItem)}</div>
                 {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
               </>
             ) : (
-              <RunFoldBar state={runFold.state} label={runFold.label} steps={runTimeline.length} pendingLabel={runFoldPending} defaultOpen={false}>
-                <div className="tl-list">{runTimelineView.map(renderTimelineItem)}</div>
+              <RunFoldBar state={runFold.state} label={runFold.label} steps={runTimeline.length} pendingLabel={runFoldPending} defaultOpen={false} v3={transcriptV3}>
+                <div className="tl-list">{runTimelineSegments ? runTimelineSegments.map(renderTimelineSegment) : runTimelineView.map(renderTimelineItem)}</div>
                 {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
               </RunFoldBar>
             )}
@@ -8971,6 +9022,7 @@ function ToolCard({ tool, expanded = false, onToggle, onOpenFile }) {
     && getBrowserStreamState().status === "reconnecting"
     && Date.now() - getBrowserStreamState().since > 3000;
 
+  const v3 = flag("transcriptV3");
   return (
     <div className={`tool-card ${done ? (isError ? "error" : "success") : "pending"} ${isMapTool ? "tool-card-map" : ""}`}>
       <div
@@ -8989,7 +9041,9 @@ function ToolCard({ tool, expanded = false, onToggle, onOpenFile }) {
         </span>
         <ToolIdentityIcon name={name} size={12} className="tool-identity-inline" />
         {isMapTool && <span className="tool-map-badge" title="地图操作：结果会实时反映到地图上">地图</span>}
-        <span className="tool-phrase" title={inputStr}>{toolPhrase(name, input, done)}</span>
+        <span className="tool-phrase" title={inputStr}>
+          {v3 && !done ? <TextShimmer active>{toolPhrase(name, input, done)}</TextShimmer> : toolPhrase(name, input, done)}
+        </span>
         {resultChip && <span className={`tool-result-chip${isError ? " err" : ""}`} title={resultFirstLine || resultChip}>{resultChip}</span>}
         {tool.startMissing && <span className="tool-recovered" title="开始事件已丢失，状态由结束事件恢复">已恢复</span>}
         {isCmd && <code className="cmd-code" title={fullInput}>$ {cmdPreview}</code>}

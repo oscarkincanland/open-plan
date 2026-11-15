@@ -63,7 +63,7 @@ function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function printStatus(status) {
   const interesting = [
     "skillDeps", "interactionHub", "composerUnified", "writingOneShot", "writingLeanContext", "askAssumption", "writingBudget",
-    "teamSuggest", "teamGuard", "teamRequiredEntry",
+    "teamSuggest", "teamGuard", "teamRequiredEntry", "transcriptV3",
   ];
   const enabled = Object.entries(status.runtimeFlags || {})
     .filter(([key, value]) => value === true && interesting.includes(key))

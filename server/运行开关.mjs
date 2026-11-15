@@ -232,6 +232,8 @@ export const RUNTIME_FLAGS = Object.freeze({
   mapBookmarks: readFlagDefault("OAW_MAP_BOOKMARKS", true),
   /** 会话恢复 A4：运行中刷新恢复（冷启动探测 LIVE Run + Run 起点整段回放 + 恢复内容新建气泡，默认关） */
   replayRecover: readFlag("OAW_REPLAY_RECOVER"),
+  /** 会话流 v3：行式过程区 + 运行扫光 + 折叠位置补偿（计划 2026-11-14-001，默认关 = 基线逐字等价） */
+  transcriptV3: readFlag("OAW_TRANSCRIPT_V3"),
   /** Qoder 对标总开关：打开后整族优化项生效（默认关；关掉即整体回滚） */
   qoderAlign: QODER_ALIGN,
   /** Qoder P0-1：SSE 重连退避加入抖动与退避上限放宽（默认关 = 基线固定倍增 500ms→5s 封顶） */
@@ -398,6 +400,7 @@ export function runtimeFlagsSnapshot() {
     mapPack: RUNTIME_FLAGS.mapPack,
     mapTemplates: RUNTIME_FLAGS.mapTemplates,
     mapBookmarks: RUNTIME_FLAGS.mapBookmarks,
+    transcriptV3: RUNTIME_FLAGS.transcriptV3,
     replayRecover: RUNTIME_FLAGS.replayRecover,
     qoderAlign: RUNTIME_FLAGS.qoderAlign,
     qoderSseBackoff: RUNTIME_FLAGS.qoderSseBackoff,

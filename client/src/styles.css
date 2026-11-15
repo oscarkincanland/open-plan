@@ -12076,6 +12076,129 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   to { background-position: -80% 0; }
 }
 
+
+/* ===== 会话流 v3（计划 2026-11-14-001）：裸行过程区 + 运行扫光 + 折叠补偿 =====
+   v3 由运行时开关 OAW_TRANSCRIPT_V3 控制（默认关）；关闭时以下规则完全不命中，
+   渲染与基线逐字等价。行式化对齐 DSH process row：33px 行高、0.5px 发丝线、
+   组内 rail、无卡片外框；运行态只用色阶 + 扫光区分，不靠底色。 */
+[data-transcript-v3="1"] .tl-list {
+  gap: 0;
+  padding-left: 8px;
+  border-left-color: color-mix(in srgb, var(--border) 55%, transparent);
+}
+[data-transcript-v3="1"] .tl-row-head {
+  min-height: 33px;
+  padding: 0 0 8px;
+  border-radius: 0;
+  border-bottom: .5px solid color-mix(in srgb, var(--border) 65%, transparent);
+  color: var(--muted);
+}
+[data-transcript-v3="1"] .tl-row-head:hover { background: none; color: var(--dim); }
+[data-transcript-v3="1"] .tl-chev { opacity: 0; color: var(--muted); transform: none; }
+[data-transcript-v3="1"] .tl-row-head:hover .tl-chev,
+[data-transcript-v3="1"] .tl-row.open .tl-chev { opacity: 1; }
+[data-transcript-v3="1"] .tl-row.open .tl-chev { transform: rotate(90deg); }
+[data-transcript-v3="1"] .tl-icon { width: 16px; height: 16px; border: 0; background: none; color: inherit; }
+[data-transcript-v3="1"] .tl-verb { font-size: 13px; color: inherit; }
+[data-transcript-v3="1"] .tl-obj { font-size: 13px; color: var(--muted); }
+[data-transcript-v3="1"] .tl-row.is-run .tl-verb,
+[data-transcript-v3="1"] .tl-row.is-run .tl-obj { color: var(--text); }
+[data-transcript-v3="1"] .tl-time { font-size: 11px; }
+[data-transcript-v3="1"] .tl-detail { margin-left: 22px; }
+/* 工具卡去外框：只保留发丝线与缩进 */
+[data-transcript-v3="1"] .tool-card {
+  border: 0 !important;
+  border-radius: 0;
+  background: none !important;
+  margin: 0;
+  border-bottom: .5px solid color-mix(in srgb, var(--border) 65%, transparent);
+  overflow: visible;
+}
+[data-transcript-v3="1"] .tool-header { min-height: 33px; padding: 0 0 8px; display: flex; align-items: center; gap: 6px; color: var(--muted); }
+[data-transcript-v3="1"] .tool-card.pending .tool-header { color: var(--text); }
+[data-transcript-v3="1"] .tool-card.success .tool-header,
+[data-transcript-v3="1"] .tool-card.error .tool-header { color: var(--muted); }
+[data-transcript-v3="1"] .tool-detail { padding: 6px 0 10px 22px; border-top: .5px solid color-mix(in srgb, var(--border) 45%, transparent); }
+/* 整轮折叠头同样去卡片 */
+[data-transcript-v3="1"] .run-fold-head { color: var(--muted); }
+[data-transcript-v3="1"] .run-fold-body { overflow: hidden; }
+
+/* 过程组（阶段 5）：组头摘要 + 组体缩进；只有显隐，不做高度动画 */
+[data-transcript-v3="1"] .tl-group { display: block; }
+[data-transcript-v3="1"] .tl-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 33px;
+  padding: 0 0 8px;
+  margin: 0;
+  border: 0;
+  border-bottom: .5px solid color-mix(in srgb, var(--border) 65%, transparent);
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+[data-transcript-v3="1"] .tl-group-head:hover { color: var(--dim); }
+[data-transcript-v3="1"] .tl-group-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+[data-transcript-v3="1"] .tl-group-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-left: 3px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+[data-transcript-v3="1"] .tl-group-dot.done { background: var(--success); }
+[data-transcript-v3="1"] .tl-group.is-live .tl-group-label { color: var(--text); }
+[data-transcript-v3="1"] .tl-group-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-transcript-v3="1"] .tl-group-count { flex: none; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+[data-transcript-v3="1"] .tl-group-chev {
+  flex: none;
+  display: inline-flex;
+  color: inherit;
+  opacity: 0;
+  transition: transform var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
+}
+[data-transcript-v3="1"] .tl-group-head:hover .tl-group-chev,
+[data-transcript-v3="1"] .tl-group.open .tl-group-chev { opacity: 1; }
+[data-transcript-v3="1"] .tl-group.open .tl-group-chev { transform: rotate(90deg); }
+[data-transcript-v3="1"] .tl-group-body {
+  border-left: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  margin-left: 6px;
+  padding-left: 8px;
+}
+
+/* 运行扫光（对齐 DSH TextShimmer）：105° 窄带从左到右，1.5s / steps(48) / delay .3s */
+.tl-shimmer { position: relative; display: inline-block; max-width: 100%; min-width: 0; vertical-align: top; }
+.tl-shimmer-text { position: relative; }
+.tl-shimmer-deco {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  pointer-events: none;
+  user-select: none;
+  color: var(--tl-shimmer-color, color-mix(in srgb, var(--text) 45%, transparent));
+}
+.tl-shimmer-sweep {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  -webkit-mask-image: linear-gradient(105deg, transparent 0%, black 40% 60%, transparent 100%);
+  mask-image: linear-gradient(105deg, transparent 0%, black 40% 60%, transparent 100%);
+  transform: translateX(-100%);
+  animation: transcript-shimmer-sweep 1.5s steps(48, end) .3s infinite;
+}
+@keyframes transcript-shimmer-sweep {
+  0% { transform: translateX(-100%); }
+  66.6667%, 100% { transform: translateX(100%); }
+}
+
 /* ==========================================================================
    P3 · 统一动效闸门与一次性反馈（动效治理）
    命中条件（二者任一，属性写在 <html> 上）：
@@ -14725,4 +14848,8 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .oaw-pptx-stage { position: relative; }
 .oaw-pptx-first-frame { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
 .oaw-pptx-hint.warn { color: var(--warning); }
+
+/* 会话流 v3：运行扫光纳入统一闸门（减少动效时整层隐藏，不留空壳） */
+:is([data-reduce-motion="1"], [data-motion-level="off"]) .tl-shimmer-sweep { animation: none !important; }
+:is([data-reduce-motion="1"], [data-motion-level="off"]) .tl-shimmer-deco { display: none; }
 

@@ -104,7 +104,7 @@ const 期望持续动画 = [
   "activity-marquee-sweep", "blink", "brain-pulse", "dot-breathe-soft",
   "marquee-neon", "marquee-scroll", "marquee-shine",
   "mp-spin", "oaw-agent-glow", "oaw-agent-pulse", "oaw-agent-tab-glow", "oaw-strip-shimmer",
-  "pulse", "pulse-status", "pulse-status-soft", "session-pulse", "spin", "streaming-label-breathe", "thinking-caret-blink", "task-orb-spin",
+  "pulse", "pulse-status", "pulse-status-soft", "session-pulse", "spin", "streaming-label-breathe", "thinking-caret-blink", "task-orb-spin", "transcript-shimmer-sweep",
 ];
 assert.deepEqual(
   [...无限动画].sort(),
@@ -134,6 +134,7 @@ const 持续动画宿主 = {
   "oaw-agent-tab-glow": [".canvas-tab.agent-editing"],
   "oaw-strip-shimmer": [".oaw-canvas-strip-skeleton"],
   "task-orb-spin": [".task-orb.running .task-orb-ring"],
+  "transcript-shimmer-sweep": [".tl-shimmer-sweep"],
 };
 const 宿主清单 = new Set();
 for (const 宿主们 of Object.values(持续动画宿主)) for (const 宿主 of 宿主们) 宿主清单.add(宿主);
