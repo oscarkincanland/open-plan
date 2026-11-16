@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useState, useCallback, useEffect, useRef } from "react";
+﻿import React, { lazy, Suspense, useState, useCallback, useEffect, useRef } from "react";
 import SessionSidebar from "./components/SessionSidebar.jsx";
 import ChatPanel, { normalizeHistoryMessages } from "./components/ChatPanel.jsx";
 import { mergeRunSummaries } from "./运行展示投影.js";
@@ -20,6 +20,7 @@ import { isMotionReduced, useAppearance } from "./界面外观.js";
 import Logo from "./components/Logo.jsx";
 import TaskCenter from "./components/任务中心.jsx";
 import WorkProductPanel, { ArtifactPanel, RunChangesPanel } from "./components/工作产物面板.jsx";
+import 工作区开始页 from "./components/工作区开始页.jsx";
 import 画布标签栏 from "./components/画布标签栏.jsx";
 import 文件树抽屉 from "./components/文件树抽屉.jsx";
 import { isStaleChunkError, recoverFromStaleChunk } from "./分包恢复.js";
@@ -427,6 +428,13 @@ function pathBaseName(value) {
 }
 
 const GLOBAL_EVENT_NOTICES = new Set(["run_finished", "run_recovered", "run_cancel_requested", "agent_error", "ask_user"]);
+
+// 地图写类工具（2026-11-11-012）：全局流活动跟踪名单（排除只读 map_read/map_datasets/
+// map_layer_info/map_clear_analysis/map_template）。map_analyze 会改变地图观感，纳入跟踪。
+const MAP_WRITE_TOOLS = new Set([
+  "map_draft_layer", "map_fixate_layer", "map_edit", "map_import",
+  "map_save_analysis", "map_reset", "map_analyze", "map_project_create", "map_export",
+]);
 // 启动加载分区文案：失败提示与重试按钮按分区说明，避免只报一句笼统错误。
 const LOAD_SCOPE_LABELS = { files: "文件列表", sessions: "会话列表", projects: "项目列表", workspaces: "工作区列表" };
 
@@ -515,6 +523,25 @@ export default function App() {
   // 2026-11-11-009：slug -> { active, boardPath, action, threadId }（全局流驱动，Run 终态权威收口）。
   const [canvasActivity, setCanvasActivity] = useState({});
   const [pendingCanvasOpen, setPendingCanvasOpen] = useState(null); // { slug, title, workspace }
+  // 地图写类工具活动（2026-11-11-012）：project -> { active, tool, threadId }。
+  // 与 canvasActivity 同款：全局流驱动、Run 终态权威收口；供地图模式活动 pill 显示。
+  const [mapActivity, setMapActivity] = useState({});
+  // 地图模式画布活动指示数据（2026-11-11-010）：活动画布 slug + 标题（标签标题优先）。
+  // 必须在 canvasActivity 声明之后（TDZ）。
+  // 2026-11-11-012：地图项目活动优先（地图项目画布），其次创作画布活动。
+  const mapActiveTarget = (() => {
+    if (activeModule !== "map") return null;
+    const mapEntry = Object.entries(mapActivity).find(([, info]) => info?.active);
+    if (mapEntry) {
+      return { kind: "map", project: String(mapEntry[0] || ""), tool: String(mapEntry[1]?.tool || "") };
+    }
+    const entry = Object.entries(canvasActivity).find(([, info]) => info?.active);
+    if (!entry) return null;
+    const slug = String(entry[0] || "");
+    if (!slug) return null;
+    const tab = canvasTabs.find((item) => item.kind === "design" && item.payload?.slug === slug);
+    return { kind: "design", slug, title: tab?.title || slug };
+  })();
   const canvasRefreshPendingRef = useRef(new Map()); // 150ms 合并窗口：slug -> 刷新信息
   const canvasRefreshTimerRef = useRef(null);
   // 文件树抽屉只服务文档/产物/改动；切到浏览器/对象/工作流/地图预览时自动收起，切回允许的标签再恢复。
@@ -608,6 +635,10 @@ export default function App() {
     return id;
   });
   const [mapContexts, setMapContexts] = useState({});
+  // mapContextsRef：全局流 handlePayload 在 mount-once 的 effect 里闭包，直读 state 会拿到
+  // 挂载时的旧值——活动跟踪里回退会话绑定项目必须走 ref（2026-11-11-012）。
+  const mapContextsRef = useRef(mapContexts);
+  mapContextsRef.current = mapContexts;
   const currentMapContext = mapContexts[threadId] || null;
   const currentMapProject = currentMapContext?.mapProject || "zhejiang-map";
   // 主界面只要会话已绑定地图，也必须把项目/视口交给 Agent；否则地图工具会回退
@@ -628,6 +659,23 @@ export default function App() {
     const tab = createViewTab(kind, payload);
     setCanvasTabs((prev) => openCanvasTab(prev, tab).tabs);
     setCanvasActiveId(tab.id);
+    setCanvasCollapsed(false);
+  }, []);
+
+  // 2026-11-11-011：工作区开始页（单例、不持久化，见 画布状态.js sanitizeTab）。
+  const openStartPage = useCallback(() => {
+    openCanvasView("start");
+  }, [openCanvasView]);
+
+  /**
+   * 把开始页放到标签栏首位并激活（已有则复用），不关闭用户其他标签。
+   * 与 openStartPage 的区别：本函数只重排标签、不改动其他状态，供「新建会话」
+   * 「切换工作区」「刷新后画布为空」三条路径共用。
+   */
+  const ensureStartPage = useCallback(() => {
+    const startTab = createViewTab("start");
+    setCanvasTabs((prev) => [startTab, ...prev.filter((tab) => tab.kind !== "start")]);
+    setCanvasActiveId(startTab.id);
     setCanvasCollapsed(false);
   }, []);
 
@@ -784,6 +832,9 @@ export default function App() {
   const currentProject = projects.find((project) => sameWorkspacePath(project.rootPath, currentWorkspace)) || null;
 
   const canvasRestoreRef = useRef("");
+  // 2026-11-11-011：切换工作区后要打开「开始」页，但画布标签会被下面的恢复 effect
+  // 用持久化状态整体覆盖，所以不能在切换流程里直接 openStartPage()，而是在恢复时注入。
+  const pendingStartPageRef = useRef(false);
   useEffect(() => {
     if (!currentWorkspace || canvasRestoreRef.current === currentWorkspace) return undefined;
     let cancelled = false;
@@ -801,8 +852,27 @@ export default function App() {
         .filter((tab) => tab.kind !== "objects" || flag("qoderObjectBar"))
         .filter((tab) => tab.kind !== "design" || flag("creativeCanvas"))
         .filter((tab) => tab.kind !== "workflows" || flag("domainWorkflows"));
-      setCanvasTabs(allowed);
-      setCanvasActiveId(saved.activeId && allowed.some((tab) => tab.id === saved.activeId) ? saved.activeId : (allowed[allowed.length - 1]?.id || ""));
+      let nextTabs = allowed;
+      let nextActiveId = saved.activeId && allowed.some((tab) => tab.id === saved.activeId) ? saved.activeId : (allowed[allowed.length - 1]?.id || "");
+      if (pendingStartPageRef.current) {
+        // 用户刚切换了工作区：先给一个「开始」页（单例、不持久化），原有标签保留在其后。
+        pendingStartPageRef.current = false;
+        const startTab = createViewTab("start");
+        nextTabs = [startTab, ...allowed.filter((tab) => tab.kind !== "start")];
+        nextActiveId = startTab.id;
+        // 文档恢复 effect 结束时会把 active 切回“上次激活的标签”，这里一并改写，
+        // 否则开始页会被刚恢复的画布/设计标签抢走焦点。
+        pendingActiveCanvasIdRef.current = startTab.id;
+      }
+      // 首次进入/刷新：该工作区画布为空（没有任何已保存标签）且没有选中历史会话时，
+      // 直接给一个「开始」页 —— 否则用户看到的是一块空白画布，不知道能做什么。
+      if (!allowed.length) {
+        const startTab = createViewTab("start");
+        nextTabs = [startTab];
+        nextActiveId = startTab.id;
+      }
+      setCanvasTabs(nextTabs);
+      setCanvasActiveId(nextActiveId);
       setCanvasMaximized(Boolean(saved.maximized));
       setCanvasSideOpen(saved.side?.kind === "files");
       setCanvasWidth(saved.width || 420);
@@ -859,15 +929,8 @@ export default function App() {
     setCanvasTabs((prev) => prev.map((tab) => (tab.id === tabId ? { ...tab, title: title || "创作画布" } : tab)));
   }, []);
 
-  // Agent 在当前会话新建画布：全局事件先落 pending，再按当前工作区打开标签（避免闭包旧工作区）。
-  useEffect(() => {
-    if (!pendingCanvasOpen) return;
-    const { slug, title, workspace } = pendingCanvasOpen;
-    setPendingCanvasOpen(null);
-    if (!slug) return;
-    if (workspace && workspace !== currentWorkspace) return;
-    openDesignCanvas(slug, title || slug);
-  }, [pendingCanvasOpen, openDesignCanvas, currentWorkspace]);
+  // Agent 在当前会话新建画布：全局事件先落 pending，由 closeExternalModules 声明之后的
+  // 消费 effect 统一处理（打开标签 + 地图模式自动切换，见 openExternalModule 下方），避免 TDZ。
 
   // Agent 编辑画布自动定位（2026-11-11-009）：出现新的激活 slug 时自动打开/激活对应
   // 设计标签，让“agent 正在操作哪个画布”一眼可见。用户 10s 内手动切换过画布标签则
@@ -1006,6 +1069,19 @@ export default function App() {
     setActiveModule(module);
   }, [conversationMode]);
 
+  // 当前会话新建画布时若在地图模块，自动退出地图并打开新画布标签（2026-11-11-010）：
+  // 地图模式下画布槽整个被遮罩隐藏（styles.css .map-module-active），自动开标签用户看不见；
+  // 用户要求"及时切换到新生成的画布"。仅在事件消费时触发，放在 closeExternalModules 声明之后避免 TDZ。
+  useEffect(() => {
+    if (!pendingCanvasOpen) return;
+    const { slug, title, workspace } = pendingCanvasOpen;
+    setPendingCanvasOpen(null);
+    if (!slug) return;
+    if (workspace && workspace !== currentWorkspace) return;
+    if (activeModule === "map") closeExternalModules();
+    openDesignCanvas(slug, title || slug);
+  }, [pendingCanvasOpen, openDesignCanvas, currentWorkspace, activeModule, closeExternalModules]);
+
   // 外部模块打开时主 ChatPanel 会卸载；先暂存 @ 引用，待回到对话后再写入，
   // 避免“点击调用但输入框没有任何内容”的竞态。
   const insertChatText = useCallback((value) => {
@@ -1135,13 +1211,16 @@ export default function App() {
       return prev.filter((tab) => tab.kind !== "mapPreview");
     });
     setCanvasActiveId((prev) => (prev === "view:mapPreview" ? "" : prev));
+    // 2026-11-11-011：新建会话后直接落到「开始」导航页（用户诉求：「如果新建的话直接形成一个导航页」）。
+    // 工作区切换那条链路用 pendingStartPageRef 注入，这里显式传 openStart:false 避免重复。
+    if (options.openStart !== false) ensureStartPage();
     lastSessionIdRef.current = created?.sessionId || null;
     newSessionInFlightRef.current = false;
     setCreatingSession(false);
     return created;
     // 不把 refreshFiles / refreshSessions 列入依赖：它们在下方才声明，依赖数组在
     // 渲染期求值会命中 TDZ；两者都是依赖稳定的 useCallback，闭包捕获始终有效。
-  }, [clientId, currentWorkspace, projects]);
+  }, [clientId, currentWorkspace, ensureStartPage, projects]);
 
   const setScopeStatus = useCallback((scope, status) => {
     setLoadStatus((prev) => (prev[scope] === status ? prev : { ...prev, [scope]: status }));
@@ -1390,10 +1469,25 @@ export default function App() {
                 },
               }));
             }
+          } else if (MAP_WRITE_TOOLS.has(String(data.name || ""))) {
+            // 地图写类工具活动（2026-11-11-012）：project 取入参，缺省回退会话绑定项目。
+            let input = data.input;
+            if (typeof input === "string") { try { input = JSON.parse(input); } catch { input = null; } }
+            const project = String(input?.project || mapContextsRef.current[String(event.threadId || "")]?.mapProject || "当前地图项目");
+            const active = event.type === "tool_start";
+            setMapActivity((prev) => ({
+              ...prev,
+              [project]: {
+                active,
+                tool: String(data.name || ""),
+                threadId: String(event.threadId || prev[project]?.threadId || ""),
+              },
+            }));
           }
         }
         // Run 终态权威收口（2026-11-11-009）：凡该 thread 的画布活动一律落定，
         // 不再依赖逐个 tool_end；run_recovered 视为服务重启后的终态（原 Run 已收口）。
+        // 2026-11-11-012：地图写类工具活动同款收口。
         if (["run_finished", "agent_error", "run_recovered"].includes(event.type)) {
           const finishedThreadId = String(event.threadId || "");
           if (finishedThreadId) {
@@ -1403,6 +1497,17 @@ export default function App() {
               for (const [slug, info] of Object.entries(prev)) {
                 if (info?.active && (!info.threadId || info.threadId === finishedThreadId)) {
                   next[slug] = { ...info, active: false };
+                  changed = true;
+                }
+              }
+              return changed ? next : prev;
+            });
+            setMapActivity((prev) => {
+              let changed = false;
+              const next = { ...prev };
+              for (const [project, info] of Object.entries(prev)) {
+                if (info?.active && (!info.threadId || info.threadId === finishedThreadId)) {
+                  next[project] = { ...info, active: false };
                   changed = true;
                 }
               }
@@ -1748,7 +1853,12 @@ export default function App() {
       setFiles(r.files || []);
       // 工作区切换后异步刷新项目：让新打开的本地目录立即出现在项目栏，且不阻塞文件视图。
       void refreshProjects();
-      void handleNewSession(r.workspace);
+      // 工作区切换的开始页由下面的 pendingStartPageRef 统一注入（需要等标签恢复完成），
+      // 这里不让 handleNewSession 抢先插一个，避免两条路径互相覆盖。
+      void handleNewSession(r.workspace, { openStart: false });
+      // 2026-11-11-011：切到新工作区后打开「开始」页。标记交给画布恢复 effect 注入
+      //（标签会被持久化状态覆盖，直接 open 会被冲掉）。
+      pendingStartPageRef.current = true;
     } catch (e) {
       if (switchSeq === workspaceSwitchSeqRef.current) {
         // 切换失败保留原有效状态：恢复原目录与文件列表，会话/历史/预览标签不动，只提示失败原因。
@@ -2820,6 +2930,33 @@ export default function App() {
           />
           </DeferredModule>
         )}
+        {/* 地图模式活动指示（2026-11-11-010/011）：画布槽在地图模式下被遮罩隐藏——
+            地图项目活动（优先）显示"正在编辑地图项目"，点击让面板切到该项目（不退出地图）；
+            创作画布活动显示"正在编辑画布"，点击退出地图并打开画布。 */}
+        {activeModule === "map" && mapActiveTarget && (
+          <button
+            type="button"
+            className="map-canvas-activity-pill"
+            onClick={() => {
+              if (mapActiveTarget.kind === "map") {
+                // 地图项目活动：面板切到活动项目（bridge switch_project），不退出地图模块。
+                mapBridgeRef.current?.onMapAction?.({ action: "switch_project", project: mapActiveTarget.project });
+                return;
+              }
+              closeExternalModules();
+              openDesignCanvas(mapActiveTarget.slug, mapActiveTarget.title || mapActiveTarget.slug);
+            }}
+            title={mapActiveTarget.kind === "map" ? "点击让地图面板切到该项目" : "点击查看 Agent 正在编辑的画布"}
+          >
+            <span className="map-canvas-activity-dot" aria-hidden="true" />
+            <span className="map-canvas-activity-text">
+              {mapActiveTarget.kind === "map"
+                ? `Agent 正在编辑地图项目《${mapActiveTarget.project}》${mapActiveTarget.tool ? ` · ${mapActiveTarget.tool}` : ""}`
+                : `Agent 正在编辑画布《${mapActiveTarget.title || mapActiveTarget.slug}》`}
+            </span>
+            <strong>查看</strong>
+          </button>
+        )}
         {activeModule === "map" && mapChatVisible && (
           <Resizer
             className="map-chat-resizer"
@@ -2935,142 +3072,15 @@ export default function App() {
                 <button
                   ref={previewToggleRef}
                   className={`btn-sm topbar-tools-toggle ${topbarMenuOpen ? "active" : ""}`}
-                  onClick={() => setTopbarMenuOpen((v) => !v)}
+                  onClick={() => { setTopbarMenuOpen(false); ensureStartPage(); }}
                   aria-label="工作区"
-                  aria-expanded={topbarMenuOpen}
                   aria-haspopup="dialog"
-                  title="工作区：文件、产物、改动、浏览器与任务中心"
+                  title="打开工作区开始页：文件、产物、改动、浏览器、任务中心与最近会话"
                 >
                   <Icon name="columns" size={14} />
                   {(Object.values(unreadByThread).reduce((sum, count) => sum + Number(count || 0), 0) > 0 || artifactNotice) && <i className="topbar-tools-dot" aria-hidden="true" />}
                 </button>
               </提示气泡>
-              {/* 工作区面板（2026-11-03）：把原来的下拉菜单换成卡片面板。
-                  每个卡片仍调用原来的打开逻辑，不新增页面、不改页面内部。 */}
-              {topbarMenuOpen && (
-                <div className="topbar-tools-panel" role="dialog" aria-label="工作区">
-                  <div className="topbar-tools-panel-head">
-                    <span className="topbar-tools-panel-title"><Icon name="folder" size={13} /> 工作区</span>
-                    <span className="topbar-tools-panel-sub" title={currentWorkspace || ""}>
-                      {currentWorkspace ? pathBaseName(currentWorkspace) : "未选择工作区"}
-                    </span>
-                  </div>
-                  <div className="topbar-tools-cards">
-                    <button
-                      type="button"
-                      className={`topbar-tools-card ${canvasSideVisible ? "on" : ""}`}
-                      onClick={() => { setTopbarMenuOpen(false); if (!canvasOpen) openCanvasView("artifacts"); setCanvasSideOpen(true); }}
-                      title="浏览会话工作区的文件"
-                    >
-                      <Icon name="folder" size={15} />
-                      <span><strong>工作区文件</strong><small>浏览会话工作区的文件</small></span>
-                    </button>
-                    <button
-                      type="button"
-                      className="topbar-tools-card"
-                      onClick={() => { setTopbarMenuOpen(false); setArtifactSegment("artifacts"); openCanvasView("artifacts"); }}
-                      title="打开工作产物：任务摘要 / 产物 / 链接"
-                    >
-                      <Icon name="package" size={15} />
-                      <span><strong>工作产物</strong><small>任务摘要、产物与链接</small></span>
-                    </button>
-                    <button
-                      type="button"
-                      className="topbar-tools-card"
-                      onClick={() => { setTopbarMenuOpen(false); openCanvasView("changes"); }}
-                      title="打开改动：本轮文件变化"
-                    >
-                      <Icon name="history" size={15} />
-                      <span><strong>本轮改动</strong><small>本轮文件变化</small></span>
-                    </button>
-                    <button
-                      type="button"
-                      className={`topbar-tools-card ${browserOpen ? "on" : ""}`}
-                      onClick={() => {
-                        setTopbarMenuOpen(false);
-                        if (browserOpen) { closeBrowserPanel(); return; }
-                        browserAutoOpenBlockedRef.current = false;
-                        setBrowserActivityPing(0);
-                        openCanvasView("browser");
-                      }}
-                      title={browserOpen ? "关闭内置浏览器标签" : "打开内置浏览器标签"}
-                    >
-                      <Icon name="globe" size={15} />
-                      <span><strong>内置浏览器</strong><small>{browserOpen ? "点击关闭浏览器标签" : "浏览网页"}</small></span>
-                      {browserActivityPing > 0 && !browserOpen && <i className="browser-activity-dot" aria-hidden="true" />}
-                    </button>
-                    <button
-                      type="button"
-                      className="topbar-tools-card"
-                      onClick={() => { setTopbarMenuOpen(false); taskCenterRef.current?.open(); }}
-                      title="任务中心：并行任务、运行状态与历史会话"
-                    >
-                      <Icon name="list" size={15} />
-                      <span><strong>任务中心</strong><small>并行任务与运行状态</small></span>
-                    </button>
-                    {/* 创作画布（2026-11-09）：画布关闭时没有标签栏「+」入口，
-                        这里必须提供一级入口；打开后走「新建 / 最近画布」空态。 */}
-                    {flag("creativeCanvas") && (
-                      <button
-                        type="button"
-                        className="topbar-tools-card"
-                        onClick={() => { setTopbarMenuOpen(false); openDesignCanvas("", ""); }}
-                        title="新建或打开创作画布：画板、文本/形状/SVG 编辑与 SVG/PNG/PDF/PPTX 导出"
-                      >
-                        <Icon name="grid" size={15} />
-                        <span><strong>创作画布</strong><small>画板、对象编辑与导出</small></span>
-                      </button>
-                    )}
-                  </div>
-                  {(artifactNotice || flag("qoderObjectBar") || flag("domainWorkflows")) && (
-                    <div className="topbar-tools-more">
-                      <span className="topbar-tools-more-label">更多工具</span>
-                      {artifactNotice && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const target = artifactNotice;
-                            setTopbarMenuOpen(false);
-                            setArtifactNotice(null);
-                            void open(target.path, threadId, currentWorkspace);
-                          }}
-                          title={`打开本轮新产物：${artifactNotice.path}`}
-                        >
-                          <Icon name="file" size={13} /><span>本轮新产物：{artifactNotice.name}</span>
-                        </button>
-                      )}
-                      {flag("qoderObjectBar") && (
-                        <button
-                          type="button"
-                          onClick={() => { setTopbarMenuOpen(false); if (objectsOpen) closeObjects(); else openCanvasView("objects"); }}
-                          title={objectsOpen ? "关闭对象栏标签" : "打开对象栏：本轮产出 / 来源 / 技能 / 记忆汇总"}
-                        >
-                          <Icon name="layers" size={13} /><span>对象栏</span>
-                        </button>
-                      )}
-                      {flag("domainWorkflows") && (
-                        <button
-                          type="button"
-                          onClick={() => { setTopbarMenuOpen(false); if (workflowsOpen) closeWorkflows(); else openCanvasView("workflows"); }}
-                          title={workflowsOpen ? "关闭领域工作流标签" : "打开领域工作流：阶段 / 工具白名单 / 预算 / 产物契约与预检试算"}
-                        >
-                          <Icon name="flow" size={13} /><span>领域工作流</span>
-                        </button>
-                      )}
-                    </div>
-                  )}
-                  <div className="topbar-tools-foot">
-                    <button
-                      type="button"
-                      onClick={() => { setTopbarMenuOpen(false); handleNewSession(undefined, { agentId: currentSession?.agentId || "" }); }}
-                      disabled={creatingSession}
-                      title={currentSession?.agentId ? "新建对话（沿用当前会话的智能体）" : "新建对话"}
-                    >
-                      <Icon name="chatPlus" size={14} /><span>新建对话</span>
-                    </button>
-                  </div>
-                </div>
-              )}
               <TaskCenter
                 ref={taskCenterRef}
                 sessions={visibleSessions}
@@ -3170,6 +3180,7 @@ export default function App() {
               onToggleMaximize={() => setCanvasMaximized((value) => !value)}
               maximized={canvasMaximized}
               onPlusAction={(action) => {
+                if (action === "start") { openStartPage(); return; }
                 if (action === "files") { setCanvasSideOpen((value) => !value); if (!canvasOpen) openCanvasView("artifacts"); return; }
                 if (action === "artifacts") { setArtifactSegment("artifacts"); openCanvasView("artifacts"); return; }
                 if (action === "changes") { openCanvasView("changes"); return; }
@@ -3195,6 +3206,43 @@ export default function App() {
             />
             <div className={`canvas-workarea ${canvasSideVisible ? "with-side" : ""}`}>
               <div className="canvas-main">
+                {canvasTabs.some((tab) => tab.kind === "start") && (
+                  <div className={`app-canvas-body canvas-body-start ${activeCanvasTab?.kind === "start" ? "" : "canvas-hidden"}`}>
+                    <工作区开始页
+                      project={currentProject}
+                      workspace={currentWorkspace}
+                      fileCount={files.length}
+                      sessionCount={visibleSessions.length}
+                      sessions={visibleSessions}
+                      entries={[
+                        { id: "files", title: "工作区文件", hint: `${files.length} 个目录项 · 浏览与搜索`, icon: "folder", onOpen: () => setCanvasSideOpen(true) },
+                        { id: "artifacts", title: "任务摘要", hint: "本轮结论、产物与验收", icon: "package", onOpen: () => openCanvasView("artifacts") },
+                        { id: "changes", title: "代码审查和变更", hint: "本轮/历史文件改动与 diff", icon: "history", onOpen: () => openCanvasView("changes") },
+                        { id: "browser", title: "浏览器", hint: "内置浏览器：抓取与比对资料", icon: "globe", onOpen: () => { browserAutoOpenBlockedRef.current = false; setBrowserActivityPing(0); openCanvasView("browser"); } },
+                        {
+                          id: "mapPreview",
+                          title: "地图预览",
+                          hint: currentMapContext?.mapProject ? `当前会话绑定：${currentMapContext.mapProject}` : "",
+                          icon: "map",
+                          disabled: !currentMapContext?.mapProject,
+                          disabledReason: "当前会话未绑定地图项目",
+                          onOpen: () => openMapPreviewForCurrentSession(),
+                        },
+                        { id: "design", title: "创作画布", hint: "画板/对象编辑与导出", icon: "grid", disabled: !flag("creativeCanvas"), disabledReason: "创作画布开关未开启", onOpen: () => openDesignCanvas("", "") },
+                        { id: "newSession", title: "新建对话", hint: "在当前工作区开一个新会话", icon: "chatPlus", onOpen: () => { void handleNewSession(currentWorkspaceRef.current || currentWorkspace); chatInputRef.current?.focusInput?.(); } },
+                      ]}
+                      moreEntries={[
+                        { id: "objects", title: "对象栏", hint: "选中对象的属性与操作", icon: "layers", disabled: !flag("qoderObjectBar"), disabledReason: "对象栏开关未开启", onOpen: () => openCanvasView("objects") },
+                        { id: "workflows", title: "领域工作流", hint: "按领域编排的任务流程", icon: "flow", disabled: !flag("domainWorkflows"), disabledReason: "领域工作流开关未开启", onOpen: () => openCanvasView("workflows") },
+                        { id: "taskCenter", title: "运行记录", hint: "任务中心：运行状态、事件与失败原因", icon: "list", onOpen: () => taskCenterRef.current?.open() },
+                      ]}
+                      onOpenSession={handleSelectSession}
+                      onOpenArtifacts={() => openCanvasView("artifacts")}
+                      onNewChat={() => { void handleNewSession(currentWorkspaceRef.current || currentWorkspace); chatInputRef.current?.focusInput?.(); }}
+                      onSearch={() => setPaletteOpen(true)}
+                    />
+                  </div>
+                )}
                 {tabs.length > 0 && (
                   <div className={`app-canvas-body canvas-body-doc ${activeCanvasTab?.kind === "doc" ? "" : "canvas-hidden"}`}>
                     <Suspense fallback={<div className="module-loading">正在加载文档预览…</div>}>

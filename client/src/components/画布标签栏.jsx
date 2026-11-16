@@ -208,6 +208,7 @@ export default function 画布标签栏({
               <kbd>Ctrl P</kbd>
             </button>
             <div className="canvas-plus-sep" role="separator" />
+            <button type="button" role="menuitem" onClick={() => run("start")}><Icon name="grid" size={13} /> 开始页</button>
             <button type="button" role="menuitem" onClick={() => run("artifacts")}><Icon name="package" size={13} /> 任务摘要</button>
             <button type="button" role="menuitem" onClick={() => run("files")}><Icon name="folder" size={13} /> 文件</button>
             <button type="button" role="menuitem" onClick={() => run("browser")}><Icon name="globe" size={13} /> 浏览器</button>

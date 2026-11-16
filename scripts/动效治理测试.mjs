@@ -129,7 +129,7 @@ const 持续动画宿主 = {
   "activity-marquee-sweep": [".message-process-fold.run-activity-fold.is-live > summary::after"],
   "thinking-caret-blink": [".thinking-process-inline.is-streaming .thinking-text::after"],
   "mp-spin": [".mp-spin"],
-  "oaw-agent-pulse": [".canvas-tab-agent", ".oaw-canvas-deck-agent"],
+  "oaw-agent-pulse": [".canvas-tab-agent", ".oaw-canvas-deck-agent", ".map-canvas-activity-dot"],
   "oaw-agent-glow": [".oaw-canvas-board.agent-editing .oaw-canvas-board-scale", ".oaw-canvas-status.agent-live"],
   "oaw-agent-tab-glow": [".canvas-tab.agent-editing"],
   "oaw-strip-shimmer": [".oaw-canvas-strip-skeleton"],
@@ -153,10 +153,16 @@ assert.match(闸门块, /\.marquee\.is-active::after \{\s*animation: none !impor
 assert.match(闸门块, /\.chat-body \{ scroll-behavior: auto; \}/, "闸门应取消平滑滚动");
 assert.match(闸门块, /:active \{\s*transform: none !important;/, "闸门应取消按钮按压缩放");
 // 不误杀地图/浏览器模块的交互过渡。
-// 判定要按"规则"而不是整块文本：闸门块里允许出现与动效无关的地图布局规则
-// （例如画布小地图的 flex 尺寸），禁止的是对地图模块施加 animation/transition 覆盖。
+// 判定要按"选择器 token"而不是整条规则文本：闸门的持续动画清单是若干类名组成的
+// 一条 :is(...) 规则，整块文本匹配会把无关类名一起卷进来。2026-11-11-011：
+// 闸门必须纳管应用层活动指示点 .map-canvas-activity-dot（关闭其呼吸脉冲），
+// 它挂在地图模块浮层上但不是地图库内部过渡，按 token 精确豁免；其余
+// .map-* / leaflet / maplibregl token 仍一律拦截。
 const 闸门规则块 = 闸门块.split("}").filter((rule) => /animation|transition/i.test(rule));
-const 误伤地图规则 = 闸门规则块.filter((rule) => /leaflet|maplibregl|\.map-[a-z]/i.test(rule));
+const 误伤地图规则 = 闸门规则块.filter((rule) => {
+  const tokens = rule.trim().split("{")[0].trim().split(/[\s,]+/).filter(Boolean);
+  return tokens.some((t) => /leaflet|maplibregl|\.map-[a-z]/i.test(t) && t !== ".map-canvas-activity-dot");
+});
 assert.deepEqual(
   误伤地图规则.map((rule) => rule.trim().split("{")[0].trim()),
   [],

@@ -40,12 +40,19 @@ test("Word / Excel / PPT / PDF / 网页 / Markdown / 代码 的类别与色调",
 
 console.log("\n▶ 组件与覆盖范围");
 
-test("扁平图标组件使用实色底 + 白色字形，不走线性 Icon", () => {
+test("扁平图标组件使用实色类型底 + 白色字形（DESIGN §5.8），不走通用 Icon", () => {
   const component = read("client/src/components/文件类型图标.jsx");
-  assert.match(component, /fill="currentColor"/);
-  assert.match(component, /var\(--file-icon-fg\)/);
-  assert.doesNotMatch(component, /<Icon\b/);
+  // 2026-11-11-011：字形自 2026-11-04 起统一为 Tabler 线性字形（项目内文件树/预览/产物卡共用），
+  // 但底色与字形色必须保持「实色类型底 + 白色字形」——此前是 14% 淡底 + 同色字形，
+  // 深色底上几乎看不出类型差异（用户实测反馈"产物图标全一样"）。
+  assert.match(component, /from "@tabler\/icons-react"/, "缺少 Tabler 字形来源");
+  assert.match(component, /const GLYPHS = \{/, "缺少类型 → 字形映射");
+  assert.doesNotMatch(component, /<Icon\b/, "文件类型图标不得回退到通用 Icon");
   assert.match(component, /data-kind=\{info\.kind\}/);
+  const css = read("client/src/styles.css");
+  assert.match(css, /\.file-type-icon \{[\s\S]{0,400}?background: var\(--file-tone, var\(--file-other\)\);/, "类型图标底色应为实色类型色");
+  assert.match(css, /\.file-type-icon \{[\s\S]{0,400}?color: var\(--file-icon-fg, #fff\);/, "类型图标字形应为白色前景");
+  assert.match(css, /--file-icon-fg: #ffffff;/, "缺少 --file-icon-fg 令牌");
 });
 
 test("左栏文件树与预览页文件树共用文件类型图标", () => {
@@ -59,10 +66,11 @@ test("左栏文件树与预览页文件树共用文件类型图标", () => {
 });
 
 test("产物卡与命令面板共用扁平文件图标", () => {
-  const chat = read("client/src/components/ChatPanel.jsx");
+  // 2026-11-11-011：本轮产物行收敛到 ArtifactCard（ChatPanel 不再内联一份产物列表）。
+  const artifactCard = read("client/src/components/会话流/ArtifactCard.jsx");
   const palette = read("client/src/components/CommandPalette.jsx");
-  assert.match(chat, /import 文件类型图标 from "\.\/文件类型图标\.jsx"/);
-  assert.match(chat, /<文件类型图标 file=\{item\.path\} size=\{15\} \/>/);
+  assert.match(artifactCard, /import 文件类型图标 from "..\/文件类型图标\.jsx"/);
+  assert.match(artifactCard, /<文件类型图标 file=\{item\.path\} size=\{18\} \/>/, "产物卡图标应放大到 18px 以便区分类型");
   assert.match(palette, /import 文件类型图标 from "\.\/文件类型图标\.jsx"/);
   assert.match(palette, /<文件类型图标 file=\{it\.file\} size=\{14\} \/>/);
 });
@@ -74,7 +82,8 @@ test("明暗主题都有 --file-* 颜色令牌", () => {
   assert.match(css, /--file-pdf:\s*#d9534f;/);
   assert.match(css, /--file-doc:\s*#2f6fed;/);
   assert.match(css, /\[data-kind="doc"\] \{ --file-tone: var\(--file-doc\); \}/);
-  assert.match(css, /color-mix\(in srgb, var\(--file-tone, var\(--file-other\)\) 14%, transparent\)/);
+  // 2026-11-11-011：底色由 14% 淡色改为实色类型色（见上一条用例），这里守住「每类都有 tone 令牌」。
+  assert.match(css, /\.file-type-icon\[data-kind="md"\] \{ --file-tone: var\(--file-md\); \}/);
 });
 
 console.log(failed ? "\n✗ 文件类型图标测试存在失败" : "\n✓ 文件类型图标测试全部通过");

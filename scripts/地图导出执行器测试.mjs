@@ -100,6 +100,20 @@ check("审批策略与元数据：map_export → ask + 登记", () => {
   assert.match(元数据源码, /meta\("map_export"/, "工具元数据必须登记");
 });
 
+check("越界校验以 outDir 为基准（2026-11-11-010）：agent 侧 workspace 与项目基准不一致不再误报", () => {
+  const 执行器源码 = read("server/地图导出执行器.mjs");
+  assert.match(
+    执行器源码,
+    /target\.startsWith\(path\.resolve\(dir\) \+ path\.sep\)/,
+    "执行器必须校验产物落在 outDir 内（path.sep 收尾，防止同前缀目录绕过）",
+  );
+  assert.doesNotMatch(
+    执行器源码,
+    /target\.startsWith\(path\.resolve\(workspace\)\)/,
+    "不得再用调用方 workspace 前缀校验（ctx.workspace 与项目基准不一致会误报越界）",
+  );
+});
+
 if (failed) {
   console.error("地图导出执行器测试：存在失败项");
   process.exitCode = 1;

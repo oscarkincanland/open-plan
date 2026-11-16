@@ -26,7 +26,7 @@ import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, materializeSkippedOf, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves, startOwnerHeartbeat, stopOwnerHeartbeat, setRunLifecycleInvalidator } from "./runs.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, materializeSkippedOf, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, validatableRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves, startOwnerHeartbeat, stopOwnerHeartbeat, setRunLifecycleInvalidator } from "./runs.mjs";
 import { markInterruptedJobs } from "./后台任务.mjs";
 import { attachRunTimingMeta, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
@@ -5454,8 +5454,9 @@ app.post("/api/agent/prompt", async (req, res) => {
     // 出错也检测产物（agent 可能已部分写入文件）；清单走内容哈希口径，
     // 只碰了 mtime、内容没变的文件不算变更。
     if (run) await waitForFlush(run?.before || [], runWorkspace);
+    // 2026-11-11-010：validatableRunArtifacts 跳过 deleted 与画布内部文件（误报修复）。
     const changed = run
-      ? listRunArtifacts(run, runWorkspace).map((item) => item.path)
+      ? validatableRunArtifacts(run, runWorkspace)
       : await waitForFlush(run?.before || [], runWorkspace);
     const validations = validateArtifacts(changed, runWorkspace);
     const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
@@ -5527,8 +5528,8 @@ async function executeContinuation({ key, entry, run, task, references, workflow
     if (entry?.lastFinalText) recordRunEvent(run.id, "assistant_final", { text: entry.lastFinalText });
     const continuationWorkspace = entry.workspace || run.cwd || getWorkspace();
     await waitForFlush(before, continuationWorkspace);
-    // 内容哈希口径：只碰了 mtime 的文件不算变更
-    const changed = listRunArtifacts(run, continuationWorkspace).map((item) => item.path);
+    // 内容哈希口径：只碰了 mtime 的文件不算变更；validatableRunArtifacts 再跳过 deleted 与画布内部文件
+    const changed = validatableRunArtifacts(run, continuationWorkspace);
     const validations = validateArtifacts(changed, continuationWorkspace);
     const stagedValidations = validateStagedArtifacts(run.id);
     const allValidations = [...validations, ...stagedValidations];

@@ -778,6 +778,18 @@ export function isNoiseArtifactPath(relativePath) {
   return SCRATCH_SCRIPT_BASENAME.test(basename);
 }
 
+/**
+ * 创作画布内部文件判定（2026-11-11-010）：`designs/<slug>/project/**` 与 operations.jsonl
+ * 是画布的结构/审计文件，不是交付物（交付物是导出文件与数据产物）。从产物展示与
+ * 送检清单中隐藏；“改动”面板与版本时间线仍能看到它们。
+ */
+export function isCanvasInternalArtifactPath(relativePath) {
+  const value = String(relativePath || "").replace(/\\/g, "/").trim();
+  if (!value.startsWith("designs/")) return false;
+  if (/^designs\/[^/]+\/operations\.jsonl$/i.test(value)) return true;
+  return /^designs\/[^/]+\/project\//i.test(value);
+}
+
 function trackedPathMatches(tracked, candidate) {
   if (tracked === ".") return true;
   return candidate === tracked || candidate.startsWith(`${tracked}/`);
@@ -1203,6 +1215,18 @@ export function listRunArtifacts(run, root = "") {
   return filterRunChanges(run, changedFiles(run.before, after, { runId: run.id }));
 }
 
+/**
+ * 送检/产物清单（2026-11-11-010）：listRunArtifacts 的可呈现口径——
+ * ① 跳过 `deleted`：重新导出覆盖会把旧文件标记删除，已删除的文件不该再送检
+ *    （否则"产物文件不存在"把整轮误降级为失败，实测 run_59da1789）；
+ * ② 跳过画布内部文件（project/**、operations.jsonl）：非交付物，无需结构校验。
+ */
+export function validatableRunArtifacts(run, root = "") {
+  return listRunArtifacts(run, root)
+    .filter((item) => item?.status !== "deleted" && !isCanvasInternalArtifactPath(item?.path))
+    .map((item) => item.path);
+}
+
 /** Run 明确触碰过的具体文件（"." 代表只知道"写过但不知道写到哪"，不参与精确过滤）。 */
 function concreteTouchedPaths(run) {
   return [...new Set((run.touchedPaths || []).map((value) => normalizeTrackedPath(run, value)).filter((value) => value && value !== "."))];
@@ -1492,9 +1516,12 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
       .filter((item, index, list) => list.findIndex((other) => other.path === item.path) === index);
     // run_finished 的 artifacts 与 SSE / 客户端投影同形状（数组），此前写的是数量，
     // 与事件注册表 schema（array）以及前端 run 总结卡（读 .path）不一致。
+    // 2026-11-11-010：会话结果卡同口径隐藏画布内部文件（交付物才进结果卡）。
     const finishedData = {
       status: finalStatus,
-      artifacts: artifacts.slice(0, 50).map((item) => ({
+      artifacts: artifacts.slice(0, 50)
+        .filter((item) => !isCanvasInternalArtifactPath(item?.path))
+        .map((item) => ({
         artifactId: item?.artifactId || null,
         path: String(item?.path || "").replace(/\\/g, "/"),
         type: item?.type || null,
@@ -1502,7 +1529,7 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
         deliverable: item?.deliverable === true,
         size: Number.isFinite(item?.size) ? item.size : null,
       })),
-      artifactCount: artifacts.length,
+      artifactCount: artifacts.filter((item) => !isCanvasInternalArtifactPath(item?.path)).length,
       materializeSkipped,
       verificationStatus: run.verificationStatus,
       completion: run.completion || null,
@@ -1740,8 +1767,10 @@ function publicRunView(run, { includeEvents = true, eventByteBudget = 0 } = {}) 
   // 工作产物视图：不展示过程脚本/中间数据（touchedPaths 与磁盘记录仍保留原始清单，
   // 便于审计与回滚定位）。历史上已固化的噪音条目（如 `_gh_search/*`）也因此不再出现在
   // 产物面板与会话总结里，无需改写 Run 记录。
+  // 2026-11-11-010：画布内部文件（project/**、operations.jsonl）同样不进产物视图——
+  // 交付物是导出文件与数据产物；画布本体经画布模块与版本时间线呈现。
   if (Array.isArray(publicRun.artifacts)) {
-    publicRun.artifacts = publicRun.artifacts.filter((item) => !isNoiseArtifactPath(item?.path));
+    publicRun.artifacts = publicRun.artifacts.filter((item) => !isNoiseArtifactPath(item?.path) && !isCanvasInternalArtifactPath(item?.path));
   }
   if (Array.isArray(publicRun.events) && !includeEvents) {
     publicRun.eventCount = publicRun.events.length;

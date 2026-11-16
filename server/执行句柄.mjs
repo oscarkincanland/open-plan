@@ -20,6 +20,7 @@ import {
   getRun,
   listRuns,
   listRunArtifacts,
+  validatableRunArtifacts,
   requestRunCancellation,
   snapshotWorkspace,
 } from "./runs.mjs";
@@ -132,7 +133,7 @@ export function 创建执行句柄(初始依赖 = {}) {
   const deps = {
     agentManager: 默认管理器,
     // Run 生命周期依赖（默认直连 runs.mjs；契约测试注入替身，避免真实落盘）
-    runs: { beginRun, recordRunEvent, finishRun, getRun, listRuns, listRunArtifacts, requestRunCancellation, snapshotWorkspace },
+    runs: { beginRun, recordRunEvent, finishRun, getRun, listRuns, listRunArtifacts, validatableRunArtifacts, requestRunCancellation, snapshotWorkspace },
     stageWrite,
     waitForFlush,
     validateArtifacts,
@@ -426,11 +427,10 @@ export function 创建执行句柄(初始依赖 = {}) {
       // 失败前已生成的权威文本也写入 run 记录，供前端断线兜底渲染
       if (run && entry?.lastFinalText) deps.runs.recordRunEvent(run.id, "assistant_final", { text: entry.lastFinalText });
       // 出错也检测产物（agent 可能已部分写入文件）；清单走内容哈希口径，
-      // 只碰了 mtime、内容没变的文件不算变更。
+      // 只碰了 mtime、内容没变的文件不算变更。validatableRunArtifacts：跳过 deleted 与画布内部文件。
       const stagedElsewhere = otherRunsStagedPaths(run?.id || "");
       if (tracksWorkspace) await deps.waitForFlush(before, runWorkspace);
-      const changed = deps.runs.listRunArtifacts(run, runWorkspace)
-        .map((item) => item.path)
+      const changed = deps.runs.validatableRunArtifacts(run, runWorkspace)
         .filter((p) => !stagedElsewhere.has(String(p).replace(/\\/g, "/")));
       const validations = deps.validateArtifacts(changed, runWorkspace);
       const stagedValidations = run ? deps.validateStagedArtifacts(run.id) : [];
@@ -487,8 +487,8 @@ export function 创建执行句柄(初始依赖 = {}) {
     if (tracksWorkspace) await deps.waitForFlush(before, runWorkspace);
     // 产物清单走内容哈希口径（与 run.artifacts 相同），而非 mtime 差异：
     // 后者会把 Office/CLI 只是读取过、内容未变的文件也算成本轮产物。
-    const changed = deps.runs.listRunArtifacts(run, runWorkspace)
-      .map((item) => item.path)
+    // 2026-11-11-010：validatableRunArtifacts 跳过 deleted 与画布内部文件。
+    const changed = deps.runs.validatableRunArtifacts(run, runWorkspace)
       .filter((p) => !stagedElsewhere.has(String(p).replace(/\\/g, "/")));
     const validations = deps.validateArtifacts(changed, runWorkspace);
     const stagedValidations = run ? deps.validateStagedArtifacts(run.id) : [];

@@ -23,8 +23,10 @@ const {
   finishRun,
   filterRunChanges,
   getRun,
+  isCanvasInternalArtifactPath,
   isRunTerminal,
   recordRunEvent,
+  validatableRunArtifacts,
 } = await import("../server/runs.mjs");
 
 const workspace = path.join(temp, "workspace");
@@ -69,6 +71,30 @@ try {
     [{ path: "a.docx" }, { path: "other-run.xlsx" }],
   );
   assert.deepEqual(filtered.map((item) => item.path), ["a.docx"], "filterRunChanges 必须忽略 . 通配");
+
+  // 5. 送检/产物清单口径（2026-11-11-010）：
+  //    deleted 产物（重新导出覆盖旧文件）与画布内部文件不进送检清单
+  const run5 = beginRun({ clientId: "test", threadId: "t3", sessionId: "s3", cwd: workspace, task: { mode: "agent" } });
+  fs.writeFileSync(path.join(workspace, "will-delete.png"), "PNG");
+  fs.mkdirSync(path.join(workspace, "designs", "od-demo", "project", "boards"), { recursive: true });
+  fs.mkdirSync(path.join(workspace, "designs", "od-demo", "exports"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "designs", "od-demo", "project", "canvas.json"), "{}");
+  fs.writeFileSync(path.join(workspace, "designs", "od-demo", "operations.jsonl"), "{}\n");
+  fs.writeFileSync(path.join(workspace, "designs", "od-demo", "exports", "成图.png"), "PNG");
+  recordRunEvent(run5.id, "write_started", { path: "will-delete.png" });
+  recordRunEvent(run5.id, "write_started", { path: "designs/od-demo/project/canvas.json" });
+  recordRunEvent(run5.id, "write_started", { path: "designs/od-demo/operations.jsonl" });
+  recordRunEvent(run5.id, "write_started", { path: "designs/od-demo/exports/成图.png" });
+  fs.rmSync(path.join(workspace, "will-delete.png"));
+  const run5Loaded = getRun(run5.id);
+  const candidates5 = validatableRunArtifacts(run5Loaded, workspace);
+  assert.ok(!candidates5.includes("will-delete.png"), "已删除（deleted）的产物不得再送检");
+  assert.ok(!candidates5.includes("designs/od-demo/project/canvas.json"), "画布结构文件（project/**）不进送检清单");
+  assert.ok(!candidates5.includes("designs/od-demo/operations.jsonl"), "画布审计文件（operations.jsonl）不进送检清单");
+  assert.ok(candidates5.includes("designs/od-demo/exports/成图.png"), "画布导出文件是交付物，必须保留在送检清单");
+  assert.equal(isCanvasInternalArtifactPath("designs/od-demo/project/boards/a.board.json"), true, "画板文件应判为画布内部文件");
+  assert.equal(isCanvasInternalArtifactPath("designs/od-demo/exports/成图.png"), false, "导出文件不是画布内部文件");
+  assert.equal(isCanvasInternalArtifactPath("reports/report.docx"), false, "非 designs 路径不受影响");
 
   console.log("产物归属与终态测试：通过");
 } finally {

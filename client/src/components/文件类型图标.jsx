@@ -38,10 +38,14 @@ const GLYPHS = {
 };
 
 export default function 文件类型图标({ file, size = 20, className = "" }) {
-  const isDir = file?.isDir === true;
+  // 2026-11-11-011：调用方既可能传文件对象（{name,isDir}），也可能直接传路径字符串。
+  // 之前只认 `file.name || file.path`，传字符串时永远解析成空 → 一律落回 other（灰色通用图标），
+  // 这就是用户实测「本轮产物图标全都一样」的真正原因。
+  const source = typeof file === "string" ? file : (file?.name || file?.path || "");
+  const isDir = typeof file === "object" && file?.isDir === true;
   const info = isDir
     ? { kind: "folder", label: "文件夹", ext: "" }
-    : artifactTypeInfo(file?.name || file?.path || "");
+    : artifactTypeInfo(source);
   const px = typeof size === "number" ? size : size === "small" ? 16 : 20;
   const glyph = Math.max(10, Math.round(px * 0.72));
   const title = isDir ? "文件夹" : `${info.label}${info.ext ? ` · ${info.ext.toUpperCase()}` : ""}`;
