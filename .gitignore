@@ -12,6 +12,12 @@ server_err.log
 *.log
 # 本机环境诊断产物（PATH 备份等），不入库
 运行日志/
+# 服务监督器运行日志（logs-supervisor.out / logs-supervisor.err）
+/logs-supervisor.*
+# 根目录一次性临时文件与截图（2026-11-16 清理）
+/_arc.txt
+/_w2.txt
+/*.jpg
 
 # 工作区文档（用户文件，不入库）；地图数据（maps/）纳入版本控制
 office-workspace/*
