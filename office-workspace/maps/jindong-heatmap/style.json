@@ -530,7 +530,7 @@
       "source": "junctions",
       "source-layer": "junctions",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "type": "circle",
       "paint": {
