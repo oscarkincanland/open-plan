@@ -27,7 +27,7 @@ export const 画布限制 = Object.freeze({
 });
 
 /** 允许的元素类型（V1）。 */
-const 元素类型 = new Set(["text", "rect", "line", "image", "svg"]);
+const 元素类型 = new Set(["text", "rect", "line", "image", "svg", "video"]);
 const 对齐集 = new Set(["left", "center", "right", "justify"]);
 const 适配集 = new Set(["cover", "contain", "fill"]);
 const 缩放方向集 = new Set(["n", "s", "e", "w", "ne", "nw", "se", "sw"]);
@@ -41,6 +41,7 @@ const 兜底尺寸 = Object.freeze({
   line: { w: 240, h: 0 },
   image: { w: 320, h: 200 },
   svg: { w: 320, h: 200 },
+  video: { w: 640, h: 360 },
 });
 
 /* ───────────────────────────── 基础工具 ───────────────────────────── */
@@ -170,6 +171,33 @@ export function 素材地址({ slug = "", workspace = "", path = "" } = {}) {
 }
 
 /**
+ * 板相对素材路径 → 项目相对路径（2026-11-15-007）。
+ *
+ * 口径不一致是「画布里的视频/图片加载不出来」的根因：
+ *   - 服务端 `validateAssetSrc()` 按**板文件目录**校验并原样保存 src（数据里就是 `../assets/a.mp4`）；
+ *   - 素材接口 `/api/canvas/:slug/asset` 按 **project 根**解析，且显式拒绝 `..`（安全边界）。
+ * 渲染前必须把 `boards/vid.board.json` + `../assets/a.mp4` 归一到 `assets/a.mp4`。
+ * 越界（弹到项目根之外）或绝对路径/URL 一律返回空串，由调用方渲染占位。
+ */
+export function 素材项目相对路径(板路径, src) {
+  const 原始 = String(src ?? "").trim().replace(/\\/g, "/");
+  if (!原始) return "";
+  if (原始.startsWith("/") || /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(原始)) return "";
+  const 目录段 = String(板路径 ?? "").replace(/\\/g, "/").split("/").slice(0, -1);
+  const 结果 = [];
+  for (const 段 of [...目录段, ...原始.split("/")]) {
+    if (!段 || 段 === ".") continue;
+    if (段 === "..") {
+      if (!结果.length) return "";
+      结果.pop();
+      continue;
+    }
+    结果.push(段);
+  }
+  return 结果.length ? 结果.join("/") : "";
+}
+
+/**
  * SVG markup 清洗（尽力而为，渲染侧再用 `<img>` 承载，双保险）。
  *
  * 说明：这里不是完整 sanitizer——真正的安全边界是「不把 markup 注入文档 DOM」，
@@ -215,7 +243,7 @@ export function normalizeStyle(style) {
  *
  * @param {object} raw 原始元素
  * @param {number} 序号 位置（用于生成缺省 id）
- * @param {string} 板路径 板相对路径（解析 image/svg 的 src）
+ * @param {string} 板路径 板相对路径（解析 image/svg/video 的 src）
  */
 export function normalizeElement(raw, 序号 = 0, 板路径 = "") {
   if (!raw || typeof raw !== "object") return null;
@@ -259,6 +287,16 @@ export function normalizeElement(raw, 序号 = 0, 板路径 = "") {
   元素.src = 素材路径(raw.src, 板路径);
   if (类型值 === "image") {
     元素.fit = 适配集.has(raw.fit) ? raw.fit : "cover";
+    return 元素;
+  }
+  if (类型值 === "video") {
+    // 视频封面（可选）与 src 同路径规则；fit 默认 contain（视频裁切比图片更易丢关键信息）。
+    元素.poster = 素材路径(raw.poster, 板路径);
+    if (!元素.poster) delete 元素.poster;
+    元素.fit = 适配集.has(raw.fit) ? raw.fit : "contain";
+    元素.loop = raw.loop === true;
+    元素.muted = raw.muted === true;
+    元素.autoplay = raw.autoplay === true;
     return 元素;
   }
   if (raw.markup) 元素.markup = 清洗SVG(raw.markup);
@@ -810,6 +848,11 @@ export function exportPlanForCanvas(canvas) {
       pptx: {
         enabled: !空,
         reason: 空 ? "画布没有可导出的板" : 含图片页 ? "兼容板作为整页图片进入 PPTX（文字不可编辑）" : "对象板文本映射为可编辑文本框",
+      },
+      // 单文件 HTML（2026-11-15-007 B）：媒体 base64 内嵌，视频为真 <video controls>，可单独分发。
+      html: {
+        enabled: !空,
+        reason: 空 ? "画布没有可导出的板" : "一个自包含 .html：图片/视频内嵌，双击即看、视频可播放",
       },
     },
     note: 含图片页 ? "含兼容板：兼容板为图片页，文字不可编辑；对象板文本可在 PowerPoint 中直接修改。" : "",

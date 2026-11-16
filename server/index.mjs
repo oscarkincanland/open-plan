@@ -6561,8 +6561,11 @@ const CANVAS_ASSET_MIME = new Map(Object.entries({
   avif: "image/avif", svg: "image/svg+xml", ico: "image/x-icon",
   woff2: "font/woff2", woff: "font/woff", ttf: "font/ttf", otf: "font/otf",
   css: "text/css; charset=utf-8", js: "text/javascript; charset=utf-8",
-  json: "application/json; charset=utf-8", mp4: "video/mp4", webm: "video/webm",
+  json: "application/json; charset=utf-8", mp4: "video/mp4", webm: "video/webm", ogv: "video/ogg",
 }));
+
+/** 视频素材走 Range 分段响应（`<video>` seek 依赖），其余扩展名保持 200 流式。 */
+const CANVAS_VIDEO_MIME = new Set(["video/mp4", "video/webm", "video/ogg"]);
 
 app.get("/api/canvas/:slug/asset", async (req, res) => {
   if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
@@ -6586,11 +6589,33 @@ app.get("/api/canvas/:slug/asset", async (req, res) => {
     if (!fs.existsSync(target) || !fs.statSync(target).isFile()) {
       return res.status(404).json({ ok: false, error: "素材不存在", code: "CANVAS_NOT_FOUND" });
     }
+    const { resolveCanvasAssetRange } = await import("./创作画布.mjs");
     res.setHeader("Content-Type", mime);
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Content-Type-Options", "nosniff");
-    // SVG/字体等按受控资源返回：禁止外链与脚本，避免素材成为 XSS 入口。
-    res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:");
+    // SVG/字体等按受控资源返回：禁止外链与脚本，避免素材成为 XSS 入口；视频素材放行 media-src。
+    const csp = CANVAS_VIDEO_MIME.has(mime)
+      ? "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src 'self'"
+      : "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:";
+    res.setHeader("Content-Security-Policy", csp);
+    const stat = fs.statSync(target);
+    // `<video>` 的 seek/拖进度条依赖 Range：视频 MIME 按区间响应（206/416），其余扩展名保持 200 流式。
+    const range = CANVAS_VIDEO_MIME.has(mime) ? resolveCanvasAssetRange(req.headers.range, stat.size) : { status: 200 };
+    if (range.status === 206) {
+      res.status(206);
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${stat.size}`);
+      res.setHeader("Content-Length", String(range.end - range.start + 1));
+      fs.createReadStream(target, { start: range.start, end: range.end }).pipe(res);
+      return;
+    }
+    if (range.status === 416) {
+      res.status(416);
+      res.setHeader("Content-Range", `bytes */${stat.size}`);
+      return res.end();
+    }
+    res.setHeader("Accept-Ranges", CANVAS_VIDEO_MIME.has(mime) ? "bytes" : "none");
+    res.setHeader("Content-Length", String(stat.size));
     fs.createReadStream(target).pipe(res);
   } catch (e) { canvasError(res, e); }
 });

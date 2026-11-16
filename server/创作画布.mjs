@@ -33,6 +33,7 @@ import {
   CANVAS_CAPTURE_LIMIT,
   CANVAS_EXPORT_FORMATS,
   buildCanvasExportUrl,
+  buildCanvasHtml,
   buildCanvasPptx,
   buildExportFileName,
   normalizeColor,
@@ -87,7 +88,7 @@ const VERSION_MERGE_UI_MS = 2 * 1000;
 const SLUG_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}_-]{0,63}$/u;
 const ELEMENT_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const BOARD_FILE_PATTERN = /^[A-Za-z0-9_-]{1,64}\.board\.json$/;
-const ELEMENT_TYPES = new Set(["text", "rect", "line", "image", "svg"]);
+const ELEMENT_TYPES = new Set(["text", "rect", "line", "image", "svg", "video"]);
 const TEXT_ALIGNS = new Set(["left", "center", "right"]);
 const VALIGNS = new Set(["top", "middle", "bottom"]);
 const IMAGE_FITS = new Set(["cover", "contain", "fill"]);
@@ -446,7 +447,7 @@ function validateElement(raw, index, { projectDir, boardDir, ids }) {
   ids.add(id);
   const type = String(raw.type ?? "");
   if (!ELEMENT_TYPES.has(type)) {
-    fail("CANVAS_INVALID", `${where}(${id}) 的 type 非法：${type || "(空)"}（可用：text/rect/line/image/svg）`);
+    fail("CANVAS_INVALID", `${where}(${id}) 的 type 非法：${type || "(空)"}（可用：text/rect/line/image/svg/video）`);
   }
   const element = { id, type };
   if (type === "line") {
@@ -492,6 +493,23 @@ function validateElement(raw, index, { projectDir, boardDir, ids }) {
       const fit = String(raw.fit || "").toLowerCase();
       if (!IMAGE_FITS.has(fit)) fail("CANVAS_INVALID", `${where}(${id}) 的 fit 只能是 cover/contain/fill`);
       element.fit = fit;
+    }
+  }
+  if (type === "video") {
+    element.src = validateAssetSrc(raw.src, { projectDir, boardDir, where: `${where}(${id})` });
+    if (raw.poster !== undefined && raw.poster !== null && String(raw.poster).trim() !== "") {
+      element.poster = validateAssetSrc(raw.poster, { projectDir, boardDir, where: `${where}(${id})` });
+    }
+    if (raw.fit !== undefined) {
+      const fit = String(raw.fit || "").toLowerCase();
+      if (!IMAGE_FITS.has(fit)) fail("CANVAS_INVALID", `${where}(${id}) 的 fit 只能是 cover/contain/fill`);
+      element.fit = fit;
+    }
+    for (const flag of ["loop", "muted", "autoplay"]) {
+      if (raw[flag] !== undefined) {
+        if (typeof raw[flag] !== "boolean") fail("CANVAS_INVALID", `${where}(${id}) 的 ${flag} 必须是布尔值`);
+        element[flag] = raw[flag];
+      }
     }
   }
   element.style = validateStyle(raw.style, `${where}(${id})`);
@@ -1730,7 +1748,7 @@ export function createCanvas(workspace, options = {}) {
   });
 }
 
-/** 素材 MIME 白名单（图片 / SVG / 字体，禁止可执行类型）。 */
+/** 素材 MIME 白名单（图片 / SVG / 字体 / 视频，禁止可执行类型）。 */
 const ASSET_MIME_BY_EXT = Object.freeze({
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -1744,7 +1762,39 @@ const ASSET_MIME_BY_EXT = Object.freeze({
   ".woff2": "font/woff2",
   ".ttf": "font/ttf",
   ".otf": "font/otf",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".ogv": "video/ogg",
 });
+
+/**
+ * 解析素材请求的 Range 头（RFC 7233 单区间/后缀区间，`<video>` seek 依赖）。
+ * 非 Range 请求 / 空 size / 多区间或非法语法 → 200 全量；可满足区间 → 206；
+ * 起点越界 → 416。
+ *
+ * @returns {{ status: 200 } | { status: 206, start: number, end: number } | { status: 416, size: number }}
+ */
+export function resolveCanvasAssetRange(rangeHeader, size) {
+  if (!rangeHeader || !Number.isFinite(size) || size <= 0) return { status: 200 };
+  const match = /^bytes=(\d*)-(\d*)$/.exec(String(rangeHeader).trim());
+  if (!match || (match[1] === "" && match[2] === "")) return { status: 200 };
+  let start;
+  let end;
+  if (match[1] === "") {
+    // 后缀区间：bytes=-N 表示最后 N 字节。
+    const suffix = Number(match[2]);
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = Number(match[1]);
+    end = match[2] === "" ? size - 1 : Number(match[2]);
+    if (Number.isFinite(end)) end = Math.min(end, size - 1);
+  }
+  if (!Number.isFinite(start) || start < 0 || start > end || start >= size) {
+    return { status: 416, size };
+  }
+  return { status: 206, start, end };
+}
 
 /**
  * 读取 project 内素材字节（供 `GET /api/canvas/:slug/asset?path=` 路由使用）。
@@ -1766,7 +1816,7 @@ export function readCanvasAsset(workspace, slug, assetPath) {
   if (!isInside(index.projectDir, real)) fail("CANVAS_PATH_DENIED", `素材路径越界：${rel}`);
   const ext = path.extname(real).toLowerCase();
   const mime = ASSET_MIME_BY_EXT[ext];
-  if (!mime) fail("CANVAS_INVALID", `不支持的素材类型：${ext || "(无扩展名)"}（只允许图片/SVG/字体）`);
+  if (!mime) fail("CANVAS_INVALID", `不支持的素材类型：${ext || "(无扩展名)"}（只允许图片/SVG/字体/视频）`);
   let buffer;
   try { buffer = fs.readFileSync(real); } catch { fail("CANVAS_NOT_FOUND", `素材不可读：${rel}`); }
   return { file: real, relative: rel, mime, bytes: buffer.length, buffer };
@@ -2649,6 +2699,21 @@ export function planExport(workspace, slug, options = {}) {
       scaled: capture.scaled,
       viewUrl: buildCanvasExportUrl({ workspace: root, slug: cleanSlug, boards: selected.map((entry) => entry.path), format: "pdf" }),
     });
+  } else if (format === "html") {
+    // HTML：整本一个自包含文件（图片/SVG/视频 base64 内嵌）。不要求所有板同尺寸，
+    // 也不需要浏览器——视频走真 <video controls>，这是与 SVG/PPTX 静态降级的关键差别。
+    const missing = selected.filter((entry) => !entry.exists);
+    if (missing.length) {
+      errors.push(`画板文件不存在：${missing.map((item) => item.path).join(", ")}`);
+      return { jobs: [], errors, warnings, format, boards: selected.map((item) => item.path) };
+    }
+    jobs.push({
+      id: "job-1",
+      format: "html",
+      boards: selected.map((entry) => entry.path),
+      width: selected[0].w,
+      height: selected[0].h,
+    });
   } else {
     const missing = selected.filter((entry) => !entry.exists);
     if (missing.length) {
@@ -2889,6 +2954,28 @@ export async function runExport(workspace, slug, options = {}, deps = {}) {
           files.push(writeExportFile(root, exportsDir, buildExportFileName({
             title: canvasTitle, boardTitle: "", format: "pdf", outputName: options?.outputName, at,
           }), buffer));
+        } else if (plan.format === "html") {
+          // 单文件 HTML：媒体全部 base64 内嵌；视频用真 <video controls>（可播放）。
+          const htmlBoards = [];
+          for (const boardPath of item.boards) {
+            const entry = boardEntries.get(boardPath);
+            if (!entry) fail("CANVAS_NOT_FOUND", `画板不存在：${boardPath}`);
+            const boardAbs = path.join(projectDir, boardPath);
+            const baseDir = path.dirname(boardAbs);
+            if (entry.kind === "html" || entry.kind === "svg") {
+              let raw = "";
+              try { raw = fs.readFileSync(boardAbs, "utf8"); } catch { raw = ""; }
+              htmlBoards.push({ path: boardPath, kind: entry.kind, w: entry.w, h: entry.h, title: entry.title || "", raw, baseDir });
+            } else {
+              const { board } = readBoard(root, cleanSlug, boardPath);
+              htmlBoards.push({ path: boardPath, kind: "object", w: entry.w, h: entry.h, title: entry.title || "", board, baseDir });
+            }
+          }
+          const built = buildCanvasHtml({ title: canvasTitle, boards: htmlBoards, projectDir, at });
+          warnings.push(...built.warnings);
+          files.push(writeExportFile(root, exportsDir, buildExportFileName({
+            title: canvasTitle, boardTitle: "", format: "html", outputName: options?.outputName, at,
+          }), Buffer.from(built.html, "utf8"), { slides: built.pageCount }));
         } else {
           // PPTX：对象板映射为可编辑对象；兼容板先截图成整页图片。
           const slides = [];

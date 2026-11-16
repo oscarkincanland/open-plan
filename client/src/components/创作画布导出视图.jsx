@@ -144,6 +144,41 @@ function 导出元素({ 元素, 素材前缀 }) {
       </svg>
     );
   }
+  if (元素.type === "video") {
+    // 导出为静态图：有封面用封面帧，无封面给中性占位框；不嵌真实媒体（导出策略见 2026-11-15-005 计划）。
+    const 封面 = 元素.poster ? `${素材前缀}${encodeURIComponent(元素.poster)}` : "";
+    if (封面) {
+      return (
+        <img
+          src={封面}
+          alt=""
+          draggable={false}
+          style={{ ...样式, objectFit: 元素.fit === "cover" || 元素.fit === "fill" ? 元素.fit : "contain" }}
+        />
+      );
+    }
+    const 字号 = Math.max(10, Math.min(Math.round(元素.h / 8), 14));
+    return (
+      <div
+        style={{
+          ...样式,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 4,
+          boxSizing: "border-box",
+          border: "1px dashed rgba(128,128,128,.6)",
+          color: "rgba(128,128,128,.9)",
+          fontFamily: "system-ui, sans-serif",
+          fontSize: 字号,
+        }}
+      >
+        <span style={{ fontSize: 字号 * 2, lineHeight: 1 }}>▶</span>
+        <span>视频</span>
+      </div>
+    );
+  }
   const 图源 = 元素.markup
     ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(清洗SVG(元素.markup))}`
     : 元素.src

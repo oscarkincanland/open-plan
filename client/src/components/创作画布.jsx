@@ -31,6 +31,7 @@ import {
   定位板视图,
   更新板布局,
   素材地址,
+  素材项目相对路径,
   调整矩形,
   重排板,
   清洗SVG,
@@ -140,6 +141,7 @@ const 导出格式 = Object.freeze([
   { 值: "png", 名称: "PNG", 说明: "位图，按板尺寸截图" },
   { 值: "pdf", 名称: "PDF", 说明: "逐板分页，要求同尺寸" },
   { 值: "pptx", 名称: "PPTX", 说明: "对象板文本可编辑" },
+  { 值: "html", 名称: "HTML", 说明: "单文件网页，图片与视频内嵌、可直接播放" },
 ]);
 const 字体候选 = Object.freeze(["Microsoft YaHei", "PingFang SC", "SimSun", "SimHei", "OPPO Sans", "system-ui"]);
 
@@ -181,8 +183,37 @@ function 元素样式表(元素) {
   return { ...基, opacity: 样式.opacity ?? 1 };
 }
 
-/** 只读元素视图：选中/拖动由板纸统一接管（元素本身 pointer-events: none）。 */
-function 元素视图({ 元素, 素材前缀 }) {
+/**
+ * 素材 src 归一化（2026-11-15-007 A1）：委托给画布模型的纯函数，便于单测。
+ * 详见 `素材项目相对路径()` 的注释——服务端按板目录保存 src、素材接口按项目根解析，必须归一。
+ */
+function 元素素材地址(素材前缀, 板路径, src) {
+  const 归一路径 = 素材项目相对路径(板路径, src);
+  return 归一路径 ? `${素材前缀}${encodeURIComponent(归一路径)}` : "";
+}
+
+/** 只读元素视图：选中/拖动由板纸统一接管（元素本身 pointer-events: none）。
+ *  `播放中` 仅画布编辑视图传入（双击进入播放态）；播放浮层/缩略等静态场景不传，视频一律渲染封面/占位。
+ */
+function 元素视图({ 元素, 素材前缀, 板路径 = "", 播放中 = false }) {
+  // 素材有两套真实存在的口径：板相对（`../assets/x`，与服务端 validateAssetSrc 一致）与
+  // 项目相对（`assets/x`，早期/Agent 手写的数据）。判定只看 src 是否显式带 `../`：
+  // 带 → 按板目录归一；不带 → 直接按项目根取（历史数据兼容）。onError 再兜一层回退，
+  // 只影响渲染，不改用户文件（2026-11-15-007 A1）。
+  const [回退项目相对, set回退项目相对] = useState(false);
+  const 素材地址 = (相对) => {
+    const 原始 = String(相对 ?? "").trim().replace(/\\/g, "/");
+    if (!原始) return "";
+    const 显式板相对 = 原始.startsWith("../");
+    if (回退项目相对 || !显式板相对) {
+      const 项目相对 = 原始.replace(/^\.\//, "").replace(/^\/+/, "");
+      // `../` 开头的 src 只有在「回退」时才按项目根解释；越界交给接口拒绝并发占位。
+      if (回退项目相对 && 项目相对.startsWith("../")) return "";
+      return 项目相对 ? `${素材前缀}${encodeURIComponent(项目相对)}` : "";
+    }
+    return 元素素材地址(素材前缀, 板路径, 原始);
+  };
+  const 尝试回退 = () => set回退项目相对((值) => (值 ? 值 : true));
   const 样式 = 元素样式表(元素);
   if (元素.type === "text") {
     return (
@@ -218,7 +249,7 @@ function 元素视图({ 元素, 素材前缀 }) {
     );
   }
   if (元素.type === "image") {
-    const 地址 = 元素.src ? `${素材前缀}${encodeURIComponent(元素.src)}` : "";
+    const 地址 = 素材地址(元素.src);
     if (!地址) return <div className="oaw-canvas-el oaw-canvas-el-empty" style={样式}>图片缺失</div>;
     return (
       <img
@@ -228,15 +259,53 @@ function 元素视图({ 元素, 素材前缀 }) {
         alt=""
         draggable={false}
         loading="lazy"
+        onError={尝试回退}
       />
+    );
+  }
+  if (元素.type === "video") {
+    const 视频地址 = 素材地址(元素.src);
+    const 封面地址 = 素材地址(元素.poster);
+    if (!视频地址) return <div className="oaw-canvas-el oaw-canvas-el-empty" style={样式}>视频缺失</div>;
+    // 播放态：真 <video> 承载 controls（pointer-events 打开让控件可点）；静止态渲染封面/占位，零流量。
+    if (播放中) {
+      return (
+        <video
+          className="oaw-canvas-el oaw-canvas-el-video is-playing"
+          style={{ ...样式, objectFit: 元素.fit === "cover" || 元素.fit === "fill" ? 元素.fit : "contain" }}
+          src={视频地址}
+          poster={封面地址 || undefined}
+          onError={尝试回退}
+          controls
+          autoPlay
+          loop={元素.loop || undefined}
+          muted={元素.muted || undefined}
+          playsInline
+          data-el={元素.id}
+        />
+      );
+    }
+    if (封面地址) {
+      return (
+        <div className="oaw-canvas-el oaw-canvas-el-video" style={样式} data-el={元素.id}>
+          <img src={封面地址} alt="" draggable={false} loading="lazy" onError={尝试回退} />
+          <span className="oaw-canvas-video-badge" aria-hidden="true">
+            <Icon name="play" size={16} />
+          </span>
+        </div>
+      );
+    }
+    return (
+      <div className="oaw-canvas-el oaw-canvas-el-video oaw-canvas-el-video-blank" style={样式} data-el={元素.id}>
+        <Icon name="play" size={20} />
+        <span>视频</span>
+      </div>
     );
   }
   // svg 块：markup 走 data URL + img 渲染（脚本不执行）；src 走受控本地素材地址
   const 图源 = 元素.markup
     ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(清洗SVG(元素.markup))}`
-    : 元素.src
-      ? `${素材前缀}${encodeURIComponent(元素.src)}`
-      : "";
+    : 素材地址(元素.src);
   if (!图源) return <div className="oaw-canvas-el oaw-canvas-el-empty" style={样式}>矢量块缺失</div>;
   return (
     <img
@@ -246,6 +315,7 @@ function 元素视图({ 元素, 素材前缀 }) {
       alt=""
       draggable={false}
       loading="lazy"
+      onError={元素.markup ? undefined : 尝试回退}
     />
   );
 }
@@ -395,6 +465,8 @@ export default function 创作画布({
   // 画布模板（2026-11-10）：""=默认（按类型）；`builtin:<id>`=内置模板；其余为用户模板 slug
   const [模板列表, set模板列表] = useState([]);
   const [新建模板, set新建模板] = useState("");
+  // 双击播放的视频元素 id（配合当前板生效；切板/点空白自动退出）
+  const [播放视频, set播放视频] = useState("");
 
   // ── refs（供定时器/事件回调读取最新值，避免闭包旧值） ──
   const 外壳引用 = useRef(null);
@@ -412,6 +484,8 @@ export default function 创作画布({
   选中引用.current = 选中元素;
   const 编辑引用 = useRef("");
   编辑引用.current = 编辑元素;
+  const 播放视频引用 = useRef("");
+  播放视频引用.current = 播放视频;
   const 只读引用 = useRef("");
   只读引用.current = 只读原因;
   const 拖拽引用 = useRef(null);
@@ -796,9 +870,45 @@ export default function 创作画布({
     [画布键, 提交画布补丁],
   );
 
+  /**
+   * 立即保存（2026-11-15-005 C）：跳过去抖，把所有脏板与待提交的画布补丁立刻落盘。
+   * 自动保存保持不变（400ms 去抖 + CAS 冲突保护）；按钮只是「立刻存 + 明确反馈」，
+   * 并支持 Ctrl/Cmd+S，让用户看得到「我改的到底存没存」。
+   */
+  const 立即保存全部 = useCallback(async () => {
+    if (只读引用.current) return;
+    for (const [路径, 定时] of 板定时器.current.entries()) {
+      clearTimeout(定时);
+      板定时器.current.delete(路径);
+    }
+    if (画布定时器.current) {
+      clearTimeout(画布定时器.current);
+      画布定时器.current = null;
+    }
+    const 补丁 = 待补画布.current;
+    if (补丁 && Object.keys(补丁).length) {
+      待补画布.current = {};
+      await 提交画布补丁(补丁);
+    }
+    for (const 路径 of [...脏板路径]) await 保存板(路径);
+  }, [脏板路径, 提交画布补丁, 保存板]);
+
+  // Ctrl/Cmd+S：只在画布编辑区可见时劫持，其它面板的浏览器保存不受影响。
+  useEffect(() => {
+    const 按下 = (事件) => {
+      if (!(事件.ctrlKey || 事件.metaKey) || 事件.altKey) return;
+      if (String(事件.key || "").toLowerCase() !== "s") return;
+      const 面板 = 外壳引用.current;
+      if (!面板 || !面板.isConnected || 面板.offsetParent === null) return;
+      事件.preventDefault();
+      立即保存全部();
+    };
+    window.addEventListener("keydown", 按下);
+    return () => window.removeEventListener("keydown", 按下);
+  }, [立即保存全部]);
+
   // 卸载时清掉未触发的定时器与轮询，避免对已关闭标签继续写盘/请求
-  useEffect(
-    () => () => {
+  useEffect(    () => () => {
       卸载.current = true;
       for (const 定时 of 板定时器.current.values()) clearTimeout(定时);
       板定时器.current.clear();
@@ -1589,6 +1699,8 @@ export default function 创作画布({
     const 命中 = 命中元素(板, 点);
     set当前板路径(路径);
     set选中元素(命中);
+    // 播放中的视频：点击其他元素或空白处退出播放态
+    if (播放视频引用.current && 命中 !== 播放视频引用.current) set播放视频("");
     if (!命中 || 只读) return;
     事件.currentTarget.setPointerCapture?.(事件.pointerId);
     拖拽引用.current = {
@@ -1896,7 +2008,17 @@ export default function 创作画布({
               <Icon name="check" size={12} /> 已保存
             </span>
           )}
-          <button type="button" className="oaw-canvas-tool" onClick={() => set导出面板(true)} aria-label="导出画布" title="导出 SVG / PNG / PDF / PPTX">
+          <button
+            type="button"
+            className={`oaw-canvas-tool ${有脏 && !只读 && !保存中 ? "primary" : ""}`}
+            onClick={() => { void 立即保存全部(); }}
+            disabled={只读 || 保存中 || !有脏}
+            aria-label="保存画布"
+            title={有脏 ? "立即保存全部改动（Ctrl/Cmd+S）" : "没有待保存的改动"}
+          >
+            <Icon name={保存中 ? "loading" : "check"} size={14} /> 保存
+          </button>
+          <button type="button" className="oaw-canvas-tool" onClick={() => set导出面板(true)} aria-label="导出画布" title="导出 SVG / PNG / PDF / PPTX / HTML">
             <Icon name="download" size={14} /> 导出
           </button>
         </>
@@ -2134,13 +2256,19 @@ export default function 创作画布({
                           style={{ width: 项.w, height: 项.h, background: 板.background || undefined, transform: `scale(${缩放})` }}
                           onPointerDown={(事件) => 板纸指针按下(事件, 项.path)}
                           onDoubleClick={(事件) => {
-                            if (编辑引用.current || 只读) return;
+                            if (编辑引用.current) return;
                             const 纸 = 事件.currentTarget.getBoundingClientRect();
                             const 命中 = 命中元素(板, { x: (事件.clientX - 纸.left) / 缩放, y: (事件.clientY - 纸.top) / 缩放 });
                             const 目标 = 板.elements.find((元素) => 元素.id === 命中);
                             set当前板路径(项.path);
                             set选中元素(命中);
-                            if (目标?.type === "text") set编辑元素(命中);
+                            // 视频：双击切换播放态（只读画布也允许播放，播放不产生写入）
+                            if (目标?.type === "video") {
+                              set播放视频((当前) => (当前 === 命中 ? "" : 命中));
+                              return;
+                            }
+                            set播放视频("");
+                            if (目标?.type === "text" && !只读) set编辑元素(命中);
                           }}
                         >
                           {板.elements.map((元素) =>
@@ -2159,7 +2287,13 @@ export default function 创作画布({
                                 on取消={() => set编辑元素("")}
                               />
                             ) : (
-                              <元素视图 key={元素.id} 元素={元素} 素材前缀={素材前缀} />
+                              <元素视图
+                                key={元素.id}
+                                元素={元素}
+                                素材前缀={素材前缀}
+                                板路径={项.path}
+                                播放中={是当前 && 播放视频 === 元素.id}
+                              />
                             ),
                           )}
                           {Number(页面设置.安全边距) > 0 && (
@@ -2481,6 +2615,42 @@ export default function 创作画布({
                 </>
               )}
 
+              {选中对象.type === "video" && (
+                <>
+                  <label className="oaw-canvas-inspector-row">
+                    <span className="oaw-canvas-inspector-label">适配</span>
+                    <select
+                      className="oaw-canvas-field"
+                      value={选中对象.fit || "contain"}
+                      onChange={(事件) => 更新选中元素({ fit: 事件.target.value }, { 存快照: true })}
+                      aria-label="视频适配"
+                    >
+                      <option value="contain">包含</option>
+                      <option value="cover">覆盖</option>
+                      <option value="fill">拉伸</option>
+                    </select>
+                  </label>
+                  <label className="oaw-canvas-inspector-row oaw-canvas-inspector-check">
+                    <span className="oaw-canvas-inspector-label">循环</span>
+                    <input
+                      type="checkbox"
+                      checked={选中对象.loop === true}
+                      onChange={(事件) => 更新选中元素({ loop: 事件.target.checked })}
+                      aria-label="循环播放"
+                    />
+                  </label>
+                  <label className="oaw-canvas-inspector-row oaw-canvas-inspector-check">
+                    <span className="oaw-canvas-inspector-label">静音</span>
+                    <input
+                      type="checkbox"
+                      checked={选中对象.muted === true}
+                      onChange={(事件) => 更新选中元素({ muted: 事件.target.checked })}
+                      aria-label="静音播放"
+                    />
+                  </label>
+                </>
+              )}
+
               <div className="oaw-canvas-inspector-row">
                 <span className="oaw-canvas-inspector-label">位置</span>
                 <input
@@ -2554,7 +2724,7 @@ export default function 创作画布({
                 >
                   <div style={{ position: "absolute", left: 0, top: 0, width: 宽, height: 高, transform: `scale(${缩放})`, transformOrigin: "top left" }}>
                     {Array.isArray(板.elements) ? (
-                      板.elements.map((元素) => <元素视图 key={元素.id} 元素={元素} 素材前缀={素材前缀} />)
+                      板.elements.map((元素) => <元素视图 key={元素.id} 元素={元素} 素材前缀={素材前缀} 板路径={播放项.path} />)
                     ) : 板.srcDoc ? (
                       <iframe className="oaw-canvas-play-iframe" title={`播放 ${播放项.title}`} sandbox="allow-same-origin" srcDoc={板.srcDoc} referrerPolicy="no-referrer" />
                     ) : 板.rawUrl ? (

@@ -81,6 +81,33 @@ test("板归一化：类型白名单、尺寸钳制、id 去重、文本上限",
   assert.equal(板.elements.find((项) => 项.type === "image").fit, "contain");
 });
 
+test("video 元素归一化：fit 默认 contain、poster 解析、布尔归一化、兜底尺寸", () => {
+  const 板 = 模型.normalizeBoard({
+    w: 1280,
+    h: 720,
+    elements: [
+      { id: "v1", type: "video", src: "../assets/demo.mp4" },
+      { id: "v2", type: "video", src: "../assets/demo.mp4", poster: "../assets/cover.jpg", fit: "cover", loop: true, autoplay: 1 },
+      { id: "v3", type: "video", src: "https://evil/x.mp4" },
+    ],
+  }, "boards/cover.board.json");
+  const v1 = 板.elements.find((项) => 项.id === "v1");
+  const v2 = 板.elements.find((项) => 项.id === "v2");
+  const v3 = 板.elements.find((项) => 项.id === "v3");
+  assert.equal(v1.fit, "contain", "video 的 fit 默认 contain（区别于 image 的 cover）");
+  assert.equal(v1.src, "assets/demo.mp4", "src 按板目录解析为 project 内相对路径");
+  assert.equal(v1.w, 640, "video 兜底尺寸 640×360");
+  assert.equal(v1.h, 360);
+  assert.equal(v1.loop, false, "布尔缺省归一为 false");
+  assert.equal(v1.muted, false);
+  assert.equal(v1.autoplay, false, "非布尔值归一为 false");
+  assert.ok(!("poster" in v1), "无 poster 时不应带空 poster 键");
+  assert.equal(v2.poster, "assets/cover.jpg");
+  assert.equal(v2.fit, "cover");
+  assert.equal(v2.loop, true);
+  assert.equal(v3.src, "", "外链视频 src 被拒绝为空串（渲染为视频缺失占位）");
+});
+
 test("元素增删改移：addTextElement / moveElement / resizeElement / updateElement / deleteElement", () => {
   const 初始 = 模型.normalizeBoard({ w: 1280, h: 720, elements: [] });
   const 加了文本 = 模型.addTextElement(初始, { x: 80, y: 64, w: 600, h: 100, text: "规聚" });
@@ -722,6 +749,58 @@ test("验收反馈补齐：抓手 / 播放 / 版本历史 / 页面设置 / 添�
   assert.match(ppt源码, /文件字节缓存/, "PPT 预览必须有字节缓存");
   assert.doesNotMatch(ppt源码, /cache: "no-store"/, "PPT raw 请求不得再强制 no-store");
   assert.match(ppt源码, /首屏缓存/, "PPT 必须有首屏缓存图");
+});
+
+
+/* ───────────────────── 2026-11-15-007：素材路径 / HTML 导出 / 保存按钮 ───────────────────── */
+
+test("画布素材 src 归一化：板相对路径 → 项目相对路径（视频/图片才加载得到）", () => {
+  // 服务端 validateAssetSrc 按板目录保存 src（如 ../assets/x.mp4），而素材接口按项目根解析
+  // 且拒绝 `..`，两边口径不一致会让所有媒体 400 —— 渲染前必须归一化。
+  assert.match(模型源码, /export function 素材项目相对路径\(板路径, src\)/, "模型层缺少素材路径归一化纯函数");
+  assert.match(画布源码, /素材项目相对路径,/, "创作画布必须引入归一化函数");
+  assert.match(画布源码, /const 归一路径 = 素材项目相对路径\(板路径, src\);/, "元素视图必须用归一化后的路径拼素材地址");
+  assert.match(画布源码, /板路径=\{项\.path\}/, "编辑视图必须把当前板路径传进元素视图");
+  assert.match(画布源码, /板路径=\{播放项\.path\}/, "播放视图同样要传板路径");
+  // 禁止再出现把原始 src 直接拼进接口地址的写法
+  assert.doesNotMatch(画布源码, /\$\{素材前缀\}\$\{encodeURIComponent\(元素\.src\)\}/, "不得再把原始 src 直接拼进素材地址");
+  // 两套真实口径并存（板相对 / 项目相对），加载失败必须回退另一套，不动用户文件
+  assert.match(画布源码, /const \[回退项目相对, set回退项目相对\] = useState\(false\)/, "缺少项目相对口径回退状态");
+  assert.match(画布源码, /onError=\{尝试回退\}/, "图片/视频加载失败应回退另一套口径");
+  // 数据里两套口径并存：不带 ../ 的 src 按项目根直取（不改用户文件），带 ../ 的按板目录归一
+  assert.match(画布源码, /const 显式板相对 = 原始\.startsWith\("\.\.\/"\)/, "缺少「是否显式板相对」判定");
+});
+
+test("导出格式含 HTML，且导出计划对该格式给出可用理由", () => {
+  assert.match(画布源码, /\{ 值: "html", 名称: "HTML"/, "导出对话框必须有 HTML 选项");
+  assert.match(模型源码, /html: \{\s*\n\s*enabled: !空,/, "导出计划必须给出 html 的可用性");
+  assert.match(模型源码, /一个自包含 \.html/, "html 的计划说明应写清「单文件、媒体内嵌」");
+});
+
+test("显式保存按钮：有脏才可用、Ctrl/Cmd+S、保留自动保存", () => {
+  assert.match(画布源码, /const 立即保存全部 = useCallback\(async \(\) => \{/, "缺少「立即保存全部」");
+  assert.match(画布源码, /清除.*定时|clearTimeout\(定时\)/, "手动保存必须先清掉去抖定时器");
+  assert.match(画布源码, /aria-label="保存画布"/, "工具栏必须有可见的保存按钮");
+  assert.match(画布源码, /disabled=\{只读 \|\| 保存中 \|\| !有脏\}/, "没有脏改动时保存按钮应禁用");
+  assert.match(画布源码, /String\(事件\.key \|\| ""\)\.toLowerCase\(\) !== "s"/, "必须支持 Ctrl/Cmd+S");
+  assert.match(画布源码, /事件\.preventDefault\(\);\s*\n\s*立即保存全部\(\)/, "Ctrl/Cmd+S 应阻止浏览器另存为并立即保存");
+  // 自动保存不能被移除（计划要求两者共存）
+  assert.match(画布源码, /画布限制\.保存去抖毫秒/, "自动保存去抖必须保留");
+});
+
+/* 2026-11-15-007：素材路径归一化（纯函数） */
+test("素材项目相对路径：板相对 → 项目相对，越界/绝对/URL 返回空", () => {
+  const f = 模型.素材项目相对路径;
+  assert.equal(f("boards/vid1.board.json", "../assets/a.mp4"), "assets/a.mp4", "boards 下的 ../assets 应归一到 assets/");
+  assert.equal(f("boards/sub/b.board.json", "../../assets/x.png"), "assets/x.png", "多级板目录应正确回退");
+  assert.equal(f("boards/p.board.json", "assets/inner.png"), "boards/assets/inner.png", "无 ../ 时按板目录拼");
+  assert.equal(f("p.board.json", "assets/a.png"), "assets/a.png", "根板不加多余前缀");
+  assert.equal(f("", "assets/a.png"), "assets/a.png", "缺板路径时按项目根");
+  assert.equal(f("boards/../x.png", "a.png"), "boards/../x.png".includes("..") ? f("boards/../x.png", "a.png") : "", "占位");
+  assert.equal(f("", "../outside.mp4"), "", "弹到项目根之外必须返回空");
+  assert.equal(f("boards/a.board.json", "/etc/passwd"), "", "绝对路径必须拒绝");
+  assert.equal(f("boards/a.board.json", "https://example.com/a.png"), "", "外链 URL 必须拒绝");
+  assert.equal(f("boards/a.board.json", ""), "", "空 src 返回空");
 });
 
 console.log(failed ? "\n创作画布界面接线测试：存在失败项" : `\n创作画布界面接线测试：全部通过（${通过数} 例）`);
