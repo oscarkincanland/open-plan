@@ -6522,11 +6522,36 @@ app.post("/api/canvas/:slug/save-as-template", async (req, res) => {
   } catch (e) { canvasError(res, e); }
 });
 
-app.get("/api/canvas/exports/:jobId", (req, res) => {
+app.get("/api/canvas/exports/:jobId", async (req, res) => {
   if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
-  const job = canvasExportJobs.get(String(req.params.jobId || ""));
-  if (!job) return res.status(404).json({ ok: false, error: "导出任务不存在或服务已重启" });
-  res.json({ ok: true, ...job });
+  const jobId = String(req.params.jobId || "");
+  const live = canvasExportJobs.get(jobId);
+  if (live) return res.json({ ok: true, ...live });
+  // 2026-11-16：任务号只在内存里，服务重启（含健康检查误重启）后前端轮询必然 404，
+  // 界面把「其实已经导出成功」显示成「导不出来」。这里回落到画布目录下的 .jobs.json
+  // ——落盘任务是权威记录，能跨重启把已完成/失败的真实结果交回前端。
+  try {
+    const cvs = await import("./创作画布.mjs");
+    const persisted = cvs.listExportJobs(canvasWorkspaceFrom(req), null, { jobId })
+      .find((item) => String(item.jobId || "") === jobId);
+    if (persisted) {
+      return res.json({
+        ok: true,
+        id: persisted.jobId,
+        jobId: persisted.jobId,
+        slug: persisted.slug,
+        format: persisted.format,
+        status: persisted.status,
+        files: Array.isArray(persisted.files) ? persisted.files : [],
+        error: (persisted.errors || []).join("；"),
+        warnings: persisted.warnings || [],
+        createdAt: persisted.createdAt,
+        finishedAt: persisted.finishedAt,
+        recoveredAfterRestart: true,
+      });
+    }
+  } catch { /* 回落失败按未找到处理，不改变原有语义 */ }
+  res.status(404).json({ ok: false, error: "导出任务不存在（服务已重启且未在画布记录中找到该任务）" });
 });
 
 app.post("/api/canvas", async (req, res) => {
