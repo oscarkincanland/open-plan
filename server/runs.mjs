@@ -524,6 +524,8 @@ function runSearchText(run) {
 }
 
 function buildRunMeta(run) {
+  const events = Array.isArray(run.events) ? run.events : [];
+  const lastEventAt = String(events[events.length - 1]?.at || "") || null;
   return {
     id: run.id,
     threadId: run.threadId,
@@ -534,9 +536,93 @@ function buildRunMeta(run) {
     mode: run.task?.mode,
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,
+    // 2026-11-16-008 B：列表/巡检只需要「多久没动静」，不必为此加载整份 Run。
+    // lastEventAt 是事件级空闲判据，updatedAt 是写入级兜底（无事件时用）。
+    lastEventAt,
+    updatedAt: run.updatedAt || lastEventAt || run.startedAt || null,
     artifactCount: Array.isArray(run.artifacts) ? run.artifacts.length : 0,
     search: runSearchText(run),
   };
+}
+
+/**
+ * 静默 Run 回收用的轻量候选查询（2026-11-16-008 B）。
+ *
+ * 旧实现用 `listRuns({ limit: 50, includeEvents: "latest" })` 再逐个 `getRun()`：
+ * 50 条 Run 的完整视图 + 事件克隆实测同步阻塞约 **1976ms**；冷启动首轮更差
+ * （要先把几百条 Run 索引建立起来，实测 3.5s）。而它每 30 秒跑一次，与导出/快照
+ * 等重活撞上就会让 `/api/status` 连续超时、被监督器误判卡死并重启服务。
+ *
+ * 现在只做两件便宜事：
+ *   1. `statSync` 按 mtime 先筛掉「最近还在写」的文件（活跃 Run 必然刚写过）；
+ *   2. 对剩下的少量文件，只读**头 4KB + 尾 16KB** 提取 `status` 与最后一个 `at`，
+ *      完全不 JSON.parse 整份 Run。
+ * 只有真正判定停滞的候选才由调用方 `getRun()` 复核。
+ */
+export async function listRunStallCandidates({ limit = 200, olderThanMs = 0, chunkSize = 40 } = {}) {
+  ensureDir(RUNS_DIR);
+  const now = Date.now();
+  const stallFloor = Math.max(0, Number(olderThanMs) || 0);
+  const out = [];
+  let names = [];
+  try { names = fs.readdirSync(RUNS_DIR).filter((n) => n.endsWith(".json")); } catch { return out; }
+  const yieldEvery = Math.max(1, Math.min(200, Number(chunkSize) || 40));
+  let scanned = 0;
+  for (const name of names) {
+    // 每 N 个文件让出一次事件循环：几百条 Run 的头尾读在 USB 盘上也要几百毫秒，
+    // 一口气做完仍会拖住 /api/status；分批让出把单次占用压到毫秒级。
+    if (scanned > 0 && scanned % yieldEvery === 0) await new Promise((resolve) => setImmediate(resolve));
+    scanned += 1;
+    const id = path.basename(name, ".json");
+    const file = path.join(RUNS_DIR, name);
+    let stat;
+    try { stat = fs.statSync(file); } catch { continue; }
+    // 最近还在写的 Run 不可能是「静默停滞」，直接跳过（这是最省的预筛）。
+    if (stallFloor > 0 && now - stat.mtimeMs < stallFloor) continue;
+    const peek = peekRunFile(file, stat);
+    if (!peek || !STALL_ACTIVE_STATUSES.has(String(peek.status || ""))) continue;
+    out.push({
+      id,
+      status: peek.status,
+      lastEventAt: peek.lastEventAt,
+      updatedAt: new Date(stat.mtimeMs).toISOString(),
+      startedAt: null,
+    });
+    if (out.length >= Math.max(1, Math.min(500, limit))) break;
+  }
+  return out;
+}
+
+const STALL_ACTIVE_STATUSES = new Set(["running", "queued", "recovering"]);
+
+/** 读 Run 文件头尾各一小段，取 status 与最后一个事件时间（不解析整份 JSON）。 */
+function peekRunFile(file, stat) {
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+    const size = stat.size;
+    const headLen = Math.min(4096, size);
+    const tailLen = Math.min(16384, size);
+    const head = Buffer.alloc(headLen);
+    if (headLen > 0) fs.readSync(fd, head, 0, headLen, 0);
+    const tail = Buffer.alloc(tailLen);
+    if (tailLen > 0) fs.readSync(fd, tail, 0, tailLen, Math.max(0, size - tailLen));
+    const headText = head.toString("utf8");
+    const tailText = tail.toString("utf8");
+    const statusMatch = /"status"\s*:\s*"([a-z_]+)"/.exec(headText) || /"status"\s*:\s*"([a-z_]+)"/.exec(tailText);
+    let lastEventAt = null;
+    const idx = tailText.lastIndexOf('"at":"');
+    if (idx >= 0) {
+      const raw = tailText.slice(idx + 6, idx + 30);
+      const m = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.exec(raw);
+      if (m) lastEventAt = m[0];
+    }
+    return { status: statusMatch ? statusMatch[1] : null, lastEventAt };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+  }
 }
 
 function runIndexEntry(id) {
@@ -1286,14 +1372,21 @@ export function mergeChangeLists(snapshotChanges = [], recentChanges = []) {
 
 function copyAfterBlobs(run, artifacts, after) {
   const dir = ensureDir(path.join(RUNS_DIR, run.id, "after"));
+  // 2026-11-16-008 B：此前只有单文件 4MB 上限，没有总量上限——一次 100+ 产物的 Run
+  // 会在 finishRun 里连续 `copyFileSync` 几百 MB（USB 工作区更慢），把事件循环钉住。
+  // 这里加总量预算（与 before 快照的 MAX_BLOB_TOTAL 同口径），超出部分放弃回滚副本，
+  // 只影响「可回滚」，不影响产物本身与 Run 记录。
+  let remaining = MAX_BLOB_TOTAL;
   for (const artifact of artifacts) {
     if (!artifact.after || artifact.after.size > MAX_BLOB_BYTES) continue;
+    if (remaining <= 0) break;
     const source = path.join(after.root, artifact.path);
     const target = path.join(dir, artifact.path);
     try {
       ensureDir(path.dirname(target));
       fs.copyFileSync(source, target);
       artifact.after.reversible = true;
+      remaining -= artifact.after.size;
     } catch {}
   }
 }

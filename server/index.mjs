@@ -26,7 +26,7 @@ import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, materializeSkippedOf, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, validatableRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves, startOwnerHeartbeat, stopOwnerHeartbeat, setRunLifecycleInvalidator } from "./runs.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunStallCandidates, listRunSummaries, runSummaryView, materializeSkippedOf, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, validatableRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves, startOwnerHeartbeat, stopOwnerHeartbeat, setRunLifecycleInvalidator } from "./runs.mjs";
 import { markInterruptedJobs } from "./后台任务.mjs";
 import { attachRunTimingMeta, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
@@ -368,10 +368,25 @@ app.use((req, res, next) => {
   });
   next();
 });
+// 事件循环延迟采样（2026-11-16-008 C）：每 2s 一次，用「本次 tick 比预期晚了多久」近似
+// 事件循环被同步工作挤占的时长。监督器健康检查超时时，先看 /api/status 的这个值。
+let eventLoopLagMs = 0;
+let eventLoopLagLastTick = Date.now();
+const eventLoopLagTimer = setInterval(() => {
+  const now = Date.now();
+  const late = now - eventLoopLagLastTick - 2000;
+  eventLoopLagLastTick = now;
+  // 保留最近一次的严重程度（短窗口抖动不覆盖持续阻塞的高值）。
+  eventLoopLagMs = Math.max(0, Math.max(late, eventLoopLagMs * 0.5));
+}, 2000);
+eventLoopLagTimer.unref?.();
 app.get("/api/status", (req, res) => {
   if (API_TOKEN && tokenMatches(req.query?.token)) setAuthCookie(res);
   res.json({
     ok: true,
+    // 2026-11-16-008 C：事件循环延迟（毫秒，2s 采样）。健康检查超时到底是「进程卡死」
+    // 还是「事件循环被同步工作占满」，看这个值就能定位，不必再靠“疑似卡住”猜。
+    eventLoopLagMs: Math.round(eventLoopLagMs),
     officecli: path.basename(OFFICECLI),
     version: pkg.version,
     // L0 运行宪法版本：设置里只做只读展示，不提供编辑入口。
@@ -7752,21 +7767,36 @@ httpServer.on("error", (error) => {
 // 运行时被替换、插话接管等）。不回收的话会话列表会永远显示「执行中」，
 // 在会话之间切换时看起来就是"状态对不上"（用户反馈的会话间混乱）。
 const RUN_STALL_MS = Math.max(60000, Number.parseInt(process.env.OAW_RUN_STALL_MS || "180000", 10) || 180000);
-function reapStalledRuns() {
+let reaperRunning = false;
+async function reapStalledRuns() {
+  // 防重入：上一轮还没扫完就跳过本次，避免多轮叠加把事件循环越压越满。
+  if (reaperRunning) return;
+  reaperRunning = true;
+  try {
+    await reapStalledRunsOnce();
+  } finally {
+    reaperRunning = false;
+  }
+}
+
+async function reapStalledRunsOnce() {
   let candidates = [];
   try {
-    candidates = listRuns({ limit: 50, includeEvents: "latest" }).filter((item) => ["running", "queued", "recovering"].includes(item.status));
+    // 2026-11-16-008 B：只读运行索引（状态 + 最后事件时间），不再为 50 条 Run 构造
+    // 完整视图（实测同步 1976ms / 30 秒一次，会把 /api/status 拖到超时被误重启）。
+    // olderThanMs 让「刚写过」的文件在 stat 阶段就被筛掉；扫描本身按批让出事件循环。
+    candidates = await listRunStallCandidates({ limit: 200, olderThanMs: RUN_STALL_MS });
   } catch (error) {
-    console.warn(`[runs] 静默 Run 回收：读取 Run 列表失败 ${String(error?.message || error).slice(0, 160)}`);
+    console.warn(`[runs] 静默 Run 回收：读取运行索引失败 ${String(error?.message || error).slice(0, 160)}`);
     return;
   }
-  for (const item of candidates) {
+  for (const candidate of candidates) {
     try {
-      const run = getRun(item.id);
-      if (!run) continue;
-      const events = Array.isArray(run.events) ? run.events : [];
-      const lastAt = Date.parse(events[events.length - 1]?.at || run.startedAt || "") || 0;
+      const lastAt = Date.parse(candidate.lastEventAt || candidate.updatedAt || candidate.startedAt || "") || 0;
       if (!lastAt || Date.now() - lastAt < RUN_STALL_MS) continue;
+      // 只有确实停滞的候选才加载完整 Run（通常 0~2 条）。
+      const run = getRun(candidate.id);
+      if (!run) continue;
       const entry = agentManager.resolveLiveEntry(agentKey(run.clientId, run.threadId), { runId: run.id });
       const runtime = entry ? agentManager.runtimeSnapshot(agentKey(run.clientId, run.threadId)) : null;
       const runtimeBusy = Boolean(entry?.busy) || ["running", "queued", "compacting"].includes(String(runtime?.status || ""));
@@ -7805,11 +7835,11 @@ function reapStalledRuns() {
     }
   }
 }
-const runReaperTimer = setInterval(reapStalledRuns, 30000);
+const runReaperTimer = setInterval(() => { void reapStalledRuns(); }, 30000);
 runReaperTimer.unref?.();
 // 启动后先跑一次：进程重启留下的 recovering/running 会在几分钟内被收尾，
 // 不必等满一个周期，用户打开界面时看到的会话状态就是准的。
-setTimeout(reapStalledRuns, 5000).unref?.();
+setTimeout(() => { void reapStalledRuns(); }, 5000).unref?.();
 
 process.on("SIGINT", () => { void shutdownService("SIGINT", 0); });
 process.on("SIGTERM", () => { void shutdownService("SIGTERM", 0); });

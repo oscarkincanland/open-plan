@@ -214,6 +214,7 @@
     "test:background-jobs": "node scripts/后台任务测试.mjs",
     "test:bash-locks": "node scripts/bash写锁测试.mjs",
     "test:service-supervisor": "node scripts/服务监督回归测试.mjs",
+    "test:responsiveness": "node scripts/服务响应性回归测试.mjs",
     "test:native-files": "node scripts/原生文件测试.mjs",
     "test:run-view": "node scripts/运行展示投影测试.mjs",
     "test:run-payload": "node scripts/运行终态载荷测试.mjs",
