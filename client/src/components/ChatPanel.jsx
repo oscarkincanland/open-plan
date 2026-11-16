@@ -26,7 +26,6 @@ import { completionLabel, formatDuration, formatTokenCount, reduceRunTrace, redu
 import { associateRunMessages, findAssistantEntryByText, hiddenLegacySummaryRuns, isInternalHarnessMessage, projectLegacyRunSummary, upsertRunSummaryMessage } from "../运行展示投影.js";
 import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, toolIdentity } from "../事件展示.js";
 import { buildArtifactIndex } from "../产物类型.js";
-import 文件类型图标 from "./文件类型图标.jsx";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
 import { isStaleChunkError, recoverFromStaleChunk } from "../分包恢复.js";
@@ -39,11 +38,10 @@ import { getBrowserStreamState } from "../浏览器联动.js";
 import TimelineRow from "./会话流/TimelineRow.jsx";
 import RunFoldBar from "./会话流/RunFoldBar.jsx";
 import SummaryBlock from "./会话流/SummaryBlock.jsx";
-import ArtifactCard from "./会话流/ArtifactCard.jsx";
-import RunChangesCard from "./会话流/RunChangesCard.jsx";
+import ArtifactCard from "./会话流/ArtifactCard.jsx";import RunChangesCard from "./会话流/RunChangesCard.jsx";
 import { TypewriterText } from "./会话流/useTypewriter.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
-import { assignTimelineTurns, buildRunTimeline, describeRunFold, splitCompletionSummary, summarizeTimeline } from "../会话流投影.js";
+import { assignTimelineTurns, buildRunTimeline, describeRunFold, isNarrationText, splitCompletionSummary, splitRunTimelineSections, summarizeTimeline } from "../会话流投影.js";
 import { BROWSER_STEP_VERBS, browserStepHost } from "../浏览器动作.js";
 import { applyToolMetadata, toolPresentationOf } from "../工具展示.js";
 import { reduceTeamEvent, teamFromEvents } from "../团队投影.js";
@@ -103,6 +101,10 @@ const THINKING_MIGRATION_KEY = "oaw_thinking_level_v3";
 // 2026-11-07：默认推理档位改为「高」。此前默认 default（跟随模型），
 // 对规划分析类问题深度不够；用户可在工具栏显式改回。
 const DEFAULT_THINKING_EFFORT = "high";
+// 一次性系统提示（已排队 / 已中断保留队列 / 已切换模式 / 已加入上下文…）显示过一次就够：
+// 永久留在会话流里会越积越多、挤占正文（2026-11-15-004）。悬停暂停，移开后重新计时。
+const TRANSIENT_NOTICE_TTL_MS = 6000;
+const TRANSIENT_NOTICE_FADE_MS = 220;
 
 /**
  * 读取初始推理档位。
@@ -1975,8 +1977,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     systemEventKeysRef.current.clear();
     // 记录目标会话的阅读位置：等 messages 水合完成后由下面的 layout effect 恢复。
     // 运行中的会话不恢复（应继续跟随底部）。
-    const savedScroll = scrollPositionsRef.current.get(threadId);
-    pendingScrollRestoreRef.current = (savedScroll != null && !hydratedIsLive) ? savedScroll : null;
+    // 2026-11-15-003：只有「真的换了会话」才重新武装恢复位置。本 effect 也会因
+    // historyMessages 更新（刷新/补拉历史）重跑，旧实现每次都拿 scrollPositionsRef
+    // 里的旧值重新武装一次——用户已经滚到底部或读到别处后，下一次水合又把他拽回
+    // 历史位置，观感就是"几轮之后还在跳"。
+    if (previousThreadRef.current !== threadId) {
+      const savedScroll = scrollPositionsRef.current.get(threadId);
+      pendingScrollRestoreRef.current = (savedScroll != null && !hydratedIsLive) ? savedScroll : null;
+    }
     previousThreadRef.current = threadId;
   }, [historyMessages, historyThreadId, threadId]);
 
@@ -2411,8 +2419,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       const cachedModel = threadCacheRef.current.get(threadId)?.model || "";
       // 计划 006 D2：会话模型 sessionStorage 缓存优先于全局偏好——刷新后本会话模型不丢，
       // 也不会被（可能来自其他窗口的）全局偏好覆盖。
+      // 2026-11-11-010（计划 010 §2.4）：服务端默认（运行设置 defaultModel）优先于
+      // "上次使用"（localStorage）——用户要求刷新默认 DeepSeek V4.1 Flash，而不是上次手动选的模型；
+      // 会话级模型仍由 thread 缓存/sessionStorage 保持，此链只决定"新会话"的初始显示。
       const storedThreadModel = readThreadModelCache()[threadId] || "";
-      const preferred = cachedModel || storedThreadModel || saved || d.default || "";
+      const preferred = cachedModel || storedThreadModel || d.default || saved || "";
       const cur = nextModels.some((m) => m.id === preferred) ? preferred : (nextModels[0]?.id || "");
       setModel(cur);
       // 只做显示层初始化，不写全局偏好、不回推 onModelChange：
@@ -3615,7 +3626,7 @@ case "runtime_connecting":
         }
         break;
       case "agent_model_fallback_failed":
-        pushSystem(`备用模型切换失败：${data.message || "请在设置中检查模型授权"}`, `agent_model_fallback_failed:${data.from || "unknown"}`);
+        pushSystem(`备用模型切换失败：${data.message || "请在设置中检查模型授权"}`, `agent_model_fallback_failed:${data.from || "unknown"}`, { sticky: true });
         break;
       case "model_switched": {
         // 模型切换的统一事实来源：排队（本轮结束前不生效）/ 生效 / 通道回退 / 失败。
@@ -3895,7 +3906,7 @@ case "runtime_connecting":
           } else if (data.action === "project_created") {
             // 创建即交付（2026-11-11-004 §3.1）：不弹“地图分析已生成”，交 App 绑定会话并开预览。
           } else {
-            pushSystem(`地图分析已生成：${data.title || data.analysis || "分析结果"}${data.source === "demo" ? "（演示数据）" : ""}`);
+            pushSystem(`地图分析已生成：${data.title || data.analysis || "分析结果"}${data.source === "demo" ? "（演示数据）" : ""}`, undefined, { sticky: true });
             // 阶段 4.4：记住最近一次地图可视化，结果区据此提示"临时，未保存"。
             // 数据源就是既有 map_action 事件（persist:false，不落盘），不新增 SSE。
             setMapVisualHint("");
@@ -4075,11 +4086,79 @@ case "runtime_connecting":
     }
   }, [patch]);
 
-  const pushSystem = useCallback((text, key = text) => {
+  const pushSystem = useCallback((text, key = text, options = {}) => {
     if (!mountedRef.current) return;
     if (!acceptSystemEvent(key)) return;
-    setMessages((ms) => [...ms, { id: newId(), role: "system", text, status: "done", createdAt: Date.now() }]);
+    // sticky=true 的提示必须常驻（错误 / 需用户行动 / 用户主动索取的信息），
+    // 其余按一次性提示处理：到点淡出后从会话流移除（2026-11-15-004）。
+    const sticky = options?.sticky === true;
+    setMessages((ms) => [...ms, {
+      id: newId(),
+      role: "system",
+      text,
+      status: "done",
+      createdAt: Date.now(),
+      ...(sticky ? {} : { transient: true, expiresAt: Date.now() + TRANSIENT_NOTICE_TTL_MS }),
+    }]);
   }, [acceptSystemEvent]);
+
+  // 一次性提示的生命周期：到点标 leaving（淡出）→ 过渡结束后从 messages 移除。
+  // 悬停暂停通过提示气泡上的 data-notice-id 做事件委托（不穿透 MemoMessage 的 props）。
+  const noticeHoverIdRef = useRef(null);
+  const transientNotices = messages.filter((m) => m?.transient && !m.leaving);
+  useEffect(() => {
+    const active = transientNotices.filter((m) => m.id !== noticeHoverIdRef.current);
+    if (!active.length) return undefined;
+    const nextAt = Math.min(...active.map((m) => Number(m.expiresAt) || 0));
+    const timer = window.setTimeout(() => {
+      const due = new Set(
+        messages
+          .filter((m) => m?.transient && !m.leaving && m.id !== noticeHoverIdRef.current && (Number(m.expiresAt) || 0) <= Date.now() + 50)
+          .map((m) => m.id),
+      );
+      if (!due.size) return;
+      setMessages((list) => list.map((m) => (due.has(m.id) ? { ...m, leaving: true } : m)));
+    }, Math.max(0, nextAt - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [messages, transientNotices.length]);
+  // 移除阶段只按「正在淡出的 id 集合」重排定时器：若依赖整个 messages，流式期间
+  // 每 16ms 一次更新都会重置 220ms 定时器，提示就永远删不掉。
+  const leavingNoticeIds = messages.filter((m) => m?.transient && m.leaving).map((m) => m.id);
+  const leavingNoticesKey = leavingNoticeIds.join("|");
+  useEffect(() => {
+    if (!leavingNoticesKey) return undefined;
+    const ids = new Set(leavingNoticesKey.split("|"));
+    const timer = window.setTimeout(() => {
+      setMessages((list) => list.filter((m) => !ids.has(m.id)));
+    }, isMotionReduced() ? 0 : TRANSIENT_NOTICE_FADE_MS);
+    return () => window.clearTimeout(timer);
+  }, [leavingNoticesKey]);
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return undefined;
+    const noticeIdOf = (node) => node?.closest?.(".msg.system[data-notice-id]")?.getAttribute("data-notice-id") || "";
+    const onOver = (event) => {
+      const id = noticeIdOf(event.target);
+      if (!id || noticeHoverIdRef.current === id) return;
+      noticeHoverIdRef.current = id;
+      // 暂停：把到期时间推远，其它提示的计时不受影响。
+      setMessages((list) => list.map((m) => (m.id === id && m.transient ? { ...m, expiresAt: Number.MAX_SAFE_INTEGER } : m)));
+    };
+    const onOut = (event) => {
+      const id = noticeIdOf(event.target);
+      if (!id || noticeHoverIdRef.current !== id) return;
+      // 在提示内部移动（子元素之间）不算离开。
+      if (event.relatedTarget && noticeIdOf(event.relatedTarget) === id) return;
+      noticeHoverIdRef.current = null;
+      setMessages((list) => list.map((m) => (m.id === id && m.transient ? { ...m, expiresAt: Date.now() + TRANSIENT_NOTICE_TTL_MS } : m)));
+    };
+    el.addEventListener("pointerover", onOver);
+    el.addEventListener("pointerout", onOut);
+    return () => {
+      el.removeEventListener("pointerover", onOver);
+      el.removeEventListener("pointerout", onOut);
+    };
+  }, []);
 
   // v0.13.0–v0.13.1：Goal 读写（会话级，经服务端 .oaw/goals 持久化）。
   const runGoalAction = useCallback(async (action, payload = {}) => {
@@ -4124,7 +4203,7 @@ case "runtime_connecting":
       }
       pushSystem(result?.goal ? `长期目标：${result.goal.text}（${result.goal.status}）` : "长期目标已清除。", `goal-command:${Date.now()}`);
     } catch (error) {
-      pushSystem("目标操作失败：" + (error?.message || "未知错误"), `goal-error:${Date.now()}`);
+      pushSystem("目标操作失败：" + (error?.message || "未知错误"), `goal-error:${Date.now()}`, { sticky: true });
     }
   }, [goal, pushSystem, runGoalAction, saveGoal]);
 
@@ -4236,11 +4315,11 @@ case "runtime_connecting":
       clearInput();
       setComposerMenu(null);
       if (selectedEditMode === "chat") {
-        pushSystem("专家团队只在 Work/Review 可用；请先切换到 Work 再使用 /team。", "team-mode-rejected");
+        pushSystem("专家团队只在 Work/Review 可用；请先切换到 Work 再使用 /team。", "team-mode-rejected", { sticky: true });
         return;
       }
       if (!flag("teamRequiredEntry")) {
-        pushSystem("团队模式入口已关闭（服务端 OAW_TEAM_REQUIRED_ENTRY=0）。", "team-mode-disabled");
+        pushSystem("团队模式入口已关闭（服务端 OAW_TEAM_REQUIRED_ENTRY=0）。", "team-mode-disabled", { sticky: true });
         return;
       }
       teamRequiredForSend = true;
@@ -4277,7 +4356,7 @@ case "runtime_connecting":
         pushSystem("已切换到 " + (mode === "chat" ? "Chat（只读检索）" : mode === "review" ? "Review（审查与安全副本）" : "Work（执行与产出）") + "。");
         return;
       }
-      pushSystem("输入帮助：/goal 设置长期目标；/compact 压缩上下文；/new 新建会话；/chat、/agent 或 /review 切换模式；/team 开启团队模式（Work/Review）；@ 选择文件；& 选择历史会话。", "composer-help");
+      pushSystem("输入帮助：/goal 设置长期目标；/compact 压缩上下文；/new 新建会话；/chat、/agent 或 /review 切换模式；/team 开启团队模式（Work/Review）；@ 选择文件；& 选择历史会话。", "composer-help", { sticky: true });
       return;
     }
     const text = rawText || (sourceImages.length ? "（图片消息）" : "（附件消息）");
@@ -4584,7 +4663,7 @@ case "runtime_connecting":
         stopConfirmTimerRef.current = null;
         if (!stoppingRef.current) return;
         finalizeStopped();
-        pushSystem(`已受理中断，但服务端在 ${seconds} 秒内仍未确认收尾（可能卡在不响应中断的工具里）；如仍在输出可再点一次中断或刷新页面。`, "stop-unconfirmed");
+        pushSystem(`已受理中断，但服务端在 ${seconds} 秒内仍未确认收尾（可能卡在不响应中断的工具里）；如仍在输出可再点一次中断或刷新页面。`, "stop-unconfirmed", { sticky: true });
       }, ms);
     };
     armStopConfirm(defaultConfirmMs);
@@ -4630,7 +4709,7 @@ case "runtime_connecting":
       stoppingRef.current = false;
       stopRequestedRef.current = false;
       setStopping(false);
-      pushSystem(`中断失败：${e.message || "网络错误"}`, "stop-failed");
+      pushSystem(`中断失败：${e.message || "网络错误"}`, "stop-failed", { sticky: true });
     }
   };
 
@@ -5004,6 +5083,18 @@ case "runtime_connecting":
   // 停在底部的会话下次仍跟到底部）。
   const scrollPositionsRef = useRef(new Map());
   const pendingScrollRestoreRef = useRef(null);
+  // 立即定位（2026-11-15-003）：`.chat-body` 带 `scroll-behavior: smooth`，而 CSSOM 里
+  // `scrollTo({ behavior: "auto" })` 会解析成 CSS 计算值——同样是平滑动画。
+  // 自动跟随底部每 60ms 触发一次，每次平滑动画都会被下一次打断，表现为视口一直在"跳"。
+  // 这里在定位瞬间把 inline scroll-behavior 临时改成 auto：用户主动点「回到底部」
+  // 仍走 motionScrollBehavior() 保留动效，只有自动跟随走瞬时定位。
+  const jumpScrollTo = (el, top) => {
+    if (!el) return;
+    const previous = el.style.scrollBehavior;
+    el.style.scrollBehavior = "auto";
+    el.scrollTop = top;
+    el.style.scrollBehavior = previous;
+  };
   const updateScrollFollowState = () => {
     const el = bodyRef.current;
     if (!el) return;
@@ -5020,7 +5111,10 @@ case "runtime_connecting":
     followLatestRef.current = true;
     setShowScrollToBottom(false);
     setUnreadBelow(0);
-    el.scrollTo({ top: el.scrollHeight, behavior: motionScrollBehavior() });
+    // 运行中内容还在持续增高：平滑滚动会被下一帧的新内容反复打断（观感就是"还在跳"），
+    // 此时直接瞬时到底；空闲时仍保留动效（DESIGN 的动效基线）。
+    if (runInProgressRef.current || busy) jumpScrollTo(el, el.scrollHeight);
+    else el.scrollTo({ top: el.scrollHeight, behavior: motionScrollBehavior() });
   };
   // v0.13.8 未读累计：以"最后一条助手消息 id"为准——只有尾部新到达的回复才计数，
   // 历史分页向头部插入旧消息、切会话重放都不会误增；离开底部期间到达才累计。
@@ -5046,7 +5140,9 @@ case "runtime_connecting":
       if (!el || !followLatestRef.current) return;
       // 用用户滚动时记录的跟随意图，而不是在流式内容增高后重新判断距离。
       // 否则回复变长就会让滚动距离超过阈值，后续 token 留在视口外。
-      el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
+      // 2026-11-15-003：必须瞬时定位——CSS 的 scroll-behavior: smooth 会把
+      // `behavior: "auto"` 也变成动画，60ms 一次的新跟随会不断打断上一次动画（"一直在跳"）。
+      jumpScrollTo(el, el.scrollHeight);
     }, 60);
   }, [messages]);
   // 卸载时清掉排队中的跟底定时器（effect 本身不再每次清理，见上）。
@@ -6540,35 +6636,16 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
             </div>
             {resultTab === "products" && products.length > 0 && (
               <div className="result-tab-panel" role="tabpanel" aria-label="本轮产物">
-                <div className="product-cards-head">
-                  <span>
-                    <Icon name="folder" size={12} /> 交付产物 {deliverables.length} · 已确认 {confirmedProducts.length}
-                    {attributedProducts.length > confirmedProducts.length ? ` · 待确认 ${attributedProducts.length - confirmedProducts.length}` : ""}
-                    {leadProducts.length ? ` · 未归属线索 ${leadProducts.length}` : ""}
-                  </span>
-                  {onOpenArtifacts && <button type="button" className="product-cards-link" onClick={() => onOpenArtifacts()} title="在右侧“产物”面板查看版本与固定">在产物面板查看</button>}
-                </div>
+                {/* 2026-11-11-011：本轮产物统一由 ArtifactCard 渲染（默认 3 条主要交付物 + 折叠 +
+                    常驻打开方式）。此前这里另有一份内联副本，两处口径/上限不一致（6 vs 8），
+                    且都被 .product-cards 的 320px 内部滚动裁掉第 6 条。 */}
                 {productCards.length > 0 && (
-                  <div className="product-cards">
-                    {productCards.slice(0, 6).map((item) => (
-                      <div className={`product-card${item.deliverable ? " deliverable" : ""}${item.confirmed ? "" : " provisional"}`} key={item.path}>
-                        <button type="button" className="product-card-main" onClick={() => onOpenFile?.(item.path)} title={item.path}>
-                          <span className="product-card-icon"><文件类型图标 file={item.path} size={15} /></span>
-                          <span className="product-card-meta">
-                            <strong>{item.name}</strong>
-                            <small>{item.typeLabel}{item.sizeText ? ` · ${item.sizeText}` : ""}</small>
-                          </span>
-                          {item.deliverable && <span className="product-card-badge">交付</span>}
-                          {!item.confirmed && (
-                            <span
-                              className="product-card-badge provisional"
-                              title="本轮没有把该文件写进台账（bash / officecli 写文件不回报路径），按“本轮确有写入 + 文件在运行窗口内变化”归属到本轮；若同一工作区有并行运行，也可能来自它"
-                            >待确认</span>
-                          )}
-                        </button>
-                        <button type="button" className="product-card-open" onClick={() => onOpenFile?.(item.path)} title={`打开 ${item.path}`}>打开</button>
-                      </div>
-                    ))}
+                  <ArtifactCard products={productCards} onOpenFile={onOpenFile} onOpenPanel={onOpenArtifacts} />
+                )}
+                {productCards.length === 0 && (
+                  <div className="product-cards-head">
+                    <span><Icon name="folder" size={12} /> 交付产物 {deliverables.length} · 已确认 {confirmedProducts.length}</span>
+                    {onOpenArtifacts && <button type="button" className="product-cards-link" onClick={() => onOpenArtifacts()} title="在右侧“产物”面板查看版本与固定">在产物面板查看</button>}
                   </div>
                 )}
                 {/* 未归属线索：本轮没有任何写入证据（纯读取的一轮）时，快照差异无法证明属于本轮，
@@ -6699,7 +6776,10 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
       );
     }
     return (
-      <div className="msg system">
+      <div
+        className={`msg system${m.transient ? " transient" : ""}${m.leaving ? " is-leaving" : ""}`}
+        data-notice-id={m.transient ? m.id : undefined}
+      >
         <div className="bubble">
           {m.text}
           {m.memoryProposal && (
@@ -6912,6 +6992,16 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     () => (timelinePath ? assignTimelineTurns(runTimeline, timelineEventsSource) : []),
     [timelinePath, runTimeline, timelineEventsSource],
   );
+  // 2026-11-12：结构化小节（标题/表格/列表/长论述）不是「过程」，不能收进折叠体——
+  // 从时间流里挑出来放到折叠体外按原顺序渲染，折叠体只留真正的过程（思考/工具/播报）。
+  // 注意：失败/取消轮仍必须默认折叠（既有规范），所以不能靠「默认展开」绕过。
+  // 2026-11-15-002：二分下沉到 splitRunTimelineSections（纯函数，可测）——
+  //   运行中整条时间流直铺、不外提（旧实现会把中途过程文本立刻搬到消息底部）；
+  //   收尾后只外提「最后一次过程条目之后」的结论小节，中段结构化文本留在过程原位。
+  const { foldTimelineItems, liftedTimelineItems } = useMemo(() => {
+    if (!timelinePath) return { foldTimelineItems: [], liftedTimelineItems: [] };
+    return splitRunTimelineSections(runTimelineView, { live: isTaskLive });
+  }, [timelinePath, runTimelineView, isTaskLive]);
   // 「已运行 xx」：运行中按 startedAt 实时累加，结束后用实测总时长。
   // 不能整轮隐藏——用户需要一眼看到这一轮跑了多久；也不能再包回运行框。
   //
@@ -7046,7 +7136,8 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
         const isStreamingText = streaming && item === runTimeline[lastTextIndex];
         // 流式中间态不显示「阶段结论」标签：模型还在吐字，此时只是半句；
         // 过短（<8 字）的碎片也不当作阶段结论，避免出现「阶段结论 15」之类的假结论。
-        const showCap = !isStreamingText && String(item.text || "").trim().length >= 8;
+        // 2026-11-12：结构化小节不是「阶段小结」，不加这个标签（它本来就属于结论）。
+        const showCap = !isStreamingText && String(item.text || "").trim().length >= 8 && isNarrationText(item.text);
         return (
           <div className="textblock flow-markdown" key={item.id}>
             {showCap && <div className="tb-cap">{item.cap}</div>}
@@ -7133,9 +7224,13 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   let processOrder = -1;
   blocks.forEach((block, blockIndex) => {
     if (block?.type === "message_boundary" || blockIndex === hiddenFinalTextIndex) return;
+    // 2026-11-12：只折叠「过程播报」，结构化结论（标题/表格/列表/长论述）必须留在正文。
+    // 原实现只判断「是不是终稿块」，导致模型在两次工具调用之间写的 `##` 小节被整段吞进
+    // 「执行过程」（用户反馈「结构化回复又被折叠了」）。
     const isIntermediateText = foldIntermediateText
       && block?.type === "text"
-      && blockIndex !== finalAnswerBlockIndex;
+      && blockIndex !== finalAnswerBlockIndex
+      && isNarrationText(block.text);
     if (isProcessBlock(block) || isIntermediateText) {
       processOrder += 1;
       const item = { block, blockIndex, processOrder };
@@ -7364,14 +7459,18 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                     不再单独占一行——否则结算瞬间这一行消失会让整段内容上跳。
                     compact/嵌入式隐藏消息头时仍保留独立行作为兜底。 */}
                 {runElapsedText && hideHeader && !showTimelineSummary && <div className="tl-elapsed">{runElapsedText}</div>}
-                <div className={`tl-list ${isTaskLive ? "is-live" : ""}`}>{runTimelineView.map(renderTimelineItem)}</div>
+                <div className={`tl-list ${isTaskLive ? "is-live" : ""}`}>{foldTimelineItems.map(renderTimelineItem)}</div>
                 {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
               </>
             ) : (
               <RunFoldBar state={runFold.state} label={runFold.label} steps={runTimeline.length} pendingLabel={runFoldPending} defaultOpen={false}>
-                <div className="tl-list">{runTimelineView.map(renderTimelineItem)}</div>
+                <div className="tl-list">{foldTimelineItems.map(renderTimelineItem)}</div>
                 {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
               </RunFoldBar>
+            )}
+            {/* 结构化小节（标题/表格/列表）属于结论，渲染在折叠体外，按时间流原顺序。 */}
+            {liftedTimelineItems.length > 0 && (
+              <div className="tl-lifted-sections">{liftedTimelineItems.map(renderTimelineItem)}</div>
             )}
             {timelineInteractionItems.map(renderTimelineInteraction)}
             {finalAnswerMissing && (

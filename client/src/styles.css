@@ -14944,3 +14944,9 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .start-recent-dot.failed { background: var(--error); }
 .start-foot { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; padding-top: 6px; }
 .start-newchat, .start-artifacts { display: inline-flex; align-items: center; gap: 6px; }
+
+/* ===== 折叠体外的小节结论（2026-11-12）=====
+   模型写在两次工具调用之间的结构化小节（## 标题 / 表格 / 列表）属于结论，
+   提到「执行过程」折叠体外按原顺序渲染，不能被折叠藏住。 */
+.tl-lifted-sections { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 2px; }
+.tl-lifted-sections .textblock { margin: 0; }

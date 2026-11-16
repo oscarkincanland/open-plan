@@ -213,13 +213,15 @@ test("「## 结论」分节提取为结论，且从详细展开中移除避免�
   assert.ok(r.detail.includes("| 情况 | 处理 |"));
   assert.equal(r.what, "");
 });
-test("「做了什么」分节进入 what；「你需要执行」等其余分节保留在 detail", () => {
+test("「做了什么」分节进入 what，同时必须保留在 detail（内容不得丢失）", () => {
   const summary = "## 结论\n\n装不了。\n\n## 做了什么\n\n定位根因并写成操作单。\n\n## 你需要执行\n\nwsl --install";
   const r = splitCompletionSummary(summary);
   assert.equal(r.what, "定位根因并写成操作单。");
   assert.equal(r.conclusion, "装不了。");
   assert.ok(r.detail.includes("你需要执行"));
-  assert.ok(!r.detail.includes("做了什么"));
+  // 2026-11-12：旧实现把该节从 detail 移除，而渲染层从不用 what → 整节消失（用户反馈被吞）。
+  assert.ok(r.detail.includes("做了什么"), "「做了什么」节必须保留在 detail，否则界面上会整节消失");
+  assert.ok(r.detail.includes("定位根因并写成操作单。"), "该节正文也必须保留");
 });
 test("无标题结构的纯文本：首段为结论，其余为详细展开", () => {
   const r = splitCompletionSummary("第一段是结论。\n\n第二段是细节。\n\n第三段也是细节。");
@@ -236,10 +238,12 @@ test("单段结语：结论即全文，详细展开为空（不得重复渲染�
   assert.equal(r.conclusion, "按用户确认，就此收尾并交付当前版本。");
   assert.equal(r.detail, "");
 });
-test("有分节但无「结论」：结论段从详细展开中移除，不出现两次", () => {
+test("有分节但无「结论」：不提升首段，全部内容保留在 detail（2026-11-10 口径）", () => {
+  // 2026-11-12 同步：该用例原断言「首段被提升为结论并从 detail 移除」，与 2026-11-10
+  // 「只有显式结论节才提升」的修复冲突（首段会被搬到开场白和 ## 标题之前）。
   const r = splitCompletionSummary("## 交付物\n\n交通专题地图已生成。\n\n## 已知限制\n\n未做实地核验。");
-  assert.equal(r.conclusion, "交通专题地图已生成。");
-  assert.equal(r.detail.includes("交通专题地图已生成。"), false);
+  assert.equal(r.conclusion, "", "无「结论」节时不得提升任何段落");
+  assert.ok(r.detail.includes("交通专题地图已生成。"), "正文内容必须保留");
   assert.ok(r.detail.includes("已知限制"));
 });
 

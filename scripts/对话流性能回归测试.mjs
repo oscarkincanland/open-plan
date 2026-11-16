@@ -61,17 +61,20 @@ try {
   const runSummarySource = chatPanelSource.slice(chatPanelSource.indexOf("function RunSummary("), chatPanelSource.indexOf("// ========== 消息组件"));
   assert.match(runSummarySource, /const \[resultTab, setResultTab\] = useState\("products"\)/, "本轮结果区应是页签结构，默认落在“本轮产物”");
   assert.match(runSummarySource, /role="tablist" aria-label="本轮结果视图"/, "本轮产物/文件改动/依据应是无障碍页签");
-  assert.match(runSummarySource, /className=\{`product-card\$\{item\.deliverable \? " deliverable" : ""\}\$\{item\.confirmed \? "" : " provisional"\}`\}/, "本轮产物应渲染为文件卡片（图标 + 名称 + 类型，未确认的带待确认标记）");
-  assert.match(runSummarySource, /className="product-card-badge">交付/, "产物卡片应标记交付项");
-  assert.match(runSummarySource, /className="product-card-open"[\s\S]{0,200}?>打开</, "产物卡片应有“打开”按钮");
-  assert.match(runSummarySource, /productCards\.slice\(0, 6\)\.map/, "产物卡片首屏最多 6 个，其余走产物面板");
+  // 2026-11-11-011：本轮产物统一交给 ArtifactCard 渲染（默认 3 条主要交付物 + 折叠行 +
+  // 常驻打开方式）。RunSummary 不再内联复制一份产物行，避免两处口径/上限漂移。
+  assert.match(runSummarySource, /<ArtifactCard products=\{productCards\} onOpenFile=\{onOpenFile\} onOpenPanel=\{onOpenArtifacts\} \/>/, "本轮产物应统一由 ArtifactCard 渲染");
+  assert.doesNotMatch(runSummarySource, /productCards\.slice\(0, 6\)\.map/, "RunSummary 不应再内联一份产物列表（已收敛到 ArtifactCard）");
+  assert.match(runSummarySource, /className="product-leads"/, "未归属线索应单独成组（默认折叠）");
   // 归属分层：write-ledger/已验收 = 已确认；"本轮写过 + 窗口内变更" = 待确认（可见但标注）；
   // 完全没有写入证据的差异才是"未归属线索"，不参与产物计数。
   assert.match(runSummarySource, /const attributedProducts = useMemo\(\(\) => products\.filter\(\(item\) => item\.attributed\)/, "产物应按归属过滤（未归属线索不计数）");
   assert.match(runSummarySource, /const confirmedProducts = useMemo\(\(\) => products\.filter\(\(item\) => item\.confirmed\)/, "已确认产物应按写入台账/验收结果单独归类");
   assert.match(runSummarySource, /本轮产物 <span className="result-tab-count">\{attributedProducts\.length\}/, "页签计数应包含归属到本轮的产物（含待确认）");
-  assert.match(runSummarySource, /className="product-card-badge provisional"/, "未确认的产物卡片应带待确认标记");
-  assert.match(runSummarySource, /本轮没有把该文件写进台账/, "待确认标记应解释原因（bash / officecli 不回报路径）");
+  // 产物卡片的徽标与「待确认」解释随渲染收敛到 ArtifactCard（2026-11-11-011）。
+  const artifactCardSource = fs.readFileSync(new URL("../client/src/components/会话流/ArtifactCard.jsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  assert.match(artifactCardSource, /className="product-card-badge provisional"/, "未确认的产物卡片应带待确认标记");
+  assert.match(artifactCardSource, /本轮没有把该文件写进台账/, "待确认标记应解释原因（bash / officecli 不回报路径）");
   assert.match(runSummarySource, /className="product-leads"/, "未归属线索应单独成组（默认折叠）");
   assert.match(runSummarySource, /未归属线索 \{leadProducts\.length\} · 可能来自其他运行，需人工确认/, "线索组应明确说明可能来自其他运行");
   assert.match(chatPanelSource, /const confirmedOf = \(change\) => change\?\.source === "write-ledger" \|\| change\?\.role === "deliverable"/, "只有写入台账或已验收的文件才算已确认");

@@ -60,6 +60,78 @@ export function toolStateOf(block, traceTool = null) {
 }
 
 /**
+ * 判断一段助手文本是「过程播报」还是「结构化结论」。
+ *
+ * 背景（2026-11-12）：运行结束后会把中间文本折进「执行过程」提升可读性，原实现只看
+ * 「是不是终稿块」——只要模型在两次工具调用之间写了结构化小节（`##` 标题、表格、列表），
+ * 而这些小节又不巧落在终稿块之前，就会被整段折进折叠区，用户看到的是「结构化回复被吞」。
+ *
+ * 规则：结构化内容一律不折叠（它是结论，不是进度）。判定从宽——只要出现标题、
+ * 表格、列表、引用块，或正文足够长（多段论述），都按结论处理。
+ * 只有「一句话过渡语 / 进度播报」才允许收进过程区。
+ *
+ * @param {string} text 助手文本块内容
+ * @returns {boolean} true = 过程播报（可折叠）；false = 结构化结论（必须留在正文）
+ */
+export function isNarrationText(text = "") {
+  const source = String(text || "").trim();
+  if (!source) return true;
+  // 结构化标记：ATX 标题、表格行、无序/有序列表、引用块、代码块、分隔线。
+  if (/^#{1,6}[ \t]+\S/m.test(source)) return false;
+  if (/^[ \t]*\|.*\|[ \t]*$/m.test(source)) return false;
+  if (/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\S/m.test(source)) return false;
+  if (/^[ \t]*>[ \t]?\S/m.test(source)) return false;
+  if (/^[ \t]*```/m.test(source)) return false;
+  if (/^[ \t]*(?:---+|\*\*\*+)[ \t]*$/m.test(source)) return false;
+  // 多段论述（≥2 个非空行且总长超过 200 字）也按结论处理，避免整段论述被折叠。
+  const lines = source.split(/\r?\n/).filter((line) => line.trim());
+  if (lines.length >= 2 && source.length > 200) return false;
+  // 单个长段落（>240 字）同样视为实质回答。
+  if (source.length > 240) return false;
+  return true;
+}
+
+/** 时间流里的「过程条目」：有这些条目夹在中间时，前面的文本一定不是收尾结论。 */
+const PROCESS_ITEM_KINDS = new Set(["tool", "subagent", "pipeline"]);
+
+/**
+ * 时间流二分：过程条目（fold，收进「执行过程」折叠体）与收尾结论小节（lift，折叠体外）。
+ *
+ * 背景（2026-11-15-002，用户反馈「思考过程被渲染到下面」）：
+ *   2026-11-12 为了让「收尾的结构化结论」不被折进过程，把**所有**非播报文本都外提，
+ *   再统一追加到消息末尾。但模型在回合中段写的长进度文本同样会被 `isNarrationText`
+ *   判为结构化结论（≥2 行且 >200 字 / >240 字即命中），结果这些过程文本被搬到消息
+ *   最底部——运行中尤其明显（刚写出就沉底），时间顺序也丢了。
+ *
+ * 现在的规则：
+ *   - 运行中（live）：整条时间流按原顺序直铺，不外提任何条目；
+ *   - 收尾后：只有位于**最后一次过程条目之后**、且被判为结构化结论的文本才外提；
+ *     中段结构化文本仍属过程，留在 fold 原位随过程折叠。
+ *
+ * @param {Array<object>} items buildRunTimeline / assignTimelineTurns 产物
+ * @param {{ live?: boolean }} [options] live=true 表示这一轮仍在运行
+ * @returns {{ foldTimelineItems: Array<object>, liftedTimelineItems: Array<object> }}
+ */
+export function splitRunTimelineSections(items = [], { live = false } = {}) {
+  const list = Array.isArray(items) ? items : [];
+  // 运行中直铺：任何外提都会让新写出的过程文本立刻跳到消息底部。
+  if (live) return { foldTimelineItems: list.slice(), liftedTimelineItems: [] };
+  let lastProcessIndex = -1;
+  list.forEach((item, index) => {
+    if (PROCESS_ITEM_KINDS.has(item?.kind)) lastProcessIndex = index;
+  });
+  const foldTimelineItems = [];
+  const liftedTimelineItems = [];
+  list.forEach((item, index) => {
+    const isConclusionSection = item?.kind === "text"
+      && !isNarrationText(item.text)
+      && index > lastProcessIndex;
+    (isConclusionSection ? liftedTimelineItems : foldTimelineItems).push(item);
+  });
+  return { foldTimelineItems, liftedTimelineItems };
+}
+
+/**
  * 把运行轨迹里的工具结果合并回消息块。
  *
  * 为什么要合并：历史恢复时消息块可能拿不到结果（toolResult 消息缺失或被窗口截断），
@@ -400,7 +472,13 @@ export function splitCompletionSummary(summary = "", finalText = "") {
   }
   // 有分节但没有「结论」节：不提升任何段落为结论，detail 原样保留模型顺序。
   // （旧实现会把首个分节首段搬到最前面，见本函数顶部说明。）
-  removeSection(whatSection);
+  //
+  // 2026-11-12（用户第二次报「结构化回复被吞」）：这里**不再**把「做了什么」节从 detail 移除。
+  // 旧实现 `removeSection(whatSection)` 把它从 detail 删掉，而唯一渲染出口
+  // （ChatPanel 的 summaryBody = conclusion + detail）从不使用 what 字段——
+  // 结果是模型写的整个「## 做了什么」小节在界面上彻底消失，属于内容丢失而非折叠。
+  // 现在该节留在 detail 原位置，what 仍返回给需要摘要行的调用方（同一内容两处不会重复渲染，
+  // 因为渲染层只用 conclusion + detail）。
   const what = whatSection ? bodyOf(whatSection) : "";
   return { what, conclusion, detail };
 }

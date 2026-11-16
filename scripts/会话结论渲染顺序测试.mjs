@@ -105,7 +105,7 @@ check("无标题纯文本：保持首段为结语、顺序不变", () => {
   assert.equal([result.conclusion, result.detail].filter(Boolean).join("\n\n"), source);
 });
 
-check("做了什么节被提取且不影响其余顺序", () => {
+check("做了什么节被提取为 what，但正文必须留在 detail（不得整节丢失）", () => {
   const source = [
     "开场。",
     "",
@@ -120,7 +120,8 @@ check("做了什么节被提取且不影响其余顺序", () => {
   const result = splitCompletionSummary("", source);
   assert.equal(result.what, "改了渲染顺序。");
   assert.equal(result.conclusion, "");
-  assert.ok(!result.detail.includes("改了渲染顺序。"), "what 段不应在 detail 重复");
+  // 2026-11-12：渲染层只用 conclusion + detail；若这里移除该节，界面上会整节消失。
+  assert.ok(result.detail.includes("改了渲染顺序。"), "what 段必须保留在 detail，否则用户看不到这一节");
   assert.ok(result.detail.startsWith("开场。"));
   assert.ok(result.detail.indexOf("## 下一步") > result.detail.indexOf("开场。"));
 });
