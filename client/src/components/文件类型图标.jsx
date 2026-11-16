@@ -11,6 +11,7 @@ import {
   IconFolder,
   IconMap2,
   IconMarkdown,
+  IconMovie,
   IconPhoto,
 } from "@tabler/icons-react";
 import { artifactTypeInfo } from "../产物类型.js";
@@ -30,6 +31,7 @@ const GLYPHS = {
   md: IconMarkdown,
   code: IconCode,
   image: IconPhoto,
+  video: IconMovie,
   map: IconMap2,
   archive: IconArchive,
   text: IconFile,

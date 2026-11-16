@@ -1367,6 +1367,10 @@ app.get(/^\/api\/doc\/(.+)\/raw$/, (req, res) => {
     avif: "image/avif",
     ico: "image/x-icon",
     svg: "image/svg+xml",
+    // 视频按真实类型返回（<video> 播放与 Range seek 依赖正确 MIME）
+    mp4: "video/mp4",
+    webm: "video/webm",
+    ogv: "video/ogg",
   };
   try {
     // D2：允许条件请求。此前写死 no-store 导致每次打开都全量重下
@@ -1454,6 +1458,9 @@ app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
     } else if (IMAGE_EXTENSIONS.has(ext)) {
       // D04：独立图片格式走专用查看器（raw 已按扩展名给正确 MIME）
       res.json({ kind: "image", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/raw${cwdQuery}` });
+    } else if (VIDEO_EXTENSIONS.has(ext)) {
+      // 视频预览（2026-11-15-006）：原生 <video> 播放；/raw 的 sendFile 自带 Range（进度条分段加载）
+      res.json({ kind: "video", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/raw${cwdQuery}` });
     } else if (RUNTIME_FLAGS.cadPreview && (ext === "dxf" || ext === "dwg")) {
       // CAD 预览（开关 cadPreview，默认关=DXF/DWG 落入下方 html 兜底与基线一致）：
       // 解析结果随 open 响应一次返回（实体数受 CAD_ENTITY_LIMIT 截断，truncated 标记提示）。
@@ -3869,6 +3876,8 @@ app.get("/api/runs/:id/acceptance", async (req, res) => {
 // ---------- 本轮文件改动的内容差异（W3/C02，只读） ----------
 // 安全：changeId 必须能在服务端 Run 记录里解析到合法文件；不接受任意路径参数。
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "ico"]);
+// 预览分派用视频扩展名（与画布素材口径一致：mp4/webm/ogv，2026-11-15-005/006 计划）
+const VIDEO_EXTENSIONS = new Set(["mp4", "webm", "ogv"]);
 
 const RUN_CHANGES_DIR = process.env.OAW_RUNS_DIR || path.join(PROJECT_DIR, ".oaw", "runs");
 
