@@ -32,7 +32,13 @@ function applyDocumentAttributes({ theme, skin }) {
     root.setAttribute("data-theme", theme);
     root.setAttribute("data-skin", skin);
   };
-  if (typeof document.startViewTransition === "function" && !isMotionReduced()) {
+  if (
+    typeof document.startViewTransition === "function" &&
+    !isMotionReduced() &&
+    document.visibilityState !== "hidden"
+  ) {
+    // 文档隐藏时没有渲染机会，过渡回调会被浏览器推迟到重新可见（E2E 实测后台标签页延迟数秒），
+    // 此时直接写入、落定即可。
     const transition = document.startViewTransition(write);
     transition.ready?.catch(() => {});
     transition.finished?.catch(() => {});

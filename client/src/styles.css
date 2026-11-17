@@ -117,54 +117,10 @@
 }
 
 /* ===== 亮色主题 =====
-   唯一裸亮色令牌块（计划 2026-11-18-001）：历史 L120(v0.3.0 青绿) / L5974(0.10 绿色) /
-   L9323(无障碍复验后绿色) / CAD 块四处互相覆盖，现合并为一处。
-   取值以无障碍复验后的最后生效块为准（--dim 对比度见《会话流前端规范》§10.1 亮色 4.66:1 复验）。 */
-[data-theme="light"] {
-  --body-bg: #f5f7f4;
-  --panel-bg: #ffffff;
-  --panel2-bg: #eef2ec;
-  --surface: #e5ebe3;
-  --text: #1d281f;
-  --muted: #5d6a60;
-  --dim: #5f6a60;
-  --accent: #638e2d;
-  --border: #d2dbd0;
-  --selected: #e4ecdf;
-  --success: #5c7a1f;
-  --error: #c0392b;
-  --warning: #b7791f;
-  --user-bg: #cbe99b;
-  --user-fg: #16240c;
-  --tool-pending: #edf2eb;
-  --tool-success: #e6f0de;
-  --tool-error: #f7e8e5;
-  /* CAD 预览描边（原 CAD 区段独立亮色块并入此处；保持独立行以便令牌棘轮识别） */
-  --oaw-cad-ink: #3a4050;
-  /* 文件类型扁平图标（亮色主题加深一档，保证浅底上可辨） */
-  --file-doc: #2f6fed;
-  --file-sheet: #1f8a4c;
-  --file-slides: #d9730d;
-  --file-pdf: #d64545;
-  --file-html: #7b4fd6;
-  --file-md: #0f8f8f;
-  --file-code: #4a5fc1;
-  --file-image: #0e8ea8;
-  --file-video: #b93a7d;
-  --file-map: #2f7d4f;
-  --file-archive: #a8770f;
-  --file-other: #5f6673;
-  --file-icon-fg: #ffffff;
-  /* 源码高亮（亮色主题：加深一档保证对比） */
-  --code-keyword: #7c3aed;
-  --code-string: #1a7f37;
-  --code-comment: #6b7280;
-  --code-number: #b45309;
-  --code-function: #1d4ed8;
-  --code-type: #a16207;
-  --code-attr: #0e7490;
-  --code-tag: #be123c;
-}
+   唯一裸亮色令牌块位于「0.10 收敛层」暗色 :root 重声明**之后**（计划 2026-11-18-001）：
+   :root 与 [data-theme="light"] 同特异性（0,1,0），级联按源码顺序取胜——亮色块若位于
+   任何核心色板 :root 重声明之前，暗色值会恒定覆盖亮色（2026-11-18 E2E 实证回归，
+   由 test:theme-appearance 的位置不变量守护）。 */
 [data-theme="light"] .docview,
 [data-theme="light"] .center-area { background: #f0f2f7; }
 [data-theme="light"] .docframe { background: var(--pure-white); }
@@ -9313,7 +9269,55 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   --tool-error: #33201f;
 }
 
-/* 无障碍复验后的旧亮色令牌块已并入顶部唯一亮色块（计划 2026-11-18-001）。 */
+/* ===== 亮色主题 =====
+   唯一裸亮色令牌块（计划 2026-11-18-001）：历史 L120(v0.3.0 青绿) / L5974(0.10 绿色) /
+   L9323(无障碍复验后绿色) / CAD 块四处互相覆盖，现合并为一处并置于本收敛层之后。
+   取值以无障碍复验后的最后生效块为准（--dim 对比度见《会话流前端规范》§10.1 亮色 4.66:1 复验）。 */
+[data-theme="light"] {
+  --body-bg: #f5f7f4;
+  --panel-bg: #ffffff;
+  --panel2-bg: #eef2ec;
+  --surface: #e5ebe3;
+  --text: #1d281f;
+  --muted: #5d6a60;
+  --dim: #5f6a60;
+  --accent: #638e2d;
+  --border: #d2dbd0;
+  --selected: #e4ecdf;
+  --success: #5c7a1f;
+  --error: #c0392b;
+  --warning: #b7791f;
+  --user-bg: #cbe99b;
+  --user-fg: #16240c;
+  --tool-pending: #edf2eb;
+  --tool-success: #e6f0de;
+  --tool-error: #f7e8e5;
+  /* CAD 预览描边（原 CAD 区段独立亮色块并入此处；保持独立行以便令牌棘轮识别） */
+  --oaw-cad-ink: #3a4050;
+  /* 文件类型扁平图标（亮色主题加深一档，保证浅底上可辨） */
+  --file-doc: #2f6fed;
+  --file-sheet: #1f8a4c;
+  --file-slides: #d9730d;
+  --file-pdf: #d64545;
+  --file-html: #7b4fd6;
+  --file-md: #0f8f8f;
+  --file-code: #4a5fc1;
+  --file-image: #0e8ea8;
+  --file-video: #b93a7d;
+  --file-map: #2f7d4f;
+  --file-archive: #a8770f;
+  --file-other: #5f6673;
+  --file-icon-fg: #ffffff;
+  /* 源码高亮（亮色主题：加深一档保证对比） */
+  --code-keyword: #7c3aed;
+  --code-string: #1a7f37;
+  --code-comment: #6b7280;
+  --code-number: #b45309;
+  --code-function: #1d4ed8;
+  --code-type: #a16207;
+  --code-attr: #0e7490;
+  --code-tag: #be123c;
+}
 
 .app,
 .center-area,

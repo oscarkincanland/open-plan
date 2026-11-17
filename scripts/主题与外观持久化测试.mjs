@@ -196,6 +196,36 @@ test("窄屏设置层级：≤768px 媒体查询内 .module-view 使用 var(--z-
   assert.ok(moduleOnTop, "≤768px 媒体查询内应声明 .module-view { z-index: var(--z-drawer) }");
 });
 
+test("级联次序不变量：亮色令牌块必须位于所有含核心色板变量的裸 :root 块之后", () => {
+  const css = read("client/src/styles.css");
+  const lightPos = css.search(/^\[data-theme="light"\]\s*\{/m);
+  assert.ok(lightPos > -1, "未找到亮色令牌块");
+  // :root 与 [data-theme="light"] 同特异性（0,1,0），级联按源码顺序取胜；
+  // 亮色块之后任何核心色板 :root 重声明都会让暗色恒定覆盖亮色（2026-11-18 E2E 实证回归）。
+  const re = /^:root \{/gm;
+  let m;
+  const offenders = [];
+  while ((m = re.exec(css)) !== null) {
+    let depth = 0;
+    let end = m.index;
+    for (let i = m.index; i < css.length; i++) {
+      if (css[i] === "{") depth++;
+      else if (css[i] === "}") { depth--; if (depth === 0) { end = i; break; } }
+    }
+    const block = css.slice(m.index, end);
+    const hasCore = /--(body-bg|surface|text|accent|muted|dim|border|selected):/.test(block);
+    if (hasCore && m.index > lightPos) {
+      const line = css.slice(0, m.index).split("\n").length;
+      offenders.push(`L${line}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `亮色块之后不得再有核心色板 :root 重声明（暗色会恒定覆盖亮色）：${offenders.join(", ")}`,
+  );
+});
+
 test("View Transition 接线：theme.jsx 以 isMotionReduced() 旁路 startViewTransition 且吞掉 skip rejection", () => {
   const jsx = read("client/src/theme.jsx");
   assert.ok(jsx.includes("startViewTransition"), "theme.jsx 应接入 document.startViewTransition");
@@ -204,6 +234,7 @@ test("View Transition 接线：theme.jsx 以 isMotionReduced() 旁路 startViewT
   // 以 rejection 结束；未显式 catch 会变成 pageerror。值未变时也必须跳过。
   assert.ok(/finished\?*\.catch|ready\?*\.catch/.test(jsx), "transition.ready/finished 必须显式 catch");
   assert.ok(jsx.includes('root.getAttribute("data-theme") === theme'), "值未变化时应跳过写入与过渡");
+  assert.ok(jsx.includes("visibilityState"), "文档隐藏时应跳过过渡直接写入（无渲染机会，回调会被推迟）");
 });
 
 console.log(failed ? "\n结果：存在失败" : "\n结果：全部通过");
