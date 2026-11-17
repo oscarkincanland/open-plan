@@ -268,6 +268,55 @@ await test("滚动位置按会话恢复", () => {
   assert.match(chatPanel, /el\.scrollTop = Math\.min\(target, Math\.max\(0, el\.scrollHeight - el\.clientHeight\)\)/);
 });
 
+await test("跟底滚动瞬时定位，不被 CSS smooth 拖成动画（2026-11-15-003）", () => {
+  // `.chat-body` 的 scroll-behavior: smooth 保留：用户主动滚动/点回到底部仍有动效。
+  assert.match(styles, /\.chat-body \{ scroll-behavior: smooth; \}/, "会话流应保留平滑滚动的设计基线");
+  // 关键：CSSOM 里 scrollTo({behavior:"auto"}) 会解析成 CSS 计算值（= smooth），
+  // 跟底每 60ms 触发一次会互相打断，观感就是"一直在跳"——必须走瞬时定位。
+  assert.match(chatPanel, /const jumpScrollTo = \(el, top\) => \{/, "缺少瞬时定位辅助函数");
+  assert.match(chatPanel, /el\.style\.scrollBehavior = "auto";/, "瞬时定位需临时关闭 CSS 平滑");
+  assert.match(chatPanel, /jumpScrollTo\(el, el\.scrollHeight\);/, "自动跟随必须走瞬时定位");
+  assert.doesNotMatch(
+    chatPanel,
+    /el\.scrollTo\(\{ top: el\.scrollHeight, behavior: "auto" \}\)/,
+    "自动跟随不得再用会被 CSS smooth 接管的写法",
+  );
+});
+
+await test("阅读位置只在真正换会话时武装，避免水合重跑把视口拽回旧位置", () => {
+  assert.match(
+    chatPanel,
+    /if \(previousThreadRef\.current !== threadId\) \{[\s\S]{0,220}?pendingScrollRestoreRef\.current/,
+    "pendingScrollRestore 必须只在 thread 变化时武装",
+  );
+});
+
+await test("一次性系统提示到点淡出后移除，错误/需行动类常驻（2026-11-15-004）", () => {
+  // 提示生命周期
+  assert.match(chatPanel, /const TRANSIENT_NOTICE_TTL_MS = 6000;/, "一次性提示应有时长常量");
+  assert.match(chatPanel, /const TRANSIENT_NOTICE_FADE_MS = 220;/, "应有淡出时长常量");
+  assert.match(chatPanel, /const pushSystem = useCallback\(\(text, key = text, options = \{\}\)/, "pushSystem 应支持第 3 个选项参数");
+  assert.match(chatPanel, /\.\.\.\(sticky \? \{\} : \{ transient: true, expiresAt: Date\.now\(\) \+ TRANSIENT_NOTICE_TTL_MS \}\)/, "非 sticky 提示应标记 transient + 到期时间");
+  assert.match(chatPanel, /leaving: true/, "到期应先标 leaving 再移除");
+  assert.match(chatPanel, /isMotionReduced\(\) \? 0 : TRANSIENT_NOTICE_FADE_MS/, "减少动效档位下应直接移除");
+  // 悬停暂停 / 移开重新计时
+  assert.match(chatPanel, /addEventListener\("pointerover", onOver\)/, "提示悬停应暂停计时");
+  assert.match(chatPanel, /expiresAt: Number\.MAX_SAFE_INTEGER/, "悬停时到期时间应推到极远");
+  // 必须常驻的提示
+  for (const key of ["agent_model_fallback_failed", "goal-error", "team-mode-rejected", "team-mode-disabled", "composer-help", "stop-unconfirmed", "stop-failed"]) {
+    assert.match(
+      chatPanel,
+      new RegExp(`${key}[^\\n]{0,120}sticky: true`),
+      `「${key}」必须 sticky（错误/需行动/用户主动索取）`,
+    );
+  }
+  assert.match(chatPanel, /地图分析已生成[^\n]{0,160}sticky: true/, "地图分析结果入口提示应常驻");
+  // 样式：淡出过渡 + 减少动效下禁用
+  assert.match(styles, /\.msg\.system\.transient \{ transition: opacity/, "缺少淡出过渡");
+  assert.match(styles, /\.msg\.system\.transient\.is-leaving \{ opacity: 0;/, "缺少淡出终态");
+  assert.match(styles, /:is\(\[data-reduce-motion="1"\], \[data-motion-level="off"\]\) \.msg\.system\.transient \{ transition: none !important; \}/, "淡出过渡必须进统一动效闸门");
+});
+
 await test("工作区切换失败中止历史加载", () => {
   assert.match(app, /WORKSPACE_UNAVAILABLE/);
   assert.match(app, /已中止本次历史加载/);
@@ -359,7 +408,11 @@ await test("工具卡按类型分叉：读（行号）/ 搜索（命中）/ 命�
 
 await test("多轮 Run 的过程按 turn 分组（只留间距、不显示轮次标签）", () => {
   assert.match(chatPanel, /assignTimelineTurns\(runTimeline, timelineEventsSource\)/);
-  assert.match(chatPanel, /runTimelineView\.map\(renderTimelineItem\)/);
+  // 2026-11-12：时间流按「过程 / 结构化小节」二分——结构化小节提到折叠体外，
+  // 折叠体只渲染过程条目；两处都必须走同一个 renderTimelineItem 渲染器。
+  assert.match(chatPanel, /assignTimelineTurns\(runTimeline, timelineEventsSource\)/);
+  assert.match(chatPanel, /foldTimelineItems\.map\(renderTimelineItem\)/, "折叠体内应渲染过程条目");
+  assert.match(chatPanel, /liftedTimelineItems\.map\(renderTimelineItem\)/, "结构化小节应在折叠体外渲染");
   assert.match(chatPanel, /case "turn-divider":/);
   // 视觉上不出现「第 N 轮」文字/分隔线；轮次只通过 aria-label 给读屏
   assert.match(chatPanel, /aria-label=\{`第 \$\{item\.turn\} 轮`\}/);

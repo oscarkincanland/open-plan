@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 创作画布导出：SVG 序列化 + 导出视图 URL 构造 + PPTX 生成。
  *
  * 设计口径（计划 docs/plans/2026-11-09-003 §5.5）：
@@ -18,7 +18,7 @@ import path from "node:path";
 import { isInside } from "./workspace.mjs";
 
 /** 导出格式白名单（顺序即界面展示顺序）。 */
-export const CANVAS_EXPORT_FORMATS = Object.freeze(["svg", "png", "pdf", "pptx"]);
+export const CANVAS_EXPORT_FORMATS = Object.freeze(["svg", "png", "pdf", "pptx", "html"]);
 
 /** 内置浏览器截图上限（与 内置浏览器.mjs 的 MAX_CAPTURE 同源）。 */
 export const CANVAS_CAPTURE_LIMIT = Object.freeze({ width: 2400, height: 1600 });
@@ -283,6 +283,24 @@ function svgImageElement(element, projectDir, baseDir, warnings) {
     + ` preserveAspectRatio="${fit}" xlink:href="data:${asset.mime};base64,${asset.base64}"/>`;
 }
 
+function svgVideoElement(element, projectDir, baseDir, warnings) {
+  // 视频导出为静态图：有封面帧（poster）按图片嵌入，无封面给占位框；不嵌真实媒体（2026-11-15-005 计划 §3.4）。
+  if (element.poster) {
+    return svgImageElement({ ...element, src: element.poster }, projectDir, baseDir, warnings);
+  }
+  warnings.push(`视频元素 ${element.id} 没有封面帧（poster），已用占位框导出`);
+  const attrs = [
+    `x="${round(element.x)}"`, `y="${round(element.y)}"`,
+    `width="${round(Math.max(element.w, 1))}"`, `height="${round(Math.max(element.h, 1))}"`,
+    'fill="none"', 'stroke="rgba(128,128,128,.6)"', 'stroke-dasharray="6 4"',
+  ];
+  const cx = element.x + element.w / 2;
+  const cy = element.y + element.h / 2;
+  return `<rect ${attrs.join(" ")}/>`
+    + `<text x="${round(cx)}" y="${round(cy)}" text-anchor="middle" dominant-baseline="middle"`
+    + ` fill="rgba(128,128,128,.9)" font-size="14" font-family="system-ui, sans-serif">视频</text>`;
+}
+
 function svgBlockElement(element, projectDir, baseDir, warnings) {
   const fit = element.fit === "cover" ? "xMidYMid slice" : element.fit === "fill" ? "none" : "xMidYMid meet";
   const wrap = (inner, viewBox) => `<svg x="${round(element.x)}" y="${round(element.y)}"`
@@ -327,6 +345,7 @@ export function serializeBoardToSvg({ board, projectDir, baseDir = "", title = "
     else if (element.type === "line") parts.push(svgLineElement(element, warnings));
     else if (element.type === "image") parts.push(svgImageElement(element, projectDir, assetBase, warnings));
     else if (element.type === "svg") parts.push(svgBlockElement(element, projectDir, assetBase, warnings));
+    else if (element.type === "video") parts.push(svgVideoElement(element, projectDir, assetBase, warnings));
   }
   const label = escapeXmlAttr(String(title || board?.title || ""));
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"`
@@ -549,6 +568,38 @@ export async function buildCanvasPptx({ title = "", slides = [], projectDir = ""
           });
           continue;
         }
+        // 视频：导出为静态封面帧（poster），无封面给占位矩形；不嵌真实媒体（2026-11-15-005 计划 §3.4）。
+        if (element.type === "video") {
+          const box = { x: tx(element.x), y: ty(element.y), w: len(element.w), h: len(element.h) };
+          if (element.poster) {
+            const asset = resolveProjectAsset(projectDir, element.poster, { baseDir: assetBase });
+            if (asset) {
+              slide.addImage({
+                path: asset.file,
+                ...box,
+                ...(element.fit === "cover" ? { sizing: { type: "cover", w: box.w, h: box.h } }
+                  : element.fit === "contain" ? { sizing: { type: "contain", w: box.w, h: box.h } } : {}),
+              });
+              continue;
+            }
+            warnings.push(`视频封面帧缺失：${element.poster}`);
+          } else {
+            warnings.push(`视频元素 ${element.id} 没有封面帧（poster），已用占位矩形导出`);
+          }
+          slide.addShape(pptx.ShapeType.rect, {
+            ...box,
+            fill: { color: "F2F2F2" },
+            line: { color: "BFBFBF", dashType: "dash" },
+          });
+          slide.addText("视频", {
+            ...box,
+            align: "center",
+            valign: "middle",
+            fontSize: 12,
+            color: "8C8C8C",
+          });
+          continue;
+        }
         if (element.type === "image" || element.type === "svg") {
           const box = { x: tx(element.x), y: ty(element.y), w: len(element.w), h: len(element.h) };
           if (element.type === "image") {
@@ -611,4 +662,248 @@ export async function buildCanvasPptx({ title = "", slides = [], projectDir = ""
     imagePages,
     warnings,
   };
+}
+
+// ---------- 单文件 HTML 导出（2026-11-15-007 B）----------
+
+/** 视频扩展名 → MIME（HTML 导出要内嵌真实媒体，图片白名单覆盖不到）。 */
+const VIDEO_MIME_BY_EXT = Object.freeze({
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".ogv": "video/ogg",
+});
+
+/**
+ * 解析 project 内视频素材为 base64（与 resolveProjectAsset 同一边界：禁绝对路径/URL/越界）。
+ * 与图片版分开是为了不影响 SVG/PPTX 的「视频只出静态帧」口径。
+ */
+export function resolveProjectVideo(projectDir, src, { baseDir = "" } = {}) {
+  const base = path.resolve(String(projectDir || ""));
+  const from = path.resolve(String(baseDir || base));
+  const raw = String(src ?? "").trim().replace(/\\/g, "/");
+  if (!raw || raw.includes("\0")) return null;
+  if (raw.startsWith("/") || /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(raw)) return null;
+  const segments = raw.split("/").filter((item) => item && item !== ".");
+  if (!segments.length) return null;
+  const target = path.resolve(from, segments.join("/"));
+  if (!isInside(base, target) || !fs.existsSync(target)) return null;
+  let real;
+  try { real = fs.realpathSync(target); } catch { return null; }
+  if (!isInside(base, real)) return null;
+  let stat;
+  try { stat = fs.statSync(real); } catch { return null; }
+  if (!stat.isFile()) return null;
+  const ext = path.extname(real).toLowerCase();
+  const mime = VIDEO_MIME_BY_EXT[ext];
+  if (!mime) return null;
+  let buffer;
+  try { buffer = fs.readFileSync(real); } catch { return null; }
+  return { file: real, ext, mime, bytes: buffer.length, base64: buffer.toString("base64") };
+}
+
+function htmlElStyle(element) {
+  const style = element.style || {};
+  const parts = [
+    "position:absolute",
+    `left:${round(element.x)}px`,
+    `top:${round(element.y)}px`,
+    `width:${Math.max(round(element.w), 1)}px`,
+    `height:${Math.max(round(element.h), 0)}px`,
+  ];
+  if (style.opacity !== undefined) parts.push(`opacity:${round(style.opacity)}`);
+  return parts.join(";");
+}
+
+/** 单个元素 → HTML 片段（与画布编辑视图同一视觉口径）。 */
+function htmlElement(element, projectDir, baseDir, warnings) {
+  const style = element.style || {};
+  if (element.type === "text") {
+    const fontSize = Number(style.fontSize) || 24;
+    const lineHeight = Number(style.lineHeight) || 1.2;
+    const align = style.textAlign === "center" ? "center" : style.textAlign === "right" ? "right" : "left";
+    const raw = String(element.text ?? "");
+    if (!raw.trim()) warnings.push(`文本元素 ${element.id} 内容为空`);
+    const css = [
+      htmlElStyle(element),
+      `font-family:${CANVAS_FONT_STACK}`,
+      `font-size:${round(fontSize)}px`,
+      `line-height:${round(lineHeight, 3)}`,
+      `font-weight:${round(Number(style.fontWeight) || 400, 0)}`,
+      `color:${normalizeColor(style.color, "#141413")}`,
+      `text-align:${align}`,
+      "white-space:pre-wrap",
+      "overflow-wrap:anywhere",
+    ];
+    return `<div style="${escapeXmlAttr(css.join(";"))}">${escapeXmlText(raw)}</div>`;
+  }
+  if (element.type === "rect") {
+    const fill = normalizeColor(style.fill, "none");
+    const stroke = normalizeColor(style.stroke, "none");
+    const strokeWidth = Number(style.strokeWidth ?? (stroke !== "none" ? 1 : 0)) || 0;
+    const radius = Number(style.radius) || 0;
+    const css = [htmlElStyle(element), `background:${fill}`];
+    if (radius > 0) css.push(`border-radius:${round(radius)}px`);
+    if (stroke !== "none" && strokeWidth > 0) css.push(`border:${round(strokeWidth)}px solid ${stroke}`, "box-sizing:border-box");
+    return `<div style="${escapeXmlAttr(css.join(";"))}"></div>`;
+  }
+  if (element.type === "line") {
+    const stroke = normalizeColor(style.stroke, "#141413");
+    const strokeWidth = Number(style.strokeWidth) || 2;
+    const x1 = round(element.x1 ?? 0);
+    const y1 = round(element.y1 ?? 0);
+    const x2 = round(element.x2 ?? 0);
+    const y2 = round(element.y2 ?? 0);
+    const left = Math.min(x1, x2);
+    const top = Math.min(y1, y2);
+    const w = Math.max(Math.abs(x2 - x1), 1);
+    const h = Math.max(Math.abs(y2 - y1), 1);
+    return `<svg style="${escapeXmlAttr(`position:absolute;left:${left}px;top:${top}px;width:${w}px;height:${h}px`)}" viewBox="${left} ${top} ${w} ${h}" preserveAspectRatio="none">`
+      + `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${escapeXmlAttr(stroke)}" stroke-width="${round(strokeWidth)}" stroke-linecap="round"/></svg>`;
+  }
+  if (element.type === "video") {
+    const media = resolveProjectVideo(projectDir, element.src, { baseDir });
+    if (!media) {
+      warnings.push(`视频素材缺失或不在 project 内：${element.src || "(空 src)"}（元素 ${element.id}）`);
+      return `<div style="${escapeXmlAttr(`${htmlElStyle(element)};border:1px dashed rgba(128,128,128,.6);color:rgba(128,128,128,.9);display:flex;align-items:center;justify-content:center;font:14px system-ui,sans-serif`)}">视频缺失</div>`;
+    }
+    const poster = element.poster ? resolveProjectAsset(projectDir, element.poster, { baseDir }) : null;
+    const fit = element.fit === "cover" ? "cover" : element.fit === "fill" ? "fill" : "contain";
+    const attrs = [
+      `src="data:${media.mime};base64,${media.base64}"`,
+      poster ? `poster="data:${poster.mime};base64,${poster.base64}"` : "",
+      'controls preload="metadata" playsinline',
+      element.loop ? "loop" : "",
+      element.muted ? "muted" : "",
+      `style="${escapeXmlAttr(`${htmlElStyle(element)};object-fit:${fit};background:#000`)}"`,
+    ].filter(Boolean);
+    return `<video ${attrs.join(" ")}></video>`;
+  }
+  if (element.type === "svg") {
+    const markup = element.markup
+      ? sanitizeSvgMarkup(element.markup)
+      : "";
+    const asset = markup ? null : resolveProjectAsset(projectDir, element.src, { baseDir });
+    if (!markup && !asset) {
+      warnings.push(`矢量素材缺失或不在 project 内：${element.src || "(空 src)"}（元素 ${element.id}）`);
+      return "";
+    }
+    const uri = markup
+      ? `data:image/svg+xml;base64,${Buffer.from(markup, "utf8").toString("base64")}`
+      : `data:${asset.mime};base64,${asset.base64}`;
+    return `<img src="${uri}" alt="" style="${escapeXmlAttr(`${htmlElStyle(element)};object-fit:${element.fit === "fill" ? "fill" : element.fit === "cover" ? "cover" : "contain"}`)}"/>`;
+  }
+  const asset = resolveProjectAsset(projectDir, element.src, { baseDir });
+  if (!asset) {
+    warnings.push(`图片素材缺失或不在 project 内：${element.src || "(空 src)"}（元素 ${element.id}）`);
+    return "";
+  }
+  const fit = element.fit === "cover" ? "cover" : element.fit === "fill" ? "fill" : "contain";
+  return `<img src="data:${asset.mime};base64,${asset.base64}" alt="" style="${escapeXmlAttr(`${htmlElStyle(element)};object-fit:${fit}`)}"/>`;
+}
+
+/**
+ * 单文件 HTML 导出：媒体（图片 / SVG / 视频）全部 base64 内嵌，可单独分发、双击即看；
+ * 视频为真 `<video controls>`（与 SVG/PPTX 的静态降级不同）。键盘 ←/→ 或按钮翻页。
+ *
+ * @param {{title?: string, boards?: Array<{path: string, kind?: string, w?: number, h?: number, board?: object, raw?: string, baseDir?: string}>, projectDir?: string, at?: Date}} input
+ * @returns {{html: string, warnings: string[], pageCount: number, bytes: number}}
+ */
+export function buildCanvasHtml({ title = "", boards = [], projectDir = "", at = new Date() } = {}) {
+  const warnings = [];
+  const slides = [];
+  for (const entry of Array.isArray(boards) ? boards : []) {
+    if (!entry) continue;
+    const w = Math.max(1, Number(entry.w) || 1280);
+    const h = Math.max(1, Number(entry.h) || 720);
+    const boardTitle = String(entry.title || entry.path || "");
+    const background = entry.board?.background ? normalizeColor(entry.board.background, "#ffffff") : "#ffffff";
+    let inner = "";
+    if (entry.kind === "html") {
+      // 兼容板：整页塞进沙箱 iframe（不执行脚本），保留原有版式。
+      inner = `<iframe sandbox="allow-same-origin" referrerpolicy="no-referrer" style="position:absolute;left:0;top:0;width:${w}px;height:${h}px;border:0" srcdoc="${escapeXmlAttr(String(entry.raw || ""))}"></iframe>`;
+    } else if (entry.kind === "svg") {
+      const markup = sanitizeSvgMarkup(String(entry.raw || ""));
+      inner = `<img src="data:image/svg+xml;base64,${Buffer.from(markup, "utf8").toString("base64")}" alt="" style="position:absolute;left:0;top:0;width:${w}px;height:${h}px"/>`;
+    } else {
+      const elements = Array.isArray(entry.board?.elements) ? entry.board.elements : [];
+      const baseDir = String(entry.baseDir || path.dirname(path.join(String(projectDir || ""), String(entry.path || ""))));
+      inner = elements.map((element) => {
+        try { return htmlElement(element, projectDir, baseDir, warnings); } catch { return ""; }
+      }).join("\n");
+    }
+    slides.push(`<section class="slide" data-board="${escapeXmlAttr(String(entry.path || ""))}" data-title="${escapeXmlAttr(boardTitle)}" style="width:${w}px;height:${h}px;background:${escapeXmlAttr(background)}">${inner}</section>`);
+  }
+  const pageCount = slides.length;
+  const html = `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>${escapeXmlText(title || "画布导出")}</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #0f1115; color: #e7e9ee; font: 14px/1.5 "Microsoft YaHei", "PingFang SC", Arial, sans-serif; }
+  #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .slide { position: absolute; transform-origin: center center; display: none; overflow: hidden; border-radius: 6px; box-shadow: 0 18px 60px rgba(0,0,0,.55); }
+  .slide.is-active { display: block; }
+  #bar { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; align-items: center; gap: 10px;
+         padding: 7px 12px; border-radius: 999px; background: rgba(20,22,28,.86); border: 1px solid rgba(255,255,255,.12); backdrop-filter: blur(6px); }
+  #bar button { width: 30px; height: 30px; border-radius: 50%; border: 1px solid rgba(255,255,255,.16); background: transparent; color: inherit; cursor: pointer; font-size: 15px; line-height: 1; }
+  #bar button:hover { background: rgba(255,255,255,.1); }
+  #bar button:disabled { opacity: .35; cursor: default; }
+  #counter { min-width: 64px; text-align: center; font-variant-numeric: tabular-nums; color: #b9bfcc; }
+  #hint { position: fixed; right: 14px; bottom: 20px; font-size: 12px; color: #6b7280; }
+  @media print { #bar, #hint { display: none; } .slide { box-shadow: none; border-radius: 0; } }
+</style>
+</head>
+<body>
+<div id="stage">
+${slides.join("\n")}
+</div>
+<div id="bar"><button type="button" id="prev" aria-label="上一页">‹</button><span id="counter">1 / ${pageCount || 1}</span><button type="button" id="next" aria-label="下一页">›</button></div>
+<div id="hint">← → 翻页 · 视频可直接播放</div>
+<script>
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll(".slide"));
+  var index = 0;
+  var counter = document.getElementById("counter");
+  var prev = document.getElementById("prev");
+  var next = document.getElementById("next");
+  function layout() {
+    if (!slides.length) return;
+    var s = slides[Math.max(0, Math.min(index, slides.length - 1))];
+    var w = parseFloat(s.style.width) || 1280;
+    var h = parseFloat(s.style.height) || 720;
+    var scale = Math.min((window.innerWidth - 48) / w, (window.innerHeight - 96) / h, 2);
+    var left = (window.innerWidth - w * scale) / 2;
+    var top = (window.innerHeight - h * scale) / 2;
+    slides.forEach(function (slide, i) {
+      slide.classList.toggle("is-active", i === index);
+      slide.style.transform = "translate(" + left + "px," + top + "px) scale(" + scale + ")";
+    });
+    if (counter) counter.textContent = (index + 1) + " / " + slides.length;
+    if (prev) prev.disabled = index <= 0;
+    if (next) next.disabled = index >= slides.length - 1;
+  }
+  function go(step) {
+    if (!slides.length) return;
+    index = Math.max(0, Math.min(slides.length - 1, index + step));
+    layout();
+  }
+  document.addEventListener("keydown", function (event) {
+    if (["ArrowRight", "PageDown", " "].indexOf(event.key) >= 0) { event.preventDefault(); go(1); }
+    else if (["ArrowLeft", "PageUp"].indexOf(event.key) >= 0) { event.preventDefault(); go(-1); }
+    else if (event.key === "Home") { index = 0; layout(); }
+    else if (event.key === "End") { index = slides.length - 1; layout(); }
+  });
+  if (prev) prev.addEventListener("click", function () { go(-1); });
+  if (next) next.addEventListener("click", function () { go(1); });
+  window.addEventListener("resize", layout);
+  layout();
+})();
+</script>
+</body>
+</html>`;
+  return { html, warnings, pageCount, bytes: Buffer.byteLength(html, "utf8") };
 }

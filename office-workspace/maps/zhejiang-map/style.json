@@ -419,7 +419,7 @@
       "source": "junctions",
       "source-layer": "junctions",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "type": "circle",
       "paint": {
@@ -720,7 +720,7 @@
       "source": "gis_osm_railways_free_1",
       "source-layer": "gis_osm_railways_free_1",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "type": "line",
       "paint": {
@@ -771,7 +771,7 @@
         ],
         "text-rotation-alignment": "map",
         "text-allow-overlap": false,
-        "visibility": "visible"
+        "visibility": "none"
       },
       "paint": {
         "text-color": "#ffffff",

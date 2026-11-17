@@ -524,6 +524,8 @@ function runSearchText(run) {
 }
 
 function buildRunMeta(run) {
+  const events = Array.isArray(run.events) ? run.events : [];
+  const lastEventAt = String(events[events.length - 1]?.at || "") || null;
   return {
     id: run.id,
     threadId: run.threadId,
@@ -534,9 +536,93 @@ function buildRunMeta(run) {
     mode: run.task?.mode,
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,
+    // 2026-11-16-008 B：列表/巡检只需要「多久没动静」，不必为此加载整份 Run。
+    // lastEventAt 是事件级空闲判据，updatedAt 是写入级兜底（无事件时用）。
+    lastEventAt,
+    updatedAt: run.updatedAt || lastEventAt || run.startedAt || null,
     artifactCount: Array.isArray(run.artifacts) ? run.artifacts.length : 0,
     search: runSearchText(run),
   };
+}
+
+/**
+ * 静默 Run 回收用的轻量候选查询（2026-11-16-008 B）。
+ *
+ * 旧实现用 `listRuns({ limit: 50, includeEvents: "latest" })` 再逐个 `getRun()`：
+ * 50 条 Run 的完整视图 + 事件克隆实测同步阻塞约 **1976ms**；冷启动首轮更差
+ * （要先把几百条 Run 索引建立起来，实测 3.5s）。而它每 30 秒跑一次，与导出/快照
+ * 等重活撞上就会让 `/api/status` 连续超时、被监督器误判卡死并重启服务。
+ *
+ * 现在只做两件便宜事：
+ *   1. `statSync` 按 mtime 先筛掉「最近还在写」的文件（活跃 Run 必然刚写过）；
+ *   2. 对剩下的少量文件，只读**头 4KB + 尾 16KB** 提取 `status` 与最后一个 `at`，
+ *      完全不 JSON.parse 整份 Run。
+ * 只有真正判定停滞的候选才由调用方 `getRun()` 复核。
+ */
+export async function listRunStallCandidates({ limit = 200, olderThanMs = 0, chunkSize = 40 } = {}) {
+  ensureDir(RUNS_DIR);
+  const now = Date.now();
+  const stallFloor = Math.max(0, Number(olderThanMs) || 0);
+  const out = [];
+  let names = [];
+  try { names = fs.readdirSync(RUNS_DIR).filter((n) => n.endsWith(".json")); } catch { return out; }
+  const yieldEvery = Math.max(1, Math.min(200, Number(chunkSize) || 40));
+  let scanned = 0;
+  for (const name of names) {
+    // 每 N 个文件让出一次事件循环：几百条 Run 的头尾读在 USB 盘上也要几百毫秒，
+    // 一口气做完仍会拖住 /api/status；分批让出把单次占用压到毫秒级。
+    if (scanned > 0 && scanned % yieldEvery === 0) await new Promise((resolve) => setImmediate(resolve));
+    scanned += 1;
+    const id = path.basename(name, ".json");
+    const file = path.join(RUNS_DIR, name);
+    let stat;
+    try { stat = fs.statSync(file); } catch { continue; }
+    // 最近还在写的 Run 不可能是「静默停滞」，直接跳过（这是最省的预筛）。
+    if (stallFloor > 0 && now - stat.mtimeMs < stallFloor) continue;
+    const peek = peekRunFile(file, stat);
+    if (!peek || !STALL_ACTIVE_STATUSES.has(String(peek.status || ""))) continue;
+    out.push({
+      id,
+      status: peek.status,
+      lastEventAt: peek.lastEventAt,
+      updatedAt: new Date(stat.mtimeMs).toISOString(),
+      startedAt: null,
+    });
+    if (out.length >= Math.max(1, Math.min(500, limit))) break;
+  }
+  return out;
+}
+
+const STALL_ACTIVE_STATUSES = new Set(["running", "queued", "recovering"]);
+
+/** 读 Run 文件头尾各一小段，取 status 与最后一个事件时间（不解析整份 JSON）。 */
+function peekRunFile(file, stat) {
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+    const size = stat.size;
+    const headLen = Math.min(4096, size);
+    const tailLen = Math.min(16384, size);
+    const head = Buffer.alloc(headLen);
+    if (headLen > 0) fs.readSync(fd, head, 0, headLen, 0);
+    const tail = Buffer.alloc(tailLen);
+    if (tailLen > 0) fs.readSync(fd, tail, 0, tailLen, Math.max(0, size - tailLen));
+    const headText = head.toString("utf8");
+    const tailText = tail.toString("utf8");
+    const statusMatch = /"status"\s*:\s*"([a-z_]+)"/.exec(headText) || /"status"\s*:\s*"([a-z_]+)"/.exec(tailText);
+    let lastEventAt = null;
+    const idx = tailText.lastIndexOf('"at":"');
+    if (idx >= 0) {
+      const raw = tailText.slice(idx + 6, idx + 30);
+      const m = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.exec(raw);
+      if (m) lastEventAt = m[0];
+    }
+    return { status: statusMatch ? statusMatch[1] : null, lastEventAt };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+  }
 }
 
 function runIndexEntry(id) {
@@ -776,6 +862,18 @@ export function isNoiseArtifactPath(relativePath) {
   if (SCRATCH_DIRECTORY_SEGMENT.test(value)) return true;
   const basename = value.split("/").pop() || "";
   return SCRATCH_SCRIPT_BASENAME.test(basename);
+}
+
+/**
+ * 创作画布内部文件判定（2026-11-11-010）：`designs/<slug>/project/**` 与 operations.jsonl
+ * 是画布的结构/审计文件，不是交付物（交付物是导出文件与数据产物）。从产物展示与
+ * 送检清单中隐藏；“改动”面板与版本时间线仍能看到它们。
+ */
+export function isCanvasInternalArtifactPath(relativePath) {
+  const value = String(relativePath || "").replace(/\\/g, "/").trim();
+  if (!value.startsWith("designs/")) return false;
+  if (/^designs\/[^/]+\/operations\.jsonl$/i.test(value)) return true;
+  return /^designs\/[^/]+\/project\//i.test(value);
 }
 
 function trackedPathMatches(tracked, candidate) {
@@ -1203,6 +1301,18 @@ export function listRunArtifacts(run, root = "") {
   return filterRunChanges(run, changedFiles(run.before, after, { runId: run.id }));
 }
 
+/**
+ * 送检/产物清单（2026-11-11-010）：listRunArtifacts 的可呈现口径——
+ * ① 跳过 `deleted`：重新导出覆盖会把旧文件标记删除，已删除的文件不该再送检
+ *    （否则"产物文件不存在"把整轮误降级为失败，实测 run_59da1789）；
+ * ② 跳过画布内部文件（project/**、operations.jsonl）：非交付物，无需结构校验。
+ */
+export function validatableRunArtifacts(run, root = "") {
+  return listRunArtifacts(run, root)
+    .filter((item) => item?.status !== "deleted" && !isCanvasInternalArtifactPath(item?.path))
+    .map((item) => item.path);
+}
+
 /** Run 明确触碰过的具体文件（"." 代表只知道"写过但不知道写到哪"，不参与精确过滤）。 */
 function concreteTouchedPaths(run) {
   return [...new Set((run.touchedPaths || []).map((value) => normalizeTrackedPath(run, value)).filter((value) => value && value !== "."))];
@@ -1262,14 +1372,21 @@ export function mergeChangeLists(snapshotChanges = [], recentChanges = []) {
 
 function copyAfterBlobs(run, artifacts, after) {
   const dir = ensureDir(path.join(RUNS_DIR, run.id, "after"));
+  // 2026-11-16-008 B：此前只有单文件 4MB 上限，没有总量上限——一次 100+ 产物的 Run
+  // 会在 finishRun 里连续 `copyFileSync` 几百 MB（USB 工作区更慢），把事件循环钉住。
+  // 这里加总量预算（与 before 快照的 MAX_BLOB_TOTAL 同口径），超出部分放弃回滚副本，
+  // 只影响「可回滚」，不影响产物本身与 Run 记录。
+  let remaining = MAX_BLOB_TOTAL;
   for (const artifact of artifacts) {
     if (!artifact.after || artifact.after.size > MAX_BLOB_BYTES) continue;
+    if (remaining <= 0) break;
     const source = path.join(after.root, artifact.path);
     const target = path.join(dir, artifact.path);
     try {
       ensureDir(path.dirname(target));
       fs.copyFileSync(source, target);
       artifact.after.reversible = true;
+      remaining -= artifact.after.size;
     } catch {}
   }
 }
@@ -1492,9 +1609,12 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
       .filter((item, index, list) => list.findIndex((other) => other.path === item.path) === index);
     // run_finished 的 artifacts 与 SSE / 客户端投影同形状（数组），此前写的是数量，
     // 与事件注册表 schema（array）以及前端 run 总结卡（读 .path）不一致。
+    // 2026-11-11-010：会话结果卡同口径隐藏画布内部文件（交付物才进结果卡）。
     const finishedData = {
       status: finalStatus,
-      artifacts: artifacts.slice(0, 50).map((item) => ({
+      artifacts: artifacts.slice(0, 50)
+        .filter((item) => !isCanvasInternalArtifactPath(item?.path))
+        .map((item) => ({
         artifactId: item?.artifactId || null,
         path: String(item?.path || "").replace(/\\/g, "/"),
         type: item?.type || null,
@@ -1502,7 +1622,7 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
         deliverable: item?.deliverable === true,
         size: Number.isFinite(item?.size) ? item.size : null,
       })),
-      artifactCount: artifacts.length,
+      artifactCount: artifacts.filter((item) => !isCanvasInternalArtifactPath(item?.path)).length,
       materializeSkipped,
       verificationStatus: run.verificationStatus,
       completion: run.completion || null,
@@ -1740,8 +1860,10 @@ function publicRunView(run, { includeEvents = true, eventByteBudget = 0 } = {}) 
   // 工作产物视图：不展示过程脚本/中间数据（touchedPaths 与磁盘记录仍保留原始清单，
   // 便于审计与回滚定位）。历史上已固化的噪音条目（如 `_gh_search/*`）也因此不再出现在
   // 产物面板与会话总结里，无需改写 Run 记录。
+  // 2026-11-11-010：画布内部文件（project/**、operations.jsonl）同样不进产物视图——
+  // 交付物是导出文件与数据产物；画布本体经画布模块与版本时间线呈现。
   if (Array.isArray(publicRun.artifacts)) {
-    publicRun.artifacts = publicRun.artifacts.filter((item) => !isNoiseArtifactPath(item?.path));
+    publicRun.artifacts = publicRun.artifacts.filter((item) => !isNoiseArtifactPath(item?.path) && !isCanvasInternalArtifactPath(item?.path));
   }
   if (Array.isArray(publicRun.events) && !includeEvents) {
     publicRun.eventCount = publicRun.events.length;

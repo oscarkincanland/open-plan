@@ -125,33 +125,34 @@ test("模型弹层：供应商条 + 渐变滑轨 + 星标保留", () => {
   assert.match(chatPanel, /<small>\{selectedProviderMeta\.label\} · \{selectedEffort\.shortLabel\}<\/small>/, "触发器第二行应显示供应商与思考档位");
 });
 
-console.log("\n▶ 顶栏工作区面板");
+console.log("\n▶ 顶栏工作区入口");
 
-test("顶栏入口是面板而不是下拉菜单", () => {
-  assert.match(app, /topbar-tools-panel/, "应有工作区面板");
-  assert.match(app, /role="dialog" aria-label="工作区"/, "面板应是 dialog 语义");
+// 2026-11-12（用户确认）：顶栏「工作区」不再是弹窗卡片面板，改为直接打开开始页；
+// 原面板里的能力全部搬进开始页，避免两套入口并存。
+test("顶栏入口直接打开工作区开始页，不再弹面板", () => {
+  assert.match(app, /aria-label="工作区"/, "入口按钮要有可读标签");
+  assert.match(app, /onClick=\{\(\) => \{ setTopbarMenuOpen\(false\); ensureStartPage\(\); \}\}/, "入口应打开开始页");
+  assert.doesNotMatch(app, /topbar-tools-panel/, "不应再有旧的工作区弹窗面板");
+  assert.doesNotMatch(app, /role="dialog" aria-label="工作区"/, "面板 dialog 语义应已移除");
   assert.doesNotMatch(app, /className="topbar-tools-menu"/, "不应再有下拉菜单");
   assert.doesNotMatch(styles, /\.topbar-tools-menu \{/, "不应再有下拉菜单样式");
-  assert.match(styles, /\.topbar-tools-panel \{/, "应有面板样式");
-  assert.match(app, /aria-label="工作区"/, "入口按钮要有可读标签");
 });
 
-test("面板只放现有能力，不新增终端或诊断页", () => {
+test("开始页承接原面板能力，且不新增终端或诊断页", () => {
   assert.doesNotMatch(app, /新建终端/, "不应新增终端入口");
   assert.doesNotMatch(app, /会话数据诊断/, "不应新增会话数据诊断入口");
-  // 五张主卡片
-  for (const label of ["工作区文件", "工作产物", "本轮改动", "内置浏览器", "任务中心"]) {
-    assert.ok(app.includes(`<strong>${label}</strong>`), `面板应包含「${label}」卡片`);
+  // 原面板五张主卡片的能力改为开始页入口卡片
+  for (const title of ["工作区文件", "任务摘要", "代码审查和变更", "浏览器", "运行记录"]) {
+    assert.ok(app.includes(`title: "${title}"`), `开始页应包含「${title}」入口`);
   }
 });
 
-test("每张卡片仍调用既有打开逻辑（不新增页面类型）", () => {
+test("开始页入口仍调用既有打开逻辑（不新增页面类型）", () => {
   assert.match(app, /setCanvasSideOpen\(true\)/, "工作区文件应复用文件树抽屉");
-  assert.match(app, /openCanvasView\("artifacts"\)/, "工作产物应复用画布页签");
-  assert.match(app, /openCanvasView\("changes"\)/, "本轮改动应复用画布页签");
-  assert.match(app, /openCanvasView\("browser"\)/, "内置浏览器应复用画布页签");
-  assert.match(app, /taskCenterRef\.current\?\.open\(\)/, "任务中心应复用既有打开入口");
-  assert.match(app, /handleNewSession\(undefined, \{ agentId: currentSession\?\.agentId \|\| "" \}\)/, "新建对话应复用既有逻辑");
+  assert.match(app, /openCanvasView\("artifacts"\)/, "任务摘要应复用画布页签");
+  assert.match(app, /openCanvasView\("changes"\)/, "代码审查和变更应复用画布页签");
+  assert.match(app, /openCanvasView\("browser"\)/, "浏览器应复用画布页签");
+  assert.match(app, /taskCenterRef\.current\?\.open\(\)/, "运行记录应复用既有任务中心入口");
 });
 
 console.log(failed ? "\n工作区面板与输入栏收敛测试：存在失败\n" : "\n工作区面板与输入栏收敛测试：全部通过\n");

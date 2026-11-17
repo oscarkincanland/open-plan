@@ -9,6 +9,7 @@ import CadViewer from "./CadViewer.jsx";
 import DocxViewer from "./DocxViewer.jsx";
 import PptxViewer from "./PptxViewer.jsx";
 import ImageViewer from "./ImageViewer.jsx";
+import VideoViewer from "./VideoViewer.jsx";
 import CommentMarker from "./CommentMarker.jsx";
 import Icon from "./Icon.jsx";
 import 文件类型图标 from "./文件类型图标.jsx";
@@ -857,6 +858,9 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext, o
         )}
         {doc.kind === "image" && (
           <ImageViewer doc={doc} onPreviewState={setPreviewState} onPreviewError={setPreviewErr} />
+        )}
+        {doc.kind === "video" && (
+          <VideoViewer doc={doc} onPreviewState={setPreviewState} onPreviewError={setPreviewErr} />
         )}
         {doc.kind === "pdf" && (
           <div className="docframe-container">

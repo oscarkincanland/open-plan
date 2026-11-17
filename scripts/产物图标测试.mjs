@@ -55,6 +55,16 @@ test("doc 与 docx 共用文档类别（Word 老格式也要有图标）", () =>
   assert.equal(EXT_KINDS.doc.icon, EXT_KINDS.docx.icon);
 });
 
+test("视频扩展名归到 video 类别（2026-11-15-006 预览视频）", () => {
+  for (const ext of ["mp4", "webm", "ogv"]) {
+    const info = artifactTypeInfo(`讲座录像.${ext}`);
+    assert.equal(info.kind, "video", `${ext} 应归到 video 类别`);
+    assert.equal(info.label, "视频");
+    assert.equal(info.tone, "video");
+    assert.equal(artifactTypeLabel(`讲座录像.${ext}`), `视频 · ${ext.toUpperCase()}`);
+  }
+});
+
 test("每个语义类别都有对应字形（否则会静默回退成 other）", () => {
   const source = fs.readFileSync(path.join(ROOT, "client", "src", "components", "文件类型图标.jsx"), "utf8");
   const glyphBlock = source.slice(source.indexOf("const GLYPHS = {"), source.indexOf("export default function"));

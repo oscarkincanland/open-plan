@@ -69,6 +69,9 @@ export const PREVIEW_CAPABILITIES = Object.freeze({
   webp: { level: "full", label: "图片", detail: "图片查看器。", editable: "只读" },
   bmp: { level: "full", label: "图片", detail: "图片查看器。", editable: "只读" },
   svg: { level: "full", label: "图片", detail: "图片查看器（脚本不执行）。", editable: "只读" },
+  mp4: { level: "full", label: "视频", detail: "浏览器视频播放器：进度条、音量、全屏；拖动进度条按 Range 分段加载。", editable: "只读" },
+  webm: { level: "full", label: "视频", detail: "浏览器视频播放器：进度条、音量、全屏；拖动进度条按 Range 分段加载。", editable: "只读" },
+  ogv: { level: "full", label: "视频", detail: "浏览器视频播放器：进度条、音量、全屏；拖动进度条按 Range 分段加载。", editable: "只读" },
 });
 
 const UNKNOWN_CAPABILITY = Object.freeze({ level: "unknown", label: "未知格式", detail: "该格式没有登记预览能力。", editable: "只读" });

@@ -63,7 +63,10 @@ export async function executeExportJob(job, { workspace, port, outDir } = {}) {
   const dir = outDir || path.join(workspace, "地图导出");
   fs.mkdirSync(dir, { recursive: true });
   const target = path.join(dir, job.fileName);
-  if (!target.startsWith(path.resolve(workspace))) throw new Error("导出产物路径越界");
+  // 2026-11-11-010：不变式改为"产物必须落在调用方指定的 outDir 内"。
+  // 此前校验 target.startsWith(resolve(workspace))——agent 调用时 ctx.workspace 与
+  // ensureProject 的工作区基准可能不一致，导致合法导出误报"导出产物路径越界"。
+  if (!target.startsWith(path.resolve(dir) + path.sep)) throw new Error("导出产物路径越界");
   fs.writeFileSync(target, Buffer.from(capture.base64 || "", "base64"));
   return { file: target, bytes: Buffer.byteLength(capture.base64 || "", "base64") };
 }

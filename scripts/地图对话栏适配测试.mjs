@@ -23,6 +23,8 @@ const read = (rel) => fs.readFileSync(path.join(ROOT, rel), "utf8");
 const chatSrc = read("client/src/components/ChatPanel.jsx");
 const appSrc = read("client/src/App.jsx");
 const stylesSrc = read("client/src/styles.css");
+// 2026-11-11-012：地图项目画布联动，断言对象是 MapPanel 的项目切换守卫。
+const mapPanelSrc = read("client/src/components/MapPanel.jsx");
 const eventSrc = read("client/src/事件展示.js");
 const toolIconSrc = read("client/src/components/工具语义图标.jsx");
 
@@ -158,6 +160,100 @@ test("对话流性能回归的 118 条断言不因本阶段改动而需要调整
   const flowTest = read("scripts/对话流性能回归测试.mjs");
   assert.ok(flowTest.length > 0, "对话流测试应存在");
   assert.match(flowTest, /chatPanelSource|ChatPanel/, "它依赖 ChatPanel 源码（结构不变即全绿）");
+});
+
+console.log("\n▶ 4.5 地图模式画布联动与模型选择器（2026-11-11-010，011 修正对象为地图项目画布）");
+
+test("地图模式下画布槽被隐藏，必须有浮动活动指示兜底", () => {
+  assert.match(stylesSrc, /\.app\.map-module-active > \.app-canvas-slot[^{]*\{[^}]*visibility: hidden/, "画布槽在地图模式确被隐藏（该修复的前提）");
+  assert.match(appSrc, /map-canvas-activity-pill/, "App 必须渲染地图画布活动浮动 pill");
+  assert.match(appSrc, /Agent 正在编辑画布《/, "pill 文案必须带画布标题（创作画布分支）");
+  // 2026-11-11-012：派生改名 mapActiveTarget，地图项目活动优先、创作画布其次。
+  assert.match(appSrc, /mapActiveTarget = \(\(\) => \{/, "活动目标必须派生（mapActiveTarget）");
+  assert.match(appSrc, /Object\.entries\(mapActivity\)\.find/, "地图项目活动必须优先于创作画布活动");
+  for (const cls of [".map-canvas-activity-pill", ".map-canvas-activity-dot", ".map-canvas-activity-text"]) {
+    assert.ok(stylesSrc.includes(cls), `应定义 ${cls} 样式`);
+  }
+});
+
+test("点击活动 pill：地图项目态就地切换项目，创作画布态退出地图开画布", () => {
+  const idx = appSrc.indexOf("map-canvas-activity-pill");
+  const block = appSrc.slice(idx, idx + 900);
+  assert.match(block, /mapActiveTarget\.kind === "map"/, "必须按活动类型分支");
+  assert.match(block, /action: "switch_project"/, "地图项目态点击应就地切换项目（不退出地图）");
+  assert.match(block, /closeExternalModules\(\)/, "创作画布态点击必须退出地图模块");
+  assert.match(block, /openDesignCanvas\(mapActiveTarget\.slug/, "创作画布态点击必须打开对应画布标签");
+});
+
+test("当前会话新建画布时地图模式自动切换", () => {
+  const idx = appSrc.indexOf("pendingCanvasOpen");
+  const consumeIdx = appSrc.indexOf("if (activeModule === \"map\") closeExternalModules();");
+  assert.ok(consumeIdx > 0, "pendingCanvasOpen 消费必须含地图模式自动退出");
+  // 消费 effect 必须在 closeExternalModules 声明之后（TDZ 防线）
+  const declIdx = appSrc.indexOf("const closeExternalModules = useCallback");
+  assert.ok(consumeIdx > declIdx, "消费 effect 必须位于 closeExternalModules 声明之后");
+  assert.ok(consumeIdx > idx, "消费 effect 不得早于 pending 声明");
+});
+
+test("地图模式模型选择器紧凑化（不再独占整行）", () => {
+  assert.doesNotMatch(stylesSrc, /\.center-chat-slot\.map-mode \.toolbar-agent-group \{[^}]*flex: 1 1 100%/, "不得再强制模型行独占整行");
+  assert.doesNotMatch(stylesSrc, /\.center-chat-slot\.map-mode \.toolbar-agent-group \.model-control-trigger \{ width: 100%/, "trigger 不得再 100% 宽");
+  assert.match(stylesSrc, /\.center-chat-slot\.map-mode \.model-control-current small \{ display: none/, "地图模式必须隐藏模型副标题");
+});
+
+test("新会话模型初始化：服务端默认优先于上次使用", () => {
+  assert.match(chatSrc, /const preferred = cachedModel \|\| storedThreadModel \|\| d\.default \|\| saved \|\| ""/, "preferred 链必须 d.default 在 saved 之前");
+});
+
+console.log("\n▶ 4.6 地图项目画布联动（2026-11-11-012）");
+
+test("project_created 特判必须先于跨项目守卫（否则新项目事件被丢弃）", () => {
+  const createdIdx = mapPanelSrc.indexOf('action.action === "project_created"');
+  const guardIdx = mapPanelSrc.indexOf("if (action.project && action.project !== project) return;");
+  assert.ok(createdIdx > 0, "handleMapAction 必须特判 project_created");
+  assert.ok(guardIdx > 0, "跨项目守卫应存在");
+  assert.ok(createdIdx < guardIdx, `project_created 特判（${createdIdx}）必须在跨项目守卫（${guardIdx}）之前`);
+});
+
+test("project_created 必须刷新项目列表并在列表确认后切换", () => {
+  const idx = mapPanelSrc.indexOf('action.action === "project_created"');
+  const block = mapPanelSrc.slice(idx, idx + 500);
+  assert.match(block, /mapProjects\(\)/, "必须重新拉取项目列表（列表未含新项目时 setProject 会被下拉守卫丢弃）");
+  assert.match(block, /setProjects\(r\.projects/, "必须更新项目列表");
+  assert.match(block, /listed\.includes\(next\)[\s\S]{0,80}setProject\(next\)/, "列表确认后才切换项目");
+});
+
+test("switch_project 必须走 changeProject（沿用既有切换链）", () => {
+  const idx = mapPanelSrc.indexOf('action.action === "switch_project"');
+  const block = mapPanelSrc.slice(idx, idx + 200);
+  assert.match(block, /changeProject\(String\(action\.project\)\)/, "应调用 changeProject 完成切换");
+});
+
+test("会话跟随刷新兜底：目标项目不在列表时重拉一次（防循环）", () => {
+  assert.match(mapPanelSrc, /followRefreshRef/, "应有 followRefreshRef 防循环守卫");
+  assert.match(mapPanelSrc, /if \(followRefreshRef\.current\) return;/, "重拉只允许一次");
+  assert.match(mapPanelSrc, /target === project\) \{ followRefreshRef\.current = false; return; \}/, "到达目标后复位守卫");
+});
+
+test("地图写类工具活动：App 必须用 MAP_WRITE_TOOLS 驱动 mapActivity", () => {
+  assert.match(appSrc, /const MAP_WRITE_TOOLS = new Set\(\[/, "应有 MAP_WRITE_TOOLS 名单");
+  const list = appSrc.match(/const MAP_WRITE_TOOLS = new Set\(\[([\s\S]*?)\]\);/)?.[1] || "";
+  for (const tool of ["map_draft_layer", "map_project_create", "map_fixate_layer", "map_export"]) {
+    assert.ok(list.includes(`"${tool}"`), `名单必须含 ${tool}`);
+  }
+  assert.match(appSrc, /\} else if \(MAP_WRITE_TOOLS\.has\(String\(data\.name \|\| ""\)\)\) \{/, "全局流 tool 事件必须有地图写工具分支");
+  assert.match(appSrc, /setMapActivity\(\(prev\) => \(\{\s*\.\.\.prev,/, "活动应写入 mapActivity");
+});
+
+test("Run 终态必须权威收口 mapActivity（防止 pill 永挂）", () => {
+  assert.match(appSrc, /setMapActivity\(\(prev\) => \{[\s\S]{0,400}info\.threadId === finishedThreadId/, "终态清理应按 threadId 匹配");
+});
+
+test("mapContextsRef：mount-once 闭包读最新 mapContexts（TDZ/闭包防线）", () => {
+  const refIdx = appSrc.indexOf("const mapContextsRef = useRef(mapContexts);");
+  assert.ok(refIdx > 0, "应有 mapContextsRef");
+  const usedIdx = appSrc.indexOf("mapContextsRef.current[");
+  assert.ok(usedIdx > refIdx, "全局流分支应通过 ref 读会话地图上下文");
 });
 
 if (failed) {

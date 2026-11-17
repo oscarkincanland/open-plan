@@ -70,6 +70,7 @@ function 假Run仓库() {
       getRun: (id) => runs.get(id) || null,
       listRuns: () => [...runs.values()],
       listRunArtifacts: () => [],
+      validatableRunArtifacts: () => [],
       requestRunCancellation: (id, reason) => { 记录.取消.push({ id, reason }); return { ok: true }; },
       snapshotWorkspace: () => [],
     },
@@ -196,7 +197,9 @@ await test("能力() 自述与实际动作一致", async () => {
   assert.equal(能力.release, true);
   assert.equal(能力.subscribe, true);
   assert.equal(能力.availability, true);
-  assert.equal(能力.actions.length, 7);
+  // 能力().actions 是动作标签清单：除七个契约方法外还含「跳过问答」（402f7d92 起），
+  // 原先断言 7 是测试漂移，已按实际 8 项修正（2026-11-15-001）。
+  assert.equal(能力.actions.length, 8);
   assert.equal(能力.availabilityState, "ready");
 });
 
@@ -213,6 +216,53 @@ await test("waitForFlush 接受工作区快照对象并返回新增文件", asyn
   } finally {
     fs.rmSync(目录, { recursive: true, force: true });
   }
+});
+
+// ---- 收尾依赖接线契约（2026-11-15-001）----
+// 背景：010 把送检清单换成 validatableRunArtifacts，但默认 runs 依赖与 index.mjs 的 import
+// 都没跟上，收尾抛 TypeError/ReferenceError 而 fire-and-forget 只落一行 console →
+// 前端看不到错误、Run 永远停在 running，3 分钟后被静默回收按中断收口并丢弃暂存产物。
+const 服务端源码 = (名) => fs.readFileSync(new URL(`../server/${名}`, import.meta.url), "utf8");
+
+await test("收尾依赖接线完整：deps.runs.* 必须在默认依赖里且是 runs.mjs 导出", async () => {
+  const 源 = 服务端源码("执行句柄.mjs");
+  const 调用 = new Set([...源.matchAll(/deps\.runs\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]));
+  assert.ok(调用.size >= 8, `未解析到 deps.runs 调用：${[...调用].join(",")}`);
+  const 依赖块 = 源.match(/runs:\s*\{([^}]*)\}/);
+  assert.ok(依赖块, "未找到默认 runs 依赖块");
+  const 注入 = new Set([...依赖块[1].matchAll(/[A-Za-z_$][\w$]*/g)].map((m) => m[0]));
+  const 缺失 = [...调用].filter((名) => !注入.has(名));
+  assert.deepEqual(缺失, [], `默认 runs 依赖缺少：${缺失.join(", ")}——执行回合会抛 TypeError，收尾失败且只落一行 console`);
+  const 仓库模块 = await import("../server/runs.mjs");
+  const 非导出 = [...注入].filter((名) => typeof 仓库模块[名] !== "function");
+  assert.deepEqual(非导出, [], `默认 runs 依赖引用了 runs.mjs 未导出的名字：${非导出.join(", ")}`);
+});
+
+await test("index.mjs 调用 runs.mjs 导出必须已 import（防 ReferenceError 吞掉收尾）", async () => {
+  const 源 = 服务端源码("index.mjs");
+  const 导入块 = 源.match(/^import\s*\{([^}]*)\}\s*from\s*"\.\/runs\.mjs"/m);
+  assert.ok(导入块, "未找到从 runs.mjs 的 import");
+  const 已导入 = new Set(导入块[1].split(",").map((项) => 项.trim()).filter(Boolean));
+  const 导出名 = [...服务端源码("runs.mjs").matchAll(/export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/g)].map((m) => m[1]);
+  const 主体 = 源.replace(导入块[0], "");
+  // 排除 index.mjs 自己的同名本地定义（如 snapshotWorkspace），避免把本地函数误判成漏导入。
+  const 本地定义 = new Set([...主体.matchAll(/(?:function|const|let|var)\s+([A-Za-z_$][\w$]*)/g)].map((m) => m[1]));
+  const 未导入 = 导出名.filter((名) => !已导入.has(名) && !本地定义.has(名)
+    && new RegExp(`(^|[^\\w$.])${名}\\s*\\(`, "m").test(主体));
+  assert.deepEqual(未导入, [], `index.mjs 调用了未导入的 runs.mjs 导出：${未导入.join(", ")}`);
+});
+
+await test("成功回合收尾跑通：状态落 completed 且发出 run_finished", async () => {
+  const { 句柄, 仓库, 事件 } = 建句柄();
+  const 结果 = await 句柄.执行("收尾接线回归", {
+    entry: 假入口(), key: "c1", client: "c1", thread: "t1",
+    task: { mode: "work" }, resolved: [], workflowId: null, runWorkspace: ".",
+  });
+  await new Promise((等待) => setTimeout(等待, 150));
+  const run = 仓库.runs.get(结果.runId);
+  assert.ok(run, "Run 应已建立");
+  assert.equal(run.status, "completed", `收尾未完成（status=${run.status}）：缺依赖时执行回合会抛 TypeError，Run 永远停在 running`);
+  assert.ok(事件.some((项) => 项.type === "run_finished"), "收尾应发出 run_finished");
 });
 
 console.log(failed ? "\n执行句柄契约测试：存在失败" : "\n执行句柄契约测试：全部通过");

@@ -251,6 +251,26 @@ try {
     assert.ok(!/<image /.test(result.svg));
   });
 
+  await check("serializeBoardToSvg：video 元素 → 封面帧图片或占位框（warning 不中断）", async () => {
+    const projectDir = path.join(designs, "export-a", "project");
+    const withPoster = serializeBoardToSvg({
+      board: { w: 100, h: 100, background: "#fff", elements: [{ id: "v1", type: "video", x: 0, y: 0, w: 60, h: 40, src: "../assets/clip.mp4", poster: "../assets/map.png" }] },
+      projectDir,
+      baseDir: path.join(projectDir, "boards"),
+    });
+    assert.ok(!/<video/i.test(withPoster.svg), "导出 SVG 不得含真实媒体元素");
+    assert.match(withPoster.svg, /<image [^>]*xlink:href="data:image\/png;base64,[A-Za-z0-9+/=]+"/, "有封面帧时按图片嵌入");
+    assert.deepEqual(withPoster.warnings, []);
+    const withoutPoster = serializeBoardToSvg({
+      board: { w: 100, h: 100, background: "#fff", elements: [{ id: "v2", type: "video", x: 0, y: 0, w: 60, h: 40, src: "../assets/clip.mp4" }] },
+      projectDir,
+      baseDir: path.join(projectDir, "boards"),
+    });
+    assert.ok(withoutPoster.warnings.some((item) => item.includes("没有封面帧")), JSON.stringify(withoutPoster.warnings));
+    assert.match(withoutPoster.svg, /stroke-dasharray="6 4"/, "无封面帧时输出占位框");
+    assert.match(withoutPoster.svg, />视频<\/text>/);
+  });
+
   await check("sanitizeSvgMarkup 去除 script/on*/foreignObject/外链/http url()", async () => {
     const dirty = '<svg><script>alert(1)</script><foreignObject><div/></foreignObject>'
       + '<a href="https://evil/x" onclick="steal()">x</a><image href="http://evil/y.png"/>'
@@ -500,6 +520,30 @@ try {
     assert.ok(allText.some((xml) => /<a:t>离线文本<\/a:t>/.test(xml)), "应存在可编辑文本 run");
   });
 
+  await check("PPTX：video 元素导出为封面帧图片/占位矩形（不嵌真实媒体）", async () => {
+    createCanvas(workspace, { slug: "video-deck", title: "视频 deck" });
+    const poster = path.join(designs, "video-deck", "project", "assets", "cover.png");
+    fs.mkdirSync(path.dirname(poster), { recursive: true });
+    fs.writeFileSync(poster, Buffer.from(TINY_PNG_BASE64, "base64"));
+    writeBoard(workspace, "video-deck", "boards/v.board.json", {
+      v: 1, w: 1280, h: 720, elements: [
+        { id: "el-v1", type: "video", x: 40, y: 40, w: 400, h: 200, src: "../assets/clip.mp4", poster: "../assets/cover.png" },
+        { id: "el-v2", type: "video", x: 40, y: 300, w: 400, h: 200, src: "../assets/clip.mp4" },
+      ],
+    });
+    const result = await runExport(workspace, "video-deck", { format: "pptx" }, { browser: null });
+    assert.equal(result.files.length, 1);
+    const zip = await JSZip.loadAsync(fs.readFileSync(result.files[0].path));
+    const slideNames = Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)).sort();
+    const slideXmls = [];
+    for (const name of slideNames) slideXmls.push(await zip.file(name).async("string"));
+    const videoSlide = slideXmls.find((xml) => /<a:t>视频<\/a:t>/.test(xml));
+    assert.ok(videoSlide, "无封面帧视频应有占位文本 run");
+    assert.match(videoSlide, /<p:pic>/, "有封面帧的视频应内嵌为图片对象");
+    assert.ok(slideXmls.every((xml) => !/<a:videoFile|<p:video/i.test(xml)), "幻灯 XML 不得含视频媒体引用");
+    assert.ok(result.warnings.some((item) => item.includes("没有封面帧")), JSON.stringify(result.warnings));
+  });
+
   await check("兼容板 PPTX 在浏览器缺失时给出 CANVAS_BROWSER_UNAVAILABLE", async () => {
     await expectCode(
       () => runExport(workspace, "mixed-deck", { format: "pptx" }, { browser: null }),
@@ -518,6 +562,49 @@ try {
     const other = listExportJobs(workspace, "offline-deck");
     assert.ok(other.every((job) => job.slug === "offline-deck"));
   });
+  await check("HTML 导出：单文件内嵌图片与视频（视频可真播）", async () => {
+    // 2026-11-15-007 B：一个自包含 .html；媒体全部 base64；视频不是静态降级。
+    await createCanvas(workspace, { slug: "html-deck", title: "HTML 导出画布" });
+    const png = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6360000002000100ffff03000006000557bfabd40000000049454e44ae426082", "hex");
+    const mp4 = Buffer.from("00000018667479706d703432000000006d70343269736f6d", "hex");
+    const projectDir = path.join(designs, "html-deck", "project");
+    fs.mkdirSync(path.join(projectDir, "assets"), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, "assets", "shot.png"), png);
+    fs.writeFileSync(path.join(projectDir, "assets", "demo.mp4"), mp4);
+    await writeBoard(workspace, "html-deck", "boards/p1.board.json", {
+      id: "p1", w: 1280, h: 720, background: "#0f1115",
+      elements: [
+        { id: "el-text", type: "text", x: 80, y: 60, w: 900, h: 120, text: "技术分享 · 视频页", style: { fontSize: 48, color: "#ffffff" } },
+        { id: "el-pic", type: "image", x: 80, y: 220, w: 480, h: 270, src: "../assets/shot.png", fit: "cover" },
+        { id: "el-video", type: "video", x: 620, y: 220, w: 560, h: 315, src: "../assets/demo.mp4", poster: "../assets/shot.png" },
+      ],
+    }, { rev: 0 });
+    const plan = planExport(workspace, "html-deck", { format: "html" });
+    assert.equal(plan.errors.length, 0, `HTML 导出计划不应报错：${plan.errors.join("；")}`);
+    assert.equal(plan.jobs.length, 1, "HTML 是整本一个文件");
+    // 不需要浏览器：传 deps.browser=null 也应成功。
+    const result = await runExport(workspace, "html-deck", { format: "html" }, { browser: null });
+    assert.equal(result.files.length, 1);
+    assert.ok(result.files[0].path.endsWith(".html"), `导出扩展名应为 .html，实际 ${result.files[0].path}`);
+    const html = fs.readFileSync(result.files[0].path, "utf8");
+    assert.match(html, /<video [^>]*controls/, "视频必须是真 <video controls>（可播放），不是静态降级");
+    assert.match(html, /data:video\/mp4;base64,[A-Za-z0-9+/=]+/, "视频必须 base64 内嵌");
+    assert.match(html, /<img src="data:image\/png;base64,[A-Za-z0-9+/=]+"/, "图片必须 base64 内嵌");
+    assert.match(html, /技术分享 · 视频页/, "文本元素必须出现在 HTML 里");
+    assert.match(html, /id="counter"/, "应带页码/翻页控件（键盘 ←/→）");
+    assert.match(html, /ArrowRight/, "应带键盘翻页脚本");
+  });
+
+  await check("视频素材解析边界：绝对路径 / URL / 越界一律拒绝", async () => {
+    const { resolveProjectVideo } = await import("../server/创作画布导出.mjs");
+    const projectDir = path.join(designs, "html-deck", "project");
+    const baseDir = path.join(projectDir, "boards");
+    assert.ok(resolveProjectVideo(projectDir, "../assets/demo.mp4", { baseDir }), "板相对路径应可解析");
+    assert.equal(resolveProjectVideo(projectDir, "/etc/passwd.mp4", { baseDir }), null, "绝对路径必须拒绝");
+    assert.equal(resolveProjectVideo(projectDir, "https://example.com/a.mp4", { baseDir }), null, "外链 URL 必须拒绝");
+    assert.equal(resolveProjectVideo(projectDir, "../../../outside.mp4", { baseDir }), null, "越出 project 必须拒绝");
+  });
+
 } finally {
   try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
 }

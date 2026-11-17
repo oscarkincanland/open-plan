@@ -4473,7 +4473,7 @@ execute: async (_toolCallId, params, signal) => {
         + "patch_board：整板写入（slug、board、elements JSON 数组 或 完整 board JSON；expectedRev 做并发校验）；\n"
         + "update_canvas：改标题/页面/顺序/板坐标（slug + title/pages/order/boards JSON；expectedRev 可选）；\n"
         + "delete_element：从板删除指定元素（slug、board、elementId）。\n"
-        + "元素类型：text（text/style/x/y/w/h）、rect、line、image（src 为 project 内相对路径）、svg（src 或 markup）。画布文件属于工作区产物。",
+        + "元素类型：text（text/style/x/y/w/h）、rect、line、image（src 为 project 内相对路径）、svg（src 或 markup）、video（src 为 project 内相对路径的 mp4/webm/ogv，poster 可选封面帧，fit 可选 contain/cover/fill，loop/muted 可选布尔；建议单视频 ≤64MB，素材先放入 designs/<slug>/project/assets/）。画布文件属于工作区产物。",
       parameters: Type.Object({
         action: Type.Union([
           Type.Literal("create_canvas"),

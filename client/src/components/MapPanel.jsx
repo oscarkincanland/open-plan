@@ -548,12 +548,17 @@ export default function MapPanel({
   }, [project]);
 
   // 会话项目跟随：App 恢复/切换会话后把 mapProject 传进来，地图面板同步到该项目。
-  // 这是“上层 → 本地”的单向回填，只更新本地状态，不再反向通知，避免双写循环。
+  // 这是"上层 → 本地"的单向回填，只更新本地状态，不再反向通知，避免双写循环。
+  // 2026-11-11-012：列表不含目标项目时刷新一次再跟随（agent 新建/服务重启恢复会话时，
+  // 本地列表是旧的——不刷新会让跟随永远失效）。
+  const followRefreshRef = useRef(false);
   useEffect(() => {
     const target = String(initialProject || "").trim();
-    if (!target || target === project) return;
-    if (!projects.some((item) => String(item.project || item.name || "") === target)) return;
-    setProject(target);
+    if (!target || target === project) { followRefreshRef.current = false; return; }
+    if (projects.some((item) => String(item.project || item.name || "") === target)) return;
+    if (followRefreshRef.current) return;
+    followRefreshRef.current = true;
+    mapProjects().then((r) => setProjects(r.projects || [])).catch(() => {});
   }, [initialProject, projects, project]);
 
   // 用户切换项目（菜单/新建/重命名/删除回退）的唯一入口：先更新本地，
@@ -1782,7 +1787,25 @@ export default function MapPanel({
 
   // Agent 地图动作只更新临时分析图层，避免对话结束时再次整体 reloadStyle。
   const handleMapAction = useCallback((action) => {
-    if (!action || action.project && action.project !== project) return;
+    if (!action) return;
+    // 新建项目画布自动切换（2026-11-11-012）：agent map_project_create 后面板切到新项目。
+    // 必须在跨项目守卫之前——project_created 的 project 就是"别人"（新项目），
+    // 否则面板停留旧项目，agent 后续 map_draft_layer 的草稿全写进看不见的新项目。
+    if (action.action === "project_created" && String(action.project || "")) {
+      const next = String(action.project);
+      mapProjects().then((r) => {
+        const listed = (r.projects || []).map((item) => String(item.project || item.name || ""));
+        setProjects(r.projects || []);
+        if (listed.includes(next)) setProject(next);
+      }).catch(() => {});
+      return;
+    }
+    // 会话内切换请求（2026-11-11-012 F3）：活动 pill「查看」用，不退出地图模块。
+    if (action.action === "switch_project" && String(action.project || "")) {
+      changeProject(String(action.project));
+      return;
+    }
+    if (action.project && action.project !== project) return;
     if (action.action === "clear_analysis") {
       mapRef.current?.clearAnalysis(action.id || "agent-analysis");
       setActiveAnalysis(null);
@@ -1811,7 +1834,7 @@ export default function MapPanel({
     const title = action.title || (action.analysis === "isochrone" ? "等时圈" : action.analysis === "od" ? "出行 OD" : action.analysis === "buffer" ? "缓冲区分析" : action.analysis === "spatial_filter" ? "空间筛选" : action.analysis === "bbox_clip" ? "范围裁剪" : "热力图");
     const source = action.source === "demo" ? " · 演示数据" : "";
     flash(`${title}${source}已显示`);
-  }, [project, regionOptions, selectRegion, flash, syncTempLayers]);
+  }, [project, regionOptions, selectRegion, flash, syncTempLayers, changeProject]);
 
   const saveAnalysis = useCallback(async (action = activeAnalysis, { name = "", group = "" } = {}) => {
     if (!action?.geojson) return flash("当前没有可保存的分析结果");

@@ -54,7 +54,8 @@ test("未读计数：新助手回复累计、回底 chip 显示、多路清零",
   assert.match(chatPanel, /lastId !== previousId && !followLatestRef\.current/, "离开底部才累计");
   assert.match(chatPanel, /回到底部 · \$\{unreadBelow\} 条未读/, "回底 chip 文案");
   assert.match(chatPanel, /if \(atBottom\) setUnreadBelow\(0\)/, "滚到底清零");
-  assert.match(chatPanel, /setUnreadBelow\(0\);\s*\n\s*el\.scrollTo/, "回底按钮清零");
+  // 2026-11-15-003：回底按钮先清零未读，运行中走瞬时定位（避免平滑动画被新内容打断）。
+  assert.match(chatPanel, /setUnreadBelow\(0\);[\s\S]{0,600}?(jumpScrollTo\(el, el\.scrollHeight\)|el\.scrollTo\(\{ top: el\.scrollHeight)/, "回底按钮清零并定位到底部");
   assert.match(chatPanel, /setUnreadBelow\(0\); \/\/ 切会话未读归零/, "切会话清零");
 });
 

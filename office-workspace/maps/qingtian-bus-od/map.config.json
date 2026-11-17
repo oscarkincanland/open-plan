@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 2,
+  "kind": "blank",
+  "name": "青田县公交出行OD演示",
+  "project": "qingtian-bus-od",
+  "description": "青田县公交出行OD期望线演示画布（演示数据，非真实调查）",
+  "archived": true,
+  "baseProject": null,
+  "crs": "EPSG:4326",
+  "center": [
+    120.07,
+    29.31
+  ],
+  "zoom": 9,
+  "basemap": "esri-sat",
+  "groups": [],
+  "sharedLayers": [],
+  "layers": [],
+  "bookmarks": [],
+  "createdAt": "2026-11-11T14:31:53.297Z",
+  "updatedAt": "2026-11-11T14:35:22.103Z",
+  "archivedAt": "2026-11-11T14:41:12.510Z"
+}

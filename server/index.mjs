@@ -26,7 +26,7 @@ import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, materializeSkippedOf, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves, startOwnerHeartbeat, stopOwnerHeartbeat, setRunLifecycleInvalidator } from "./runs.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunStallCandidates, listRunSummaries, runSummaryView, materializeSkippedOf, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listRunArtifacts, validatableRunArtifacts, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs, flushPendingRunSaves, startOwnerHeartbeat, stopOwnerHeartbeat, setRunLifecycleInvalidator } from "./runs.mjs";
 import { markInterruptedJobs } from "./后台任务.mjs";
 import { attachRunTimingMeta, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
@@ -368,10 +368,25 @@ app.use((req, res, next) => {
   });
   next();
 });
+// 事件循环延迟采样（2026-11-16-008 C）：每 2s 一次，用「本次 tick 比预期晚了多久」近似
+// 事件循环被同步工作挤占的时长。监督器健康检查超时时，先看 /api/status 的这个值。
+let eventLoopLagMs = 0;
+let eventLoopLagLastTick = Date.now();
+const eventLoopLagTimer = setInterval(() => {
+  const now = Date.now();
+  const late = now - eventLoopLagLastTick - 2000;
+  eventLoopLagLastTick = now;
+  // 保留最近一次的严重程度（短窗口抖动不覆盖持续阻塞的高值）。
+  eventLoopLagMs = Math.max(0, Math.max(late, eventLoopLagMs * 0.5));
+}, 2000);
+eventLoopLagTimer.unref?.();
 app.get("/api/status", (req, res) => {
   if (API_TOKEN && tokenMatches(req.query?.token)) setAuthCookie(res);
   res.json({
     ok: true,
+    // 2026-11-16-008 C：事件循环延迟（毫秒，2s 采样）。健康检查超时到底是「进程卡死」
+    // 还是「事件循环被同步工作占满」，看这个值就能定位，不必再靠“疑似卡住”猜。
+    eventLoopLagMs: Math.round(eventLoopLagMs),
     officecli: path.basename(OFFICECLI),
     version: pkg.version,
     // L0 运行宪法版本：设置里只做只读展示，不提供编辑入口。
@@ -1367,6 +1382,10 @@ app.get(/^\/api\/doc\/(.+)\/raw$/, (req, res) => {
     avif: "image/avif",
     ico: "image/x-icon",
     svg: "image/svg+xml",
+    // 视频按真实类型返回（<video> 播放与 Range seek 依赖正确 MIME）
+    mp4: "video/mp4",
+    webm: "video/webm",
+    ogv: "video/ogg",
   };
   try {
     // D2：允许条件请求。此前写死 no-store 导致每次打开都全量重下
@@ -1454,6 +1473,9 @@ app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
     } else if (IMAGE_EXTENSIONS.has(ext)) {
       // D04：独立图片格式走专用查看器（raw 已按扩展名给正确 MIME）
       res.json({ kind: "image", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/raw${cwdQuery}` });
+    } else if (VIDEO_EXTENSIONS.has(ext)) {
+      // 视频预览（2026-11-15-006）：原生 <video> 播放；/raw 的 sendFile 自带 Range（进度条分段加载）
+      res.json({ kind: "video", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/raw${cwdQuery}` });
     } else if (RUNTIME_FLAGS.cadPreview && (ext === "dxf" || ext === "dwg")) {
       // CAD 预览（开关 cadPreview，默认关=DXF/DWG 落入下方 html 兜底与基线一致）：
       // 解析结果随 open 响应一次返回（实体数受 CAD_ENTITY_LIMIT 截断，truncated 标记提示）。
@@ -3869,6 +3891,8 @@ app.get("/api/runs/:id/acceptance", async (req, res) => {
 // ---------- 本轮文件改动的内容差异（W3/C02，只读） ----------
 // 安全：changeId 必须能在服务端 Run 记录里解析到合法文件；不接受任意路径参数。
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "ico"]);
+// 预览分派用视频扩展名（与画布素材口径一致：mp4/webm/ogv，2026-11-15-005/006 计划）
+const VIDEO_EXTENSIONS = new Set(["mp4", "webm", "ogv"]);
 
 const RUN_CHANGES_DIR = process.env.OAW_RUNS_DIR || path.join(PROJECT_DIR, ".oaw", "runs");
 
@@ -5454,8 +5478,9 @@ app.post("/api/agent/prompt", async (req, res) => {
     // 出错也检测产物（agent 可能已部分写入文件）；清单走内容哈希口径，
     // 只碰了 mtime、内容没变的文件不算变更。
     if (run) await waitForFlush(run?.before || [], runWorkspace);
+    // 2026-11-11-010：validatableRunArtifacts 跳过 deleted 与画布内部文件（误报修复）。
     const changed = run
-      ? listRunArtifacts(run, runWorkspace).map((item) => item.path)
+      ? validatableRunArtifacts(run, runWorkspace)
       : await waitForFlush(run?.before || [], runWorkspace);
     const validations = validateArtifacts(changed, runWorkspace);
     const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
@@ -5527,8 +5552,8 @@ async function executeContinuation({ key, entry, run, task, references, workflow
     if (entry?.lastFinalText) recordRunEvent(run.id, "assistant_final", { text: entry.lastFinalText });
     const continuationWorkspace = entry.workspace || run.cwd || getWorkspace();
     await waitForFlush(before, continuationWorkspace);
-    // 内容哈希口径：只碰了 mtime 的文件不算变更
-    const changed = listRunArtifacts(run, continuationWorkspace).map((item) => item.path);
+    // 内容哈希口径：只碰了 mtime 的文件不算变更；validatableRunArtifacts 再跳过 deleted 与画布内部文件
+    const changed = validatableRunArtifacts(run, continuationWorkspace);
     const validations = validateArtifacts(changed, continuationWorkspace);
     const stagedValidations = validateStagedArtifacts(run.id);
     const allValidations = [...validations, ...stagedValidations];
@@ -6512,11 +6537,36 @@ app.post("/api/canvas/:slug/save-as-template", async (req, res) => {
   } catch (e) { canvasError(res, e); }
 });
 
-app.get("/api/canvas/exports/:jobId", (req, res) => {
+app.get("/api/canvas/exports/:jobId", async (req, res) => {
   if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
-  const job = canvasExportJobs.get(String(req.params.jobId || ""));
-  if (!job) return res.status(404).json({ ok: false, error: "导出任务不存在或服务已重启" });
-  res.json({ ok: true, ...job });
+  const jobId = String(req.params.jobId || "");
+  const live = canvasExportJobs.get(jobId);
+  if (live) return res.json({ ok: true, ...live });
+  // 2026-11-16：任务号只在内存里，服务重启（含健康检查误重启）后前端轮询必然 404，
+  // 界面把「其实已经导出成功」显示成「导不出来」。这里回落到画布目录下的 .jobs.json
+  // ——落盘任务是权威记录，能跨重启把已完成/失败的真实结果交回前端。
+  try {
+    const cvs = await import("./创作画布.mjs");
+    const persisted = cvs.listExportJobs(canvasWorkspaceFrom(req), null, { jobId })
+      .find((item) => String(item.jobId || "") === jobId);
+    if (persisted) {
+      return res.json({
+        ok: true,
+        id: persisted.jobId,
+        jobId: persisted.jobId,
+        slug: persisted.slug,
+        format: persisted.format,
+        status: persisted.status,
+        files: Array.isArray(persisted.files) ? persisted.files : [],
+        error: (persisted.errors || []).join("；"),
+        warnings: persisted.warnings || [],
+        createdAt: persisted.createdAt,
+        finishedAt: persisted.finishedAt,
+        recoveredAfterRestart: true,
+      });
+    }
+  } catch { /* 回落失败按未找到处理，不改变原有语义 */ }
+  res.status(404).json({ ok: false, error: "导出任务不存在（服务已重启且未在画布记录中找到该任务）" });
 });
 
 app.post("/api/canvas", async (req, res) => {
@@ -6560,8 +6610,11 @@ const CANVAS_ASSET_MIME = new Map(Object.entries({
   avif: "image/avif", svg: "image/svg+xml", ico: "image/x-icon",
   woff2: "font/woff2", woff: "font/woff", ttf: "font/ttf", otf: "font/otf",
   css: "text/css; charset=utf-8", js: "text/javascript; charset=utf-8",
-  json: "application/json; charset=utf-8", mp4: "video/mp4", webm: "video/webm",
+  json: "application/json; charset=utf-8", mp4: "video/mp4", webm: "video/webm", ogv: "video/ogg",
 }));
+
+/** 视频素材走 Range 分段响应（`<video>` seek 依赖），其余扩展名保持 200 流式。 */
+const CANVAS_VIDEO_MIME = new Set(["video/mp4", "video/webm", "video/ogg"]);
 
 app.get("/api/canvas/:slug/asset", async (req, res) => {
   if (!RUNTIME_FLAGS.creativeCanvas) return canvasFeature(res);
@@ -6585,11 +6638,33 @@ app.get("/api/canvas/:slug/asset", async (req, res) => {
     if (!fs.existsSync(target) || !fs.statSync(target).isFile()) {
       return res.status(404).json({ ok: false, error: "素材不存在", code: "CANVAS_NOT_FOUND" });
     }
+    const { resolveCanvasAssetRange } = await import("./创作画布.mjs");
     res.setHeader("Content-Type", mime);
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Content-Type-Options", "nosniff");
-    // SVG/字体等按受控资源返回：禁止外链与脚本，避免素材成为 XSS 入口。
-    res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:");
+    // SVG/字体等按受控资源返回：禁止外链与脚本，避免素材成为 XSS 入口；视频素材放行 media-src。
+    const csp = CANVAS_VIDEO_MIME.has(mime)
+      ? "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src 'self'"
+      : "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:";
+    res.setHeader("Content-Security-Policy", csp);
+    const stat = fs.statSync(target);
+    // `<video>` 的 seek/拖进度条依赖 Range：视频 MIME 按区间响应（206/416），其余扩展名保持 200 流式。
+    const range = CANVAS_VIDEO_MIME.has(mime) ? resolveCanvasAssetRange(req.headers.range, stat.size) : { status: 200 };
+    if (range.status === 206) {
+      res.status(206);
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${stat.size}`);
+      res.setHeader("Content-Length", String(range.end - range.start + 1));
+      fs.createReadStream(target, { start: range.start, end: range.end }).pipe(res);
+      return;
+    }
+    if (range.status === 416) {
+      res.status(416);
+      res.setHeader("Content-Range", `bytes */${stat.size}`);
+      return res.end();
+    }
+    res.setHeader("Accept-Ranges", CANVAS_VIDEO_MIME.has(mime) ? "bytes" : "none");
+    res.setHeader("Content-Length", String(stat.size));
     fs.createReadStream(target).pipe(res);
   } catch (e) { canvasError(res, e); }
 });
@@ -7692,21 +7767,36 @@ httpServer.on("error", (error) => {
 // 运行时被替换、插话接管等）。不回收的话会话列表会永远显示「执行中」，
 // 在会话之间切换时看起来就是"状态对不上"（用户反馈的会话间混乱）。
 const RUN_STALL_MS = Math.max(60000, Number.parseInt(process.env.OAW_RUN_STALL_MS || "180000", 10) || 180000);
-function reapStalledRuns() {
+let reaperRunning = false;
+async function reapStalledRuns() {
+  // 防重入：上一轮还没扫完就跳过本次，避免多轮叠加把事件循环越压越满。
+  if (reaperRunning) return;
+  reaperRunning = true;
+  try {
+    await reapStalledRunsOnce();
+  } finally {
+    reaperRunning = false;
+  }
+}
+
+async function reapStalledRunsOnce() {
   let candidates = [];
   try {
-    candidates = listRuns({ limit: 50, includeEvents: "latest" }).filter((item) => ["running", "queued", "recovering"].includes(item.status));
+    // 2026-11-16-008 B：只读运行索引（状态 + 最后事件时间），不再为 50 条 Run 构造
+    // 完整视图（实测同步 1976ms / 30 秒一次，会把 /api/status 拖到超时被误重启）。
+    // olderThanMs 让「刚写过」的文件在 stat 阶段就被筛掉；扫描本身按批让出事件循环。
+    candidates = await listRunStallCandidates({ limit: 200, olderThanMs: RUN_STALL_MS });
   } catch (error) {
-    console.warn(`[runs] 静默 Run 回收：读取 Run 列表失败 ${String(error?.message || error).slice(0, 160)}`);
+    console.warn(`[runs] 静默 Run 回收：读取运行索引失败 ${String(error?.message || error).slice(0, 160)}`);
     return;
   }
-  for (const item of candidates) {
+  for (const candidate of candidates) {
     try {
-      const run = getRun(item.id);
-      if (!run) continue;
-      const events = Array.isArray(run.events) ? run.events : [];
-      const lastAt = Date.parse(events[events.length - 1]?.at || run.startedAt || "") || 0;
+      const lastAt = Date.parse(candidate.lastEventAt || candidate.updatedAt || candidate.startedAt || "") || 0;
       if (!lastAt || Date.now() - lastAt < RUN_STALL_MS) continue;
+      // 只有确实停滞的候选才加载完整 Run（通常 0~2 条）。
+      const run = getRun(candidate.id);
+      if (!run) continue;
       const entry = agentManager.resolveLiveEntry(agentKey(run.clientId, run.threadId), { runId: run.id });
       const runtime = entry ? agentManager.runtimeSnapshot(agentKey(run.clientId, run.threadId)) : null;
       const runtimeBusy = Boolean(entry?.busy) || ["running", "queued", "compacting"].includes(String(runtime?.status || ""));
@@ -7745,11 +7835,11 @@ function reapStalledRuns() {
     }
   }
 }
-const runReaperTimer = setInterval(reapStalledRuns, 30000);
+const runReaperTimer = setInterval(() => { void reapStalledRuns(); }, 30000);
 runReaperTimer.unref?.();
 // 启动后先跑一次：进程重启留下的 recovering/running 会在几分钟内被收尾，
 // 不必等满一个周期，用户打开界面时看到的会话状态就是准的。
-setTimeout(reapStalledRuns, 5000).unref?.();
+setTimeout(() => { void reapStalledRuns(); }, 5000).unref?.();
 
 process.on("SIGINT", () => { void shutdownService("SIGINT", 0); });
 process.on("SIGTERM", () => { void shutdownService("SIGTERM", 0); });

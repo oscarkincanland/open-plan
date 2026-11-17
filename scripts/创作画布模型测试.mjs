@@ -27,6 +27,7 @@ import {
   readCanvas,
   readCanvasAsset,
   readCanvasVersion,
+  resolveCanvasAssetRange,
   restoreBoardHistory,
   restoreCanvasVersion,
   updateCanvas,
@@ -240,7 +241,7 @@ try {
   check("元素类型非法 / id 重复 / 类型白名单", () => {
     const good = { v: 1, w: 1280, h: 720, elements: [textElement()] };
     expectCode(() => writeBoard(workspace, "deck-a", "boards/bad.board.json", {
-      ...good, elements: [{ ...good.elements[0], type: "video" }],
+      ...good, elements: [{ ...good.elements[0], type: "audio" }],
     }), "CANVAS_INVALID");
     expectCode(() => writeBoard(workspace, "deck-a", "boards/bad.board.json", {
       ...good, elements: [textElement(), textElement()],
@@ -274,6 +275,49 @@ try {
       ...base, elements: [imageEl("../assets/map.png")],
     });
     assert.equal(ok.rev, 1);
+  });
+
+  check("video 元素：src 必填 + poster/fit/loop/muted/autoplay 校验", () => {
+    const base = { v: 1, w: 1280, h: 720, elements: [] };
+    const videoEl = (extra = {}) => ({ id: "video-1", type: "video", x: 0, y: 0, w: 640, h: 360, src: "../assets/demo.mp4", ...extra });
+    // 合法：全字段落盘
+    const ok = writeBoard(workspace, "deck-a", "boards/video.board.json", {
+      ...base, elements: [videoEl({ poster: "../assets/demo.jpg", fit: "cover", loop: true, muted: false, autoplay: true })],
+    });
+    assert.equal(ok.rev, 1);
+    const { board } = readBoard(workspace, "deck-a", "boards/video.board.json");
+    const el = board.elements[0];
+    assert.equal(el.type, "video");
+    assert.equal(el.src, "../assets/demo.mp4");
+    assert.equal(el.poster, "../assets/demo.jpg");
+    assert.equal(el.fit, "cover");
+    assert.equal(el.loop, true);
+    assert.equal(el.autoplay, true);
+    // 缺 src → 拒绝
+    expectCode(() => writeBoard(workspace, "deck-a", "boards/video.board.json", {
+      ...base, elements: [{ id: "video-2", type: "video", x: 0, y: 0, w: 100, h: 100 }],
+    }), "CANVAS_INVALID", "缺 src");
+    // 外链/绝对路径 src → 拒绝
+    for (const src of ["https://evil/x.mp4", "C:/tmp/x.mp4", "/abs/x.mp4"]) {
+      expectCode(() => writeBoard(workspace, "deck-a", "boards/video.board.json", {
+        ...base, elements: [videoEl({ src })],
+      }), "CANVAS_INVALID", `src=${src}`);
+    }
+    // poster 同路径规则（URL 拒绝）
+    expectCode(() => writeBoard(workspace, "deck-a", "boards/video.board.json", {
+      ...base, elements: [videoEl({ poster: "https://evil/cover.jpg" })],
+    }), "CANVAS_INVALID", "poster URL");
+    // fit 非法 → 拒绝；loop 非布尔 → 拒绝
+    expectCode(() => writeBoard(workspace, "deck-a", "boards/video.board.json", {
+      ...base, elements: [videoEl({ fit: "stretch" })],
+    }), "CANVAS_INVALID", "fit");
+    expectCode(() => writeBoard(workspace, "deck-a", "boards/video.board.json", {
+      ...base, elements: [videoEl({ loop: "yes" })],
+    }), "CANVAS_INVALID", "loop 非布尔");
+    // fit 缺省不落盘（与 image 一致），默认值由前端归一化承担（contain，见界面接线测试）
+    writeBoard(workspace, "deck-a", "boards/video.board.json", { ...base, elements: [videoEl()] });
+    const { board: again } = readBoard(workspace, "deck-a", "boards/video.board.json");
+    assert.equal(again.elements[0].fit, undefined);
   });
 
   check("SVG 块 markup 落盘即 sanitize（去 script/on*/foreignObject/外链）", () => {
@@ -523,6 +567,26 @@ try {
     expectCode(() => readCanvasAsset(workspace, "readasset", "assets/none.png"), "CANVAS_NOT_FOUND");
     fs.writeFileSync(path.join(designs, "readasset", "project", "assets", "bad.exe"), "MZ");
     expectCode(() => readCanvasAsset(workspace, "readasset", "assets/bad.exe"), "CANVAS_INVALID");
+    // 视频扩展名放行（mp4/webm/ogv）
+    const mp4File = path.join(designs, "readasset", "project", "assets", "clip.mp4");
+    fs.writeFileSync(mp4File, Buffer.from([0, 0, 0, 24, 102, 116, 121, 112]));
+    assert.equal(readCanvasAsset(workspace, "readasset", "assets/clip.mp4").mime, "video/mp4");
+    fs.writeFileSync(path.join(designs, "readasset", "project", "assets", "clip.webm"), Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
+    assert.equal(readCanvasAsset(workspace, "readasset", "assets/clip.webm").mime, "video/webm");
+    fs.writeFileSync(path.join(designs, "readasset", "project", "assets", "clip.ogv"), Buffer.from("OggS"));
+    assert.equal(readCanvasAsset(workspace, "readasset", "assets/clip.ogv").mime, "video/ogg");
+  });
+
+  check("resolveCanvasAssetRange：单区间/后缀区间/越界/非法语法", () => {
+    assert.deepEqual(resolveCanvasAssetRange(undefined, 1000), { status: 200 }, "无 Range → 200 全量");
+    assert.deepEqual(resolveCanvasAssetRange("bytes=0-", 1000), { status: 206, start: 0, end: 999 });
+    assert.deepEqual(resolveCanvasAssetRange("bytes=100-199", 1000), { status: 206, start: 100, end: 199 });
+    assert.deepEqual(resolveCanvasAssetRange("bytes=100-", 1000), { status: 206, start: 100, end: 999 });
+    assert.deepEqual(resolveCanvasAssetRange("bytes=-200", 1000), { status: 206, start: 800, end: 999 }, "后缀区间取末 N 字节");
+    assert.deepEqual(resolveCanvasAssetRange("bytes=900-9999", 1000), { status: 206, start: 900, end: 999 }, "终点越界钳到末字节");
+    assert.deepEqual(resolveCanvasAssetRange("bytes=1000-", 1000), { status: 416, size: 1000 }, "起点越界 → 416");
+    assert.deepEqual(resolveCanvasAssetRange("bytes=0-0", 0), { status: 200 }, "空文件 → 200 全量");
+    assert.deepEqual(resolveCanvasAssetRange("bytes=100-200,300-400", 1000), { status: 200 }, "多区间退化为 200 全量");
   });
 
   check("operations.jsonl 记录 create/save/import，含 actor/时间/摘要", () => {

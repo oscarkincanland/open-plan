@@ -330,6 +330,12 @@ function TaskCenterInternal({ sessions = [], projects = [], currentProjectId = "
             <提示气泡 label="刷新任务状态">
               <button className="btn-xs" onClick={refresh} aria-label="刷新任务状态"><Icon name="refresh" size={12} /></button>
             </提示气泡>
+            {/* 2026-11-12：弹层此前只有 Esc 能关，没有可见关闭入口（用户反馈「打开后没办法收起」）。 */}
+            {!fullPage && (
+              <提示气泡 label="关闭任务中心">
+                <button className="btn-xs task-center-close" onClick={() => closePanel()} aria-label="关闭任务中心"><Icon name="close" size={12} /></button>
+              </提示气泡>
+            )}
           </div>
           <div className="task-center-filters">
             <select value={projectScope} onChange={(e) => setProjectScope(e.target.value)} title="项目范围">

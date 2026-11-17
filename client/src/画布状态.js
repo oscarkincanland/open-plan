@@ -14,10 +14,11 @@ export const CANVAS_STORAGE_KEY = "oaw_canvas_v2";
 export const CANVAS_WIDTH_KEY = "oaw_canvas_w";
 export const CANVAS_SIDE_WIDTH_KEY = "oaw_canvas_side_w";
 
-export const SINGLETON_TAB_KINDS = new Set(["artifacts", "changes", "browser", "objects", "workflows", "mapPreview", "team"]);
+export const SINGLETON_TAB_KINDS = new Set(["start", "artifacts", "changes", "browser", "objects", "workflows", "mapPreview", "team"]);
 
 
 const VIEW_META = Object.freeze({
+  start: { title: "开始", icon: "grid" },
   artifacts: { title: "工作产物", icon: "package" },
   changes: { title: "改动", icon: "history" },
   browser: { title: "浏览器", icon: "globe" },
@@ -200,6 +201,7 @@ function sanitizeTab(tab) {
   if (kind === "subagent") return null; // 临时标签不恢复
   if (kind === "mapPreview") return null; // 会话地图预览跟随当前会话，不跨会话恢复
   if (kind === "team") return null; // 团队跟随当前会话/Run，不写入 localStorage，避免指向新会话
+  if (kind === "start") return null; // 工作区开始页每次切换工作区时按需注入，不写入持久化标签
   if (kind === "design") {
     // 创作画布恢复身份（不存板内容）；slug 为空的“新建”占位标签不持久化。
     const slug = String(tab.payload?.slug || "");
