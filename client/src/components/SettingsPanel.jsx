@@ -813,6 +813,7 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
             ))}
           </div>
         </div>
+        <div className="sp-hint">工作台风格只切换强调色，明暗由上方「主题」控制；两处各选一次即可。</div>
         <div className="sp-row">
           <span className="sp-label">消息字体</span>
           <div className="sp-options">

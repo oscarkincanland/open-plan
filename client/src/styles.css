@@ -116,24 +116,31 @@
   --neutral-300: #ccc;
 }
 
-/* ===== 亮色主题 ===== */
+/* ===== 亮色主题 =====
+   唯一裸亮色令牌块（计划 2026-11-18-001）：历史 L120(v0.3.0 青绿) / L5974(0.10 绿色) /
+   L9323(无障碍复验后绿色) / CAD 块四处互相覆盖，现合并为一处。
+   取值以无障碍复验后的最后生效块为准（--dim 对比度见《会话流前端规范》§10.1 亮色 4.66:1 复验）。 */
 [data-theme="light"] {
-  --body-bg: #f5f6fa;
+  --body-bg: #f5f7f4;
   --panel-bg: #ffffff;
-  --panel2-bg: #eef0f6;
-  --surface: #e4e7f0;
-  --text: #2d3142;
-  --muted: #5c6270;
-  --dim: #5c6270;
-  --accent: #2a8c82;
-  --border: #d4d8e4;
-  --selected: #dfe4ee;
+  --panel2-bg: #eef2ec;
+  --surface: #e5ebe3;
+  --text: #1d281f;
+  --muted: #5d6a60;
+  --dim: #5f6a60;
+  --accent: #638e2d;
+  --border: #d2dbd0;
+  --selected: #e4ecdf;
   --success: #5c7a1f;
   --error: #c0392b;
   --warning: #b7791f;
-  --user-bg: #e6f0ee;
-  --user-fg: #102b26;
-  --tool-pending: #eceef4;
+  --user-bg: #cbe99b;
+  --user-fg: #16240c;
+  --tool-pending: #edf2eb;
+  --tool-success: #e6f0de;
+  --tool-error: #f7e8e5;
+  /* CAD 预览描边（原 CAD 区段独立亮色块并入此处；保持独立行以便令牌棘轮识别） */
+  --oaw-cad-ink: #3a4050;
   /* 文件类型扁平图标（亮色主题加深一档，保证浅底上可辨） */
   --file-doc: #2f6fed;
   --file-sheet: #1f8a4c;
@@ -157,8 +164,6 @@
   --code-type: #a16207;
   --code-attr: #0e7490;
   --code-tag: #be123c;
-  --tool-success: #e8f0e2;
-  --tool-error: #f5e3e0;
 }
 [data-theme="light"] .docview,
 [data-theme="light"] .center-area { background: #f0f2f7; }
@@ -5971,19 +5976,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   --chat-max: 680px;
   --preview-w: 360px;
 }
-[data-theme="light"] {
-  --body-bg: #f7f8f6;
-  --panel2-bg: #f1f4ef;
-  --surface: #e8ede5;
-  --text: #273126;
-  --muted: #5e6b60;
-  --dim: #5e6b60;
-  --accent: #628d28;
-  --border: #d9e0d5;
-  --selected: #e5ecdf;
-  --user-bg: #eaf2e3;
-  --user-fg: #16240f;
-}
+/* 0.10 亮色令牌块已并入顶部唯一亮色块（计划 2026-11-18-001），见「亮色主题」区段。 */
 .sidebar-brand {
   display: flex;
   align-items: center;
@@ -9320,25 +9313,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   --tool-error: #33201f;
 }
 
-[data-theme="light"] {
-  --body-bg: #f5f7f4;
-  --panel-bg: #ffffff;
-  --panel2-bg: #eef2ec;
-  --surface: #e5ebe3;
-  --text: #1d281f;
-  --muted: #5d6a60;
-  /* 同上：原取值在白色面板上仅 3.35:1；现取值在 body 上 5.24:1、
-     surface 上 4.66:1。 */
-  --dim: #5f6a60;
-  --accent: #638e2d;
-  --border: #d2dbd0;
-  --selected: #e4ecdf;
-  --user-bg: #cbe99b;
-  --user-fg: #16240c;
-  --tool-pending: #edf2eb;
-  --tool-success: #e6f0de;
-  --tool-error: #f7e8e5;
-}
+/* 无障碍复验后的旧亮色令牌块已并入顶部唯一亮色块（计划 2026-11-18-001）。 */
 
 .app,
 .center-area,
@@ -13780,6 +13755,9 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
     border-left: 0;
     box-shadow: 0 0 40px rgba(0, 0, 0, 0.45);
   }
+  /* 计划 2026-11-18-001：窄屏下画布槽固定全屏（--z-overlay 260），设置等模块浮层
+     原裸 z-index:30 会被画布盖住并拦截点击（598px 实测复现），抬到抽屉层。 */
+  .module-view { z-index: var(--z-drawer); }
   .canvas-side { position: absolute; right: 0; top: 44px; bottom: 0; z-index: 20; box-shadow: -12px 0 30px rgba(0, 0, 0, 0.35); }
 }
 
@@ -14170,12 +14148,10 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 
 /* ===== CAD 预览查看器（CadViewer.jsx · 开关 OAW_CAD_PREVIEW，默认关=不渲染不占样式）=====
    配色全部走既有主题变量，暗/亮主题自动跟随；描边色 --oaw-cad-ink 按主题定义一次。 */
-/* CAD 预览描边色：令牌写成独立行，设计令牌棘轮才能识别为令牌定义而非硬编码色值 */
+/* CAD 预览描边色：令牌写成独立行，设计令牌棘轮才能识别为令牌定义而非硬编码色值；
+   亮色取值已并入顶部唯一亮色令牌块（计划 2026-11-18-001）。 */
 :root {
   --oaw-cad-ink: #cfd3e0;
-}
-[data-theme="light"] {
-  --oaw-cad-ink: #3a4050;
 }
 .oaw-cad-wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--panel-bg); }
 .oaw-cad-toolbar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--border); }

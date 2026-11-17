@@ -103,6 +103,7 @@
     "test:motion": "node scripts/动效治理测试.mjs",
     "test:cross-layer": "node scripts/跨层回归测试.mjs",
     "test:a11y": "node scripts/无障碍与窄屏测试.mjs",
+    "test:theme-appearance": "node scripts/主题与外观持久化测试.mjs",
     "test:perf-budget": "node scripts/性能与流量基线测试.mjs",
     "test:sse-protocol": "node scripts/SSE事件协议回归测试.mjs",
     "test:run-trace": "node scripts/执行轨迹归约测试.mjs",
