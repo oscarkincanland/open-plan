@@ -21,6 +21,7 @@
  *   npm run check:commit-gate
  */
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -88,6 +89,19 @@ function checkCommit(commit) {
   }
   if (touchedCode.length && !CLUE_RE.test(`${commit.subject} ${commit.body}`)) {
     warnings.push("提交信息没有需求编号/缺陷/计划线索（§7.1-1 功能明确）");
+  }
+
+  // AGENTS §7.3：S2/S3 方案须回填「对抗审查」小节（或写明豁免）。
+  // 这里对"新增/修改的计划文档"做静态检查：既无审查小节也无豁免字样 → 警告。
+  const planFiles = commit.files.filter((item) => item.status !== "D" && PLAN_RE.test(item.file) && /\.md$/.test(item.file));
+  for (const item of planFiles) {
+    try {
+      const text = readFileSync(path.join(PROJECT_DIR, item.file), "utf8");
+      const hasReview = /对抗审查|审查者：无|豁免/.test(text);
+      if (!hasReview) {
+        warnings.push(`${path.basename(item.file)} 未包含「对抗审查」小节或豁免记录（AGENTS §7.3 要求 S2/S3 方案回填）`);
+      }
+    } catch {}
   }
   return { commit, failures, warnings };
 }
