@@ -1,17 +1,18 @@
 # Office 排版规范
 
-> 状态：生效
-> 基线：v0.13.3
-> 更新：2026-11-02
+> 状态：生效　版本：1.1
+> 基线：v0.13.25
+> 更新：2026-11-18
 > 关联：AGENTS.md / [PRD](../../REQUIREMENTS.md) R1·R7·R11·R13 / [架构规范](架构规范.md) / [功能验证测试规范](功能验证测试规范.md) / [整合修改计划](../plans/2026-10-27-006-Office写作能力整合修改计划.md) / [ADR 0006](../决策记录/0006-Office规范层参数化而非复制提示词.md)
 > 适用范围：`server/office规范/` 下的版式参数、模板路由、规则闸门，以及 `server/文档引擎.mjs` 的 blocks v2 样式层。
 
 > 补记（2026-11-02 收敛）：本文此前长期停留在「草案」，却已被已采纳的 ADR 0006 当作规范来源引用，
-> 同时未进入 `AGENTS.md §10` 索引，形成孤儿文档。经核对，`server/office规范/` 的 12 个模块已全部合入
-> `develop`，本文的关键数值与实现逐项一致（13 档字号、4 档行距、3 套页边距、12 套配色），
+> 同时未进入 `AGENTS.md §10` 索引，形成孤儿文档。经核对，`server/office规范/` 的 13 个文件
+>（11 个模块 + 2 份参数 JSON）已全部合入 `develop`，本文的关键数值与实现逐项一致（13 档字号、4 档行距、3 套页边距、12 套配色），
 > 故自本次起正式生效并纳入索引。
-> 注意：Office 写作路由的强制闸门由 `OAW_OFFICE_FORMAT` 控制且**默认关闭**——
-> 规范生效指"数值与契约是事实来源"，不代表默认体验下闸门已开启。
+> 注意（2026-11-18 澄清，依据 ADR 0012 与实际实现）：Office 写作路由的**执行闸门**按路由自动通电
+> （`route=template|generate` 且 Work 模式），`OAW_OFFICE_FORMAT=off` 才是显式退出；而**封面/目录/页码/QA
+> 等排版流水线**仍由 `officeFormat` 开关控制、默认关。即默认体验为「闸门开、排版关」。
 
 ---
 
@@ -138,9 +139,11 @@
 
 ## 9. 开关与回退
 
-- 开关：`OAW_OFFICE_FORMAT`（`server/运行开关.mjs` 的 `officeFormat`），**默认关**。
-- 关闭时：路由、生成、流水线行为与 v0.11.55 基线一致；不启用澄清闸门、封面、目录、页码与 QA。
-- 打开时：启用模板/场景/版式/QA；仍可单独关闭某一项（流水线参数 `autoClarify`、`qa`、`toc`、`pageNumbers`）。
+- **两级开关（2026-11-18 澄清）**：
+  - **执行闸门**：`server/运行开关.mjs` 的 `officeGateActiveFor(route, mode)` 按路由自动启用——Work 模式且 `route=template|generate` 即通电；`OAW_OFFICE_FORMAT=off` 是唯一的显式退出（ADR 0012）。
+  - **排版流水线**：封面、目录、页码、QA 与 `autoClarify` 仍由 `RUNTIME_FLAGS.officeFormat` 控制，默认关；需要时设 `OAW_OFFICE_FORMAT=1`。
+- **默认体验**：闸门开、排版关——写作路由会拦截脚本直写并提示走 `editorial_pipeline`，但不会自动做封面/目录/页码/QA。
+- **关闭**：`OAW_OFFICE_FORMAT=off` 时闸门与排版一起退出，行为回到 v0.11.55 基线；`=1` 时两者都开。
 
 ---
 
@@ -148,7 +151,7 @@
 
 来源：`server/office规范/执行闸门.mjs`，在 `server/agent.mjs` 的 bash / officecli / write / edit 工具入口执行。
 
-- **生效条件**：`OAW_OFFICE_FORMAT=1`、Work 模式、`route=template|generate|edit`。
+- **生效条件**：Work 模式且 `route=template|generate`（`edit` 走 Office CLI 只读/写策略，不启用写作流水线闸门）；`OAW_OFFICE_FORMAT=off` 显式退出。
 - **写作路由（template/generate）**：
   - bash 生成或转换 docx/pptx（node `.mjs/.cjs/.js` 脚本、python `.py`、`node -e` 生成库、`python -c` 生成库、pandoc、重定向、通过 bash 调 officecli）→ `OFFICE_PIPELINE_REQUIRED`；
   - officecli 在管线产出前的 `create/add/set/batch/import/remove/move/swap/delete` → 拒绝；
@@ -157,7 +160,7 @@
   - 只读命令（`view/get/query`、`ls/grep/unzip -p`、只读 `node -e`）放行。
 - **澄清前置**：`clarification.shouldAsk=true` 时，回答前拒绝一切写操作（含 `editorial_pipeline`），只允许信息收集工具与 `ask_user`。
 - **逃逸阀**：命令带 `--allow-manual`，或用户需求里明确写"脚本/代码/手工生成/自己生成"时放行。
-- **回退**：关闭 `OAW_OFFICE_FORMAT` 即完全放行，行为与 v0.11.55 基线一致。
+- **回退**：`OAW_OFFICE_FORMAT=off` 即完全放行（闸门与排版一起退出），行为与 v0.11.55 基线一致。
 - **写锁粒度**：`officecli` 按目标文件加锁，`editorial_pipeline` 按交付文件加锁，只读 `bash` 不占锁；写 `bash` 仍取工作区级锁。同一工作区不同文件可并行，写同一文件仍 `WRITE_CONFLICT`。
 - **草稿预览**：`ask_user` 支持 `previewFile`；`editorial_pipeline` 在 `needs_clarification` 且有 `sourceMarkdown` 时生成 `<fileBase>.draft.md` 并通过 `clarification.previewPath` 返回；前端收到带 `previewFile` 的 `ask_user` 事件时自动打开该草稿。
 - **Markdown 直通**：`editorial_pipeline` 的 `sourceMarkdown` 跳过 Planner/Writer，`markdownToBlocks` 解析标题/段落/表格后统一排版与验收。

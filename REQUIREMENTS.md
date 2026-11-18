@@ -538,7 +538,7 @@ Office 文档、AI Agent 协作、对话流、知识库、地图/GIS、模板库
 | R10 地图/GIS | `server/map.mjs`、`map-analysis.mjs`、`地图导出执行器.mjs`、`MapPanel.jsx`、`LayerPanel.jsx`、`AttributeTable.jsx`、`MiniMapPreview.jsx`、`预览策略.js` | `test:map-readonly`、`test:map-layers`、`test:map-visual`、`test:map-chat`、`test:spatial`、`test:map-export`、`test:map-export-executor`、`test:capability-contract` |
 | R11 模板库 | `server/tpl.mjs`、`TemplateLibrary.jsx` | `npm run verify`、手工验收 |
 | R12 工作区/项目 | `server/workspace.mjs`、`项目管理.mjs`、`项目信任.mjs` | `test:workspace-isolation`、`npm run verify` |
-| R13 任务/产物 | `server/runs.mjs`、`执行句柄.mjs`、`写入协调.mjs`、`成果管理.mjs`、`server/编辑流水线.mjs`、`server/轮次预算.mjs`、`server/运行预算.mjs` | `test:artifacts`、`test:run-budget`、`test:write-lock`、`test:writing-oneshot`、`test:writing-style` |
+| R13 任务/产物 | `server/runs.mjs`、`执行句柄.mjs`、`写入协调.mjs`、`成果管理.mjs`、`server/编辑流水线.mjs`、`server/轮次预算.mjs`、`server/运行预算.mjs` | `test:artifacts`、`test:run-budget`、`test:write-lock`、`test:writing-oneshot` |
 | R14 记忆治理 | `server/记忆管理.mjs`、`记忆准入.mjs` | `test:memory-admission`、`test:workflow-contract` |
 | R15 供应商/配置 | `server/供应商目录.mjs`、`Pi配置管理.mjs`、`供应商库.jsx` | `test:provider-catalog`、`test:pi-config-api` |
 | R16 系统集成 | `server/内置浏览器.mjs`、`联网搜索.mjs`、`client/src/长连接预算.js` | `test:browser`、`test:search`、`test:stream-budget` |
