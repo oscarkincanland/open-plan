@@ -163,14 +163,18 @@ await test("文档表：只保留横线，不再全网格 + 表头实底", () =>
   assert.doesNotMatch(thRule, /background:/, "表头不应再铺实底");
 });
 
-await test("结论区文档化：目录条 + 复制 Markdown", () => {
+await test("结论区文档化能力保留在 MarkdownBody；对话内结论不带目录条（2026-11-18-001 D1）", () => {
   const md = read("client/src/components/MarkdownBody.jsx");
+  // 能力仍在组件层（md 文档预览 DocViewer 等场景继续使用）
   assert.match(md, /function extractTopSections/);
   assert.match(md, /className="md-doc-bar"/);
   assert.match(md, /className="md-doc-toc"/);
   assert.match(md, /navigator\.clipboard\.writeText/);
-  assert.match(summaryBlock, /docToc copyable/);
   assert.match(styles, /\.md-doc-toc-item/);
+  // 对话内结论（SummaryBlock / SafeMarkdown 终稿路径）不再传 docToc/copyable：
+  // 目录条横排铺开与 md 文档预览同款，观感像"打开了 md 文件"（用户 2026-11-18 反馈）。
+  assert.doesNotMatch(summaryBlock, /docToc/, "SummaryBlock 不得再传 docToc");
+  assert.doesNotMatch(summaryBlock, /copyable/, "SummaryBlock 不得再传 copyable");
 });
 
 await test("表格数字列使用等宽数字", () => {
@@ -444,8 +448,9 @@ await test("会话流 v3 渲染契约（2026-11-17-001 B/C/D 项）", () => {
   // C：v3 折叠体内过程旁白正文 13px/1.7，且 :not(.tl-list-replies) 排除终稿（结论保持 14px）。
   assert.match(styles, /\[data-transcript-v3="1"\] \.tl-list:not\(\.tl-list-replies\) \.textblock \.markdown-body \{[^}]*font-size: 13px;/, "v3 过程旁白正文应为 13px");
   assert.match(styles, /font-size: 13px;[\s\S]{0,40}?line-height: 1\.7;/, "v3 过程旁白行高 1.7");
-  // D：v3 终稿走文档化通道（分节编号 + 目录条 + 复制 Markdown），与非时间线路径对齐。
-  assert.match(chatPanel, /className="textblock flow-markdown assistant-final-answer"[\s\S]{0,120}?numberSections docToc/, "v3 终稿应带 numberSections docToc");
+  // D：v3 终稿保留分节编号；目录条/复制按钮按 2026-11-18-001 D1 去掉（对话内结论不做文档页眉形态）。
+  assert.match(chatPanel, /className="textblock flow-markdown assistant-final-answer"[\s\S]{0,120}?numberSections/, "v3 终稿应带 numberSections 编号");
+  assert.doesNotMatch(chatPanel, /numberSections docToc/, "对话内终稿不得再传 docToc（目录条/复制按钮已移除）");
   assert.match(chatPanel, /\{showTimelineSummary && !transcriptV3 && \([\s\S]{0,80}?<SummaryBlock/, "v3 下不得渲染「本轮总结」卡片");
 });
 
@@ -454,6 +459,11 @@ await test("已完成轮次内缺终态的工具行中性显示（2026-11-17-001
   assert.match(chatPanel, /settled=\{!isTaskLive\}/, "时间流工具行应按消息运行态传入 settled");
   assert.match(chatPanel, /\{pendingUnknown && <span className="tool-recovered"[^>]*>未结转<\/span>\}/, "未结转标识");
   assert.match(styles, /\.tool-icon\.unknown \{ color: var\(--dim\); animation: none; \}/, "未结转图标不得跑动画");
+});
+
+await test("v3 折叠体内旁白与组头同轴对齐（2026-11-18-001）", () => {
+  // 基线的 38px 左内边距锚定旧卡片列；v3 行式化后必须归零，让旁白与组头/行头共用左缘。
+  assert.match(styles, /\[data-transcript-v3="1"\] \.tl-list:not\(\.tl-list-replies\) \.textblock \{[^}]*padding: 2px 8px 4px 0;/, "v3 折叠体内旁白左内边距应为 0（与组头同轴）");
 });
 
 await test("结论区本地图片走文件服务地址（2026-11-17-002）", () => {
@@ -520,7 +530,7 @@ await test("旧过程折叠与 Run 折叠头同形态：无边框 / 背景 / 字
 
 console.log("\n▶ 字号档位（规范 v2.0 §4）");
 
-await test("会话流字号只允许 12 / 14 / 16", () => {
+await test("会话流字号只允许 12 / 14 / 16（v3 另允许 12.5 / 13）", () => {
   const start = styles.indexOf("/* 时间流 */");
   const end = styles.indexOf("/* 本轮产物卡 */");
   assert.ok(start > 0 && end > start, "未找到会话流样式段");
@@ -528,6 +538,21 @@ await test("会话流字号只允许 12 / 14 / 16", () => {
   assert.ok(sizes.length > 0, "会话流段应声明字号");
   for (const size of sizes) {
     assert.ok(["12px", "14px", "16px"].includes(size), `会话流出现了档位外的字号：${size}`);
+  }
+});
+
+// 2026-11-18：v3 段一直落在上一段扫描范围之外，导致 11px 越档长期"假绿"（审查 P0-5）。
+await test("会话流 v3 段字号只允许 12 / 12.5 / 13 / 14 / 16", () => {
+  const start = styles.indexOf("/* ===== 会话流 v3");
+  const end = styles.indexOf("/* ==========================================================================", start);
+  assert.ok(start > 0 && end > start, "未找到会话流 v3 样式段");
+  const sizes = [...styles.slice(start, end).matchAll(/font-size:\s*([0-9.]+px)/g)].map((m) => m[1]);
+  assert.ok(sizes.length > 0, "会话流 v3 段应声明字号");
+  for (const size of sizes) {
+    assert.ok(
+      ["12px", "12.5px", "13px", "14px", "16px"].includes(size),
+      `会话流 v3 出现了档位外的字号：${size}（规范 §4）`,
+    );
   }
 });
 

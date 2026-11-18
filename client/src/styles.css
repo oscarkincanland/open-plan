@@ -12297,7 +12297,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 [data-transcript-v3="1"] .tl-obj { font-size: 13px; color: var(--muted); }
 [data-transcript-v3="1"] .tl-row.is-run .tl-verb,
 [data-transcript-v3="1"] .tl-row.is-run .tl-obj { color: var(--text); }
-[data-transcript-v3="1"] .tl-time { font-size: 11px; }
+[data-transcript-v3="1"] .tl-time { font-size: 12px; }
 /* 思考行：内部推理是"过程的旁白"，比工具行再淡一档（--dim），字号收 1px；
    运行中的思考行回到 --muted（不抢正文亮色），展开后的思考正文降为 13px/--muted。
    此前思考行与工具行同色同字号，读起来像并列结论（用户 2026-11-15 反馈）。 */
@@ -12366,6 +12366,12 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   font-size: 13px;
   line-height: 1.7;
 }
+/* v3：折叠体内旁白左缘与组头/行头同轴（2026-11-18-001）——
+   基线的 padding-left:38px 锚定旧卡片列，行式化后与组头（47px）错开一整档；
+   左内边距归零后旁白与组头/行头共用同一左缘，五级错位回到两级。 */
+[data-transcript-v3="1"] .tl-list:not(.tl-list-replies) .textblock {
+  padding: 2px 8px 4px 0;
+}
 
 /* 过程组（阶段 5）：组头摘要 + 组体缩进；只有显隐，不做高度动画 */
 [data-transcript-v3="1"] .tl-group { display: block; }
@@ -12400,7 +12406,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 [data-transcript-v3="1"] .tl-group-dot.done { background: var(--success); }
 [data-transcript-v3="1"] .tl-group.is-live .tl-group-label { color: var(--text); }
 [data-transcript-v3="1"] .tl-group-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-[data-transcript-v3="1"] .tl-group-count { flex: none; font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+[data-transcript-v3="1"] .tl-group-count { flex: none; font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; }
 [data-transcript-v3="1"] .tl-group-chev {
   flex: none;
   display: inline-flex;

@@ -30,8 +30,8 @@ import { fileURLToPath } from "node:url";
 const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BASE = process.argv[2] || process.env.OAW_SMOKE_BASE || "http://127.0.0.1:3002";
 const SHOT = process.argv[6] || path.join(os.tmpdir(), `oaw-chat-smoke-${Date.now()}.png`);
-/** 会话流可见文本的字号白名单（规范 §4：12 / 14 / 16）。 */
-const FONT_WHITELIST = [12, 14, 16];
+/** 会话流可见文本的字号白名单（规范 §4：基线 12 / 14 / 16；v3 另允许 12.5 / 13，2026-11-18 同步）。 */
+const FONT_WHITELIST = [12, 12.5, 13, 14, 16];
 /** 会话流里参与字号检查的选择器。 */
 const FONT_SELECTORS = [".tl-verb", ".tl-obj", ".tl-time", ".tb-cap", ".run-fold-head", ".tl-thinking-text", ".tl-group-head"];
 

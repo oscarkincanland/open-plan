@@ -6526,7 +6526,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
           {fallbackSummary && (
             <div className="run-result-fallback">
               <strong>本轮总结</strong>
-              <SafeMarkdown text={fallbackSummary} onOpenFile={onOpenFile} artifacts={products.length ? products : null} numberSections docToc cwd={workspace} />
+              <SafeMarkdown text={fallbackSummary} onOpenFile={onOpenFile} artifacts={products.length ? products : null} numberSections cwd={workspace} />
             </div>
           )}
           {!!completion?.incomplete?.length && <div className="run-result-note warn">未完成：{completion.incomplete.join("；")}</div>}
@@ -7562,10 +7562,11 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                 {v3SegmentSplit.outside.length > 0 ? (
                   <div className="tl-list tl-list-replies">
                     {/* 折叠外只放最终答复：不带「阶段小结」标签——它已经是本轮结论。
-                        文档化能力与非时间线路径对齐：分节编号 + 目录条 + 复制 Markdown（D 项）。 */}
+                        编号分节保留（numberSections）；目录条/复制按钮按用户口径去掉
+                        （2026-11-18-001 D1：对话内结论不做文档页眉形态）。 */}
                     {v3SegmentSplit.outside.map((segment) => (
                       <div className="textblock flow-markdown assistant-final-answer" key={segment.item?.id || "final-reply"}>
-                        <SafeMarkdown text={segment.item?.text || ""} onOpenFile={onOpenFile} artifacts={answerArtifacts} numberSections docToc cwd={workspace} />
+                        <SafeMarkdown text={segment.item?.text || ""} onOpenFile={onOpenFile} artifacts={answerArtifacts} numberSections cwd={workspace} />
                       </div>
                     ))}
                   </div>
@@ -7574,7 +7575,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                   // 此时不能因为没有"最终答复条目"就不显示结论——直接用总结正文兜底渲染。
                   <div className="tl-list tl-list-replies">
                     <div className="textblock flow-markdown assistant-final-answer">
-                      <SafeMarkdown text={summaryBody} onOpenFile={onOpenFile} artifacts={answerArtifacts} numberSections docToc cwd={workspace} />
+                      <SafeMarkdown text={summaryBody} onOpenFile={onOpenFile} artifacts={answerArtifacts} numberSections cwd={workspace} />
                     </div>
                   </div>
                 ) : null)}
@@ -7665,7 +7666,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
             </div>
             {!streaming && authoritativeFinalText && !replaceLegacyFinalCandidate && !summaryCoversFinal && (
               <>
-                <div className="flow-markdown assistant-final-answer"><SafeMarkdown text={clampAnswer(authoritativeFinalText)} onOpenFile={onOpenFile} artifacts={answerArtifacts} numberSections docToc cwd={workspace} /></div>
+                <div className="flow-markdown assistant-final-answer"><SafeMarkdown text={clampAnswer(authoritativeFinalText)} onOpenFile={onOpenFile} artifacts={answerArtifacts} numberSections cwd={workspace} /></div>
                 {answerClamped && (
                   <button type="button" className="answer-detail-toggle" onClick={() => setAnswerExpanded((value) => !value)} aria-expanded={answerExpanded}>
                     {answerExpanded ? "收起完整答案" : "展开完整答案"}
