@@ -289,7 +289,11 @@
     "test:desktop": "node scripts/桌面端契约测试.mjs",
     "desktop:pack": "npm --prefix desktop run pack",
     "desktop:zip": "node scripts/桌面/打包便携版.mjs",
-    "desktop:smoke": "node scripts/桌面/产物冒烟.mjs"
+    "desktop:smoke": "node scripts/桌面/产物冒烟.mjs",
+    "test:ui-smoke": "node scripts/聊天界面冒烟检查.mjs",
+    "test:known-failures": "node scripts/已知失败校验.mjs",
+    "check:commit-gate": "node scripts/提交门禁检查.mjs",
+    "verify:flow": "node scripts/已知失败校验.mjs && node scripts/提交门禁检查.mjs && node scripts/聊天界面冒烟检查.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.5.1",

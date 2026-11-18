@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "updatedAt": "2026-11-17",
+  "说明": "既有失败白名单：每条必须有签名、责任人、原因与过期日。新增失败不得登记，必须修掉。过期未清视为门禁失败。依据见 docs/规范/运行时验收与门禁规范.md。",
+  "suites": [
+    {
+      "id": "test:ui-guard",
+      "script": "界面一致性守护测试",
+      "expect": "fail",
+      "signatures": [
+        "功能代码无 emoji 图标",
+        "界面色值走令牌"
+      ],
+      "owner": "前端",
+      "reason": "JSX 色值棘轮按文件冻结，LayerPanel 39>37 / MapViewer 45>43 / 草稿样式对话框 2 处待迁移到令牌；emoji 1 处待换图标",
+      "expires": "2026-12-15"
+    },
+    {
+      "id": "test:component-spec",
+      "script": "组件交互规范测试",
+      "expect": "fail",
+      "signatures": [
+        "§3.3"
+      ],
+      "owner": "前端",
+      "reason": ".canvas-tab.agent-editing 未限定在 :root[data-oaw-style=\"qoder\"] 作用域内（§3.3 作用域规则）",
+      "expires": "2026-12-15"
+    },
+    {
+      "id": "test:design-tokens",
+      "script": "设计令牌一致性测试",
+      "expect": "fail",
+      "signatures": [
+        "硬编码色值棘轮"
+      ],
+      "owner": "前端",
+      "reason": "合并 origin/develop 后硬编码色值 126>基线 125（不同值 88>87），多出 1 处待定位并改为令牌引用；在 HEAD 复现，与本轮流程优化无关",
+      "expires": "2026-12-15"
+    },
+    {
+      "id": "test:perf-budget",
+      "script": "性能与流量基线测试",
+      "expect": "fail",
+      "signatures": [
+        "CSS 合计应 ≤ 456KB"
+      ],
+      "owner": "架构",
+      "reason": "体积预算滞后于现实：dist 因 emptyOutDir=false 会保留旧构建资源（这是为旧页面 lazy chunk 不 404 的有意设计），而测试统计全部 assets；单次构建主 CSS 约 565KB 已超 456KB 预算。需先收敛统计口径（只算本次构建）再重设预算，禁止直接调参",
+      "expires": "2026-12-15"
+    }
+  ]
+}
