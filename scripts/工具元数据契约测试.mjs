@@ -62,7 +62,10 @@ test("只读/写/命令的关键属性正确", () => {
   assert.equal(getToolMetadata("bash").permission.patternSource, "command");
   assert.equal(getToolMetadata("bash").resultBudget.preview.direction, "tail");
   assert.equal(getToolMetadata("officecli").riskLevel, "high");
-  assert.equal(getToolMetadata("map_template").sideEffectScope, "session");
+  // map_template 生成 Word 报告并落盘，2026-11-07（84b7d52f，草稿层与审批边界）改为
+  // sideEffectScope=workspace + needsApproval/forceConfirm；旧断言仍写 session 属过期断言。
+  assert.equal(getToolMetadata("map_template").sideEffectScope, "workspace");
+  assert.equal(getToolMetadata("map_template").needsApproval, true);
 });
 
 test("Chat 白名单不包含破坏性或需审批工具", () => {

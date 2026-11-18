@@ -10,8 +10,12 @@ import { getToolMetadata } from "./工具元数据.mjs";
 // 通配符匹配、最后匹配生效）。规则可持久化到 .oaw/permissions.json，
 // 用户在前端选择"总是允许"后会追加一条 allow 规则覆盖默认 ask。
 
-const PERMISSIONS_FILE = path.join(PROJECT_DIR, ".oaw", "permissions.json");
-const PENDING_APPROVALS_FILE = path.join(PROJECT_DIR, ".oaw", "pending-approvals.json");
+const PERMISSIONS_FILE = process.env.OAW_PERMISSIONS_FILE
+  ? path.resolve(process.env.OAW_PERMISSIONS_FILE)
+  : path.join(PROJECT_DIR, ".oaw", "permissions.json");
+const PENDING_APPROVALS_FILE = process.env.OAW_PENDING_APPROVALS_FILE
+  ? path.resolve(process.env.OAW_PENDING_APPROVALS_FILE)
+  : path.join(PROJECT_DIR, ".oaw", "pending-approvals.json");
 const APPROVAL_TIMEOUT_MS = 300000; // 5 分钟，超时视为拒绝（比 ask_user 更保守）
 
 export const APPROVAL_ACTIONS = Object.freeze(["allow", "ask", "deny"]);
