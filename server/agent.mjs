@@ -3624,6 +3624,37 @@ execute: async (_toolCallId, params, signal) => {
       },
     });
 
+    // 状态回读（方案 2026-11-18-002 G，只读）：agent 生成草稿/固化后核对地图真实状态，
+    // 消除"agent 报成功但地图空白"的静默失败（CARTO deck.gl AI-ready 实证）。
+    const mapReadStateTool = defineTool({
+      name: "map_read_state",
+      label: "回读地图状态",
+      description:
+        "只读回读地图项目当前状态：正式图层清单（id/名称/类型/要素数/锁定）与草稿层清单（id/名称/要素数/几何类型/批次/演示标记）。在生成草稿（map_draft_layer）或固化（map_fixate_layer）之后使用，核对地图真实状态——事件渲染可能失败或被样式热更清掉，不得仅凭工具返回值假定地图已正确呈现。不做任何写操作、不需要审批。",
+      parameters: Type.Object({
+        project: Type.Optional(Type.String({ description: "项目名，默认当前地图项目" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const map = await import("./map.mjs");
+        const name = String(params.project || entry.task?.mapProject || map.DEFAULT_PROJECT);
+        const registry = map.listLayerRegistry(name);
+        const drafts = map.listDrafts(name);
+        const layers = (registry?.layers || []);
+        const lines = [`项目：${name}${registry ? `（schema v${registry.schemaVersion}）` : "（无注册表，可能不是工程化项目）"}`];
+        lines.push(`正式图层 ${layers.length} 个：`);
+        for (const l of layers) {
+          lines.push(`- ${l.id}（${l.name || "?"}·${l.type || "?"}）要素 ${l.stats?.features ?? "?"}${l.locked ? " 已锁定" : ""}`);
+        }
+        if (!layers.length) lines.push("（无正式图层）");
+        lines.push(`草稿层 ${drafts.length} 条（待确认固化）：`);
+        for (const d of drafts) {
+          lines.push(`- ${d.id}（${d.name || "未命名"}·${d.geometryType}）要素 ${d.features}${d.demo ? " · 演示数据" : ""}${d.batchId ? ` · 批次 ${String(d.batchId).slice(0, 12)}` : ""}`);
+        }
+        if (!drafts.length) lines.push("（无待确认草稿）");
+        return { content: [{ type: "text", text: lines.join("\n") }], details: { project: name, layers: layers.length, drafts: drafts.length } };
+      },
+    });
+
     // 三级重置（Work，需审批）：tree / temp / baseline。
     const mapResetTool = defineTool({
       name: "map_reset",
@@ -3685,7 +3716,8 @@ execute: async (_toolCallId, params, signal) => {
         name: Type.Optional(Type.String({ description: "草稿名称（create 建议填写）" })),
         geometryType: Type.Optional(Type.String({ description: "几何类型：point / line / polygon" })),
         geojson: Type.Optional(Type.String({ description: "GeoJSON FeatureCollection 字符串（WGS84，中国范围内）" })),
-        style: Type.Optional(Type.String({ description: "可选样式 JSON 字符串，如 {\"line-color\":\"#2563eb\"}" })),
+        style: Type.Optional(Type.String({ description: "可选样式 JSON 字符串（用户显式指定的颜色/线宽等）；颜色建议改用 palette 参数引用预注册色阶，不要自造 hex" })),
+        palette: Type.Optional(Type.String({ description: "预注册色阶名（推荐，方案 D2）：sequential.heat-flow / sequential.density / diverging.od-balance / qualitative.road-class / qualitative.mode-family；主色自动取自色阶，未知名称会被拒绝" })),
         visible: Type.Optional(Type.Boolean({ description: "草稿是否可见，默认 true" })),
         expectedCount: Type.Optional(Type.Number({ description: "期望记录数；与实际要素数不一致时拒绝（OD/客流导入用）" })),
         demo: Type.Optional(Type.Boolean({ description: "是否为演示数据；固化后会保留演示标记" })),
@@ -3696,6 +3728,22 @@ execute: async (_toolCallId, params, signal) => {
         const name = String(params.project || entry.task?.mapProject || map.DEFAULT_PROJECT);
         const action = String(params.action || "create");
         try {
+          // 配色约束（方案 2026-11-18-002 D2）：palette 只能引用预注册色阶词汇表；
+          // 未知名称明确拒绝并列出可用项（CARTO 实证：放任 agent 自由选色必产出万金油色带）。
+          const 色板 = await import("../client/src/地图/色板.js");
+          let paletteName = "";
+          if (params.palette) {
+            const 色阶 = 色板.解析色阶(params.palette);
+            if (!色阶) {
+              return { content: [{ type: "text", text: `未知色阶名「${params.palette}」。可用色阶：${色板.色阶名称列表.join("、")}；也可省略 palette 使用默认琥珀待确认色。` }], details: { available: 色板.色阶名称列表 } };
+            }
+            paletteName = params.palette;
+          }
+          const 应用色阶 = (style) => {
+            if (!paletteName) return style;
+            const 主色 = 色板.色阶主色(paletteName);
+            return { ...(style || {}), ...(主色 && !(style && style.color) ? { color: 主色 } : {}), palette: paletteName };
+          };
           if (action === "list") {
             const drafts = map.listDrafts(name);
             const text = drafts.length
@@ -3722,7 +3770,7 @@ execute: async (_toolCallId, params, signal) => {
               name: params.name,
               geojson: params.geojson,
               geometryType: params.geometryType,
-              style,
+              style: 应用色阶(style),
               visible: params.visible,
               demo: params.demo,
               expectedCount: params.expectedCount,
@@ -3743,7 +3791,7 @@ execute: async (_toolCallId, params, signal) => {
             name: params.name,
             geometryType: params.geometryType,
             geojson: params.geojson,
-            style,
+            style: 应用色阶(style),
             visible: params.visible,
             expectedCount: params.expectedCount,
             actor: "agent",
@@ -5899,7 +5947,7 @@ execute: async (_toolCallId, params, signal) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, jobStatusTool, jobCancelTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, skillDraftTool, contextReadTool, mapReadTool, mapDatasetsTool, mapLayerInfoTool, mapResetTool, mapProjectCreateTool, mapExportTool, mapDraftLayerTool, mapFixateLayerTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, cadReadTool, cadEditTool, canvasReadTool, canvasWriteTool, canvasDeleteTool, canvasImportTool, canvasExportTool, memoryUpdateTool, webSearchTool, webFetchTool, wrapBrowserStepTool("open", browserOpenTool), wrapBrowserStepTool("snapshot", browserSnapshotTool), wrapBrowserStepTool("click", browserClickTool), wrapBrowserStepTool("type", browserTypeTool), wrapBrowserStepTool("press", browserPressTool), wrapBrowserStepTool("scroll", browserScrollTool), wrapBrowserStepTool("screenshot", browserScreenshotTool), wrapBrowserStepTool("tabs", browserTabsTool), wrapBrowserStepTool("back", browserBackTool), wrapBrowserStepTool("close", browserCloseTool), wrapBrowserStepTool("wait", browserWaitForTool), wrapBrowserStepTool("act", browserActTool), wrapBrowserStepTool("extract", browserExtractTool), wrapBrowserStepTool("select", browserSelectOptionTool), subagentTool, ...teamTools, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
+        customTools: [managedReadTool, managedGrepTool, managedFindTool, managedLsTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, jobStatusTool, jobCancelTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, skillDraftTool, contextReadTool, mapReadTool, mapDatasetsTool, mapLayerInfoTool, mapReadStateTool, mapResetTool, mapProjectCreateTool, mapExportTool, mapDraftLayerTool, mapFixateLayerTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapTemplateTool, mapSaveAnalysisTool, mapClearAnalysisTool, cadReadTool, cadEditTool, canvasReadTool, canvasWriteTool, canvasDeleteTool, canvasImportTool, canvasExportTool, memoryUpdateTool, webSearchTool, webFetchTool, wrapBrowserStepTool("open", browserOpenTool), wrapBrowserStepTool("snapshot", browserSnapshotTool), wrapBrowserStepTool("click", browserClickTool), wrapBrowserStepTool("type", browserTypeTool), wrapBrowserStepTool("press", browserPressTool), wrapBrowserStepTool("scroll", browserScrollTool), wrapBrowserStepTool("screenshot", browserScreenshotTool), wrapBrowserStepTool("tabs", browserTabsTool), wrapBrowserStepTool("back", browserBackTool), wrapBrowserStepTool("close", browserCloseTool), wrapBrowserStepTool("wait", browserWaitForTool), wrapBrowserStepTool("act", browserActTool), wrapBrowserStepTool("extract", browserExtractTool), wrapBrowserStepTool("select", browserSelectOptionTool), subagentTool, ...teamTools, editorialPipelineTool, ...mcpToolDefinitions].map((tool) => wrapCustomTool(tool, { getEntry: () => entry, emit: writeEvent })),
         tools: sessionToolNames,
       }));
     } catch (error) {
@@ -7637,7 +7685,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         bashWorkspaceRule(),
         "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区（绝对路径见上），禁止写入项目目录。否则产物不会被前端检测到。",
         "- **临时文件**: 中间工作文件（脚本、JSON 片段、解包目录、备份等）请集中放在工作区内以点开头的临时目录（如 `.work/`），并在任务收尾时删除；不要把中间文件留在用户的工作区里（用户目录只应留交付产物）。",
-        "- **地图（GIS，仅 Work）**: 地图项目位于 `" + ws + "/maps/{project}/`（当前任务指定 mapProject 时一律使用任务项目；缺省才回退 zhejiang-map 浙江省交通地图）。生成数据用 map_draft_layer（草稿层，免审批），用户确认后用 map_fixate_layer 固化；用 map_read/map_edit/map_import 处理正式层读写，不要直接 write 地图 JSON。",
+        "- **地图（GIS，仅 Work）**: 地图项目位于 `" + ws + "/maps/{project}/`（当前任务指定 mapProject 时一律使用任务项目；缺省才回退 zhejiang-map 浙江省交通地图）。生成数据用 map_draft_layer（草稿层，免审批），用户确认后用 map_fixate_layer 固化；用 map_read/map_read_state/map_edit/map_import 处理正式层读写。生成草稿或固化后必须用 map_read_state 回读核对地图真实状态（图层/草稿清单与要素数），不得仅凭工具返回值假定已正确呈现；不要直接 write 地图 JSON。",
         "",
         "## 当前工作文件（用户正在查看/编辑的文档）",
         file ? `- 当前工作文件: ${file}` : "- 当前没有打开文档",

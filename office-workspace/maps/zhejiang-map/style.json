@@ -72,6 +72,13 @@
       ],
       "maxzoom": 13
     },
+    "xinchang-od-desire-line-2026": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/xinchang-od-desire-line-2026/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 13
+    },
     "blank": {
       "name": "无底图",
       "type": "raster",
@@ -251,6 +258,13 @@
       "metadata": {
         "basemap": true
       }
+    },
+    "xinchang-od-desire-line-2026-lines": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/xinchang-od-desire-line-2026-lines/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 13
     }
   },
   "layers": [
@@ -983,6 +997,96 @@
         ],
         "text-rotation-alignment": "map",
         "text-allow-overlap": false
+      },
+      "paint": {
+        "text-color": "#ffffff",
+        "text-halo-color": "rgba(0,0,0,0.75)",
+        "text-halo-width": 1.2
+      }
+    },
+    {
+      "id": "xinchang-od-desire-line-2026",
+      "source": "xinchang-od-desire-line-2026",
+      "source-layer": "xinchang-od-desire-line-2026",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "circle",
+      "paint": {
+        "circle-radius": 4.5,
+        "circle-color": "#9467bd",
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-opacity": 0.9
+      }
+    },
+    {
+      "id": "xinchang-od-desire-line-2026-lines",
+      "source": "xinchang-od-desire-line-2026-lines",
+      "source-layer": "xinchang-od-desire-line-2026-lines",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "line",
+      "paint": {
+        "line-color": "#ff7f0e",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          5,
+          0.8,
+          10,
+          1.8,
+          13,
+          3.2
+        ],
+        "line-opacity": 0.85
+      }
+    },
+    {
+      "id": "xinchang-od-desire-line-2026-lines-label",
+      "type": "symbol",
+      "source": "xinchang-od-desire-line-2026-lines",
+      "source-layer": "xinchang-od-desire-line-2026-lines",
+      "minzoom": 7,
+      "layout": {
+        "symbol-placement": "line",
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "ref"
+          ],
+          [
+            "get",
+            "name"
+          ],
+          ""
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          8,
+          10,
+          13,
+          12
+        ],
+        "text-font": [
+          "Noto Sans Regular"
+        ],
+        "text-rotation-alignment": "map",
+        "text-allow-overlap": false,
+        "visibility": "visible"
       },
       "paint": {
         "text-color": "#ffffff",

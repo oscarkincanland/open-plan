@@ -84,10 +84,13 @@ test("状态行样式已定义", () => {
 
 console.log("\n▶ 4.3 工具调用的地图语义标识");
 
-test("map_* 八个工具都登记了地图图标（单一来源）", () => {
+test("map_* 工具都登记了地图图标（单一来源）", () => {
   const idx = eventSrc.indexOf("TOOL_IDENTITY_RULES");
   const block = eventSrc.slice(idx, idx + 1600);
-  assert.match(block, /map_read\|map_datasets\|map_edit\|map_import\|map_analyze\|map_template\|map_save_analysis\|map_clear_analysis/, "应登记全部 8 个地图工具");
+  // 2026-11-18：规则逐项扩到 map_read_state / map_export，逐个断言而不是比对相邻顺序。
+  for (const tool of ["map_read", "map_read_state", "map_datasets", "map_edit", "map_import", "map_analyze", "map_template", "map_save_analysis", "map_clear_analysis", "map_export"]) {
+    assert.ok(block.includes(tool), `应登记 ${tool}`);
+  }
   assert.match(block, /"map"\]/, "应映射到 map 图标");
 });
 
@@ -150,9 +153,13 @@ test("未改 SSE 订阅链路", () => {
 });
 
 test("未改消息流分区结构（Stream/Process/Result 仍在原处）", () => {
-  for (const marker of ["chat-stream-shell", "run-result", "execution-flow"]) {
+  // 2026-11-18（计划 006 批次 2）：C4 旧执行流已删除，由 v3 过程组 + 常驻行承接；
+  // 分区结构仍要求 Stream / Result / 过程组三者存在，且不再回退到旧执行流。
+  for (const marker of ["chat-stream-shell", "run-result", "tl-next-step"]) {
     assert.ok(chatSrc.includes(marker), `应保留 ${marker}`);
   }
+  assert.ok(chatSrc.includes("tl-system-notes"), "系统提示聚合应保留常驻结构");
+  assert.ok(!chatSrc.includes('className="execution-flow'), "不应再渲染旧执行流卡片");
 });
 
 test("对话流性能回归的 118 条断言不因本阶段改动而需要调整", () => {

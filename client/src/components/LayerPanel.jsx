@@ -3,6 +3,7 @@ import Icon from "./Icon.jsx";
 import 提示气泡 from "./提示气泡.jsx";
 import OverlayPortal from "./OverlayPortal.jsx";
 import { mapGetLayer } from "../api.js";
+import { 令牌色, 补充色 } from "../地图/色板.js";
 
 const GROUP_ORDER = ["行政区划", "公路网", "设施点", "其他"];
 const GROUP_FALLBACK = { boundary: "行政区划", road: "公路网", point: "设施点" };
@@ -302,8 +303,8 @@ export default function LayerPanel({
 
   const resetFieldRender = useCallback(() => {
     if (!colorKey) return;
-    const defs = { line: "#d62728", fill: "#8abeb7", circle: "#9467bd" };
-    setPaint(colorKey, defs[selectedStyleType] || "#8abeb7");
+    const defs = 补充色.图层样式默认;
+    setPaint(colorKey, defs[selectedStyleType] || defs.fill);
     setRenderMode({ layerId: selected, mode: "single", field: null, palette: 0 });
   }, [colorKey, selected, selectedStyleType, setPaint]);
 
@@ -458,54 +459,89 @@ export default function LayerPanel({
               <span className="lp-group-count">{drafts.length}</span>
             </div>
             <div className="lp-group-body">
-              {drafts.map((draft) => (
-                <div key={draft.id} className="lp-row lp-row-draft" title={`${draft.geometryType} · ${draft.features} 要素${draft.demo ? " · 演示数据" : ""}`}>
-                  <label className="lp-eye" onClick={(e) => e.stopPropagation()} title={draft.visible === false ? "显示草稿" : "隐藏草稿"}>
-                    <input type="checkbox" checked={draft.visible !== false} onChange={() => onToggleDraft?.(draft)} />
-                  </label>
-                  <span className="lp-symbol lp-symbol-temp">
-                    <Icon name={draft.geometryType === "line" ? "route" : draft.geometryType === "polygon" ? "layers" : "locate"} size={12} />
-                  </span>
-                  <span className="lp-row-name">
-                    {draft.name || "未命名草稿"}
-                    {draft.demo && <span className="lp-row-type">演示数据</span>}
-                    <span className="lp-row-type">{draft.features} 要素 · 未固化</span>
-                  </span>
-                  <span
-                    className="lp-draft-color"
-                    style={{ background: (draft.style && draft.style.color) || "#2563eb" }}
-                    title={`草稿颜色 ${(draft.style && draft.style.color) || "#2563eb"}`}
-                  />
-                  {onEditDraftStyle && (
-                    <提示气泡 label="调整草稿颜色 / 粗细">
-                      <button className="lp-op" type="button" aria-label="调整草稿颜色与粗细" onClick={(e) => { e.stopPropagation(); onEditDraftStyle(draft); }}>
-                        <Icon name="tool" size={12} />
-                      </button>
-                    </提示气泡>
-                  )}
-                  {onLocateDraft && (
-                    <提示气泡 label="定位草稿">
-                      <button className="lp-op" type="button" aria-label="定位草稿" onClick={(e) => { e.stopPropagation(); onLocateDraft(draft); }}>
-                        <Icon name="locate" size={12} />
-                      </button>
-                    </提示气泡>
-                  )}
-                  {onConfirmDraft && (
-                    <提示气泡 label="确认固化为正式图层">
-                      <button className="lp-op" type="button" aria-label="确认固化为正式图层" onClick={(e) => { e.stopPropagation(); onConfirmDraft(draft); }}>
-                        <Icon name="check" size={12} />
-                      </button>
-                    </提示气泡>
-                  )}
-                  {onDiscardDraft && (
-                    <提示气泡 label="丢弃草稿（不影响正式图层）">
-                      <button className="lp-op danger" type="button" aria-label="丢弃草稿" onClick={(e) => { e.stopPropagation(); onDiscardDraft(draft); }}>
-                        <Icon name="trash" size={12} />
-                      </button>
-                    </提示气泡>
-                  )}
-                </div>
-              ))}
+              {(() => {
+                // 批次聚合（方案 2026-11-18-002 A2）：同 batchId 的草稿分组展示并提供整批操作；
+                // 升级前历史草稿无 batchId → 回退平铺展示（不分组，不做存量迁移）。
+                const renderDraftRow = (draft) => (
+                  <div key={draft.id} className="lp-row lp-row-draft" title={`${draft.geometryType} · ${draft.features} 要素${draft.demo ? " · 演示数据" : ""}`}>
+                    <label className="lp-eye" onClick={(e) => e.stopPropagation()} title={draft.visible === false ? "显示草稿" : "隐藏草稿"}>
+                      <input type="checkbox" checked={draft.visible !== false} onChange={() => onToggleDraft?.(draft)} />
+                    </label>
+                    <span className="lp-symbol lp-symbol-temp">
+                      <Icon name={draft.geometryType === "line" ? "route" : draft.geometryType === "polygon" ? "layers" : "locate"} size={12} />
+                    </span>
+                    <span className="lp-row-name">
+                      {draft.name || "未命名草稿"}
+                      {draft.demo && <span className="lp-row-type lp-demo-badge">演示数据</span>}
+                      <span className="lp-row-type">{draft.features} 要素 · 未固化</span>
+                    </span>
+                    <span
+                      className="lp-draft-color"
+                      style={{ background: (draft.style && draft.style.color) || 令牌色("map-draft-pending") }}
+                      title={`草稿颜色 ${(draft.style && draft.style.color) || 令牌色("map-draft-pending")}`}
+                    />
+                    {onEditDraftStyle && (
+                      <提示气泡 label="调整草稿颜色 / 粗细">
+                        <button className="lp-op" type="button" aria-label="调整草稿颜色与粗细" onClick={(e) => { e.stopPropagation(); onEditDraftStyle(draft); }}>
+                          <Icon name="tool" size={12} />
+                        </button>
+                      </提示气泡>
+                    )}
+                    {onLocateDraft && (
+                      <提示气泡 label="定位草稿">
+                        <button className="lp-op" type="button" aria-label="定位草稿" onClick={(e) => { e.stopPropagation(); onLocateDraft(draft); }}>
+                          <Icon name="locate" size={12} />
+                        </button>
+                      </提示气泡>
+                    )}
+                    {onConfirmDraft && (
+                      <提示气泡 label="确认固化为正式图层">
+                        <button className="lp-op" type="button" aria-label="确认固化为正式图层" onClick={(e) => { e.stopPropagation(); onConfirmDraft(draft); }}>
+                          <Icon name="check" size={12} />
+                        </button>
+                      </提示气泡>
+                    )}
+                    {onDiscardDraft && (
+                      <提示气泡 label="丢弃草稿（不影响正式图层）">
+                        <button className="lp-op danger" type="button" aria-label="丢弃草稿" onClick={(e) => { e.stopPropagation(); onDiscardDraft(draft); }}>
+                          <Icon name="trash" size={12} />
+                        </button>
+                      </提示气泡>
+                    )}
+                  </div>
+                );
+                const batches = new Map();
+                const loose = [];
+                for (const draft of drafts) {
+                  const bid = String(draft.batchId || "");
+                  if (bid) {
+                    if (!batches.has(bid)) batches.set(bid, []);
+                    batches.get(bid).push(draft);
+                  } else loose.push(draft);
+                }
+                const nodes = [];
+                for (const [bid, items] of batches) {
+                  const total = items.reduce((sum, d) => sum + (Number(d.features) || 0), 0);
+                  nodes.push(
+                    <div key={`batch-${bid}`} className="lp-batch">
+                      <div className="lp-batch-head" title={`Agent 批次 ${bid.slice(0, 12)}…：${items.length} 条草稿 · ${total} 要素`}>
+                        <span className="lp-batch-tag"><Icon name="layers" size={11} /> 批次 {items.length} 条</span>
+                        <span className="lp-batch-ops">
+                          {onBatchConfirmDrafts && (
+                            <button className="lp-op" type="button" aria-label="整批固化为正式图层" onClick={(e) => { e.stopPropagation(); onBatchConfirmDrafts(items); }}>整批固化</button>
+                          )}
+                          {onBatchDiscardDrafts && (
+                            <button className="lp-op danger" type="button" aria-label="整批丢弃（不影响正式图层）" onClick={(e) => { e.stopPropagation(); onBatchDiscardDrafts(items); }}>整批丢弃</button>
+                          )}
+                        </span>
+                      </div>
+                      {items.map(renderDraftRow)}
+                    </div>
+                  );
+                }
+                if (loose.length) nodes.push(...loose.map(renderDraftRow));
+                return nodes;
+              })()}
             </div>
           </div>
         )}

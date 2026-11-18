@@ -5,6 +5,7 @@ import shp from "shpjs";
 import Icon from "./Icon.jsx";
 import { mapImportLayer } from "../api.js";
 import { replayTemporaryLayers, clearLayerRegistry, registerLayerReplay, unregisterLayerReplay } from "../图层注册表.js";
+import { 图层默认色, 令牌色, 补充色, 色阶词汇表, 色阶插值表达式, 订阅主题变更, 当前主题 } from "../地图/色板.js";
 
 // 样式文件包含 Agent/用户实时修改，使用查询参数避免浏览器沿用失效的旧样式缓存。
 const STYLE_PATH = (project) => `/api/map/data/${project}/style.json?ts=${Date.now()}`;
@@ -57,7 +58,7 @@ function setBasemapVisibility(map, ids, desired) {
  * - 导出 PNG / 导入 GeoJSON+SHP（外部 ref API）
  */
 const MapViewer = forwardRef(function MapViewer(
-  { project = "zhejiang-map", config, onConfigChange, onBasemapResolved, onLayerTilesChanged, onDrillDown, onViewportChange, readOnly = false, initialView = null, reloadToken = 0, drafts = [] },
+  { project = "zhejiang-map", config, onConfigChange, onBasemapResolved, onLayerTilesChanged, onDrillDown, onViewportChange, readOnly = false, initialView = null, reloadToken = 0, drafts = [], onReady = null, onRenderIssue = null },
   ref
 ) {
   const containerRef = useRef(null);
@@ -376,61 +377,121 @@ const MapViewer = forwardRef(function MapViewer(
   };
 
   // ---- 草稿层渲染（2026-11-07）：Agent 生成、等待用户确认固化的点/线/面 ----
-  // 只画在运行时，不写 style.json；样式重载后按 draftListRef 重放。
+  // 只画在运行时，不写 style.json（方案 2026-11-18-002 C1/C2）。
+  // 竞态仲裁：本函数是草稿变更的**单一串行入口**——
+  //   · style 未就绪（含 setStyle 热更窗口，运行时图层会被清掉）→ 只记账（draftListRef），
+  //     由 markReady / applyStyle("idle") 统一重放，绝不在此窗口对运行时 source setData；
+  //   · style 已就绪 → 按 draftId 增量 diff（内容签名含 revision/style/几何类型/要素数），
+  //     仅变更草稿重建、未变草稿跳过、消失草稿移除，替代旧的"每次事件整层销毁重建"；
+  //   · 重放自愈：重放时若 meta 说已渲染但 map.getLayer 缺失（setStyle 清层后），按缺失重建。
+  // props 同步路径（MapPanel 懒加载前已持列表）经同一入口按 draftId+revision 去重，
+  // 本地显隐切换不改服务端 revision，故签名保留 visible 维度。
   const draftListRef = useRef([]);
   const draftLayerIdsRef = useRef(new Set());
+  const draftMetaRef = useRef(new Map()); // slugId → { sig, visible }
+  const onRenderIssueRef = useRef(onRenderIssue);
+  const onReadyRef = useRef(onReady);
+  useEffect(() => { onRenderIssueRef.current = onRenderIssue; }, [onRenderIssue]);
+  useEffect(() => { onReadyRef.current = onReady; }, [onReady]);
+
+  const draftSlug = (raw) => `draft-${String(raw || "x").replace(/^draft-/, "").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+
+  const removeDraftById = (m, id) => {
+    const ids = [id];
+    if (m.getLayer(`${id}-line`)) ids.push(`${id}-line`);
+    for (const lid of ids) {
+      try { if (m.getLayer(lid)) m.removeLayer(lid); } catch {}
+      try { if (m.getSource(lid)) m.removeSource(lid); } catch {}
+      draftLayerIdsRef.current.delete(lid);
+    }
+    try { if (m.getSource(`${id}-src`)) m.removeSource(`${id}-src`); } catch {}
+    draftMetaRef.current.delete(id);
+  };
+
+  const addDraftLayer = (m, draft, id, family, st) => {
+    const color = String(st.color || 令牌色("map-draft-pending"));
+    const opacity = Number.isFinite(Number(st.opacity)) ? Math.min(1, Math.max(0, Number(st.opacity))) : 0.85;
+    const width = Number.isFinite(Number(st.width)) ? Math.max(0.2, Math.min(20, Number(st.width))) : 2.2;
+    const radius = Number.isFinite(Number(st.radius)) ? Math.max(1, Math.min(40, Number(st.radius))) : 6;
+    const fillOpacity = Number.isFinite(Number(st.fillOpacity)) ? Math.min(1, Math.max(0, Number(st.fillOpacity))) : 0.18;
+    const stroke = String(st.stroke || 令牌色("map-draft-stroke") || 补充色.圆点描边);
+    const dashed = st.dashed !== false;
+    const visible = draft.visible !== false;
+    m.addSource(`${id}-src`, { type: "geojson", data: draft.geojson });
+    draftLayerIdsRef.current.add(id);
+    if (family === "line" || family === "LineString" || family === "MultiLineString") {
+      m.addLayer({ id, type: "line", source: `${id}-src`, layout: { visibility: visible ? "visible" : "none" },
+        paint: { "line-color": color, "line-width": width, "line-opacity": opacity, ...(dashed ? { "line-dasharray": [2, 1] } : {}) } });
+    } else if (family === "polygon" || family === "Polygon" || family === "MultiPolygon") {
+      m.addLayer({ id, type: "fill", source: `${id}-src`, layout: { visibility: visible ? "visible" : "none" },
+        paint: { "fill-color": color, "fill-opacity": fillOpacity } });
+      m.addLayer({ id: `${id}-line`, type: "line", source: `${id}-src`, layout: { visibility: visible ? "visible" : "none" },
+        paint: { "line-color": color, "line-width": width * 0.7, "line-opacity": Math.min(1, opacity + 0.1), ...(dashed ? { "line-dasharray": [2, 1] } : {}) } });
+      draftLayerIdsRef.current.add(`${id}-line`);
+    } else {
+      m.addLayer({ id, type: "circle", source: `${id}-src`, layout: { visibility: visible ? "visible" : "none" },
+        paint: { "circle-radius": radius, "circle-color": color, "circle-opacity": opacity, "circle-stroke-color": stroke, "circle-stroke-width": 1.5 } });
+    }
+    draftMetaRef.current.set(id, { sig: null, visible }); // sig 由调用方回填
+  };
+
+  const setDraftVisibility = (m, id, visible) => {
+    for (const lid of [id, `${id}-line`]) {
+      try { if (m.getLayer(lid)) m.setLayoutProperty(lid, "visibility", visible ? "visible" : "none"); } catch {}
+    }
+  };
 
   const clearDraftLayers = useCallback((map) => {
     const m = map || mapRef.current;
     if (!m) return;
+    for (const id of [...draftMetaRef.current.keys()]) removeDraftById(m, id);
     for (const id of draftLayerIdsRef.current) {
       try { if (m.getLayer(id)) m.removeLayer(id); } catch {}
       try { if (m.getSource(id)) m.removeSource(id); } catch {}
-    }
-    for (const id of draftLayerIdsRef.current) {
       try { if (m.getSource(`${id}-src`)) m.removeSource(`${id}-src`); } catch {}
     }
     draftLayerIdsRef.current.clear();
+    draftMetaRef.current.clear();
   }, []);
 
   const showDraftLayers = useCallback((map, drafts = []) => {
-    // 先记录列表：地图可能尚未完成 style 加载，等 markReady/applyStyle 时再重放。
+    // 先记录列表：地图可能尚未完成 style 加载，等 markReady/applyStyle 时再重放（记账窗口）。
     draftListRef.current = Array.isArray(drafts) ? drafts : [];
     const m = map || mapRef.current;
     if (!m || !m.isStyleLoaded?.()) return false;
-    clearDraftLayers(m);
-    for (const draft of draftListRef.current) {
-      const id = `draft-${String(draft.id || "x").replace(/^draft-/, "").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-      const payload = draft.geojson;
-      if (!payload) continue;
+    const list = draftListRef.current;
+    const wanted = new Set(list.map((d) => draftSlug(d?.id)));
+    // 移除已消失的草稿（按 meta 而非 layerIds 全集，避免误删同前缀其它层）。
+    for (const id of [...draftMetaRef.current.keys()]) {
+      if (!wanted.has(id)) removeDraftById(m, id);
+    }
+    const issues = [];
+    for (const draft of list) {
+      if (!draft?.geojson) continue;
+      const id = draftSlug(draft.id);
+      const family = draft.geometryType || draft.geojson.features?.[0]?.geometry?.type || "point";
       const visible = draft.visible !== false;
-      const family = draft.geometryType || payload.features?.[0]?.geometry?.type || "point";
-      // 每个草稿有自己的样式（颜色/线宽/半径/透明度/描边），由用户或 Agent 调整。
-      const st = draft.style && typeof draft.style === "object" ? draft.style : {};
-      const color = String(st.color || "#2563eb");
-      const opacity = Number.isFinite(Number(st.opacity)) ? Math.min(1, Math.max(0, Number(st.opacity))) : 0.85;
-      const width = Number.isFinite(Number(st.width)) ? Math.max(0.2, Math.min(20, Number(st.width))) : 2.2;
-      const radius = Number.isFinite(Number(st.radius)) ? Math.max(1, Math.min(40, Number(st.radius))) : 6;
-      const fillOpacity = Number.isFinite(Number(st.fillOpacity)) ? Math.min(1, Math.max(0, Number(st.fillOpacity))) : 0.18;
-      const stroke = String(st.stroke || "#ffffff");
-      const dashed = st.dashed !== false;
+      // 内容签名：revision/样式/几何族/要素数任一变化才重建；仅显隐走 layout 更新。
+      const sig = JSON.stringify({ r: draft.revision ?? null, s: draft.style || {}, g: family, n: draft.geojson.features?.length ?? 0 });
+      const meta = draftMetaRef.current.get(id);
       try {
-        m.addSource(`${id}-src`, { type: "geojson", data: payload });
-        draftLayerIdsRef.current.add(id);
-        if (family === "line" || family === "LineString" || family === "MultiLineString") {
-          m.addLayer({ id, type: "line", source: `${id}-src`, layout: { visibility: visible ? "visible" : "none" },
-            paint: { "line-color": color, "line-width": width, "line-opacity": opacity, ...(dashed ? { "line-dasharray": [2, 1] } : {}) } });
-        } else if (family === "polygon" || family === "Polygon" || family === "MultiPolygon") {
-          m.addLayer({ id, type: "fill", source: `${id}-src`, layout: { visibility: visible ? "visible" : "none" },
-            paint: { "fill-color": color, "fill-opacity": fillOpacity } });
-          m.addLayer({ id: `${id}-line`, type: "line", source: `${id}-src`, layout: { visibility: visible ? "visible" : "none" },
-            paint: { "line-color": color, "line-width": width * 0.7, "line-opacity": Math.min(1, opacity + 0.1), ...(dashed ? { "line-dasharray": [2, 1] } : {}) } });
-          draftLayerIdsRef.current.add(`${id}-line`);
-        } else {
-          m.addLayer({ id, type: "circle", source: `${id}-src`, layout: { visibility: visible ? "visible" : "none" },
-            paint: { "circle-radius": radius, "circle-color": color, "circle-opacity": opacity, "circle-stroke-color": stroke, "circle-stroke-width": 1.5 } });
+        if (meta && meta.sig === sig && (m.getLayer(id) || m.getSource(`${id}-src`))) {
+          if (meta.visible !== visible) { setDraftVisibility(m, id, visible); meta.visible = visible; }
+          continue;
         }
-      } catch { /* 单个草稿渲染失败不影响其它草稿 */ }
+        // meta 说已渲染但图层缺失（setStyle 清层后重放）→ 按"需重建"处理。
+        if (meta) removeDraftById(m, id);
+        addDraftLayer(m, draft, id, family, draft.style && typeof draft.style === "object" ? draft.style : {});
+        draftMetaRef.current.get(id).sig = sig;
+        draftMetaRef.current.get(id).visible = visible;
+      } catch (error) {
+        issues.push(draft.name || id);
+        try { removeDraftById(m, id); } catch { /* 尽力清理 */ }
+      }
+    }
+    // 渲染失败不静默（方案 C5）：上报可读警告，不中断其余草稿。
+    if (issues.length && onRenderIssueRef.current) {
+      try { onRenderIssueRef.current(`草稿渲染失败：${issues.join("、")}（几何可能无效，已跳过）`); } catch {}
     }
     return true;
   }, [clearDraftLayers]);
@@ -464,6 +525,36 @@ const MapViewer = forwardRef(function MapViewer(
     };
   }, [loaded, drafts, showDraftLayers]);
 
+  // 主题切换重应用（方案 2026-11-18-002 E1/E2）：MapLibre paint 不支持 CSS var()，
+  // JS 设值的图层色（草稿/分析/绘制等）在 <html data-theme> 变化后需重取令牌并重画；
+  // 底图联动（P2E）：carto 浅/暗成对底图随主题互换（light→positron / dark→dark matter），
+  // 高德等其它底图不强制切换。运行时图层会被 setStyle 清除——主题重应用走重放，不走增量。
+  const CARTO_BASEMAP_PAIR = { "carto-positron": "carto-dark", "carto-dark": "carto-positron" };
+  const themeRef = useRef(当前主题());
+  useEffect(() => {
+    return 订阅主题变更((主题) => {
+      if (主题 === themeRef.current) return;
+      themeRef.current = 主题;
+      const map = mapRef.current;
+      if (!map || !map.isStyleLoaded?.() || !loaded) return;
+      try {
+        clearDraftLayers(map);
+        showDraftLayers(map, draftListRef.current);
+      } catch { /* 主题重应用失败不影响地图主功能 */ }
+      try { replayTemporaryLayers(map); } catch { /* 临时层重放失败按注册表约定自兜底 */ }
+      // 底图深浅联动：仅当当前底图属于 carto 成对组合时互换。
+      try {
+        const target = CARTO_BASEMAP_PAIR[basemapRef.current];
+        if (target && basemapIdsRef.current.includes(target)) {
+          basemapRef.current = target;
+          const selected = setBasemapVisibility(map, basemapIdsRef.current, target);
+          publishBasemap(selected);
+        }
+      } catch { /* 底图联动失败保持原底图 */ }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, clearDraftLayers, showDraftLayers]);
+
   const showAnalysisLayer = (map, payload = {}, options = {}) => {
     if (!map || !payload.geojson || !map.isStyleLoaded?.()) return false;
     const id = String(payload.id || "agent-analysis").replace(/[^a-zA-Z0-9_-]/g, "-");
@@ -483,12 +574,12 @@ const MapViewer = forwardRef(function MapViewer(
     // G1：面状空间分析（缓冲区/筛选/裁剪）用 fill+line 渲染，不能落进热力图分支
     const polygonalAnalysis = type === "buffer" || type === "spatial_filter" || type === "bbox_clip";
     if (!sameKind && polygonalAnalysis) {
-      map.addLayer({ id: `${id}-fill`, type: "fill", source, paint: { "fill-color": ["coalesce", ["get", "color"], "#f97316"], "fill-opacity": 0.22 } });
-      map.addLayer({ id: `${id}-line`, type: "line", source, paint: { "line-color": ["coalesce", ["get", "color"], "#ea580c"], "line-width": 1.8, "line-opacity": 0.9 } });
+      map.addLayer({ id: `${id}-fill`, type: "fill", source, paint: { "fill-color": ["coalesce", ["get", "color"], 令牌色("map-draw-accent")], "fill-opacity": 0.22 } });
+      map.addLayer({ id: `${id}-line`, type: "line", source, paint: { "line-color": ["coalesce", ["get", "color"], 补充色.分析描边深], "line-width": 1.8, "line-opacity": 0.9 } });
     } else if (!sameKind && type === "isochrone") {
-      map.addLayer({ id: `${id}-fill`, type: "fill", source, paint: { "fill-color": ["coalesce", ["get", "color"], "#8b5cf6"], "fill-opacity": 0.2 } });
-      map.addLayer({ id: `${id}-line`, type: "line", source, paint: { "line-color": ["coalesce", ["get", "color"], "#7c3aed"], "line-width": 2, "line-opacity": 0.9 } });
-      map.addLayer({ id: `${id}-labels`, type: "symbol", source, layout: { "text-field": ["concat", ["to-string", ["get", "range"]], " 分钟"], "text-size": 11, "text-anchor": "center", "text-allow-overlap": false }, paint: { "text-color": "#5b21b6", "text-halo-color": "#fff", "text-halo-width": 1.2 } });
+      map.addLayer({ id: `${id}-fill`, type: "fill", source, paint: { "fill-color": ["coalesce", ["get", "color"], 令牌色("map-analysis")], "fill-opacity": 0.2 } });
+      map.addLayer({ id: `${id}-line`, type: "line", source, paint: { "line-color": ["coalesce", ["get", "color"], 令牌色("map-analysis-edge")], "line-width": 2, "line-opacity": 0.9 } });
+      map.addLayer({ id: `${id}-labels`, type: "symbol", source, layout: { "text-field": ["concat", ["to-string", ["get", "range"]], " 分钟"], "text-size": 11, "text-anchor": "center", "text-allow-overlap": false }, paint: { "text-color": 补充色.等时圈标注, "text-halo-color": 令牌色("map-label-halo"), "text-halo-width": 1.2 } });
     } else if (!sameKind && type !== "isochrone") {
       const max = Math.max(1, ...(payload.geojson.features || []).map((f) => Number(f.properties?.value ?? f.properties?.flow ?? 1)).filter(Number.isFinite));
       map.addLayer({
@@ -499,17 +590,17 @@ const MapViewer = forwardRef(function MapViewer(
           "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 5, 0.8, 12, 1.6],
           "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 5, 14, 12, 30],
           "heatmap-opacity": 0.76,
-          "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"], 0, "rgba(45,156,219,0)", 0.28, "#2d9cdb", 0.52, "#f2c94c", 0.78, "#f97316", 1, "#dc2626"],
+          "heatmap-color": 色阶插值表达式("sequential.heat-flow", ["heatmap-density"]),
         },
       });
       map.addLayer({
         id: `${id}-circles`, type: "circle", source, minzoom: 10,
-        paint: { "circle-radius": ["interpolate", ["linear"], ["coalesce", ["get", "value"], ["get", "flow"], 1], 0, 3, max, 10], "circle-color": "#f97316", "circle-opacity": 0.72, "circle-stroke-color": "#fff", "circle-stroke-width": 1 },
+        paint: { "circle-radius": ["interpolate", ["linear"], ["coalesce", ["get", "value"], ["get", "flow"], 1], 0, 3, max, 10], "circle-color": 令牌色("map-draw-accent"), "circle-opacity": 0.72, "circle-stroke-color": 补充色.圆点描边, "circle-stroke-width": 1 },
       });
       map.addLayer({
         id: `${id}-labels`, type: "symbol", source, minzoom: 12,
         layout: { "text-field": ["coalesce", ["get", "name"], ""], "text-size": 11, "text-offset": [0, 1.2], "text-anchor": "top", "text-allow-overlap": false },
-        paint: { "text-color": "#17212b", "text-halo-color": "#fff", "text-halo-width": 1.2 },
+        paint: { "text-color": 令牌色("map-label-ink"), "text-halo-color": 令牌色("map-label-halo"), "text-halo-width": 1.2 },
       });
     }
     if (type === "od" && payload.lines) {
@@ -521,7 +612,7 @@ const MapViewer = forwardRef(function MapViewer(
         map.addLayer({
           id: `${id}-od-lines`, type: "line", source: lineSource,
           paint: {
-            "line-color": "#7c3aed",
+            "line-color": 令牌色("map-analysis-edge"),
             "line-width": ["interpolate", ["linear"], ["get", "flow"], 1, 0.7, 10, 2.2, 40, 4.5],
             "line-opacity": 0.5,
           },
@@ -565,6 +656,7 @@ const MapViewer = forwardRef(function MapViewer(
       window.clearTimeout(fallbackTimer);
       setLoadError("");
       setLoaded(true);
+      try { onReadyRef.current?.(); } catch {} // 就绪通知：上层消费待处理队列（方案 2026-11-18-002 C4）
       ensureRuntimeLayers(map);
       // 首屏恢复草稿层（可能早于地图就绪加载）。
       if (draftListRef.current.length) showDraftLayers(map, draftListRef.current);
@@ -1066,7 +1158,7 @@ const MapViewer = forwardRef(function MapViewer(
       if (!map) return;
       const fc = { type: "FeatureCollection", features: (polygons || []).map((ring, i) => ({
         type: "Feature",
-        properties: { idx: i, color: ["#f97316", "#f59e0b", "#84cc16", "#22c55e"][i % 4] },
+        properties: { idx: i, color: 补充色.等时圈环[i % 补充色.等时圈环.length] },
         geometry: { type: "Polygon", coordinates: [ring] },
       })) };
       try {
@@ -1078,7 +1170,7 @@ const MapViewer = forwardRef(function MapViewer(
             id: "isochrones",
             type: "fill",
             source: "isochrones",
-            paint: { "fill-color": ["get", "color"], "fill-opacity": 0.25, "fill-outline-color": "#f97316" },
+            paint: { "fill-color": ["get", "color"], "fill-opacity": 0.25, "fill-outline-color": 令牌色("map-draw-accent") },
           });
         }
         map.fitBounds(new LngLatBounds().extend([[118.5, 28.0], [122.5, 31.5]]), { padding: 40 });
@@ -1117,20 +1209,21 @@ const MapViewer = forwardRef(function MapViewer(
         const weightMax = Number.isFinite(Number(opts.weightMax)) ? Math.max(1, Number(opts.weightMax)) : 800;
         ensureGeoSource(`${base}-src`, data);
         if (polygon) {
-          ensureLayer(`${base}-fill`, { type: "fill", source: `${base}-src`, paint: { "fill-color": ["coalesce", ["get", "color"], "#8b5cf6"], "fill-opacity": 0.24, "fill-outline-color": "#7c3aed" } });
+          ensureLayer(`${base}-fill`, { type: "fill", source: `${base}-src`, paint: { "fill-color": ["coalesce", ["get", "color"], 令牌色("map-analysis")], "fill-opacity": 0.24, "fill-outline-color": 令牌色("map-analysis-edge") } });
         } else if (points) {
           ensureLayer(`${base}-heat`, { type: "heatmap", source: `${base}-src`, paint: {
             "heatmap-weight": ["interpolate", ["linear"], ["coalesce", ["get", "value"], ["get", "flow"], 1], 0, 0, weightMax, 1],
             "heatmap-intensity": intensity,
             "heatmap-radius": radius === null ? ["interpolate", ["linear"], ["zoom"], 5, 14, 12, 34] : radius,
             "heatmap-opacity": opacity,
-            "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"], 0, "rgba(33,102,172,0)", 0.25, "#2d9cdb", 0.5, "#f2c94c", 0.78, "#f97316", 1, "#eb5757"],
+            "heatmap-color": 色阶插值表达式("sequential.heat-flow", ["heatmap-density"]),
           } });
-          ensureLayer(`${base}-points`, { type: "circle", source: `${base}-src`, minzoom: 10, paint: { "circle-radius": ["interpolate", ["linear"], ["coalesce", ["get", "value"], ["get", "flow"], 1], 0, 3, weightMax, 10], "circle-color": "#eb5757", "circle-opacity": opacity, "circle-stroke-color": "#fff", "circle-stroke-width": 1 } });
+          ensureLayer(`${base}-points`, { type: "circle", source: `${base}-src`, minzoom: 10, paint: { "circle-radius": ["interpolate", ["linear"], ["coalesce", ["get", "value"], ["get", "flow"], 1], 0, 3, weightMax, 10], "circle-color": 令牌色("map-draw-accent"), "circle-opacity": opacity, "circle-stroke-color": 补充色.圆点描边, "circle-stroke-width": 1 } });
         }
         if (linesData) {
           ensureGeoSource(`${base}-lines-src`, linesData);
-          ensureLayer(`${base}-lines`, { type: "line", source: `${base}-lines-src`, paint: { "line-color": ["interpolate", ["linear"], ["coalesce", ["get", "flow"], 1], 0, "#9ecae1", 400, "#7c3aed", 800, "#dc2626"], "line-width": ["interpolate", ["linear"], ["coalesce", ["get", "flow"], 1], 0, 1, 800, 4], "line-opacity": 0.65 } });
+          const flowRamp = 色阶词汇表["sequential.heat-flow"].线变体;
+          ensureLayer(`${base}-lines`, { type: "line", source: `${base}-lines-src`, paint: { "line-color": ["interpolate", ["linear"], ["coalesce", ["get", "flow"], 1], 0, flowRamp[0], 400, flowRamp[1], 800, flowRamp[2]], "line-width": ["interpolate", ["linear"], ["coalesce", ["get", "flow"], 1], 0, 1, 800, 4], "line-opacity": 0.65 } });
         }
         if (action.fitBounds) {
           const coords = [];
@@ -1160,13 +1253,13 @@ const MapViewer = forwardRef(function MapViewer(
             const polygon = payload.analysis === "isochrone" || first === "Polygon" || first === "MultiPolygon";
             const points = data.features?.some((f) => ["Point", "MultiPoint"].includes(f.geometry?.type));
             if (polygon) {
-              restore(`${base}-src`, `${base}-fill`, { type: "fill", paint: { "fill-color": ["coalesce", ["get", "color"], "#8b5cf6"], "fill-opacity": 0.24, "fill-outline-color": "#7c3aed" } });
+              restore(`${base}-src`, `${base}-fill`, { type: "fill", paint: { "fill-color": ["coalesce", ["get", "color"], 令牌色("map-analysis")], "fill-opacity": 0.24, "fill-outline-color": 令牌色("map-analysis-edge") } });
             } else if (points) {
               restore(`${base}-src`, `${base}-heat`, { type: "heatmap", paint: { "heatmap-weight": 1, "heatmap-intensity": 1.15, "heatmap-radius": 18, "heatmap-opacity": 0.72 } });
-              restore(`${base}-src`, `${base}-points`, { type: "circle", minzoom: 10, paint: { "circle-radius": 4, "circle-color": "#eb5757", "circle-opacity": 0.72, "circle-stroke-color": "#fff", "circle-stroke-width": 1 } });
+              restore(`${base}-src`, `${base}-points`, { type: "circle", minzoom: 10, paint: { "circle-radius": 4, "circle-color": 令牌色("map-draw-accent"), "circle-opacity": 0.72, "circle-stroke-color": 补充色.圆点描边, "circle-stroke-width": 1 } });
             }
             if (payload.lines?.type === "FeatureCollection") {
-              restore(`${base}-lines-src`, `${base}-lines`, { type: "line", paint: { "line-color": "#7c3aed", "line-width": 1.5, "line-opacity": 0.65 } });
+              restore(`${base}-lines-src`, `${base}-lines`, { type: "line", paint: { "line-color": 令牌色("map-analysis-edge"), "line-width": 1.5, "line-opacity": 0.65 } });
             }
           } catch { /* 单条重放失败不连累其它临时层 */ }
         });
@@ -1228,14 +1321,14 @@ const MapViewer = forwardRef(function MapViewer(
             map.addSource(srcId, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
             if (kind === "measure-polygon" || kind === "draw-point") {
               if (!map.getLayer("draw-fill")) {
-                map.addLayer({ id: "draw-fill", type: "fill", source: srcId, paint: { "fill-color": "#f97316", "fill-opacity": 0.2 } });
+                map.addLayer({ id: "draw-fill", type: "fill", source: srcId, paint: { "fill-color": 令牌色("map-draw-accent"), "fill-opacity": 0.2 } });
               }
             }
             if (!map.getLayer("draw-line")) {
-              map.addLayer({ id: "draw-line", type: "line", source: srcId, paint: { "line-color": "#f97316", "line-width": 2 } });
+              map.addLayer({ id: "draw-line", type: "line", source: srcId, paint: { "line-color": 令牌色("map-draw-accent"), "line-width": 2 } });
             }
             if (!map.getLayer("draw-dots")) {
-              map.addLayer({ id: "draw-dots", type: "circle", source: srcId, paint: { "circle-color": "#f97316", "circle-radius": 4 } });
+              map.addLayer({ id: "draw-dots", type: "circle", source: srcId, paint: { "circle-color": 令牌色("map-draw-accent"), "circle-radius": 4 } });
             }
           }
         } catch {}

@@ -42,7 +42,7 @@ const AGENT_TOOLS = Object.freeze([
   // Work 模式持有全部地图工具：只读查询 + 草稿层 + 正式写。
   // 草稿层（map_draft_layer）不落正式库、免审批；固化/导入/改样式/删除/重置需审批。
   // map_export（2026-11-11-004）：截图导出 PNG/PDF，受 OAW_MAP_EXPORT 开关；审批 ask。
-  "map_read", "map_analyze", "map_clear_analysis", "map_datasets", "map_layer_info",
+  "map_read", "map_read_state", "map_analyze", "map_clear_analysis", "map_datasets", "map_layer_info",
   "map_draft_layer", "map_fixate_layer",
   "map_edit", "map_import", "map_save_analysis", "map_reset", "map_project_create",
   "map_export",

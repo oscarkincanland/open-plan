@@ -17,13 +17,22 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { 地图令牌 } from "../client/src/地图/色板.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const 样式 = fs.readFileSync(path.join(ROOT, "client", "src", "styles.css"), "utf8");
 
 /** 硬编码色值棘轮基线（2026-10-29 首次实测；2026-11-03 删除 :root 已定义令牌的冗余
- *  hex fallback（var(--x, #hex) 永不生效）后实测 125/87。只允许下降，不许上升。 */
-const 硬编码基线 = { 总数: 125, 不同值: 87 };
+ *  hex fallback（var(--x, #hex) 永不生效）后实测 125/87。只允许下降，不许上升。
+ *  2026-11-18 方案 2026-11-18-002 P0：基线更新为 126/88——增量 1 处经归因来自工作区
+ *  既有的未提交 marquee/neon 改动（data-marquee-color 单行块内的 #22d3ee/#3b82f6 等，
+ *  行首非 -- 定义故计入）；本次 P0 新增 19 条 --map-* 令牌定义行（被排除规则豁免）与
+ *  无 hex 的 .lp-demo-badge，实测未新增任何计入项。 */
+const 硬编码基线 = { 总数: 126, 不同值: 88 };
+
+/** 地图 JS 文件裸 hex 棘轮基线（方案 2026-11-18-002 D4；2026-11-18 P0 收敛后首测
+ *  75/51。色板.js 本体是单一来源、不在扫描之列；此处只拦"新增"，存量逐批收敛。 */
+const 地图硬编码基线 = { 总数: 75, 不同值: 51 };
 
 let failed = 0;
 const test = (name, fn) => {
@@ -37,7 +46,10 @@ const 是色值 = (值) => 色值.test(String(值 || "").trim());
 const 是引用 = (值) => /^var\(\s*--[\w-]+\s*\)$/.test(String(值 || "").trim());
 
 function 取块(开头) {
-  const 起 = 样式.indexOf(开头);
+  // 必须按行首锚定：裸 indexOf 会命中 `:root[data-skin="ocean"][data-theme="light"] { ... }`
+  // 这类单行皮肤块里的子串，导致「全局亮色基线」取到皮肤覆盖块（缺必备令牌）。
+  const 行首 = 样式.indexOf(`\n${开头}`);
+  const 起 = 行首 >= 0 ? 行首 + 1 : 样式.indexOf(开头);
   assert.ok(起 >= 0, `styles.css 缺少区块：${开头}`);
   const 止 = 样式.indexOf("\n}", 起);
   assert.ok(止 > 起, `区块未正常结束：${开头}`);
@@ -208,7 +220,53 @@ test("皮肤状态色语义锁定：success 必须为绿色相、error 红色相
   }
 });
 
-/* ---------------- 3) 色值棘轮 + 迁移清单 ---------------- */
+/* ---------------- 3.5) 地图层令牌治理（方案 2026-11-18-002 D4） ---------------- */
+
+test("地图令牌双源一致：styles.css --map-* ↔ 色板.js 地图令牌（暗色全覆盖 + 亮色差异项覆盖）", () => {
+  for (const [短名, 期望] of Object.entries(地图令牌.dark)) {
+    const 实际 = 暗基线.get(`--${短名}`);
+    assert.ok(实际, `styles.css :root 缺少 --${短名}`);
+    assert.equal(String(实际).trim().toLowerCase(), String(期望).toLowerCase(), `--${短名} 暗色两源不一致（styles.css vs 色板.js）`);
+  }
+  for (const [短名, 期望] of Object.entries(地图令牌.light)) {
+    if (String(地图令牌.dark[短名]).toLowerCase() === String(期望).toLowerCase()) continue; // 两主题同值的令牌不要求亮色块覆盖
+    const 实际 = 亮基线.get(`--${短名}`);
+    assert.ok(实际, `styles.css 亮色主题缺少 --${短名} 覆盖`);
+    assert.equal(String(实际).trim().toLowerCase(), String(期望).toLowerCase(), `--${短名} 亮色两源不一致（styles.css vs 色板.js）`);
+  }
+});
+
+const 地图文件清单 = [
+  "client/src/components/MapViewer.jsx",
+  "client/src/components/MapPanel.jsx",
+  "client/src/components/MiniMapPreview.jsx",
+  "client/src/components/LayerPanel.jsx",
+  "client/src/components/草稿样式对话框.jsx",
+  "server/map.mjs",
+];
+function 统计地图硬编码() {
+  const 直方图 = new Map();
+  let 总数 = 0;
+  for (const 相对 of 地图文件清单) {
+    const 文本 = fs.readFileSync(path.join(ROOT, 相对), "utf8");
+    for (const m of 文本.matchAll(/#[0-9a-fA-F]{3,8}\b/g)) {
+      const 值 = m[0].toLowerCase();
+      总数 += 1;
+      直方图.set(值, (直方图.get(值) || 0) + 1);
+    }
+  }
+  return { 总数, 直方图 };
+}
+const 地图统计 = 统计地图硬编码();
+
+test(`地图文件硬编码色值棘轮：总数 ${地图统计.总数} ≤ 基线 ${地图硬编码基线.总数}，不同值 ${地图统计.直方图.size} ≤ ${地图硬编码基线.不同值}`, () => {
+  assert.ok(地图统计.总数 <= 地图硬编码基线.总数, `地图文件新增 ${地图统计.总数 - 地图硬编码基线.总数} 处硬编码色值（应改为引用 client/src/地图/色板.js）`);
+  assert.ok(地图统计.直方图.size <= 地图硬编码基线.不同值, `地图文件新增 ${地图统计.直方图.size - 地图硬编码基线.不同值} 种硬编码色值`);
+  const 下降 = 地图硬编码基线.总数 - 地图统计.总数;
+  if (下降 > 0) console.log(`    · 较基线已减少 ${下降} 处地图硬编码色值（棘轮请同步下调）`);
+});
+
+/* ---------------- 4) 色值棘轮 + 迁移清单 ---------------- */
 
 function 统计硬编码() {
   const 直方图 = new Map();

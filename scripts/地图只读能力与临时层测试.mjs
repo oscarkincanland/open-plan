@@ -219,7 +219,12 @@ test("map_datasets 与 map_read 同为只读（无审批）", () => {
 console.log("\n▶ 登记完整性（新增工具必须同步的四处）");
 
 test("事件展示注册表含 map_datasets 图标规则", () => {
-  assert.match(eventDisplaySrc, /map_read\|map_datasets\|/, "工具图标规则应含 map_datasets");
+  // 2026-11-18：map 族规则按工具逐个登记，断言不再依赖相邻书写顺序。
+  const mapRule = eventDisplaySrc.match(/\/\^\(map_[^)]*map_export[^)]*\)\$/)?.[0] || "";
+  assert.ok(mapRule, "应存在 map_* 图标规则");
+  for (const tool of ["map_read", "map_read_state", "map_datasets", "map_edit", "map_export"]) {
+    assert.ok(mapRule.includes(tool), `工具图标规则应含 ${tool}`);
+  }
 });
 
 test("脑图工具分类含 map_datasets", () => {

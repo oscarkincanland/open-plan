@@ -112,6 +112,28 @@
   --accent-warm: #e8792f;
   --map-accent: #4a90d9;
   --legend-green: #2ca02c;
+  /* ===== 地图图层语义令牌（方案 2026-11-18-002 D1）=====
+     JS 侧（MapViewer/MapPanel/LayerPanel/色板.js）经 getComputedStyle 消费，
+     与 client/src/地图/色板.js 双源互查（设计令牌一致性测试）。深浅底图无关的
+     图层色两主题同值；随 UI 主题变化的（草稿 pending/描边、演示徽标）在亮色块覆盖。 */
+  --map-draft-pending: #fbbf24;
+  --map-draft-stroke: #1f2937;
+  --map-analysis: #8b5cf6;
+  --map-analysis-edge: #7c3aed;
+  --map-demo-badge: #d9a13c;
+  --map-boundary-city: #e4572e;
+  --map-boundary-county: #b8b8c8;
+  --map-road-highway: #dc2626;
+  --map-road-rural: #94a3b8;
+  --map-road-generic: #3b82f6;
+  --map-point-toll: #2ca02c;
+  --map-point-generic: #9467bd;
+  --map-route-origin: #d62728;
+  --map-route-dest: #2ca02c;
+  --map-measure: #1f77b4;
+  --map-draw-accent: #f97316;
+  --map-label-ink: #17212b;
+  --map-label-halo: #ffffff;
   --viewer-bg: #525659;
   --neutral-300: #ccc;
 }
@@ -5501,6 +5523,32 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   border-radius: 3px;
   flex-shrink: 0;
 }
+/* 演示数据徽标（方案 2026-11-18-002 D1）：琥珀语义色，与草稿 pending 同族 */
+.lp-demo-badge {
+  color: var(--map-demo-badge);
+  background: color-mix(in srgb, var(--map-demo-badge) 14%, var(--panel2-bg));
+  border: 1px solid color-mix(in srgb, var(--map-demo-badge) 45%, transparent);
+}
+/* 草稿批次聚合（方案 2026-11-18-002 A2）：同轮 agent 草稿分组 + 整批操作 */
+.lp-batch { display: flex; flex-direction: column; }
+.lp-batch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 6px;
+  border-top: 1px dashed color-mix(in srgb, var(--map-draft-pending) 40%, transparent);
+}
+.lp-batch-head:first-child { border-top: 0; }
+.lp-batch-tag {
+  font-size: 10px;
+  color: var(--map-draft-pending);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.lp-batch-ops { display: inline-flex; gap: 4px; }
+.lp-batch-ops .lp-op { font-size: 10px; padding: 1px 6px; }
 .lp-rename-input {
   flex: 1;
   min-width: 0;
@@ -8089,6 +8137,21 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .approval-always { }
 .approval-deny { background: var(--error); border-color: transparent; }
 .approval-scope { margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+/* 审批卡影响半径与可逆性声明（方案 2026-11-18-002 B1/B2） */
+.approval-impact {
+  margin-bottom: 8px;
+  border-left: 3px solid color-mix(in srgb, var(--map-draft-pending) 55%, var(--border));
+  background: color-mix(in srgb, var(--map-draft-pending) 7%, var(--panel-bg));
+  border-radius: 0 6px 6px 0;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.approval-impact-row { font-size: 11px; line-height: 1.55; color: var(--text); }
+.approval-impact-row b { color: var(--map-draft-pending); margin-right: 4px; }
+.approval-preview { margin-top: 6px; }
+.approval-preview .mini-map { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 
 /* ===== 对话栏历史抽屉（chat-hist，可折叠） ===== */
 .chat-hist {
@@ -9317,6 +9380,10 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   --code-type: #a16207;
   --code-attr: #0e7490;
   --code-tag: #be123c;
+  /* 地图令牌亮色覆盖（方案 2026-11-18-002 D1；仅随 UI 主题变化的项） */
+  --map-draft-pending: #f59e0b;
+  --map-draft-stroke: #ffffff;
+  --map-demo-badge: #b7791f;
 }
 
 .app,

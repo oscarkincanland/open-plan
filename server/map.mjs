@@ -14,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WORKSPACE_DIR } from "./workspace.mjs";
 import { LAYER_DEFS, GROUP_BY_TYPE, buildProjectTiles } from "../scripts/lib/tiler.mjs";
+import { 图层默认色 } from "../client/src/地图/色板.js";
 import { atomicWriteJson, atomicWriteFile, appendJsonLine } from "./持久化工具.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -278,13 +279,16 @@ export function getBasemaps(settings = loadMapSettings()) {
 /** 图层默认样式（与 LAYER_DEFS 对齐，Agent 可改 style.json 覆盖） */
 function layerStyle(def) {
   const base = { id: def.id, source: def.id, "source-layer": def.id, layout: { visibility: "visible" } };
+  // 正式层配色取自共享色板（client/src/地图/色板.js，方案 2026-11-18-002 D1 单一来源）；
+  // 道路等级用 qualitative.road-class 色盲安全组合（消除旧红绿对），styleHash 随之变化
+  // 属预期行为（方案 P0：既有项目热更后正式层变色需回归）。
   switch (def.type) {
     case "boundary":
       return {
         ...base,
         type: "line",
         paint: {
-          "line-color": def.id === "boundary-city" ? "#e4572e" : "#b8b8c8",
+          "line-color": def.id === "boundary-city" ? 图层默认色["boundary-city"] : 图层默认色["boundary-county"],
           "line-width": def.id === "boundary-city" ? 2 : ["interpolate", ["linear"], ["zoom"], 7, 0.8, 10, 1.3, 13, 1.8],
           "line-opacity": 0.9,
           "line-dasharray": def.id === "boundary-city" ? [1, 0] : [2, 1.2],
@@ -295,7 +299,7 @@ function layerStyle(def) {
         ...base,
         type: "line",
         paint: {
-          "line-color": def.id === "highways" ? "#d62728" : def.id === "roads-rural" ? "#2ca02c" : "#ff7f0e",
+          "line-color": def.id === "highways" ? 图层默认色.highways : def.id === "roads-rural" ? 图层默认色["roads-rural"] : 图层默认色.roads,
           "line-width": def.id === "highways" ? ["interpolate", ["linear"], ["zoom"], 5, 1, 10, 2.5, 13, 4.5] : ["interpolate", ["linear"], ["zoom"], 5, 0.8, 10, 1.8, 13, 3.2],
           "line-opacity": 0.85,
         },
@@ -306,7 +310,7 @@ function layerStyle(def) {
         type: "circle",
         paint: {
           "circle-radius": def.id === "toll-stations" ? 4 : 4.5,
-          "circle-color": def.id === "toll-stations" ? "#2ca02c" : "#9467bd",
+          "circle-color": def.id === "toll-stations" ? 图层默认色["toll-stations"] : 图层默认色["point-generic"],
           "circle-stroke-color": "#ffffff",
           "circle-stroke-width": 1,
           "circle-opacity": 0.9,
@@ -1714,6 +1718,7 @@ export function draftSummary(draft = {}) {
     source: String(draft.provenance?.source || ""),
     // 草稿样式（颜色/线宽/透明度等）：前端图层树与地图渲染共用。
     style: draft.style && typeof draft.style === "object" ? draft.style : {},
+    batchId: String(draft.batchId || ""),
     status: String(draft.status || "pending"),
     visible: draft.visible !== false,
     revision: Number(draft.revision || 1),
@@ -1764,6 +1769,8 @@ function normalizeDraftInput(input = {}) {
     geometryType,
     style: input.style && typeof input.style === "object" ? input.style : {},
     visible: input.visible !== false,
+    // 批次 id（方案 2026-11-18-002 A2）：同一轮 agent 连续产生的草稿同批，默认取 runId。
+    batchId: String(input.batchId || "").slice(0, 80),
     provenance: {
       source: String(input.provenance?.source || input.source || "agent"),
       demo: Boolean(input.provenance?.demo ?? input.demo),
@@ -1796,6 +1803,7 @@ export function createDraft(name = DEFAULT_PROJECT, input = {}) {
     geojson: typeof input.geojson === "string" ? JSON.parse(input.geojson) : input.geojson,
     style: normalized.style,
     visible: normalized.visible,
+    batchId: normalized.batchId || normalized.provenance.runId || "",
     stats: { features: stats.features, bbox: stats.bbox },
     provenance: { ...normalized.provenance, createdAt: now, updatedAt: now },
     status: "pending",

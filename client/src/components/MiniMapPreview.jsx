@@ -19,8 +19,10 @@ const EMPTY_DRAFTS = [];
  * 最多 MAX_PREVIEW_DRAFTS 条，逐条取 geojson 后交给 MapViewer 以虚线画；
  * 这里不提供固化/编辑入口，草稿失败也不阻塞正式层。
  * 只读：不显示导入入口、不弹属性窗、不触发下钻、不上报视口；点击“继续编辑地图”进入地图模块。
+ * draftIdFilter（方案 2026-11-18-002 B5）：只回放指定草稿（审批卡缩略预览用），
+ * compact：隐藏头部计数与操作行，嵌入卡片时使用。
  */
-export default function MiniMapPreview({ project, view = null, height = 168, onOpen, refreshToken = 0 }) {
+export default function MiniMapPreview({ project, view = null, height = 168, onOpen, refreshToken = 0, draftIdFilter = null, compact = false }) {
   const [config, setConfig] = useState(null);
   const [error, setError] = useState("");
   const projectRef = useRef(project);
@@ -48,6 +50,7 @@ export default function MiniMapPreview({ project, view = null, height = 168, onO
 
   // 草稿层回放：列表接口只返回摘要，地图渲染需要几何，按 id 取详情后合并。
   // 只读约束：全部失败时降级为头部提示 + 重试，不阻塞正式层，也不触发任何写操作。
+  // draftIdFilter 模式（方案 B5）：直接取单条草稿详情，不拉全项目列表。
   useEffect(() => {
     if (!project) return undefined;
     let cancelled = false;
@@ -57,6 +60,18 @@ export default function MiniMapPreview({ project, view = null, height = 168, onO
       ? prev
       : { project, items: [], total: 0, truncated: false, error: "" }));
     (async () => {
+      if (draftIdFilter) {
+        try {
+          const full = await mapDraft(project, draftIdFilter);
+          const geojson = full?.draft?.geojson || null;
+          if (cancelled) return;
+          const item = geojson ? { ...(full?.draft || {}), id: draftIdFilter, geojson, style: full?.draft?.style || {} } : null;
+          setDraftState({ project, items: item ? [item] : [], total: item ? 1 : 0, truncated: false, error: item ? "" : "草稿不存在或已固化" });
+        } catch {
+          if (!cancelled) setDraftState({ project, items: [], total: 0, truncated: false, error: "草稿加载失败" });
+        }
+        return;
+      }
       let list = [];
       try {
         const result = await mapDrafts(project);
@@ -89,8 +104,8 @@ export default function MiniMapPreview({ project, view = null, height = 168, onO
       });
     })();
     return () => { cancelled = true; };
-    // 切换项目 / 正式文件与草稿事件递增的 refreshToken / 手动重试都重跑。
-  }, [project, refreshToken, draftRetryToken]);
+    // 切换项目 / 正式文件与草稿事件递增的 refreshToken / 手动重试 / 过滤草稿变化都重跑。
+  }, [project, refreshToken, draftRetryToken, draftIdFilter]);
 
   const visibleCount = (config?.layers || []).filter((layer) => layer.visible !== false).length;
   const initialView = view?.center ? { center: view.center, zoom: view.zoom || config?.zoom || 7 } : null;
@@ -100,20 +115,22 @@ export default function MiniMapPreview({ project, view = null, height = 168, onO
   const draftError = sameProject ? draftState.error : "";
 
   return (
-    <div className="mini-map">
-      <div className="mini-map-head">
-        <Icon name="map" size={12} />
-        <strong>{config?.name || project}</strong>
-        {config && <span className="mini-map-count">{visibleCount} 个可见图层</span>}
-        {draftTotal > 0 && (
-          <span className="mini-map-count" style={{ marginLeft: 0 }} title="草稿只读显示，固化请到地图模块">
-            草稿 {draftTotal}（未固化）
-          </span>
-        )}
-        {sameProject && draftState.truncated && (
-          <span className="mini-map-count" style={{ marginLeft: 0 }}>仅显示前 {MAX_PREVIEW_DRAFTS} 个</span>
-        )}
-      </div>
+    <div className={`mini-map ${compact ? "mini-map-compact" : ""}`}>
+      {!compact && (
+        <div className="mini-map-head">
+          <Icon name="map" size={12} />
+          <strong>{config?.name || project}</strong>
+          {config && <span className="mini-map-count">{visibleCount} 个可见图层</span>}
+          {draftTotal > 0 && (
+            <span className="mini-map-count" style={{ marginLeft: 0 }} title="草稿只读显示，固化请到地图模块">
+              草稿 {draftTotal}（未固化）
+            </span>
+          )}
+          {sameProject && draftState.truncated && (
+            <span className="mini-map-count" style={{ marginLeft: 0 }}>仅显示前 {MAX_PREVIEW_DRAFTS} 个</span>
+          )}
+        </div>
+      )}
       {draftError && (
         <div className="mini-map-head" role="status">
           <span className="mini-map-count" style={{ marginLeft: 0 }}>{draftError}</span>
@@ -146,11 +163,13 @@ export default function MiniMapPreview({ project, view = null, height = 168, onO
           </Suspense>
         </div>
       )}
-      <div className="mini-map-actions">
-        <button className="btn-sm" type="button" onClick={() => onOpen?.()} title="进入地图模块继续编辑该项目">
-          <Icon name="map" size={12} /> 继续编辑地图
-        </button>
-      </div>
+      {!compact && (
+        <div className="mini-map-actions">
+          <button className="btn-sm" type="button" onClick={() => onOpen?.()} title="进入地图模块继续编辑该项目">
+            <Icon name="map" size={12} /> 继续编辑地图
+          </button>
+        </div>
+      )}
     </div>
   );
 }

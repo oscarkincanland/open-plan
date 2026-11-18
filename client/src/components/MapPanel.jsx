@@ -19,6 +19,7 @@ import 地图文件树 from "./地图文件树.jsx";
 import { parseCsvPoints } from "../地图/CSV解析.js";
 import shp from "shpjs";
 import { registerLayerReplay, unregisterLayerReplay } from "../图层注册表.js";
+import { 令牌色, 补充色 } from "../地图/色板.js";
 import { askConfirm, askText, notifyError } from "./Feedback.jsx";
 import {
   mapProjects, mapCreateProject, mapProject, mapSaveStyle, mapSaveConfig,
@@ -393,6 +394,12 @@ export default function MapPanel({
     setOdMsg(`已渲染 ${count} 条 OD（总流量 ${Math.round(totalFlow).toLocaleString()}，最大 ${maxFlow}），起点热力图${odLines.length ? " + 流向线" : ""}`);
   }, [odText, odCols, odShowLines, clearOdLayers, paintOd]);
   const mapRef = useRef(null);
+  // 草稿几何缓存（方案 2026-11-18-002 C3）：列表摘要签名未变的草稿不再重复拉详情。
+  const draftGeoCacheRef = useRef(new Map());
+  const draftRefreshTimerRef = useRef(null);
+  // 临时分析就绪队列（方案 2026-11-18-002 C4）：事件先于地图就绪时记账，onReady 消费。
+  const pendingAnalysisRef = useRef([]);
+  const analysisWatchdogRef = useRef(null);
 
   const flash = useCallback((t) => {
     setMsg(t);
@@ -407,15 +414,27 @@ export default function MapPanel({
     try {
       const r = await mapDrafts(target);
       const list = Array.isArray(r?.drafts) ? r.drafts : [];
-      // 列表接口只返回摘要（不含 GeoJSON）；地图渲染需要几何，按 id 拉取详情后合并。
+      // 列表接口只返回摘要（不含 GeoJSON）。按"摘要签名"缓存几何（方案 2026-11-18-002 C3）：
+      // 摘要未变的草稿跳过详情请求，只有新增/变更（revision/要素数/样式）才重新拉取。
       const detailed = await Promise.all(list.map(async (item) => {
+        const key = `${target}:${item.id}`;
+        const sig = JSON.stringify({ f: item.features ?? null, s: item.style || {}, r: item.revision ?? null });
+        const cached = draftGeoCacheRef.current.get(key);
+        if (cached && cached.sig === sig) return { ...item, geojson: cached.geojson, style: item.style || cached.style || {} };
         try {
           const full = await mapDraft(target, item.id);
-          return { ...item, geojson: full?.draft?.geojson || null, style: full?.draft?.style || item.style || {} };
+          const geojson = full?.draft?.geojson || null;
+          if (geojson) draftGeoCacheRef.current.set(key, { sig, geojson, style: full?.draft?.style || item.style || {} });
+          return { ...item, geojson, style: full?.draft?.style || item.style || {} };
         } catch {
           return item;
         }
       }));
+      // 清理已消失草稿的缓存条目，防泄漏。
+      const alive = new Set(list.map((item) => `${target}:${item.id}`));
+      for (const key of [...draftGeoCacheRef.current.keys()]) {
+        if (key.startsWith(`${target}:`) && !alive.has(key)) draftGeoCacheRef.current.delete(key);
+      }
       setDrafts(detailed);
       mapRef.current?.showDrafts?.(detailed);
       return detailed;
@@ -983,7 +1002,7 @@ export default function MapPanel({
       const nx = W - 70, ny = titleH + 60;
       ctx.save();
       ctx.translate(nx, ny);
-      ctx.fillStyle = "#d62728"; ctx.font = "bold 20px sans-serif"; ctx.textAlign = "center";
+      ctx.fillStyle = 补充色.画布红; ctx.font = "bold 20px sans-serif"; ctx.textAlign = "center";
       ctx.fillText("N", 0, -12);
       ctx.beginPath(); ctx.moveTo(0, -8); ctx.lineTo(7, 10); ctx.lineTo(0, 5); ctx.lineTo(-7, 10); ctx.closePath();
       ctx.fillStyle = "#333"; ctx.fill();
@@ -1237,7 +1256,7 @@ export default function MapPanel({
         features: [from, to].filter(Boolean).map((p, i) => ({ type: "Feature", properties: { i }, geometry: { type: "Point", coordinates: p } })),
       },
     });
-    m.addLayer({ id: "route-pts", type: "circle", source: "route-pts-src", paint: { "circle-radius": 7, "circle-color": ["match", ["get", "i"], 0, "#d62728", "#2ca02c"], "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
+    m.addLayer({ id: "route-pts", type: "circle", source: "route-pts-src", paint: { "circle-radius": 7, "circle-color": ["match", ["get", "i"], 0, 令牌色("map-route-origin"), 令牌色("map-route-dest")], "circle-stroke-color": 补充色.圆点描边, "circle-stroke-width": 2 } });
     if (from && to) {
       m.fitBounds(
         [[Math.min(from[0], to[0]) - 0.02, Math.min(from[1], to[1]) - 0.02], [Math.max(from[0], to[0]) + 0.02, Math.max(from[1], to[1]) + 0.02]],
@@ -1261,7 +1280,7 @@ export default function MapPanel({
         type: "geojson",
         data: { type: "FeatureCollection", features: [spec.from, spec.to].filter(Boolean).map((p, i) => ({ type: "Feature", properties: { i }, geometry: { type: "Point", coordinates: p } })) },
       });
-      map.addLayer({ id: "route-pts", type: "circle", source: "route-pts-src", paint: { "circle-radius": 7, "circle-color": ["match", ["get", "i"], 0, "#d62728", "#2ca02c"], "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
+      map.addLayer({ id: "route-pts", type: "circle", source: "route-pts-src", paint: { "circle-radius": 7, "circle-color": ["match", ["get", "i"], 0, 令牌色("map-route-origin"), 令牌色("map-route-dest")], "circle-stroke-color": 补充色.圆点描边, "circle-stroke-width": 2 } });
     });
   }, []);
 
@@ -1459,7 +1478,7 @@ export default function MapPanel({
     }
     const isPoly = kind === "measure-polygon" || kind === "draw-polygon";
     const isMeasure = kind.startsWith("measure");
-    const color = isMeasure ? "#1f77b4" : "#2ca02c";
+    const color = isMeasure ? 令牌色("map-measure") : 补充色.绘制绿;
     const fc = { type: "FeatureCollection", features: [] };
     if (points.length >= (isPoly ? 3 : 2)) {
       const coords = isPoly ? [...points, points[0]] : points;
@@ -1491,7 +1510,7 @@ export default function MapPanel({
       const { points: pts, kind: k } = spec;
       const poly = k === "measure-polygon" || k === "draw-polygon";
       const measure = k.startsWith("measure");
-      const c = measure ? "#1f77b4" : "#2ca02c";
+      const c = measure ? 令牌色("map-measure") : 补充色.绘制绿;
       for (const id of ["draw-line", "draw-fill", "draw-pts"]) { try { if (map.getLayer(id)) map.removeLayer(id); } catch {} }
       try { if (map.getSource("draw-temp")) map.removeSource("draw-temp"); } catch {}
       try { if (map.getSource("draw-pts-src")) map.removeSource("draw-pts-src"); } catch {}
@@ -1785,6 +1804,41 @@ export default function MapPanel({
     }
   }, [cfg, bookmarks, project, flash]);
 
+  // 临时分析就绪队列消费（方案 2026-11-18-002 C4）：style 就绪后逐条 showAnalysis，
+  // 未就绪的留在队列等下一次 flush（onReady / 新事件到达触发），替代 250ms×12 盲重试。
+  const flushAnalysisQueue = useCallback(() => {
+    const m = mapRef.current;
+    if (!m || !pendingAnalysisRef.current.length) return;
+    const rest = [];
+    let done = 0;
+    for (const action of pendingAnalysisRef.current) {
+      const rendered = m.showAnalysis?.(action);
+      if (rendered) done += 1; else rest.push(action);
+    }
+    if (!done) return;
+    pendingAnalysisRef.current = rest;
+    // 队列清空即撤销看门狗；图层落到地图上之后再重扫临时层清单。
+    if (!rest.length && analysisWatchdogRef.current) {
+      window.clearTimeout(analysisWatchdogRef.current);
+      analysisWatchdogRef.current = null;
+    }
+    syncTempLayers();
+  }, [syncTempLayers]);
+
+  const handleViewerReady = useCallback(() => {
+    flushAnalysisQueue();
+  }, [flushAnalysisQueue]);
+
+  const handleRenderIssue = useCallback((message) => {
+    notifyError(message);
+  }, []);
+
+  // 卸载清理：撤销待处理的看门狗与草稿合并定时器。
+  useEffect(() => () => {
+    if (analysisWatchdogRef.current) window.clearTimeout(analysisWatchdogRef.current);
+    if (draftRefreshTimerRef.current) window.clearTimeout(draftRefreshTimerRef.current);
+  }, []);
+
   // Agent 地图动作只更新临时分析图层，避免对话结束时再次整体 reloadStyle。
   const handleMapAction = useCallback((action) => {
     if (!action) return;
@@ -1818,23 +1872,23 @@ export default function MapPanel({
       const matched = regionOptions.find((r) => r.name === action.region || r.label?.includes(action.region));
       if (matched) selectRegion(matched.value);
     }
-    // Agent 事件可能先于 MapLibre style 完成，短暂重试只等待地图就绪，不重建地图。
-    let attempts = 0;
-    const render = () => {
-      attempts += 1;
-      const rendered = mapRef.current?.showAnalysis(action);
-      if (rendered || attempts >= 12) {
-        clearInterval(timer);
-        // 图层真正落到地图上之后再重扫临时层清单，否则清单里看不到刚生成的结果。
-        syncTempLayers();
-      }
-    };
-    const timer = setInterval(render, 250);
-    render();
+    // Agent 事件可能先于 MapLibre style 完成：入待处理队列（方案 2026-11-18-002 C4），
+    // style 就绪（onReady）或后续事件到达时统一消费；12s 看门狗兜底上报失败（渲染失败不静默），
+    // 不再 250ms×12 盲重试。
+    pendingAnalysisRef.current.push(action);
+    flushAnalysisQueue();
+    if (analysisWatchdogRef.current) window.clearTimeout(analysisWatchdogRef.current);
+    analysisWatchdogRef.current = window.setTimeout(() => {
+      analysisWatchdogRef.current = null;
+      if (!pendingAnalysisRef.current.length) return;
+      const stuck = pendingAnalysisRef.current;
+      pendingAnalysisRef.current = [];
+      notifyError(`地图临时分析渲染失败：${stuck.map((a) => a.title || a.id || a.type || "未知").join("、")}（地图未就绪或几何无效）`);
+    }, 12000);
     const title = action.title || (action.analysis === "isochrone" ? "等时圈" : action.analysis === "od" ? "出行 OD" : action.analysis === "buffer" ? "缓冲区分析" : action.analysis === "spatial_filter" ? "空间筛选" : action.analysis === "bbox_clip" ? "范围裁剪" : "热力图");
     const source = action.source === "demo" ? " · 演示数据" : "";
     flash(`${title}${source}已显示`);
-  }, [project, regionOptions, selectRegion, flash, syncTempLayers, changeProject]);
+  }, [project, regionOptions, selectRegion, flash, syncTempLayers, changeProject, flushAnalysisQueue]);
 
   const saveAnalysis = useCallback(async (action = activeAnalysis, { name = "", group = "" } = {}) => {
     if (!action?.geojson) return flash("当前没有可保存的分析结果");
@@ -1967,7 +2021,12 @@ export default function MapPanel({
   const handleDraftChanged = useCallback((payload) => {
     if (!payload) return;
     if (payload.project && payload.project !== project) return;
-    void loadDrafts(project);
+    // 同一 tick 内的连续草稿事件合并为一次列表刷新（方案 2026-11-18-002 C3 批次合并）。
+    if (draftRefreshTimerRef.current) window.clearTimeout(draftRefreshTimerRef.current);
+    draftRefreshTimerRef.current = window.setTimeout(() => {
+      draftRefreshTimerRef.current = null;
+      void loadDrafts(project);
+    }, 60);
   }, [project, loadDrafts]);
 
   // 用户确认固化：写正式图层（服务端已做锁定/共享/坐标/记录数校验）。
@@ -1996,6 +2055,47 @@ export default function MapPanel({
     } catch (e) {
       notifyError(`丢弃失败：${e.message}`);
     }
+  }, [project, loadDrafts, flash]);
+
+  // 整批固化（方案 2026-11-18-002 A2）：askConfirm 即用户显式确认（审批语义不降级，
+  // auto 模式不涉及——这是用户主动操作）；每条草稿沿用自身名称落正式图层。
+  const handleBatchConfirmDrafts = useCallback(async (items = []) => {
+    const list = (items || []).filter((d) => d?.id);
+    if (!list.length) return;
+    const total = list.reduce((sum, d) => sum + (Number(d.features) || 0), 0);
+    const demo = list.some((d) => d.demo);
+    if (!(await askConfirm(`整批固化 ${list.length} 条草稿（共 ${total} 个要素${demo ? " · 含演示数据" : ""}）为正式图层？固化后回退须删除正式层或基线重置。`))) return;
+    const failed = [];
+    for (const draft of list) {
+      try {
+        await mapDraftConfirm(project, draft.id, { name: draft.name || "" });
+      } catch (e) {
+        failed.push(`${draft.name || draft.id}：${e.message}`);
+      }
+    }
+    await loadProject(project);
+    await mapRef.current?.reloadStyle?.();
+    if (failed.length) notifyError(`整批固化部分失败（${failed.length}/${list.length}）：${failed.join("；")}`);
+    else flash(`已整批固化 ${list.length} 条草稿为正式图层`);
+    onMapChanged?.(project);
+  }, [project, loadProject, flash, onMapChanged]);
+
+  // 整批丢弃（方案 2026-11-18-002 A2/A3）：仅删草稿文件，不触碰已固化历史（回退粒度仍是草稿对象级）。
+  const handleBatchDiscardDrafts = useCallback(async (items = []) => {
+    const list = (items || []).filter((d) => d?.id);
+    if (!list.length) return;
+    if (!(await askConfirm(`整批丢弃 ${list.length} 条草稿？正式图层不受影响，此操作不可撤销。`))) return;
+    const failed = [];
+    for (const draft of list) {
+      try {
+        await mapDraftDiscard(project, draft.id);
+      } catch (e) {
+        failed.push(`${draft.name || draft.id}：${e.message}`);
+      }
+    }
+    await loadDrafts(project);
+    if (failed.length) notifyError(`整批丢弃部分失败（${failed.length}/${list.length}）：${failed.join("；")}`);
+    else flash(`已整批丢弃 ${list.length} 条草稿`);
   }, [project, loadDrafts, flash]);
 
   // 草稿显隐：只改运行时渲染，不回写服务端（草稿 visible 由 Agent/用户创建时决定）。
@@ -2352,6 +2452,8 @@ export default function MapPanel({
             drafts={drafts}
             onConfirmDraft={handleRequestFixate}
             onDiscardDraft={handleDiscardDraft}
+            onBatchConfirmDrafts={handleBatchConfirmDrafts}
+            onBatchDiscardDrafts={handleBatchDiscardDrafts}
             onToggleDraft={handleToggleDraft}
             onLocateDraft={handleLocateDraft}
             onEditDraftStyle={setDraftStyleTarget}
@@ -2387,6 +2489,10 @@ export default function MapPanel({
             project={project}
             config={cfg}
             drafts={drafts}
+            // 就绪通知：消费待处理分析队列（方案 2026-11-18-002 C4）；
+            // 渲染失败上报：草稿几何无效等以可读警告呈现（渲染失败不静默，C5）。
+            onReady={handleViewerReady}
+            onRenderIssue={handleRenderIssue}
             // 会话视口在建图前应用，随后 MapViewer 的首次视口上报就是“应用后的相机”，
             // 不会再出现默认相机覆盖会话 header 的反向覆盖（计划 §4.4 / A7）。
             initialView={sessionInitialView}

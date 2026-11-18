@@ -1,7 +1,8 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
 import { createPortal } from "react-dom";
-import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, archiveSession, archiveSessions, renameSession, forkSession, branchAgentSession, getSession, getSessionMessageVersions, getSessionGoal, setSessionGoal, sessionGoalAction, clearSessionGoal, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns, getTabId, listAgents, listPendingQuestions } from "../api.js";
+import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, archiveSession, archiveSessions, renameSession, forkSession, branchAgentSession, getSession, getSessionMessageVersions, getSessionGoal, setSessionGoal, sessionGoalAction, clearSessionGoal, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns, getTabId, listAgents, listPendingQuestions, mapDrafts } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
+import MiniMapPreview from "./MiniMapPreview.jsx";
 import 提及菜单 from "./提及菜单.jsx";
 import { detectMentionTrigger, filterAgentsForMention, buildMentionPrefix } from "./提及逻辑.js";
 // 输入区统一面板（D3，ADR-0029，默认关）：共享引用解析器 + 单一候选面板 + 引用 chip 三态。
@@ -1056,6 +1057,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   // 模型连接状态：重试中/已恢复（输入框旁小状态点；过程区不再堆这类提示）
   const [connectionNotice, setConnectionNotice] = useState(null);
   const connectionTimerRef = useRef(null);
+  // 地图草稿批次摘要累计（方案 2026-11-18-002 A4）：batchId → {count, names, demo, action}。
+  const draftBatchNotesRef = useRef(new Map());
   const [busyInputMode, setBusyInputMode] = useState("queue"); // "queue" | "context"
   const [composerMenu, setComposerMenu] = useState(null);
   const [composerIndex, setComposerIndex] = useState(0);
@@ -3897,8 +3900,27 @@ case "runtime_connecting":
         if (data.files?.length) onFileChanged(data.files);
         break;
       case "map_draft_changed":
-        // 草稿层只用于地图面板实时刷新；对话流不逐条播报，避免噪音。
+        // 草稿层：地图面板实时刷新（onDraftChanged）；对话流不逐条播报，但按 batchId
+        // 聚合出一条轻量摘要（方案 2026-11-18-002 A4），复用 pushSystemNote 既有系统提示
+        // 聚合通道（不新增渲染通道），弥补"agent 画了草稿但对话流毫无感知"的断层。
         onDraftChanged?.(data);
+        {
+          const batchKey = String(data.batchId || data.draftId || "");
+          if (batchKey) {
+            draftBatchNotesRef.current.set(batchKey, {
+              count: (draftBatchNotesRef.current.get(batchKey)?.count || 0) + Number(data.features || 0),
+              names: [...new Set([...(draftBatchNotesRef.current.get(batchKey)?.names || []), String(data.name || "")].filter(Boolean))],
+              demo: Boolean(draftBatchNotesRef.current.get(batchKey)?.demo || data.demo),
+              action: data.action,
+            });
+            const note = draftBatchNotesRef.current.get(batchKey);
+            pushSystemNote({
+              key: `map_draft_batch:${batchKey}`,
+              kind: "map-draft",
+              text: `地图草稿${note.action === "remove" ? "已丢弃" : "已生成/更新"}：${note.names.join("、") || "未命名"}（${note.count} 要素 · 待确认固化${note.demo ? " · 含演示数据" : ""}）`,
+            });
+          }
+        }
         break;
       case "canvas_changed":
         // 创作画布：统一由 App 的 /api/agent/events 全局流按 slug/boardPath 增量刷新，
@@ -8386,13 +8408,46 @@ function 交互归属文案(owner) {
   return null;
 }
 
+// 地图审批上下文（方案 2026-11-18-002 B）：固化卡展示影响半径（要素数/几何/演示标记），
+// 数据取自既有草稿列表接口（mapDrafts），不新增事件；仅卡片未决时拉取一次。
+const MAP_FIXATE_TOOL = "map_fixate_layer";
+// 破坏性地图工具：审批卡须明示"不可自动撤销"（B2 可逆性声明）。
+const MAP_DESTRUCTIVE_TOOLS = new Set(["map_reset", "map_edit", "map_import"]);
+function useMapApprovalContext(tool, input, active) {
+  const [info, setInfo] = useState(null);
+  useEffect(() => {
+    if (!active || String(tool || "").toLowerCase() !== MAP_FIXATE_TOOL) return undefined;
+    const raw = String(input || "");
+    const slash = raw.lastIndexOf("/");
+    const project = slash > 0 ? raw.slice(0, slash) : "";
+    const draftId = slash > 0 ? raw.slice(slash + 1) : "";
+    if (!project || !draftId) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await mapDrafts(project);
+        const draft = (r?.drafts || []).find((d) => String(d.id) === draftId) || null;
+        if (!cancelled) setInfo({ project, draftId, draft });
+      } catch {
+        if (!cancelled) setInfo({ project, draftId, draft: null });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [active, tool, input]);
+  return info;
+}
+
 function ApprovalBlock({ block }) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  const toolKey = String(block.tool || "").toLowerCase();
+  const fixateInfo = useMapApprovalContext(block.tool, block.input, !block.decision);
   const toolNames = {
     officecli: "Office CLI", bash: "命令", write: "写入文件", map_edit: "地图样式编辑", map_import: "地图数据导入",
+    map_fixate_layer: "地图草稿固化", map_reset: "地图基线重置",
   };
-  const toolLabel = toolNames[String(block.tool).toLowerCase()] || block.tool || "工具";
+  const toolLabel = toolNames[toolKey] || block.tool || "工具";
+  const destructive = MAP_DESTRUCTIVE_TOOLS.has(toolKey);
 
   const decide = async (decision) => {
     if (sending || block.decision) return;
@@ -8423,6 +8478,42 @@ function ApprovalBlock({ block }) {
         {block.decision === "deny" && <span className="approval-status denied">✕ 已拒绝</span>}
       </div>
       <div className="approval-command">{block.input}</div>
+      {/* B1/B2 影响半径与可逆性声明（方案 2026-11-18-002）：固化卡回读真实草稿状态，
+          避免用户只凭 agent 文字摘要无脑放行；安全语义（allow/always/deny）不变。 */}
+      {toolKey === MAP_FIXATE_TOOL && !block.decision && (
+        <div className="approval-impact">
+          {fixateInfo?.draft ? (
+            <>
+              <div className="approval-impact-row">
+                <b>影响半径</b>：固化 {fixateInfo.draft.features} 个要素（{fixateInfo.draft.geometryType || "未知几何"}{fixateInfo.draft.demo ? " · 演示数据" : ""}）→ 正式图层「{fixateInfo.draft.name || "未命名"}」
+              </div>
+              <div className="approval-impact-row">
+                <b>可逆性</b>：固化生成新正式层，不进入回收站；回退须删除该正式层（需审批）或整体 map_reset 基线重置。
+              </div>
+              {/* B5 缩略预览（方案 2026-11-18-002）：复用只读小地图按 draftId 过滤回放，
+                  不切面板即可核对；预览只读，不含固化/编辑入口。 */}
+              <div className="approval-preview">
+                <MiniMapPreview
+                  project={fixateInfo.project}
+                  height={140}
+                  draftIdFilter={fixateInfo.draftId}
+                  compact
+                  refreshToken={fixateInfo.draft.revision || 0}
+                />
+              </div>
+            </>
+          ) : fixateInfo ? (
+            <div className="approval-impact-row">草稿 {fixateInfo.draftId} 不存在或已被固化/丢弃，执行将返回失败。</div>
+          ) : (
+            <div className="approval-impact-row"><b>可逆性</b>：固化生成新正式层，不进入回收站；回退须删除该正式层（需审批）或整体 map_reset 基线重置。</div>
+          )}
+        </div>
+      )}
+      {destructive && !block.decision && (
+        <div className="approval-impact">
+          <div className="approval-impact-row"><b>可逆性</b>：该操作写入正式图层/基线，不可自动撤销；删除的图层进入回收站（.trash），基线重置不可撤销。</div>
+        </div>
+      )}
       {block.decision && (
         <div className="approval-scope resolved-scope">
           {block.decision === "always"
@@ -8435,7 +8526,9 @@ function ApprovalBlock({ block }) {
       {!block.decision && (
         <>
           <div className="approval-actions">
-            <button className="btn primary approval-allow" onClick={() => decide("allow")} disabled={sending}>允许一次</button>
+            <button className="btn primary approval-allow" onClick={() => decide("allow")} disabled={sending}>
+              {toolKey === MAP_FIXATE_TOOL && fixateInfo?.draft ? `固化 ${fixateInfo.draft.features} 个要素` : "允许一次"}
+            </button>
             <button className="btn approval-always" onClick={() => decide("always")} disabled={sending} title="写入本机全局权限规则：同一工具的同类命令不再逐次询问，跨会话、跨项目立即生效，可在设置中撤销">总是允许</button>
             <button className="btn approval-deny" onClick={() => decide("deny")} disabled={sending}>拒绝</button>
           </div>

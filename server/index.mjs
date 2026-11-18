@@ -870,11 +870,26 @@ app.patch("/api/map/project/:name/drafts/:id", (req, res) => {
 app.delete("/api/map/project/:name/drafts/:id", (req, res) => {
   const result = map.deleteDraft(req.params.name, req.params.id, { actor: "user", reason: "user" });
   if (!result.ok) return res.status(404).json(result);
+  // 审计事件：用户丢弃草稿（注册表既有 map_draft_discarded，此前无发射点）。
+  appendEvent({
+    clientId: String(req.query?.client || "") || null,
+    threadId: String(req.query?.thread || "") || null,
+    type: "map_draft_discarded",
+    data: { project: req.params.name, draftId: result.id, reason: "user" },
+  });
   res.json(result);
 });
 
 app.post("/api/map/project/:name/drafts/cleanup", (req, res) => {
   const result = map.cleanupDrafts(req.params.name, { maxAgeMs: Number(req.body?.maxAgeMs) || undefined });
+  for (const draftId of result.removed || []) {
+    appendEvent({
+      clientId: String(req.query?.client || "") || null,
+      threadId: String(req.query?.thread || "") || null,
+      type: "map_draft_discarded",
+      data: { project: req.params.name, draftId, reason: "ttl" },
+    });
+  }
   res.json({ ok: true, ...result });
 });
 

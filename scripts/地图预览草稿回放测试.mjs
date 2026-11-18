@@ -96,7 +96,9 @@ test("草稿失败降级为提示 + 重试，不阻塞正式层", () => {
 });
 
 test("草稿随 refreshToken 重跑，切换项目即清空", () => {
-  assert.match(MINI, /\}, \[project, refreshToken, draftRetryToken\]\);/, "草稿加载应随项目/刷新令牌/重试变化");
+  // 2026-11-18（方案 2026-11-18-002 B5）：新增 draftIdFilter（审批卡单草稿回放），
+  // 依赖数组随之扩展；项目/刷新令牌/重试三个既有维度不变。
+  assert.match(MINI, /\}, \[project, refreshToken, draftRetryToken, draftIdFilter\]\);/, "草稿加载应随项目/刷新令牌/重试/过滤草稿变化");
   assert.match(MINI, /prev\.project === project/, "同项目刷新保留草稿，切换项目清空");
   assert.match(MINI, /const drafts = sameProject \? draftState\.items : EMPTY_DRAFTS/, "切换项目当帧不显示旧项目草稿");
 });
@@ -117,9 +119,11 @@ test("头部显示草稿计数（未固化）", () => {
 });
 
 test("MapViewer 侧按 id/visible/样式重放草稿（数据形状对得上）", () => {
-  assert.match(VIEWER, /const payload = draft\.geojson/, "MapViewer 读 draft.geojson");
+  // 2026-11-18（方案 2026-11-18-002 C1）：草稿渲染重构为增量 addDraftLayer，
+  // geojson 改在 addSource 处直接消费（`data: draft.geojson`），断言随之对齐。
+  assert.match(VIEWER, /data: draft\.geojson/, "MapViewer 读 draft.geojson");
   assert.match(VIEWER, /const visible = draft\.visible !== false/, "MapViewer 读 draft.visible");
-  assert.match(VIEWER, /const st = draft\.style && typeof draft\.style === "object"/, "MapViewer 读 draft.style");
+  assert.match(VIEWER, /draft\.style && typeof draft\.style === "object"/, "MapViewer 读 draft.style");
   assert.match(VIEWER, /dashed \? \{ "line-dasharray": \[2, 1\] \}/, "草稿应以虚线绘制");
   // 合并后的草稿至少要有 MapViewer 需要的键，否则小地图会静默丢层。
   const summary = draftSummaryFixture("draft-a");

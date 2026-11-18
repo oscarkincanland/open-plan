@@ -48,6 +48,7 @@ const { planTaskCapabilities, toolPolicyForMode } = await import("../server/task
 const { matchToolDecision } = await import("../server/审批策略.mjs");
 const { getToolMetadata } = await import("../server/工具元数据.mjs");
 const { validateGeoJSON } = await import("../server/map.mjs");
+const 色板Mod = await import("../client/src/地图/色板.js");
 
 console.log("\n▶ 1. 地图只在 Work（Chat 不保留地图）");
 
@@ -182,6 +183,28 @@ test("前端草稿链路：API + 面板 + 地图渲染", () => {
   assert.match(layerPanelSrc, /草稿层（待确认）/, "LayerPanel 应展示草稿分组");
   assert.match(mapViewerSrc, /showDrafts/, "MapViewer 应支持草稿渲染");
   assert.match(mapViewerSrc, /showDraftLayers\(map, draftListRef\.current\)/, "样式重载后应重放草稿");
+});
+
+test("配色约束（方案 2026-11-18-002 D2）：palette 枚举 + 未知色阶拒绝", () => {
+  assert.match(agentSrc, /palette: Type\.Optional\(Type\.String/, "map_draft_layer 应提供 palette 参数");
+  assert.match(agentSrc, /未知色阶名/, "未知色阶名应明确拒绝并列出可用项");
+  assert.equal(色板Mod.解析色阶("sequential.heat-flow")?.类型, "sequential", "合法色阶应解析成功");
+  assert.equal(色板Mod.解析色阶("not-a-palette"), null, "未知色阶名必须返回 null（不得静默回退）");
+  assert.match(色板Mod.色阶主色("sequential.heat-flow"), /^#/, "连续色带主色应为实色 hex");
+  assert.equal(色板Mod.色阶主色("qualitative.road-class"), "#dc2626", "分类色主色取第一类（高速）");
+});
+
+test("草稿批次（方案 2026-11-18-002 A2）：batchId 落盘并进摘要，缺省取 runId", () => {
+  assert.match(mapSrc, /batchId: normalized\.batchId \|\| normalized\.provenance\.runId \|\| ""/, "createDraft 缺省 batchId 取 runId");
+  assert.match(mapSrc, /batchId: String\(draft\.batchId \|\| ""\)/, "draftSummary 应暴露 batchId");
+  assert.match(layerPanelSrc, /onBatchConfirmDrafts/, "LayerPanel 应支持整批固化入口");
+  assert.match(mapPanelSrc, /handleBatchDiscardDrafts/, "MapPanel 应有整批丢弃处理");
+});
+
+test("map_read_state 只读工具在 Work 白名单并已注册（方案 G）", () => {
+  assert.match(taskSrc, /"map_read_state"/, "Work 白名单应含 map_read_state");
+  assert.match(agentSrc, /name: "map_read_state"/, "应定义 map_read_state");
+  assert.match(agentSrc, /mapLayerInfoTool, mapReadStateTool/, "应注册到 customTools");
 });
 
 console.log("\n▶ 4. 校验纯函数（几何族 / 中国范围 / 记录数）");

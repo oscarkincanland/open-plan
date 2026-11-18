@@ -213,6 +213,66 @@
         "format": "geojson",
         "importedAt": "2026-11-01T09:11:07.785Z"
       }
+    },
+    {
+      "id": "xinchang-od-desire-line-2026",
+      "name": "xinchang-od-desire-line-2026",
+      "type": "point",
+      "group": "设施点",
+      "visible": true,
+      "opacity": 1,
+      "minzoom": 5,
+      "maxzoom": 13,
+      "locked": false,
+      "source": {
+        "kind": "import",
+        "path": "layers/xinchang-od-desire-line-2026.geojson",
+        "format": "geojson",
+        "importedAt": "2026-11-18T15:51:00.268Z"
+      },
+      "stats": {
+        "features": 30,
+        "bbox": [
+          120.8,
+          30.87,
+          120.95,
+          30.955
+        ]
+      },
+      "createdAt": "2026-11-18T15:51:00.269Z",
+      "updatedAt": "2026-11-18T15:51:00.269Z",
+      "origin": "workspace",
+      "owner": "/Volumes/移动固态硬盘/pi 本地文件"
+    },
+    {
+      "id": "xinchang-od-desire-line-2026-lines",
+      "name": "xinchang-od-desire-line-2026-lines",
+      "type": "road",
+      "group": "公路网",
+      "visible": true,
+      "opacity": 1,
+      "minzoom": 5,
+      "maxzoom": 13,
+      "locked": false,
+      "source": {
+        "kind": "import",
+        "path": "layers/xinchang-od-desire-line-2026-lines.geojson",
+        "format": "geojson",
+        "importedAt": "2026-11-18T15:51:00.314Z"
+      },
+      "stats": {
+        "features": 30,
+        "bbox": [
+          120.8,
+          30.87,
+          120.96,
+          30.955
+        ]
+      },
+      "createdAt": "2026-11-18T15:51:00.314Z",
+      "updatedAt": "2026-11-18T15:51:00.314Z",
+      "origin": "workspace",
+      "owner": "/Volumes/移动固态硬盘/pi 本地文件"
     }
   ],
   "bookmarks": [
@@ -230,6 +290,6 @@
     }
   ],
   "createdAt": "2026-11-01T09:11:07.785Z",
-  "updatedAt": "2026-11-08T06:39:30.711Z",
+  "updatedAt": "2026-11-18T15:51:00.355Z",
   "archivedAt": null
 }
