@@ -171,6 +171,8 @@ add([
   meta("map_datasets", { ...READ }),
   // 图层工程信息：只读（读图层注册表与工程元数据）。
   meta("map_layer_info", { ...READ, resultBudget: budget(30 * KB, "head", "artifact") }),
+  // 状态回读（2026-11-18-002 G）：只读核对地图真实状态，消除"agent 报成功但地图空白"。
+  meta("map_read_state", { ...READ, resultBudget: budget(30 * KB, "head", "artifact") }),
 
   // ---- 地图草稿层（2026-11-07 新流程）----
   // 草稿不进入正式库（layers/style/tiles/config），可随项目草稿目录丢弃，免审批。

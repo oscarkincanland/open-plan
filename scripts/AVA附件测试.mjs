@@ -66,7 +66,8 @@ test("全区域拖拽：输入区容器整体接受拖入并显示高亮遮罩",
 
 test("附件卡片：类型图标与大小展示", () => {
   assert.match(chatPanel, /att\.mediaKind === "video" \? "play" : att\.mediaKind === "audio" \? "audio" : "file"/);
-  assert.match(chatPanel, /\{att\.size \? <span className="att-size">\{formatBytes\(att\.size\)\}<\/span> : null\}/);
+  // 2026-11-11-011 起附件收进输入卡 token 行，大小改为 token 的 meta 字段（仍展示、仍可访问）。
+  assert.match(chatPanel, /meta: att\.size \? formatBytes\(att\.size\) : ""/);
   assert.match(chatPanel, /视频附件，不自动播放/, "视频不自动播放提示");
   assert.match(icon, /^\s{2}play: Icon/m, "play 图标已注册");
   assert.match(icon, /^\s{2}audio: Icon/m, "audio 图标已注册");

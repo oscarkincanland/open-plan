@@ -77,7 +77,8 @@ test("对话区内容列在对话区内居中，并随右侧画布宽度自适�
   // 右侧画布开/关时中心列自动重新居中（不是相对整个窗口贴左或贴中）。
   assert.match(styles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,220}?margin-left: auto;/, "消息列应在对话区内居中");
   assert.doesNotMatch(styles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,220}?margin-left: 0;/, "消息列不应贴左");
-  assert.match(styles, /\.center-chat-slot \.chat-body \{[\s\S]{0,200}?padding: 34px var\(--chat-gutter\) 28px;/, "消息区左右内边距对称，居中不受滚动条预留影响");
+  // 2026-11-18：上下留白随 v3 收紧（34/28 → 24/18），断言改守「左右对称 + 用 gutter 令牌」而不是写死数值。
+  assert.match(styles, /\.center-chat-slot \.chat-body \{[\s\S]{0,200}?padding: \d+px var\(--chat-gutter\) \d+px;/, "消息区左右内边距对称，居中不受滚动条预留影响");
   assert.match(styles, /\.center-chat-slot \.chat-compose \{[\s\S]{0,300}?margin: 0 auto 18px;/, "输入区外壳应在对话区内居中");
   assert.match(styles, /\.center-chat-slot \.chat-input \{[\s\S]{0,220}?margin: 0 auto 18px;/, "输入框应在对话区内居中");
   assert.match(styles, /width: min\(var\(--msg-content-max\), calc\(100% - var\(--chat-gutter\) \* 2 - var\(--scrollbar-w\)\)\)/, "宽度随对话区可用宽度收缩（右侧画布开/关自适应）");
@@ -122,7 +123,8 @@ test("模型弹层：供应商条 + 渐变滑轨 + 星标保留", () => {
   assert.match(styles, /linear-gradient\(90deg, var\(--success\), var\(--accent\)\)/, "思考深度滑轨应为渐变轨道");
   assert.match(styles, /\.model-thinking-control input\[type="range"\]::-webkit-slider-thumb \{/, "滑杆应有白色圆钮");
   assert.match(chatPanel, /onToggleFavorite=\{toggleFavoriteModel\}/, "收藏星标必须保留");
-  assert.match(chatPanel, /<small>\{selectedProviderMeta\.label\} · \{selectedEffort\.shortLabel\}<\/small>/, "触发器第二行应显示供应商与思考档位");
+  // 2026-11-18：第二行允许被 modelMsg 临时提示覆盖（模型诊断信息优先），基础口径仍在。
+  assert.match(chatPanel, /<small>\{modelMsg \|\| `\$\{selectedProviderMeta\.label\} · \$\{selectedEffort\.shortLabel\}`\}<\/small>/, "触发器第二行应显示供应商与思考档位");
 });
 
 console.log("\n▶ 顶栏工作区入口");

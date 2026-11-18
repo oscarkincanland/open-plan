@@ -87,10 +87,12 @@ assert.match(图标, /star: IconStar/, "应提供收藏图标");
 // 4. 运行态：下一步 + 待审批定位，详细事件可展开
 assert.match(对话面板, /const nextStepText = useMemo/, "应派生当前下一步");
 assert.match(对话面板, /等待你批准「/, "待审批应进入下一步提示");
-assert.match(对话面板, /className="execution-flow-next"/, "运行态应显示下一步");
+// 2026-11-18（计划 006 批次 2）：C4 旧执行流删除后，「下一步」常驻行改为 .tl-next-step。
+assert.match(对话面板, /className="tl-next-step"/, "运行态应显示下一步");
 assert.match(对话面板, /const locateApproval = useCallback/, "待审批应可一键定位");
 assert.match(对话面板, /aria-expanded=\{expanded\}/, "详细事件仍应可展开");
-assert.match(对话面板, /className="efs-approval"/, "状态行应显示待批准入口");
+// 2026-11-18（计划 006 批次 2）：旧状态行 .efs-approval 随 C4 删除；待批准入口改由常驻 .tl-next-step 承载。
+assert.match(对话面板, /等待你批准「\$\{pendingApproval\.tool/, "状态行应显示待批准入口");
 assert.match(对话面板, /if \(followLatestRef\.current\) requestAnimationFrame\(\(\) => locateApproval\(\)\)/, "只在用户跟随时自动定位审批");
 
 // 5. 结果卡

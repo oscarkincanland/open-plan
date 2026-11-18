@@ -44,11 +44,12 @@ test("没有 0 字节的规范", () => {
   assert.deepEqual(empty, [], `以下规范是空文件：${empty.join("、")}`);
 });
 
-test("每份规范都有状态、基线与更新日期", () => {
+test("每份规范都有状态、版本、基线与更新日期", () => {
   const missing = [];
   for (const file of specs) {
     const src = fs.readFileSync(path.join(SPEC_DIR, file), "utf8");
     if (!/状态[:：]/.test(src)) missing.push(`${file}(缺状态)`);
+    else if (!/版本[:：]/.test(src)) missing.push(`${file}(缺版本)`);
     else if (!/基线[:：]/.test(src)) missing.push(`${file}(缺基线)`);
     else if (!/更新[:：]/.test(src)) missing.push(`${file}(缺更新日期)`);
   }
@@ -69,6 +70,26 @@ test("生效状态的规范都被代码或文档引用（不是孤儿）", () =>
     if (!corpus.includes(name) && !corpus.includes(file)) unreferenced.push(file);
   }
   assert.deepEqual(unreferenced, [], `以下规范标为生效但无人引用：${unreferenced.join("、")}`);
+});
+
+test("规范引用的 test:* 都在 package.json 存在（未落地项白名单）", () => {
+  // 已声明「随计划落地」但当前不存在的别名；新增白名单必须带原因与落地计划号。
+  const DECLARED_PENDING = new Set(["test:e2e:live", "test:test-quality"]);
+  const scripts = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).scripts || {};
+  const sources = [AGENTS, ...specs.map((f) => path.join(SPEC_DIR, f))];
+  const missing = new Set();
+  for (const file of sources) {
+    const src = fs.readFileSync(file, "utf8");
+    for (const match of src.matchAll(/`?(test:[a-zA-Z0-9:_-]+)`?/g)) {
+      const name = match[1].replace(/[.,，。)]+$/, "");
+      if (name.endsWith(":") || name.endsWith("-")) continue; // 通配写法 test:map-* / test:memory*
+      if (DECLARED_PENDING.has(name)) continue;
+      // `test:memory 相关项` 这类族前缀写法：只要有同前缀脚本就算可解析。
+      const asPrefix = Object.keys(scripts).some((key) => key.startsWith(`${name}-`) || key.startsWith(`${name}:`));
+      if (!scripts[name] && !asPrefix) missing.add(`${path.basename(file)} → ${name}`);
+    }
+  }
+  assert.deepEqual([...missing], [], `以下 test:* 在 package.json 不存在：${[...missing].join("、")}`);
 });
 
 function walk(dir) {

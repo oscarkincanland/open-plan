@@ -33,8 +33,9 @@ const targets = entries.map(([, target]) => target);
 
 console.log("\n▶ Tabler 映射");
 
-test("83 个旧名全部有 Tabler 映射（penTool 合并到 edit）", () => {
-  assert.equal(map.size, 82, `映射条目应为 82（83 个旧名 - penTool 合并），实际 ${map.size}`);
+test("全部旧名都有 Tabler 映射（penTool 合并到 edit）", () => {
+  // 2026-11-18：随功能新增（audio 等）映射扩到 86；数量是棘轮，新增图标必须同步上调并保持唯一。
+  assert.equal(map.size, 86, `映射条目应为 86（含 audio 等新增字形），实际 ${map.size}`);
   assert.match(iconSource, /const ICON_ALIASES = Object\.freeze\(\{ penTool: "edit" \}\)/, "penTool 应作为兼容别名指向 edit");
   assert.match(iconSource, /export const ICON_NAMES = Object\.keys\(ICONS\);/, "应导出 ICON_NAMES");
 });
@@ -79,7 +80,8 @@ console.log("\n▶ 白名单与 Word 预览");
 
 test("除白名单外的组件不再有裸 svg", () => {
   // CadViewer 用 SVG 画 DXF 几何（线段/折线），不是功能图标，按白名单放行。
-  const allow = new Set(["Logo.jsx", "Icon.jsx", "LayerPanel.jsx", "内置浏览器面板.jsx", "ChatPanel.jsx", "CadViewer.jsx"]);
+  // 创作画布两处 <svg> 渲染的是用户画布元素（线/多边形），与 CadViewer 同类，不是功能图标。
+  const allow = new Set(["Logo.jsx", "Icon.jsx", "LayerPanel.jsx", "内置浏览器面板.jsx", "ChatPanel.jsx", "CadViewer.jsx", "创作画布.jsx", "创作画布导出视图.jsx"]);
   const violations = [];
   for (const file of walk(path.join(ROOT, "client/src/components"))) {
     if (allow.has(path.basename(file))) continue;

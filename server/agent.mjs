@@ -24,7 +24,7 @@ import { RUNTIME_FLAGS, officeGateActiveFor } from "./运行开关.mjs";
 // Qoder P0-2：单帧体积护栏（纯函数；开关关闭时不参与任何逻辑）
 import { 工具输出分片, 工具输出帧上限 } from "./流连接.mjs";
 import { canonicalFromEnvelope } from "./事件规范化.mjs";
-import { RUN_RECORDED_TYPES } from "./事件注册表.mjs";
+import { RUN_RECORDED_TYPES, validateEventPayload } from "./事件注册表.mjs";
 import { isToolGateRejection } from "./pi-extensions/工作台把关.mjs";
 import { getBashSidecar } from "./内核侧车.mjs";
 import { AGENT_DIR, PROJECT_DIR, WORKSPACE_DIR, OFFICECLI, getWorkspace, normalizeWorkspace, isInside } from "./workspace.mjs";
@@ -3757,6 +3757,8 @@ execute: async (_toolCallId, params, signal) => {
             const r = map.deleteDraft(name, id, { actor: "agent", reason: "agent" });
             if (!r.ok) return { content: [{ type: "text", text: "草稿不存在或已丢弃" }], details: r };
             emitChannelSafe(entry, "map_draft_changed", { project: name, draftId: r.id, action: "remove" });
+            // 审计事件：草稿被真正丢弃（与实时刷新事件分开，便于回放追溯）。
+            emitChannelSafe(entry, "map_draft_discarded", { project: name, draftId: r.id, reason: "agent" });
             return { content: [{ type: "text", text: `已丢弃草稿 ${r.id}（正式图层未受影响）。` }], details: r };
           }
           if (action === "update") {
@@ -8100,6 +8102,15 @@ export async function removeApiKey(provider) {
 }
 
 function emitChannelSafe(entry, type, data, { persist = true } = {}) {
+  try {
+    // payload schema 校验执行（方案 2026-11-18-002 C6）：非持久事件（如 map_draft_changed）
+    // 此前不经事件存储的校验路径，schema 违规完全静默。此处对通道事件统一校验并告警——
+    // 只告警不阻断：事件照常投递（丢事件比字段违规危害更大），违规细节进服务端日志可查。
+    const check = validateEventPayload(type, data || {});
+    if (!check.ok && !check.skipped) {
+      console.warn(`[事件注册表] ${type} payload 违反 schema：缺 ${JSON.stringify(check.missing)}；类型不符 ${JSON.stringify(check.wrongType)}`);
+    }
+  } catch { /* 校验自身异常不影响事件投递 */ }
   try {
     const id = ++entry.channel.seq;
     const at = new Date().toISOString();

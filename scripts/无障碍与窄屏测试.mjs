@@ -108,6 +108,20 @@ const 对比度 = (前景, 背景) => {
   const b = 亮度(合成(背景, 背景));
   return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 };
+/** 合并取变量：同一选择器在样式表里可能多次声明（收敛层/皮肤层），按出现顺序后写覆盖。 */
+function 主题变量合并(块选择器, 起点 = 0) {
+  const merged = {};
+  let from = 起点;
+  for (;;) {
+    const at = 样式.indexOf(块选择器, from);
+    if (at === -1) break;
+    Object.assign(merged, 主题变量(块选择器, at));
+    from = at + 块选择器.length;
+    if (from <= at) break;
+  }
+  return merged;
+}
+
 /** 从样式表里取某个选择器块的变量表。 */
 function 主题变量(块选择器, 起点 = 0) {
   const start = 样式.indexOf(块选择器, 起点);
@@ -184,8 +198,8 @@ console.log("\n▶ 焦点可见与读屏状态");
 
 检查("异步状态区可被读屏播报", () => {
   assert.doesNotMatch(ChatPanel, /className="task-status-bar"/, "移除顶栏任务状态条，避免重复播报与占位");
-  assert.match(ChatPanel, /className="execution-flow-status" role="status" aria-live="polite"/, "执行流状态应播报");
-  assert.match(ChatPanel, /className="execution-flow-next" role="status" aria-live="polite"/, "下一步指引应播报");
+  assert.match(ChatPanel, /className="tl-next-step" role="status" aria-live=\{hasStreamingTextBlock \? "off" : "polite"\}/, "下一步指引应播报且与流式正文互斥");
+  assert.match(ChatPanel, /className="tl-system-notes"/, "系统提示聚合应保留可达结构");
   assert.match(ChatPanel, /className="chat-pending-bar" aria-live="polite"/, "等待审批/提问应播报");
   assert.match(ChatPanel, /className="ask-error" role="alert"/, "错误应即时播报");
   assert.match(App, /className="session-resume-warning" role="alert"/, "只读恢复告警应即时播报");
@@ -196,7 +210,8 @@ console.log("\n▶ 对比度（按主题变量实际计算）");
 检查("文本与状态色对比度达标", () => {
   const 主题 = {
     暗色: 主题变量(":root {"),
-    亮色: 主题变量('[data-theme="light"] {'),
+    // 2026-11-18：亮色块只覆盖部分令牌，其余继承 :root；按层叠合并后再算对比度。
+    亮色: { ...主题变量合并(":root {"), ...主题变量合并('[data-theme="light"] {') },
     // P2-6：opt-in 的 Qoder 令牌层同样纳入审计——只在开关打开时生效的配色最容易漏检。
     "暗色·Qoder": 主题变量(':root[data-oaw-style="qoder"] {'),
     "亮色·Qoder": 主题变量('[data-theme="light"][data-oaw-style="qoder"] {'),
@@ -235,8 +250,8 @@ console.log("\n▶ 对比度（按主题变量实际计算）");
   const 收敛起点 = 样式.indexOf("0.10 收敛层");
   assert.ok(收敛起点 > 0, "样式表缺少 0.10 收敛层");
   const 主题 = [
-    ["默认暗色", 主题变量(":root {", 收敛起点)],
-    ["默认亮色", 主题变量('[data-theme="light"] {', 收敛起点)],
+    ["默认暗色", 主题变量合并(":root {", 收敛起点)],
+    ["默认亮色", 主题变量合并('[data-theme="light"] {', 收敛起点)],
     ["proma 暗色", 主题变量(':root[data-skin="proma"] {')],
     ["proma 亮色", 主题变量(':root[data-skin="proma"][data-theme="light"] {')],
     ["glass 暗色", 主题变量(':root[data-skin="glass"] {')],
@@ -311,7 +326,8 @@ console.log("\n▶ 最小点击目标与窄屏");
 });
 
 检查("窄窗口断点与折叠规则在位", () => {
-  for (const 断点 of ["@media (max-width: 1024px)", "@media (max-width: 900px)", "@media (max-width: 768px)", "@media (max-width: 720px)", "@media (max-width: 520px)"]) {
+  // 520 已由视口媒体查询迁移为输入栏容器查询（2026-11-10-003 D3=A），单独断言。
+  for (const 断点 of ["@media (max-width: 1024px)", "@media (max-width: 900px)", "@media (max-width: 768px)", "@media (max-width: 720px)", "@container (max-width: 520px)"]) {
     assert.ok(样式.includes(断点), `缺少断点 ${断点}`);
   }
   // 预览栏在最窄的主流桌面宽度先让位（1080 已并入 1024，见设计一致性整改）
@@ -322,8 +338,8 @@ console.log("\n▶ 最小点击目标与窄屏");
   assert.match(样式, /\.cmd-panel \{[^}]*overflow: hidden/, "命令面板应约束溢出");
   assert.match(样式, /@media \(max-width: 720px\), \(max-height: 560px\) \{\s*\.cmd-overlay \{ padding-top: 4vh; \}/, "小窗口应调整命令面板留白");
   // 顶栏已收敛为控制按钮；极窄屏隐藏冗余文字，避免内容挤出视口。
-  assert.match(样式, /@media \(max-width: 520px\) \{[\s\S]{0,260}\.context-ring-label \{ display: none; \}/, "极窄窗口隐藏上下文环标签");
-  assert.match(样式, /@media \(max-width: 520px\) \{[\s\S]{0,320}\.approval-mode-control span \{ display: none; \}/, "极窄窗口隐藏审批按钮文字");
+  assert.match(样式, /@container \(max-width: 520px\) \{[\s\S]{0,260}\.context-ring-label \{ display: none; \}/, "极窄窗口隐藏上下文环标签");
+  assert.match(样式, /@container \(max-width: 600px\) \{[\s\S]{0,320}\.approval-mode-control span \{ display: none; \}/, "窄输入栏隐藏审批按钮文字");
 });
 
 检查("窄屏不再强挤三栏，任务中心与地图可用（P1）", () => {

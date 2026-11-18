@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "updatedAt": "2026-11-18",
+  "rules": {
+    "client-direct-fetch": {
+      "client/src/App.jsx": 4,
+      "client/src/components/ChatPanel.jsx": 18,
+      "client/src/components/CommandPalette.jsx": 2,
+      "client/src/components/DocViewer.jsx": 2,
+      "client/src/components/DocxViewer.jsx": 3,
+      "client/src/components/KnowledgeBase.jsx": 1,
+      "client/src/components/MapViewer.jsx": 5,
+      "client/src/components/MemoryTab.jsx": 4,
+      "client/src/components/PptxViewer.jsx": 1,
+      "client/src/components/SessionSidebar.jsx": 1,
+      "client/src/components/SettingsPanel.jsx": 1,
+      "client/src/components/SkillsManager.jsx": 2,
+      "client/src/components/TemplateLibrary.jsx": 1,
+      "client/src/components/图层属性对话框.jsx": 1,
+      "client/src/components/地图导出视图.jsx": 1,
+      "client/src/components/文件树抽屉.jsx": 1,
+      "client/src/平台/外部打开.js": 2,
+      "client/src/构建版本.js": 1,
+      "client/src/运行开关.js": 1,
+      "client/src/长连接预算.js": 1,
+      "client/src/首字延迟埋点.js": 1
+    },
+    "client-raw-eventsource": {
+      "client/src/App.jsx": 1,
+      "client/src/components/ChatPanel.jsx": 1,
+      "client/src/components/MemoryTab.jsx": 1,
+      "client/src/components/内置浏览器面板.jsx": 1
+    },
+    "server-imports-scripts": {
+      "server/map.mjs": 1,
+      "server/图层仓库.mjs": 1
+    },
+    "pi-sdk-import": {}
+  }
+}

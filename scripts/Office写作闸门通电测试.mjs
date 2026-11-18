@@ -91,8 +91,11 @@ await test("写作路由 + 管线未产出：officecli 变更类命令被拦", (
 
 await test("bash 生成文档脚本在写作路由下被拦", () => {
   const ctx = { route: "template", officeFormat: true, pipelineProduced: false, clarificationPending: null, mode: "agent" };
-  const gate = classifyToolCall({ tool: "bash", input: { command: "node gen.js" }, context: ctx });
+  // 2026-11-08 D1 收窄：只有脚本名/参数指向 Office 目标时才拦，普通 `node gen.js` 不再误伤。
+  const gate = classifyToolCall({ tool: "bash", input: { command: "node build-docx.mjs" }, context: ctx });
   assert.equal(gate.blocked, true, "bash 生成脚本应被拦截");
+  const normal = classifyToolCall({ tool: "bash", input: { command: "node gen.js" }, context: ctx });
+  assert.equal(normal.blocked, false, "普通 Node 脚本不应被误拦（D1）");
 });
 
 await test("--allow-manual 逃逸阀：显式声明后放行", () => {

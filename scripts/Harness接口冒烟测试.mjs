@@ -6,13 +6,16 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const PORT = 3198;
 const BASE = `http://127.0.0.1:${PORT}`;
+// 2026-11-18：用临时工作区跑冒烟，避免受用户 `.workspace-state.json`（可能指向未挂载/不可写磁盘）影响。
+const SMOKE_WORKSPACE = fs.mkdtempSync(path.join(os.tmpdir(), "oaw-harness-smoke-"));
 const server = spawn(process.execPath, ["server/index.mjs"], {
   cwd: process.cwd(),
-  env: { ...process.env, PORT: String(PORT) },
+  env: { ...process.env, PORT: String(PORT), OAW_WORKSPACE: SMOKE_WORKSPACE },
   stdio: ["ignore", "pipe", "pipe"],
 });
 
@@ -112,6 +115,7 @@ try {
   server.kill();
   await new Promise((resolve) => setTimeout(resolve, 300));
   try { server.kill("SIGKILL"); } catch {}
+  try { fs.rmSync(SMOKE_WORKSPACE, { recursive: true, force: true }); } catch {}
 }
 
 process.exitCode = failed ? 1 : 0;

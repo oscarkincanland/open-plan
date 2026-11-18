@@ -105,7 +105,9 @@ test("实时思考在两个渲染路径都启用打字机+跟随尾部", () => {
 test("ask_user 在 memory_update 之后直接返回收尾提示", () => {
   const executeAt = agent.indexOf('name: "ask_user"');
   assert.ok(executeAt >= 0, "找不到 ask_user 定义");
-  const source = agent.slice(executeAt, executeAt + 2200);
+  // 2026-11-18：ask_user 的 description 变长后，守卫落在 2200 字符窗口之外；按工具定义边界切片更稳。
+  const nextToolAt = agent.indexOf('name: "', executeAt + 20);
+  const source = agent.slice(executeAt, nextToolAt > executeAt ? nextToolAt : executeAt + 6000);
   assert.match(source, /if \(entry\.memoryWrittenThisRun\) \{/, "缺少 memory_update 后的守卫");
   assert.match(source, /不要再向用户提问；请直接用最终答复说明结果/, "守卫应引导模型直接收尾");
 });

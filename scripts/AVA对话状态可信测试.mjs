@@ -51,7 +51,7 @@ test("send 在压缩进行中直接返回，并给出可读提示", () => {
 test("send 的压缩守卫位于实际构造消息之前", () => {
   const sendSource = sliceBetween(chatPanel, "const send = async", "const stop = async");
   const guardAt = sendSource.indexOf("if (compacting)");
-  const rawTextAt = sendSource.indexOf("const rawText");
+  const rawTextAt = sendSource.indexOf("rawText = String(");
   assert.ok(guardAt >= 0 && rawTextAt > guardAt, "压缩守卫必须在 rawText 构造之前");
 });
 

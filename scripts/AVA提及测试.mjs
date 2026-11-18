@@ -74,7 +74,10 @@ test("服务端：会话列表投影返回 agentId", () => {
 });
 
 test("前端：新建会话透传 agentId（顶栏继承 + /new 沿用）", () => {
-  assert.match(app, /handleNewSession\(undefined, \{ agentId: currentSession\?\.agentId \|\| "" \}\)/);
+  // 2026-11-18：新建入口统一走 ChatPanel 的 onNewSession，由 ChatPanel 透传当前会话 agentId；
+  // App 侧保留 handleNewSession(ws, opts) 并把 agentId 落到 /api/agent/new。
+  assert.match(app, /onNewSession=\{\(ws, opts\) => handleNewSession\(ws, opts\)\}/);
+  assert.match(chatPanel, /onNewSession\(undefined, \{ agentId: sessionAgentId \}\)/);
   assert.match(app, /inheritedAgentId \? \{ agentId: inheritedAgentId \} : \{\}/);
   assert.match(chatPanel, /onNewSession\?\.\(workspace, \{ agentId: sessionAgentId \}\)/);
   assert.match(api, /createAgentThread = \(client, thread, cwd, options = \{\}\)/);
@@ -88,7 +91,8 @@ test("前端：提及菜单接线（触发 / 键盘可达 / 渲染）", () => {
 });
 
 test("前端：@ 提及与文件引用共存", () => {
-  assert.match(chatPanel, /\/\^\(\?\:文件\|知识库\|模板\|模板目录\|智能体\)\\\[/);
+  // 标记族在 2026-11 扩到知识库目录/技能/插件/会话/画布，断言按当前白名单。
+  assert.match(chatPanel, /\/\^\(\?\:文件\|知识库\|知识库目录\|模板\|模板目录\|技能\|插件\|会话\|智能体\|画布\)\\\[/);
   assert.match(mention, /const MENTION_MARKER = "智能体"/);
 });
 

@@ -116,7 +116,7 @@ test("内置工具清单全部映射到确定图标（无遗漏、无异常）",
     job_status: "history", job_cancel: "history",
     map_read: "map", map_datasets: "map", map_edit: "map", map_import: "map", map_analyze: "map", map_template: "map", map_save_analysis: "map", map_clear_analysis: "map",
     map_layer_info: "map", map_reset: "map", map_project_create: "map",
-    map_draft_layer: "map", map_fixate_layer: "map",
+    map_draft_layer: "map", map_fixate_layer: "map", map_read_state: "map", map_export: "map",
     review_copy: "shield", ask_user: "comment", todo: "list", run_subagent: "flow",
     // 团队协作与子代理同属编排类
     team_list: "flow", team_spawn: "flow", team_send: "flow", team_wait: "flow", team_task: "flow",
@@ -140,7 +140,11 @@ test("语义图标与状态徽记是两套：语义文件独立、工具卡同�
   assert.match(对话面板, /import ToolIdentityIcon from "\.\/工具语义图标\.jsx"/);
   assert.match(对话面板, /<ToolIdentityIcon name=\{name\} size=\{12\}/);
   // 状态徽记（运行/成功/失败）仍然保留
-  assert.match(对话面板, /className=\{`tool-icon \$\{done \? \(isError \? "err" : "ok"\) : "run"\}`\}/);
+  // 2026-11-18：完成态不再显示对勾（勾色在过程流里过于抢眼），状态徽记拆为
+  // 失败 err / 运行 run / 未结转 unknown 三种，且与语义图标 ToolIdentityIcon 并列渲染。
+  assert.match(对话面板, /className="tool-icon err"/, "失败态应保留状态徽记");
+  assert.match(对话面板, /className=\{`tool-icon \$\{pendingUnknown \? "unknown" : "run"\}`\}/, "运行/未结转态应有状态徽记");
+  assert.match(对话面板, /<ToolIdentityIcon name=\{name\} size=\{12\}/, "语义图标与状态徽记应并列");
   // 思维图标与工具图标都由映射表驱动，颜色之外保留文字
   assert.match(事件展示, /export function toolIdentity\(/);
   assert.match(图标, /\n  brain: IconBrain,/);

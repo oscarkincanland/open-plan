@@ -153,6 +153,9 @@ jobs:
       - name: 事件发射点（注册表里的事件必须有真实发射点）
         run: node scripts/CI运行测试.mjs 事件发射点守护测试
 
+      - name: 架构边界棘轮（组件直连 fetch / 裸 EventSource / server→scripts / Pi SDK 导入）
+        run: node scripts/CI运行测试.mjs 架构边界检查
+
       - name: 输入栏与工作区面板收敛（上下文/审批并入输入栏；工作区入口为面板）
         run: node scripts/CI运行测试.mjs 工作区面板与输入栏收敛测试
 

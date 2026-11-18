@@ -58,9 +58,18 @@ try {
   const restored = saved?.workspace ? normalizeWorkspace(saved.workspace) : null;
   if (restored) _currentWorkspace = restored;
 } catch {}
+// 测试/多实例隔离（2026-11-18）：显式传 OAW_WORKSPACE 时覆盖持久化状态，且不写回 .workspace-state.json。
+// 属于基础设施参数（架构规范 §3 第 9 条允许在对应模块解析），不是功能开关。
+const ENV_WORKSPACE = process.env.OAW_WORKSPACE ? normalizeWorkspace(process.env.OAW_WORKSPACE) : null;
+if (ENV_WORKSPACE) _currentWorkspace = ENV_WORKSPACE;
 
 export function getWorkspace() {
   return _currentWorkspace;
+}
+
+/** 是否由 OAW_WORKSPACE 固定（固定时 setWorkspace 不持久化，避免污染用户状态）。 */
+export function isWorkspacePinnedByEnv() {
+  return Boolean(ENV_WORKSPACE);
 }
 
 /**
@@ -87,6 +96,7 @@ export function setWorkspace(dir) {
     const real = normalizeWorkspace(dir, { create: true });
     if (!real) return false;
     _currentWorkspace = real;
+    if (isWorkspacePinnedByEnv()) return true; // 由 OAW_WORKSPACE 固定的实例不写用户状态
     // 合并写入，保留 hiddenWorkspaces 等已持久化字段
     let prev = {};
     try { prev = fs.existsSync(WS_STATE_FILE) ? JSON.parse(fs.readFileSync(WS_STATE_FILE, "utf8")) : {}; } catch {}
