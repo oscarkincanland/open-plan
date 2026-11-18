@@ -5,9 +5,36 @@ import remarkMath from "remark-math";
 import rehypeSlug from "rehype-slug";
 import remarkToc from "remark-toc";
 import Icon from "./Icon.jsx";
-import { buildArtifactIndex, resolveArtifactTarget, normalizeLocalFileHref } from "../产物类型.js";
+import { buildArtifactIndex, resolveArtifactTarget, normalizeLocalFileHref, normalizeArtifactPath } from "../产物类型.js";
+import { buildDocUrls } from "../文件地址.js";
 import { normalizeAtxHeadings, numberTopLevelSections } from "../markdown规范化.js";
 import { motionScrollBehavior } from "../界面外观.js";
+
+/** cwd 前缀剥离：模型可能写工作区绝对路径（/Volumes/.../ws/回报/截图/x.png），
+    剥掉 cwd（含收尾斜杠）得到相对路径；剥不掉（前缀不匹配）就按原样归一。 */
+function stripWorkspacePrefix(path, cwd) {
+  const normalized = normalizeArtifactPath(path);
+  const root = String(cwd || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!root) return normalized;
+  const lower = normalized.toLowerCase();
+  const rootLower = root.toLowerCase();
+  if (lower.startsWith(rootLower + "/")) return normalized.slice(root.length + 1);
+  if (lower === rootLower) return "";
+  return normalized;
+}
+
+/** 图片 src → 可访问地址：本地文件（工作区相对/绝对/file://）改写为 /api/doc/<rel>/raw?cwd=...，
+    外链 / data: URL / 无法解析（缺 cwd）时原样返回。2026-11-17-002。 */
+function resolveImgSrc(src, cwd) {
+  const value = String(src || "").trim();
+  if (!value || /^(data:|https?:)/i.test(value)) return value;
+  if (!cwd) return value;
+  const relative = normalizeLocalFileHref(value);
+  if (!relative) return value;
+  const rel = stripWorkspacePrefix(relative, cwd);
+  if (!rel) return value;
+  return buildDocUrls({ cwd, relativePath: rel }).raw;
+}
 
 /**
  * 统一 Markdown 渲染组件（聊天消息 + MD 文档共用）
@@ -177,7 +204,7 @@ function countTableColumns(children) {
   return 1;
 }
 
-function MarkdownBody({ children, className = "", withToc = false, onTagClick, onWikilinkHover, onOpenFile, artifacts, numberSections = false, docToc = false, copyable = false }) {
+function MarkdownBody({ children, className = "", withToc = false, onTagClick, onWikilinkHover, onOpenFile, artifacts, numberSections = false, docToc = false, copyable = false, cwd = "" }) {
   const [heavyPlugins, setHeavyPlugins] = useState(null);
   const [lightbox, setLightbox] = useState(null);
   // 结论区文档化：本文目录 + 复制原文（计划 2026-11-14-002 P1）
@@ -187,7 +214,7 @@ function MarkdownBody({ children, className = "", withToc = false, onTagClick, o
   // 否则 react-markdown 会把 table/code/img 等自定义节点整体卸载重建（实测闲聊页
   // 每秒产生约 500 次 DOM 变动，主线程长期占用导致界面"非常卡"）。2026-11-10。
   const handlersRef = useRef({});
-  handlersRef.current = { onTagClick, onWikilinkHover, onOpenFile };
+  handlersRef.current = { onTagClick, onWikilinkHover, onOpenFile, cwd };
   const hasOpenFile = typeof onOpenFile === "function";
 
   // 图片灯箱：Esc 关闭（点击遮罩也会关闭），避免大图只能靠放大页面看。
@@ -283,17 +310,20 @@ function MarkdownBody({ children, className = "", withToc = false, onTagClick, o
         <table style={{ "--md-table-cols": String(countTableColumns(kids)) }}>{kids}</table>
       </div>
     ),
-    // 图片：最大宽度 + 圆角；点击打开灯箱（Esc / 点遮罩关闭）
-    img: ({ src, alt }) => (
-      <button
-        type="button"
-        className="md-img-btn"
-        onClick={() => setLightbox({ src, alt: alt || "图片预览" })}
-        title="点击放大"
-      >
-        <img src={src} alt={alt} loading="lazy" className="md-img" />
-      </button>
-    ),
+    // 图片：本地文件路径改写为文件服务地址（2026-11-17-002）；点击打开灯箱（Esc / 点遮罩关闭）
+    img: ({ src, alt }) => {
+      const shown = resolveImgSrc(src, handlersRef.current.cwd);
+      return (
+        <button
+          type="button"
+          className="md-img-btn"
+          onClick={() => setLightbox({ src: shown, alt: alt || "图片预览" })}
+          title="点击放大"
+        >
+          <img src={shown} alt={alt} loading="lazy" className="md-img" />
+        </button>
+      );
+    },
     // 链接：[[目标]] 悬浮预览（知识库）；本轮产物 → 行内文件条；普通链接新窗口打开
     a: ({ href, children: kids }) => {
       const openFile = handlersRef.current.onOpenFile;
@@ -406,6 +436,7 @@ function sameMarkdownProps(prev, next) {
     && prev.docToc === next.docToc
     && prev.copyable === next.copyable
     && prev.artifacts === next.artifacts
+    && prev.cwd === next.cwd
     && (typeof prev.onOpenFile === "function") === (typeof next.onOpenFile === "function");
 }
 
