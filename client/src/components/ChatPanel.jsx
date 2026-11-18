@@ -2066,8 +2066,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     activeRunIdRef.current = null;
     runInProgressRef.current = false;
     systemEventKeysRef.current.clear();
-    if (onNewSession) onNewSession();
-  }, [onNewSession, replaceExecutionEvents, threadId]);
+    if (onNewSession) onNewSession(undefined, { agentId: sessionAgentId });
+  }, [onNewSession, replaceExecutionEvents, threadId, sessionAgentId]);
 
   // 暴露插入文本方法（供 @ 按钮调用）
   useImperativeHandle(ref, () => ({
@@ -5213,7 +5213,7 @@ case "runtime_connecting":
       list.push({
         key: `attachment:${index}:${att.name || ""}`,
         kind: "file",
-        icon: att.mediaKind === "video" ? "play" : att.mediaKind === "audio" ? "file" : "file",
+        icon: att.mediaKind === "video" ? "play" : att.mediaKind === "audio" ? "audio" : "file",
         label: att.name || `附件 ${index + 1}`,
         meta: att.size ? formatBytes(att.size) : "",
         title: `${att.name || "附件"}${att.size ? ` · ${formatBytes(att.size)}` : ""}${mediaHint}`,
