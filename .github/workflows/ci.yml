@@ -31,6 +31,9 @@ jobs:
       - name: 事件注册表一致性
         run: node scripts/CI运行测试.mjs 事件注册表测试
 
+      - name: 路由注册唯一性与顺序
+        run: node scripts/CI运行测试.mjs 路由唯一性与注册顺序测试
+
       - name: 任务结论事件流
         run: node scripts/CI运行测试.mjs 任务结论事件流测试
 

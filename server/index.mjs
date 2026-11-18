@@ -22,7 +22,6 @@ import { bashEnvironmentInfo } from "./环境能力.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
-import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
@@ -7232,38 +7231,9 @@ app.get("/api/map/road-structure", (req, res) => {
 });
 
 // 柬埔寨暹粒 OD 演示数据（来源路径可通过 CAMBODIA_OD_FILE 覆盖）
-app.get("/api/demo/cambodia-od", (req, res) => {
-  const payload = cambodiaOD.getCambodiaOD({ minFlow: req.query.minFlow });
-  if (payload.error) return res.status(404).json(payload);
-  res.json(payload);
-});
-
-// 不依赖 Agent 的地图演示入口，供工具栏按钮和验收流程直接调用。
-app.get("/api/map/demo-analysis", (req, res) => {
-  const analysis = ["heatmap", "od", "isochrone"].includes(req.query.analysis) ? req.query.analysis : "heatmap";
-  const payload = createDemoAnalysis({ analysis, region: String(req.query.region || "义乌市"), project: String(req.query.project || "zhejiang-map"), count: Number(req.query.count || 36) });
-  res.json(payload);
-});
-
-// ---------- M3 新昌公交分析 ----------
-import * as m3 from "./m3-xinchang.mjs";
-
-app.get("/api/m3/bus-routes", (_req, res) => {
-  try { res.json(m3.getBusRoutes()); } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get("/api/m3/station-heatmap", (_req, res) => {
-  try { res.json(m3.getStationHeatmap()); } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get("/api/m3/od-lines", (_req, res) => {
-  try { res.json(m3.getBusODLines()); } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get("/api/m3/network-stats", (_req, res) => {
-  try { res.json(m3.getBusNetworkStats()); } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
+// 注意：/api/demo/cambodia-od、/api/map/demo-analysis、/api/m3/* 的统一入口在文件前部
+// （map-analysis 适配层），此处不再重复注册；重复注册会被 Express 首个处理器遮蔽，
+// 形成死代码，由 scripts/路由唯一性与注册顺序测试.mjs 守护。
 // ---------- static ----------
 const dist = CLIENT_DIST;
 // 未知 API 必须返回 JSON 404，避免前端把 index.html 当作接口响应解析。
@@ -7393,30 +7363,6 @@ app.post("/api/system/pick-files", async (req, res) => {
 
 app.use("/api", (_req, res) => res.status(404).json({ error: "api endpoint not found" }));
 if (fs.existsSync(path.join(dist, "index.html"))) {
-
-// ---------- M3 公交数据分析 API ----------
-
-// 公交线路数据
-app.get("/api/bus/routes", (req, res) => {
-  res.json(map.getBusRoutes());
-});
-
-// 公交站点数据
-app.get("/api/bus/stops", (req, res) => {
-  res.json(map.getBusStops());
-});
-
-// 公交 OD 数据
-app.get("/api/bus/od", (req, res) => {
-  const period = req.query.period || "all";
-  res.json(map.getBusOD(period));
-});
-
-// 公交线网统计
-app.get("/api/bus/stats", (req, res) => {
-  res.json(map.getBusStats());
-});
-
   app.use(express.static(dist, {
     setHeaders: (res, filePath) => {
       // index.html 负责引用当前构建的资源；不缓存它，避免前端继续运行旧的
@@ -7521,29 +7467,6 @@ function emitChannel(entry, type, data) {
 }
 
 
-
-// ---------- M3 公交数据分析 API ----------
-
-// 公交线路数据
-app.get("/api/bus/routes", (req, res) => {
-  res.json(map.getBusRoutes());
-});
-
-// 公交站点数据
-app.get("/api/bus/stops", (req, res) => {
-  res.json(map.getBusStops());
-});
-
-// 公交 OD 数据
-app.get("/api/bus/od", (req, res) => {
-  const period = req.query.period || "all";
-  res.json(map.getBusOD(period));
-});
-
-// 公交线网统计
-app.get("/api/bus/stats", (req, res) => {
-  res.json(map.getBusStats());
-});
 
 if (!API_TOKEN && !["127.0.0.1", "localhost", "::1"].includes(String(HOST))) {
   console.warn("[security] HOST is not loopback and OAW_API_TOKEN is not set; API requests are unauthenticated.");
@@ -7843,26 +7766,3 @@ setTimeout(() => { void reapStalledRuns(); }, 5000).unref?.();
 
 process.on("SIGINT", () => { void shutdownService("SIGINT", 0); });
 process.on("SIGTERM", () => { void shutdownService("SIGTERM", 0); });
-
-// ---------- M3 公交数据分析 API ----------
-
-// 公交线路数据
-app.get("/api/bus/routes", (req, res) => {
-  res.json(map.getBusRoutes());
-});
-
-// 公交站点数据
-app.get("/api/bus/stops", (req, res) => {
-  res.json(map.getBusStops());
-});
-
-// 公交 OD 数据
-app.get("/api/bus/od", (req, res) => {
-  const period = req.query.period || "all";
-  res.json(map.getBusOD(period));
-});
-
-// 公交线网统计
-app.get("/api/bus/stats", (req, res) => {
-  res.json(map.getBusStats());
-});
