@@ -433,7 +433,43 @@ await test("未决 ask / 审批渲染在折叠体之外", () => {
   const foldEnd = chatPanel.indexOf("</RunFoldBar>");
   assert.ok(foldStart > 0 && foldEnd > foldStart, "未找到 RunFoldBar 使用点");
   assert.doesNotMatch(chatPanel.slice(foldStart, foldEnd), /renderTimelineInteraction/, "ask/审批不得进折叠体");
-  assert.match(chatPanel.slice(foldEnd, foldEnd + 400), /renderTimelineInteraction/, "未决交互应紧跟折叠体之后常显");
+  // 2026-11-17-001：v3 折叠体之后合法存在 lifted 小节与终稿渲染段（约 2.2k 字符），
+  // "紧跟折叠体"的实质是「折叠体外常显」，窗口按融合后结构放宽到 2400。
+  assert.match(chatPanel.slice(foldEnd, foldEnd + 2400), /renderTimelineInteraction/, "未决交互应紧跟折叠体之后常显");
+});
+
+await test("会话流 v3 渲染契约（2026-11-17-001 B/C/D 项）", () => {
+  // B：v3 不渲染「阶段小结」标签——showCap 由 !transcriptV3 门控（基线保持原标签）。
+  assert.match(chatPanel, /const showCap = !transcriptV3 && !isStreamingText && String\(item\.text \|\| ""\)\.trim\(\)\.length >= 8 && isNarrationText\(item\.text\);/, "v3 应去掉阶段小结标签（showCap 需 !transcriptV3 门控）");
+  // C：v3 折叠体内过程旁白正文 13px/1.7，且 :not(.tl-list-replies) 排除终稿（结论保持 14px）。
+  assert.match(styles, /\[data-transcript-v3="1"\] \.tl-list:not\(\.tl-list-replies\) \.textblock \.markdown-body \{[^}]*font-size: 13px;/, "v3 过程旁白正文应为 13px");
+  assert.match(styles, /font-size: 13px;[\s\S]{0,40}?line-height: 1\.7;/, "v3 过程旁白行高 1.7");
+  // D：v3 终稿走文档化通道（分节编号 + 目录条 + 复制 Markdown），与非时间线路径对齐。
+  assert.match(chatPanel, /className="textblock flow-markdown assistant-final-answer"[\s\S]{0,120}?numberSections docToc/, "v3 终稿应带 numberSections docToc");
+  assert.match(chatPanel, /\{showTimelineSummary && !transcriptV3 && \([\s\S]{0,80}?<SummaryBlock/, "v3 下不得渲染「本轮总结」卡片");
+});
+
+await test("已完成轮次内缺终态的工具行中性显示（2026-11-17-001 E 项）", () => {
+  assert.match(chatPanel, /const pendingUnknown = settled && !done;/, "ToolCard 应有未结转判定");
+  assert.match(chatPanel, /settled=\{!isTaskLive\}/, "时间流工具行应按消息运行态传入 settled");
+  assert.match(chatPanel, /\{pendingUnknown && <span className="tool-recovered"[^>]*>未结转<\/span>\}/, "未结转标识");
+  assert.match(styles, /\.tool-icon\.unknown \{ color: var\(--dim\); animation: none; \}/, "未结转图标不得跑动画");
+});
+
+await test("结论区本地图片走文件服务地址（2026-11-17-002）", () => {
+  const md = read("client/src/components/MarkdownBody.jsx");
+  // img 渲染必须经 resolveImgSrc 改写：本地文件 → /api/doc/<rel>/raw?cwd=...
+  assert.match(md, /function resolveImgSrc\(src, cwd\)/, "应有图片地址改写函数");
+  assert.match(md, /normalizeLocalFileHref\(value\)/, "本地文件判定走产物类型白名单");
+  assert.match(md, /buildDocUrls\(\{ cwd, relativePath: rel \}\)\.raw/, "改写目标为文件服务 raw 路由");
+  assert.match(md, /resolveImgSrc\(src, handlersRef\.current\.cwd\)/, "img 组件经 handlersRef 取 cwd");
+  // 会话流链路：ChatPanel → Message → SafeMarkdown → MarkdownBody 逐层传 cwd
+  assert.match(chatPanel, /function SafeMarkdown\(\{ text, onOpenFile, artifacts, numberSections = false, docToc = false, cwd = "" \}\)/, "SafeMarkdown 应支持 cwd");
+  assert.match(chatPanel, /<MarkdownBody onOpenFile=\{onOpenFile\} artifacts=\{artifacts\} numberSections=\{numberSections\} docToc=\{docToc\} copyable=\{docToc\} cwd=\{cwd\}>/, "SafeMarkdown 应把 cwd 透传给 MarkdownBody");
+  assert.match(chatPanel, /cwd=\{workspace\}\s*\/>/, "Message 内 SafeMarkdown 调用点应传 cwd={workspace}");
+  assert.match(chatPanel, /sessionId=\{sessionId\} workspace=\{workspace\}/, "ChatPanel 应把 workspace 传给 Message");
+  // 灯箱用改写后的地址（本地路径点击放大不再破图）
+  assert.match(md, /setLightbox\(\{ src: shown, alt/, "灯箱应使用改写后的地址");
 });
 
 await test("结论与产物卡不在折叠体内", () => {

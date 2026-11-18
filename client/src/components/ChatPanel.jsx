@@ -5665,7 +5665,7 @@ case "runtime_connecting":
                     <span>模型切换为 <b>{modelDisplayName(roundModel)}</b></span>
                   </div>
                 )}
-                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} clientId={clientId} threadId={threadId} sessionId={sessionId} isLastAssistant={m?.role === "assistant" && m.id === lastAssistantVisibleId} versionSwitching={versionSwitching} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onAskExpired={markAskExpired} onResend={handleMessageResend} onEditMessage={handleEditMessage} onForkMessage={handleForkMessage} onRegenerate={handleRegenerateMessage} onSwitchVersion={handleSwitchVersion} onToggleTool={toggleToolExpanded} expandedToolIds={expandedToolIds} runSummary={runSummary} executionFlow={executionFlow} onOpenSettings={onOpenSettings} unifiedComposer={composerUnified} />
+                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} clientId={clientId} threadId={threadId} sessionId={sessionId} workspace={workspace} isLastAssistant={m?.role === "assistant" && m.id === lastAssistantVisibleId} versionSwitching={versionSwitching} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onOpenSubagent={onOpenSubagent} onAskAnswered={handleMessageAskAnswered} onAskExpired={markAskExpired} onResend={handleMessageResend} onEditMessage={handleEditMessage} onForkMessage={handleForkMessage} onRegenerate={handleRegenerateMessage} onSwitchVersion={handleSwitchVersion} onToggleTool={toggleToolExpanded} expandedToolIds={expandedToolIds} runSummary={runSummary} executionFlow={executionFlow} onOpenSettings={onOpenSettings} unifiedComposer={composerUnified} />
               </React.Fragment>
             );
            }); })()}
@@ -6314,12 +6314,12 @@ function normalizeThinkingText(value) {
     .trim();
 }
 
-function SafeMarkdown({ text, onOpenFile, artifacts, numberSections = false, docToc = false }) {
+function SafeMarkdown({ text, onOpenFile, artifacts, numberSections = false, docToc = false, cwd = "" }) {
   const [showRaw, setShowRaw] = useState(false);
   if (!text) return null;
   // 结论正文开启「一、二、三」自动编号（渲染层确定性兜底，见 markdown规范化.js）：
   // 只有助手最终答复/结论才算分节文档；阶段小结、思考、工具输出不编号。
-  if (text.length <= MAX_MARKDOWN_CHARS) return <MarkdownBody onOpenFile={onOpenFile} artifacts={artifacts} numberSections={numberSections} docToc={docToc} copyable={docToc}>{text}</MarkdownBody>;
+  if (text.length <= MAX_MARKDOWN_CHARS) return <MarkdownBody onOpenFile={onOpenFile} artifacts={artifacts} numberSections={numberSections} docToc={docToc} copyable={docToc} cwd={cwd}>{text}</MarkdownBody>;
   if (!showRaw) {
     return (
       <button className="large-msg-reveal" onClick={() => setShowRaw(true)}>
@@ -6369,7 +6369,7 @@ function artifactsFromView(view) {
   return byPath.size ? [...byPath.values()] : null;
 }
 
-function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifacts, view: viewOverride = null, embedded = false }) {
+function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifacts, view: viewOverride = null, embedded = false, workspace = "" }) {
   // W1/A01：结果卡只消费「统一展示投影」，实时构建的消息与旧历史走同一条路径，
   // 不再各自拼装状态 / 产物 / 文件清单（R01/R02 的重复展示即源于此）。
   // 消息层已算过的投影直接复用（viewOverride），避免同一条消息归约两遍事件流。
@@ -6526,7 +6526,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
           {fallbackSummary && (
             <div className="run-result-fallback">
               <strong>本轮总结</strong>
-              <SafeMarkdown text={fallbackSummary} onOpenFile={onOpenFile} artifacts={products.length ? products : null} numberSections docToc />
+              <SafeMarkdown text={fallbackSummary} onOpenFile={onOpenFile} artifacts={products.length ? products : null} numberSections docToc cwd={workspace} />
             </div>
           )}
           {!!completion?.incomplete?.length && <div className="run-result-note warn">未完成：{completion.incomplete.join("；")}</div>}
@@ -6783,7 +6783,7 @@ function LiveRunSummaryBar({ m }) {
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onAskExpired, onResend, onEditMessage, onForkMessage, onRegenerate, onSwitchVersion, isLastAssistant = false, versionSwitching = false, index, prevRole, clientId, threadId, sessionId = "", runSummary = null, executionFlow = null, onOpenSettings, unifiedComposer = false }) {
+function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onOpenSubagent, onAskAnswered, onAskExpired, onResend, onEditMessage, onForkMessage, onRegenerate, onSwitchVersion, isLastAssistant = false, versionSwitching = false, index, prevRole, clientId, threadId, sessionId = "", workspace = "", runSummary = null, executionFlow = null, onOpenSettings, unifiedComposer = false }) {
   // 会话流 v3 开关（计划 2026-11-14-001）。Message 与 ChatPanel 是两个同级组件，
   // 开关必须在各自作用域内读取；此前只在 ChatPanel 里声明，导致打开会话即
   // "transcriptV3 is not defined" 被错误边界捕获。
@@ -6798,6 +6798,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
       return (
         <RunSummary
           m={m}
+          workspace={workspace}
           onOpenFile={onOpenFile}
           onRollbackRun={onRollbackRun}
           onOpenChanges={onOpenRunChanges ? () => onOpenRunChanges(runId) : undefined}
@@ -6974,7 +6975,11 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   });
   const messageExecutionFlow = executionFlow ? { ...executionFlow, events: visibleExecutionEvents } : null;
   // 权威终稿若与某个文本块对应，该块由"最终答复"通道单独渲染，避免重复一份。
-  const hiddenFinalTextIndex = authoritativeFinalText && !streaming && finalTextBlockIndex >= 0 ? finalTextBlockIndex : -1;
+  // v3：最终答复不再走「隐藏文本块 + 单独渲染总结卡」的双通道，而是作为正文常显在折叠体外，
+  // 因此不隐藏该文本块（否则 v3 下终稿会消失）。
+  const hiddenFinalTextIndex = transcriptV3
+    ? -1
+    : (authoritativeFinalText && !streaming && finalTextBlockIndex >= 0 ? finalTextBlockIndex : -1);
   const visibleBlocks = blocks.filter((block, blockIndex) => {
     if (block?.type === "message_boundary" || isProcessBlock(block)) return false;
     return blockIndex !== hiddenFinalTextIndex;
@@ -7038,6 +7043,29 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     if (!timelinePath) return { foldTimelineItems: [], liftedTimelineItems: [] };
     return splitRunTimelineSections(runTimelineView, { live: isTaskLive });
   }, [timelinePath, runTimelineView, isTaskLive]);
+  // v3 段落拆分（2026-11-15 用户口径 + 2026-11-17-001 方案融合远端「小节沉底」）：
+  //   折叠体内 = 过程组 + 过程旁白；折叠体外 = 结构化小节（lifted）+ 最终答复。
+  // 最终答复识别：优先用投影层 finalTextBlockIndex（block id 对齐），对不上回退"最后一个 text 条目"。
+  // lifted 小节（远端 splitRunTimelineSections 外提项）在 v3 下同样归折叠体外，并从折叠体内剔除防重复；
+  // 终稿本身也会被远端逻辑算进 lifted，需从 liftedOutside 里排除（终稿由 outside 单独渲染）。
+  const v3SegmentSplit = useMemo(() => {
+    if (!transcriptV3 || !runTimelineSegments) return null;
+    const isTextItem = (segment) => segment?.type === "item" && segment.item?.kind === "text";
+    const liftedIds = new Set((liftedTimelineItems || []).map((item) => String(item.id)));
+    const finalBlockId = finalTextBlockIndex >= 0 ? String(blocks[finalTextBlockIndex]?.id || "") : "";
+    let finalItemId = finalBlockId;
+    if (!finalItemId) {
+      const texts = runTimelineSegments.filter(isTextItem);
+      finalItemId = texts.length ? String(texts[texts.length - 1].item.id) : "";
+    }
+    const isLiftedSegment = (segment) => segment?.type === "item" && liftedIds.has(String(segment.item?.id || ""));
+    return {
+      finalItemId,
+      inside: runTimelineSegments.filter((segment) => !isLiftedSegment(segment) && !(isTextItem(segment) && String(segment.item.id) === finalItemId)),
+      outside: runTimelineSegments.filter((segment) => isTextItem(segment) && String(segment.item.id) === finalItemId),
+      liftedOutside: (liftedTimelineItems || []).filter((item) => String(item.id) !== finalItemId),
+    };
+  }, [transcriptV3, runTimelineSegments, liftedTimelineItems, finalTextBlockIndex, blocks]);
   // 「已运行 xx」：运行中按 startedAt 实时累加，结束后用实测总时长。
   // 不能整轮隐藏——用户需要一眼看到这一轮跑了多久；也不能再包回运行框。
   //
@@ -7177,7 +7205,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
           ? <span className="tl-think-preview"><跑马灯文本 text={previewText} active title={tail} /></span>
           : item.obj;
         return (
-          <TimelineRow key={item.id} icon={item.icon} verb={item.verb} obj={objNode} objTitle={item.obj} timeText={item.timeText} state={item.state} shimmer={transcriptV3 && isLiveThinking}>
+          <TimelineRow key={item.id} icon={item.icon} verb={item.verb} obj={objNode} objTitle={item.obj} timeText={item.timeText} state={item.state} shimmer={transcriptV3 && isLiveThinking} className={transcriptV3 ? (isLiveThinking ? "tl-row-think is-live" : "tl-row-think") : ""}>
             {isLiveThinking
               ? <TypewriterText text={thinkingText} enabled autoScroll className="tl-thinking-text" />
               : <div className="tl-thinking-text">{thinkingText}</div>}
@@ -7189,13 +7217,14 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
         // 流式中间态不显示「阶段结论」标签：模型还在吐字，此时只是半句；
         // 过短（<8 字）的碎片也不当作阶段结论，避免出现「阶段结论 15」之类的假结论。
         // 2026-11-12：结构化小节不是「阶段小结」，不加这个标签（它本来就属于结论）。
-        const showCap = !isStreamingText && String(item.text || "").trim().length >= 8 && isNarrationText(item.text);
+        // 2026-11-17-001（B 项）：v3 去掉「阶段小结」标签——位置不动（按模型输出时序），标签不要。
+        const showCap = !transcriptV3 && !isStreamingText && String(item.text || "").trim().length >= 8 && isNarrationText(item.text);
         return (
           <div className="textblock flow-markdown" key={item.id}>
             {showCap && <div className="tb-cap">{item.cap}</div>}
             {isStreamingText
               ? <TypewriterText text={item.text} enabled className="flow-stream-text" />
-              : <SafeMarkdown text={item.text} onOpenFile={onOpenFile} artifacts={answerArtifacts} />}
+              : <SafeMarkdown text={item.text} onOpenFile={onOpenFile} artifacts={answerArtifacts} cwd={workspace} />}
           </div>
         );
       }
@@ -7207,6 +7236,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
             expanded={expandedToolIds.has(toolExpandKey(item.block, item.id))}
             onToggle={() => onToggleTool?.(toolExpandKey(item.block, item.id))}
             onOpenFile={onOpenFile}
+            settled={!isTaskLive}
           />
         );
       case "ask": {
@@ -7326,7 +7356,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     }
     if (block.type === "tool") {
       const key = toolExpandKey(block, `block-${blockIndex}`);
-      return <ToolCard key={key} tool={block} expanded={expandedToolIds.has(key)} onToggle={() => onToggleTool?.(key)} onOpenFile={onOpenFile} />;
+      return <ToolCard key={key} tool={block} expanded={expandedToolIds.has(key)} onToggle={() => onToggleTool?.(key)} onOpenFile={onOpenFile} settled={!streaming} />;
     }
     if (block.type === "subagent") return <SubagentCard key={key} block={block} onOpenDetail={onOpenSubagent} />;
     if (block.type === "pipeline") return <PipelineCard key={key} block={block} onOpenFile={onOpenFile} />;
@@ -7335,12 +7365,12 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     if (block.type === "approval") return <ApprovalBlock key={key} block={block} />;
     if (block.type === "text") return (
       <div className="flow-markdown process-narration" key={key}>
-        <SafeMarkdown text={block.text} onOpenFile={onOpenFile} />
+        <SafeMarkdown text={block.text} onOpenFile={onOpenFile} cwd={workspace} />
       </div>
     );
     if (block.type === "process_note") return (
       <div className="flow-markdown process-narration process-note" key={key}>
-        <SafeMarkdown text={String(block.text || "").replace(/^\s*\[系统提醒\]\s*/, "")} />
+        <SafeMarkdown text={String(block.text || "").replace(/^\s*\[系统提醒\]\s*/, "")} cwd={workspace} />
       </div>
     );
     return null;
@@ -7357,7 +7387,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
         <div className="flow-markdown" key={block.id || `text-${segment.blockIndex}`}>
           {streaming
             ? <div className="flow-stream-text" aria-live="polite">{readableProgressText(block.text)}</div>
-            : <SafeMarkdown text={shown} onOpenFile={onOpenFile} artifacts={answerArtifacts} />}
+            : <SafeMarkdown text={shown} onOpenFile={onOpenFile} artifacts={answerArtifacts} cwd={workspace} />}
         </div>
       );
     }
@@ -7512,7 +7542,42 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                     compact/嵌入式隐藏消息头时仍保留独立行作为兜底。 */}
                 {runElapsedText && hideHeader && !showTimelineSummary && <div className="tl-elapsed">{runElapsedText}</div>}
                 <div className={`tl-list ${isTaskLive ? "is-live" : ""}`}>{(runTimelineSegments || null) ? runTimelineSegments.map(renderTimelineSegment) : foldTimelineItems.map(renderTimelineItem)}</div>
-                {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
+                {/* v3：旧「执行流」事件卡（对 SSE 事件再投影一遍）与新的过程组是同一份信息，
+                    同时出现就是两套界面（用户 2026-11-15 反馈"中断后又冒出老式 SSE 界面"）。v3 下不再渲染。 */}
+                {!transcriptV3 && messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
+              </>
+            ) : v3SegmentSplit ? (
+              <>
+                {/* v3（2026-11-15 用户口径 + 2026-11-17-001 融合远端小节沉底）：
+                    折叠体内 = 过程组 + 过程旁白（无「阶段小结」标签）；
+                    折叠体外 = 结构化小节（liftedOutside，按时间序）+ 最终答复（常显、带编号目录）。
+                    不再渲染「本轮总结」卡片，避免与模型正文重复。 */}
+                <RunFoldBar state={runFold.state} label={runFold.label} steps={runTimeline.length} pendingLabel={runFoldPending} defaultOpen={false} v3>
+                  <div className="tl-list">{v3SegmentSplit.inside.map(renderTimelineSegment)}</div>
+                  {!transcriptV3 && messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
+                </RunFoldBar>
+                {v3SegmentSplit.liftedOutside.length > 0 && (
+                  <div className="tl-lifted-sections">{v3SegmentSplit.liftedOutside.map(renderTimelineItem)}</div>
+                )}
+                {v3SegmentSplit.outside.length > 0 ? (
+                  <div className="tl-list tl-list-replies">
+                    {/* 折叠外只放最终答复：不带「阶段小结」标签——它已经是本轮结论。
+                        文档化能力与非时间线路径对齐：分节编号 + 目录条 + 复制 Markdown（D 项）。 */}
+                    {v3SegmentSplit.outside.map((segment) => (
+                      <div className="textblock flow-markdown assistant-final-answer" key={segment.item?.id || "final-reply"}>
+                        <SafeMarkdown text={segment.item?.text || ""} onOpenFile={onOpenFile} artifacts={answerArtifacts} numberSections docToc cwd={workspace} />
+                      </div>
+                    ))}
+                  </div>
+                ) : (showTimelineSummary && summaryBody ? (
+                  // 兜底：历史会话的终稿可能没能对到时间流里的文本块（finalTextBlockIndex 匹配失败），
+                  // 此时不能因为没有"最终答复条目"就不显示结论——直接用总结正文兜底渲染。
+                  <div className="tl-list tl-list-replies">
+                    <div className="textblock flow-markdown assistant-final-answer">
+                      <SafeMarkdown text={summaryBody} onOpenFile={onOpenFile} artifacts={answerArtifacts} numberSections docToc cwd={workspace} />
+                    </div>
+                  </div>
+                ) : null)}
               </>
             ) : (
               <RunFoldBar state={runFold.state} label={runFold.label} steps={runTimeline.length} pendingLabel={runFoldPending} defaultOpen={false} v3={transcriptV3}>
@@ -7520,9 +7585,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                 {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
               </RunFoldBar>
             )}
-            {/* 结构化小节（标题/表格/列表）属于结论，渲染在折叠体外，按时间流原顺序。
-                仅基线：v3 的折叠归属由 v3SegmentSplit 接管（结构化小节 + 终稿都在折叠体外），
-                重复渲染会同一小节出现两份。 */}
+            {/* 结构化小节属结论、折叠体外按原顺序；仅基线渲染（v3 归属由 v3SegmentSplit 接管，避免重复）。 */}
             {!transcriptV3 && liftedTimelineItems.length > 0 && (
               <div className="tl-lifted-sections">{liftedTimelineItems.map(renderTimelineItem)}</div>
             )}
@@ -7538,7 +7601,8 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                 </div>
               </div>
             )}
-            {showTimelineSummary && (
+            {/* v3 下不再渲染「本轮总结」卡片（与模型正文重复）；总结正文已由 v3SegmentSplit 兜底通道接管。 */}
+            {showTimelineSummary && !transcriptV3 && (
               <SummaryBlock
                 body={summaryBody}
                 onOpenFile={onOpenFile}
@@ -7601,7 +7665,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
             </div>
             {!streaming && authoritativeFinalText && !replaceLegacyFinalCandidate && !summaryCoversFinal && (
               <>
-                <div className="flow-markdown assistant-final-answer"><SafeMarkdown text={clampAnswer(authoritativeFinalText)} onOpenFile={onOpenFile} artifacts={answerArtifacts} numberSections docToc /></div>
+                <div className="flow-markdown assistant-final-answer"><SafeMarkdown text={clampAnswer(authoritativeFinalText)} onOpenFile={onOpenFile} artifacts={answerArtifacts} numberSections docToc cwd={workspace} /></div>
                 {answerClamped && (
                   <button type="button" className="answer-detail-toggle" onClick={() => setAnswerExpanded((value) => !value)} aria-expanded={answerExpanded}>
                     {answerExpanded ? "收起完整答案" : "展开完整答案"}
@@ -7626,6 +7690,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                 m={runCardSource || runSummary}
                 view={runCardView}
                 embedded
+                workspace={workspace}
                 onOpenFile={onOpenFile}
                 onRollbackRun={onRollbackRun}
                 onOpenChanges={onOpenRunChanges ? () => onOpenRunChanges(runSummary.runId || m.runId) : undefined}
@@ -7715,6 +7780,7 @@ const MemoMessage = React.memo(Message, (previous, next) => {
     && previous.sessionId === next.sessionId
     && previous.isLastAssistant === next.isLastAssistant
     && previous.versionSwitching === next.versionSwitching
+    && previous.workspace === next.workspace
     && previous.onOpenFile === next.onOpenFile
     && previous.onOpenSubagent === next.onOpenSubagent
     && previous.onEditMessage === next.onEditMessage
@@ -9055,16 +9121,17 @@ function toolPathOf(input, kind = "generic") {
   }
 }
 
-function ToolCard({ tool, expanded = false, onToggle, onOpenFile }) {
+function ToolCard({ tool, expanded = false, onToggle, onOpenFile, settled = false }) {
   const { name, input, output, done, isError, duration } = tool;
   // 运行中的工具显示「已运行 Xs」：长命令/长检索期间通道没有新事件，缺这个活性提示
   // 用户会以为界面卡死（2026-11-06 实测：编译类 bash 静默数十秒）。
   const [, setElapsedTick] = useState(0);
   useEffect(() => {
     if (done) return undefined;
+    if (settled) return undefined;
     const timer = window.setInterval(() => setElapsedTick((value) => value + 1), 1000);
     return () => window.clearInterval(timer);
-  }, [done]);
+  }, [done, settled]);
   const pendingElapsed = !done && tool.startTime ? Math.max(0, Math.floor((Date.now() - tool.startTime) / 1000)) : 0;
   // 命令预览：bash/officecli 等命令行工具显示 $ 前缀
   // 注意：JSON.stringify(undefined) 返回 undefined，历史会话中 tool.input 可能缺失
@@ -9125,8 +9192,11 @@ function ToolCard({ tool, expanded = false, onToggle, onOpenFile }) {
     && Date.now() - getBrowserStreamState().since > 3000;
 
   const v3 = flag("transcriptV3");
+  // 2026-11-17-001（E 项）：已完成轮次里缺终态事件的工具行按「未结转」中性显示，
+  // 不再跑运行态动画（pulse / 旋转 / 扫光），避免历史会话看起来还在执行。
+  const pendingUnknown = settled && !done;
   return (
-    <div className={`tool-card ${done ? (isError ? "error" : "success") : "pending"} ${isMapTool ? "tool-card-map" : ""}`}>
+    <div className={`tool-card ${done ? (isError ? "error" : "success") : "pending"} ${pendingUnknown ? "is-unknown" : ""} ${isMapTool ? "tool-card-map" : ""}`}>
       <div
         className="tool-header"
         role="button"
@@ -9138,19 +9208,20 @@ function ToolCard({ tool, expanded = false, onToggle, onOpenFile }) {
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); }
         }}
       >
-        <span className={`tool-icon ${done ? (isError ? "err" : "ok") : "run"}`}>
-          {done ? (isError ? <Icon name="close" size={12} /> : <Icon name="check" size={12} />) : <Icon name="loading" size={12} className="icon-loading" />}
+        <span className={`tool-icon ${done ? (isError ? "err" : "ok") : pendingUnknown ? "unknown" : "run"}`}>
+          {done ? (isError ? <Icon name="close" size={12} /> : <Icon name="check" size={12} />) : <Icon name="loading" size={12} className={pendingUnknown ? "" : "icon-loading"} />}
         </span>
         <ToolIdentityIcon name={name} size={12} className="tool-identity-inline" />
         {isMapTool && <span className="tool-map-badge" title="地图操作：结果会实时反映到地图上">地图</span>}
         <span className="tool-phrase" title={inputStr}>
-          {v3 && !done ? <TextShimmer active>{toolPhrase(name, input, done)}</TextShimmer> : toolPhrase(name, input, done)}
+          {v3 && !done && !pendingUnknown ? <TextShimmer active>{toolPhrase(name, input, done)}</TextShimmer> : toolPhrase(name, input, done)}
         </span>
         {resultChip && <span className={`tool-result-chip${isError ? " err" : ""}`} title={resultFirstLine || resultChip}>{resultChip}</span>}
         {tool.startMissing && <span className="tool-recovered" title="开始事件已丢失，状态由结束事件恢复">已恢复</span>}
+        {pendingUnknown && <span className="tool-recovered" title="运行记录缺少结束事件，状态未知">未结转</span>}
         {isCmd && <code className="cmd-code" title={fullInput}>$ {cmdPreview}</code>}
         {duration && <span className="tool-duration">{duration}s</span>}
-        {!done && pendingElapsed >= 1 && <span className="tool-pending-elapsed">已运行 {pendingElapsed}s</span>}
+        {!done && !pendingUnknown && pendingElapsed >= 1 && <span className="tool-pending-elapsed">已运行 {pendingElapsed}s</span>}
         <span className={`tool-chevron ${expanded ? "open" : ""}`}><Icon name="chevronRight" size={12} /></span>
       </div>
       {expanded && (
