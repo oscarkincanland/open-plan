@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>会话流滚动与折叠：现状 vs 对标 DSH</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --line: rgba(0, 0, 0, .09);
+    --text: #16181d;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --ok: #16a34a;
+    --warn: #d97706;
+    --bad: #dc2626;
+    --radius: 12px;
+    --ease: cubic-bezier(.4, 0, .2, 1);
+    --mono: 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 20px 40px;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  }
+  h1 { margin: 0 0 4px; font-size: 19px; font-weight: 650; letter-spacing: -.01em; }
+  .sub { margin: 0 0 18px; color: var(--muted); font-size: 13px; }
+  .toolbar {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    margin-bottom: 18px; padding: 12px 14px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: var(--radius);
+  }
+  button {
+    font: inherit; font-size: 13px; padding: 7px 12px; border-radius: 8px;
+    border: 1px solid var(--line); background: #fff; color: var(--text);
+    cursor: pointer; transition: background .15s var(--ease), border-color .15s var(--ease);
+    white-space: nowrap;
+  }
+  button:hover { background: #f2f4f7; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: #1d4ed8; }
+  button:disabled { opacity: .45; cursor: default; }
+  .switch { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); cursor: pointer; padding-left: 6px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .pane {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    overflow: hidden; display: flex; flex-direction: column; min-width: 0;
+  }
+  .pane-head {
+    display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+    border-bottom: 1px solid var(--line); background: linear-gradient(#fcfcfd, #f7f8fa);
+  }
+  .pane-name { font-weight: 600; font-size: 13px; }
+  .badge {
+    font-size: 11px; padding: 2px 7px; border-radius: 999px;
+    background: #eef2ff; color: #3730a3; border: 1px solid #e0e7ff;
+  }
+  .badge.bad { background: #fef2f2; color: #991b1b; border-color: #fee2e2; }
+  .badge.good { background: #f0fdf4; color: #166534; border-color: #dcfce7; }
+  .state { margin-left: auto; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .scroller {
+    position: relative; height: 430px; overflow-y: auto; overflow-x: clip;
+    padding: 14px 16px 8px; scrollbar-gutter: stable;
+  }
+  .msg { margin-bottom: 12px; }
+  .msg.user { display: flex; justify-content: flex-end; }
+  .bubble {
+    max-width: 84%; padding: 9px 12px; border-radius: 12px;
+    background: #f1f3f7; font-size: 13px;
+  }
+  .msg.user .bubble { background: #e6efff; }
+  .fold-bar {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    padding: 8px 10px; margin: 10px 0 6px;
+    border: 1px solid var(--line); border-radius: 10px; background: #fafbfc;
+    font-size: 12px; color: #374151; cursor: default;
+  }
+  .fold-bar .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+  .fold-bar .chev { margin-left: auto; color: var(--muted); transition: transform .18s var(--ease); }
+  .fold-bar.open .chev { transform: rotate(90deg); }
+  .fold-body { overflow: hidden; }
+  .fold-body.grid-mode { display: grid; grid-template-rows: 1fr; }
+  /* 关键：grid 折叠必须给子项 min-height:0，否则 min-content 让它收不到 0 */
+  .fold-body.grid-mode > * { min-height: 0; overflow: hidden; }
+  .rows { padding: 2px 0 4px; display: grid; gap: 6px; }
+  .row {
+    display: flex; gap: 8px; padding: 7px 9px; border-radius: 9px;
+    border: 1px solid var(--line); background: #fff; font-size: 12px;
+  }
+  .row .ico {
+    flex: none; width: 16px; height: 16px; border-radius: 4px; margin-top: 1px;
+    background: #eef2ff; color: #4338ca; font-size: 10px; line-height: 16px; text-align: center;
+    font-family: var(--mono);
+  }
+  .row.think { background: #fbfbfd; }
+  .row .t { font-weight: 600; font-size: 11.5px; }
+  .row .b { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .summary {
+    margin: 12px 0; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid #e5e7eb; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.03);
+  }
+  .summary h4 { margin: 0 0 4px; font-size: 12.5px; }
+  .summary p { margin: 0; color: #4b5563; font-size: 12px; line-height: 1.7; }
+  .artifact {
+    padding: 9px 12px; border: 1px dashed #d1d5db; border-radius: 10px;
+    font-size: 12px; color: var(--muted); margin-bottom: 10px;
+  }
+  .pane-foot {
+    display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap;
+    padding: 10px 14px; border-top: 1px solid var(--line); background: #fcfcfd;
+    font-size: 12px; color: var(--muted);
+  }
+  .metric { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 13px; }
+  .metric.bad { color: var(--bad); font-weight: 600; }
+  .metric.good { color: var(--ok); font-weight: 600; }
+  .note {
+    margin-top: 18px; padding: 12px 14px; border: 1px solid var(--line);
+    border-radius: var(--radius); background: var(--panel); font-size: 12.5px; color: #4b5563;
+  }
+  .note b { color: var(--text); }
+  .note ol { margin: 6px 0 0; padding-left: 18px; }
+  .note li { margin: 3px 0; }
+  kbd {
+    font: 11px var(--mono); background: #f3f4f6; border: 1px solid var(--line);
+    border-bottom-width: 2px; border-radius: 4px; padding: 0 4px;
+  }
+</style>
+</head>
+<body>
+  <h1>会话流滚动与折叠：现状 vs 对标 DSH</h1>
+  <p class="sub">左右两栏内容完全相同、同一时刻折叠。左侧跑<b>当前实现</b>（跟随阈值 80px、折叠体 <code>grid-template-rows 0fr→1fr</code> 单段 200ms、无滚动补偿），右侧跑<b>对标后的算法</b>（24px 阈值、单 rAF smoothstep、落点双策略 + 位置补偿）。底部数字是折叠瞬间「你正在读的那一行」在视口里漂移了多少像素。</p>
+
+  <div class="toolbar">
+    <button class="primary" id="btn-fold">完成并折叠（对比关键）</button>
+    <button id="btn-stream">模拟运行中输出</button>
+    <button id="btn-reset">重置</button>
+    <label class="switch"><input type="checkbox" id="opt-reading" checked /> 折叠时我正读到小结（推荐）</label>
+    <label class="switch"><input type="checkbox" id="opt-reduce" /> 减少动效</label>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="note">
+    <b>怎么看这个 demo：</b>
+    <ol>
+      <li>直接点「完成并折叠」，看两栏底部 <b>阅读位置漂移</b>：左边会出现几百 px 的跳变（小结瞬间被顶走），右边应稳定在 0–2px。</li>
+      <li>先点「模拟运行中输出」再看折叠：右侧在运行中会跟尾滚动；若你手动往上滚，右侧不再被拽回（24px 阈值），左侧因为 80px 阈值容差更大，更容易在边缘地带反复横跳。</li>
+      <li>勾选「减少动效」再折叠：右侧会瞬时落定但仍补偿位置（信息不丢），左侧则是硬跳。</li>
+      <li>本 demo 只演示<b>滚动与折叠的机械行为</b>，不改任何信息结构——「本轮小结」永远在折叠体外，和你现有 R3 的形态一致。</li>
+    </ol>
+  </div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---------- 参数（左侧=现状，右侧=对标 DSH 0.2.2-rc.3） ----------
+  const MODES = {
+    naive: {
+      key: 'naive',
+      title: '现状（当前实现）',
+      followThreshold: 80,      // ChatPanel.jsx:5010
+      foldDelay: 0,             // 单段过渡
+      foldMs: 200,              // --dur-base
+      compensation: false,
+      badge: 'bad', badgeText: '原样',
+    },
+    dsh: {
+      key: 'dsh',
+      title: '对标 DSH 后',
+      followThreshold: 24,      // use-chat-reading.ts:7 (+1)
+      foldDelay: 50,            // flow-motion.ts:12
+      foldMs: 110,              // flow-motion.ts:13
+      fadeMs: 70,               // flow-motion.ts:10
+      compensation: true,
+      badge: 'good', badgeText: '优化',
+    },
+  };
+
+  const ROWS = [
+    { kind: 'think', t: '思考', b: '先确认当前折叠实现与规范约束…' },
+    { kind: 'tool', t: 'read', b: 'client/src/components/会话流/RunFoldBar.jsx' },
+    { kind: 'tool', t: 'bash', b: 'npm run test:motion' },
+    { kind: 'think', t: '思考', b: '折叠后小结会被顶走，需要位置补偿…' },
+    { kind: 'tool', t: 'write', b: 'client/src/styles.css（折叠过渡）' },
+    { kind: 'tool', t: 'edit', b: 'client/src/components/ChatPanel.jsx（跟随逻辑）' },
+  ];
+
+  const PRIOR = [
+    { role: 'user', text: '帮我把会话流的折叠体验改一下，收起时总跳。' },
+    { role: 'agent', text: '我先看一版现状：折叠体用 grid-template-rows 过渡，收起时没有滚动补偿，所以结论会被顶走。' },
+    { role: 'user', text: '嗯，就是我读到小结的瞬间它自己跑了。' },
+    { role: 'agent', text: '对，正常阅读时视口里那一行应该纹丝不动。我准备引入滚动意图控制器：区分「跟尾」和「阅读」，折叠时按意图选落点，再用 0 高 spacer 做位置补偿。' },
+    { role: 'user', text: '那折叠动画的时长呢？现在 200ms 单段，看着有点硬。' },
+    { role: 'agent', text: '可以拆成两段：先 70ms 淡出，延迟 50ms 再 110ms 收高，用同一个 smoothstep 进度同时驱动行高和滚动位置，这样不会先塌陷再跳一下。' },
+    { role: 'user', text: '好，那你先做个 demo 我看看差别。' },
+    { role: 'agent', text: '在动手前我先核对了一遍约束：折叠体过渡必须是 grid-template-rows 0fr→1fr，动效只允许 transform/opacity，且全部要纳入统一闸门。' },
+    { role: 'user', text: '那你说的滚动补偿会不会违反这个约束？' },
+    { role: 'agent', text: '会，所以我把「是否修订规范」单独列成了决策点 D1：要么保持 0fr→1fr、只做跟随与门控（折叠仍会跳），要么改成高度驱动 + 滚动补偿（手感好，但规范要一起改）。' },
+    { role: 'user', text: '先看看效果再决定。' },
+    { role: 'agent', text: '好。demo 只演示机械行为：同一时刻折叠，左边是现在的实现，右边是加了意图控制器与单帧钟的版本，底部会显示折叠瞬间你正在读的那一行漂移了多少像素。' },
+    { role: 'user', text: '为什么左边会跳而右边不跳？原理是什么？' },
+    { role: 'agent', text: '因为滚动位置是相对内容顶部的：上方内容塌陷 350px，视口里所有东西就整体上移 350px。右边在每一帧把 scrollTop 同步减去同样的量，所以视口内那一行不动——这是补偿，不是缓动。' },
+    { role: 'user', text: '那跟尾的时候呢？' },
+    { role: 'agent', text: '跟尾时相反：落点应该在新内容的底部。所以同一套驱动里按「意图」二选一：跟尾→落到 max(目标, 内容高−视口高)，阅读→保住参考行。' },
+    { role: 'user', text: '明白了，先给我看 demo。' },
+  ];
+
+  const reduceMotion = () => document.getElementById('opt-reduce').checked;
+  const readingMode = () => document.getElementById('opt-reading').checked;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const clamp01 = (v) => Math.min(1, Math.max(0, v));
+  const smoothstep = (t) => t * t * (3 - 2 * t);
+
+  // ---------- 构建一栏 ----------
+  function buildPane(mode, host) {
+    const pane = document.createElement('section');
+    pane.className = 'pane';
+    pane.innerHTML = `
+      <div class="pane-head">
+        <span class="pane-name">${mode.title}</span>
+        <span class="badge ${mode.badge}">${mode.badgeText}</span>
+        <span class="state" data-role="state">跟尾中</span>
+      </div>
+      <div class="scroller" data-role="scroller">
+        <div data-role="flow"></div>
+        <div class="summary" data-role="anchor">
+          <h4>本轮小结</h4>
+          <p>已定位跳行根因在折叠与滚动的耦合：收起时没有任何位置补偿，读到哪里都会被顶走。方案是引入滚动意图控制器 + 单帧钟折叠驱动。</p>
+        </div>
+        <div class="artifact">产物 · 2026-11-14-001-会话流对标DSH完整方案.md</div>
+        <!-- 下一轮：给「正在读小结」留出下方滚动空间，否则阅读落点会被 clamp 到底部 -->
+        <div class="msg user"><div class="bubble">继续，先把 P0 的滚动意图控制器落地。</div></div>
+        <div class="msg">
+          <div class="fold-bar"><span class="dot"></span><span>已完成 · 用时 1 分 03 秒 · 4 步</span><span class="chev">›</span></div>
+          <div class="summary"><h4>本轮小结</h4><p>已抽出滚动意图控制器：following / target / movedByReader 三件套替代 60ms 定时器；阈值先按 40px 灰度。</p></div>
+          <div class="artifact">产物 · client/src/会话流/滚动意图.js</div>
+        </div>
+        <div class="msg user"><div class="bubble">再确认一下：滚动补偿会不会影响历史分页？</div></div>
+        <div class="msg">
+          <div class="fold-bar"><span class="dot"></span><span>已完成 · 用时 48 秒 · 3 步</span><span class="chev">›</span></div>
+          <div class="summary"><h4>本轮小结</h4><p>分页走另一条路径：贴顶时一次性补偿，其余交给原生 overflow-anchor；折叠驱动在分页期间直接禁用 motion，二者不叠加。</p></div>
+          <div class="artifact">产物 · docs/plans/2026-11-14-001-会话流对标DSH完整方案.md</div>
+        </div>
+        <div class="msg user"><div class="bubble">好，那就按这个顺序来。</div></div>
+        <div data-role="spacer" style="height:0"></div>
+      </div>
+      <div class="pane-foot">
+        <span>阅读位置漂移 <span class="metric" data-role="drift">—</span></span>
+        <span>折叠用时 <span class="metric" data-role="cost">—</span></span>
+        <span data-role="phase"></span>
+      </div>`;
+    host.appendChild(pane);
+
+    const scroller = pane.querySelector('[data-role=scroller]');
+    const flow = pane.querySelector('[data-role=flow]');
+    const anchor = pane.querySelector('[data-role=anchor]');
+    const stateEl = pane.querySelector('[data-role=state]');
+    const driftEl = pane.querySelector('[data-role=drift]');
+    const costEl = pane.querySelector('[data-role=cost]');
+    const phaseEl = pane.querySelector('[data-role=phase]');
+
+    const ctx = {
+      mode, pane, scroller, flow, anchor, stateEl, driftEl, costEl, phaseEl,
+      follow: true, streaming: false, folding: false, open: true,
+      foldBar: null, foldBody: null, rowsHost: null,
+    };
+
+    // 顶部：先铺历史消息
+    for (const m of PRIOR) {
+      const div = document.createElement('div');
+      div.className = 'msg' + (m.role === 'user' ? ' user' : '');
+      div.innerHTML = `<div class="bubble">${m.text}</div>`;
+      flow.appendChild(div);
+    }
+    renderRun(ctx);
+    bindScroll(ctx);
+    return ctx;
+  }
+
+  function renderRun(ctx) {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg';
+    wrap.innerHTML = `
+      <div class="fold-bar open" data-role="foldbar">
+        <span class="dot"></span>
+        <span data-role="foldlabel">已运行 0:12 · 5 步</span>
+        <span class="chev">›</span>
+      </div>
+      <div class="fold-body ${ctx.mode.key === 'naive' ? 'grid-mode' : ''}" data-role="foldbody">
+        <div class="rows" data-role="rows"></div>
+      </div>`;
+    ctx.flow.appendChild(wrap);
+    ctx.foldBar = wrap.querySelector('[data-role=foldbar]');
+    ctx.foldBody = wrap.querySelector('[data-role=foldbody]');
+    ctx.rowsHost = wrap.querySelector('[data-role=rows]');
+    for (const r of ROWS) appendRow(ctx, r);
+    ctx.foldBar.addEventListener('click', () => toggleFold(ctx));
+    ctx.runWrap = wrap;
+  }
+
+  function appendRow(ctx, spec) {
+    const row = document.createElement('div');
+    row.className = 'row' + (spec.kind === 'think' ? ' think' : '');
+    row.innerHTML = `
+      <span class="ico">${spec.kind === 'think' ? '◌' : '›'}</span>
+      <div style="min-width:0">
+        <div class="t">${spec.t}</div>
+        <div class="b">${spec.b}</div>
+      </div>`;
+    ctx.rowsHost.appendChild(row);
+    return row;
+  }
+
+  // ---------- 滚动意图（双方共用同一套"测量"，阈值不同） ----------
+  function distanceFromBottom(scroller) {
+    return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+  }
+
+  function syncState(ctx) {
+    ctx.stateEl.textContent = ctx.follow ? '跟尾中' : '阅读中（已停止跟尾）';
+    ctx.stateEl.style.color = ctx.follow ? 'var(--muted)' : 'var(--accent)';
+  }
+
+  function bindScroll(ctx) {
+    let raf = null;
+    const sample = () => {
+      raf = null;
+      const near = distanceFromBottom(ctx.scroller) <= ctx.mode.followThreshold;
+      if (near !== ctx.follow) { ctx.follow = near; syncState(ctx); }
+    };
+    ctx.scroller.addEventListener('scroll', () => {
+      if (ctx.folding) return;              // 折叠期间程序滚动不改变意图（DSH 同款）
+      if (raf === null) raf = requestAnimationFrame(sample);
+    }, { passive: true });
+    ctx.scroller.addEventListener('wheel', () => { ctx.follow = false; syncState(ctx); }, { passive: true });
+    ctx.scroller.addEventListener('touchstart', () => { ctx.follow = false; syncState(ctx); }, { passive: true });
+    syncState(ctx);
+  }
+
+  function viewportTop(el, scroller) {
+    return el.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+  }
+
+  // ---------- 流式输出（两侧同样节奏，差别在跟尾阈值与落点） ----------
+  async function streamOnce(ctx) {
+    if (ctx.streaming || ctx.folding) return;
+    ctx.streaming = true;
+    ctx.phaseEl.textContent = '运行中…';
+    ctx.foldBar.classList.add('open');
+    const extra = [
+      { kind: 'think', t: '思考', b: '再加两行模拟长过程，制造折叠高度…' },
+      { kind: 'tool', t: 'bash', b: 'npm run verify' },
+      { kind: 'tool', t: 'grep', b: 'overflow-anchor → 0 处命中' },
+    ];
+    for (const spec of extra) {
+      appendRow(ctx, spec);
+      await sleep(220);
+      if (ctx.follow) ctx.scroller.scrollTop = ctx.scroller.scrollHeight;
+    }
+    ctx.streaming = false;
+    ctx.phaseEl.textContent = '运行结束（等待折叠）';
+    ctx.foldBar.querySelector('[data-role=foldlabel]').textContent = '已完成 · 用时 2 分 12 秒 · 8 步';
+    ctx.foldBar.classList.remove('open');
+  }
+
+  // ---------- 折叠：两种实现 ----------
+  async function fold(ctx) {
+    if (ctx.folding) return;
+    if (!ctx.open || ctx.foldBody.getBoundingClientRect().height < 4) { return; }
+    ctx.folding = true;
+    ctx.phaseEl.textContent = '折叠中…';
+
+    // 折前定位：模拟"读到小结"
+    if (readingMode()) {
+      ctx.follow = false;
+      syncState(ctx);
+      const target = 0.42 * ctx.scroller.clientHeight;
+      ctx.scroller.scrollTop += viewportTop(ctx.anchor, ctx.scroller) - target;
+      await sleep(30);
+    }
+
+    const followAtStart = ctx.follow;
+    const before = viewportTop(ctx.anchor, ctx.scroller);
+    const body = ctx.foldBody;
+    const H = body.getBoundingClientRect().height;
+    const t0 = performance.now();
+    const reduce = reduceMotion();
+
+    if (ctx.mode.key === 'naive') {
+      // 现状：grid-template-rows 0fr→1fr 单段过渡，无补偿
+      if (reduce) {
+        body.style.transition = 'none';
+        body.style.gridTemplateRows = '0fr';
+      } else {
+        body.style.transition = `grid-template-rows ${ctx.mode.foldMs}ms var(--ease)`;
+        requestAnimationFrame(() => { body.style.gridTemplateRows = '0fr'; });
+      }
+      await sleep(reduce ? 0 : ctx.mode.foldMs + 40);
+    } else {
+      // 对标：单 rAF 帧钟 + 落点双策略 + 位置补偿
+      const follow = followAtStart;
+      if (reduce) {
+        body.style.transition = 'none';
+        body.style.height = '0px';
+        body.style.opacity = '0';
+        if (!follow) {
+          const after = viewportTop(ctx.anchor, ctx.scroller);
+          ctx.scroller.scrollTop += (after - before);
+        } else {
+          ctx.scroller.scrollTop = ctx.scroller.scrollHeight;
+        }
+      } else {
+        await new Promise((resolve) => {
+          const tick = (now) => {
+            const t = now - t0;
+            const p = smoothstep(clamp01((t - ctx.mode.foldDelay) / ctx.mode.foldMs));
+            body.style.height = (H * (1 - p)) + 'px';
+            body.style.opacity = String(clamp01(1 - t / ctx.mode.fadeMs));
+            if (follow) {
+              ctx.scroller.scrollTop = ctx.scroller.scrollHeight - ctx.scroller.clientHeight;
+            } else {
+              const after = viewportTop(ctx.anchor, ctx.scroller);
+              ctx.scroller.scrollTop += (after - before);
+            }
+            if (t < ctx.mode.foldDelay + ctx.mode.foldMs + 8) {
+              requestAnimationFrame(tick);
+            } else {
+              // 末帧落定：把高度钉成 0 并做最后一次纠偏，避免残留误差
+              body.style.height = '0px';
+              body.style.opacity = '0';
+              const finalTop = viewportTop(ctx.anchor, ctx.scroller);
+              ctx.scroller.scrollTop += (finalTop - before);
+              resolve();
+            }
+          };
+          requestAnimationFrame(tick);
+        });
+      }
+    }
+
+    const cost = Math.round(performance.now() - t0);
+    const drift = Math.round(viewportTop(ctx.anchor, ctx.scroller) - before);
+    const wasFollowing = followAtStart;
+    if (wasFollowing) {
+      // 跟尾时本来就要落到新内容，漂移不作为缺陷指标
+      ctx.driftEl.textContent = '跟尾落底（预期）';
+      ctx.driftEl.className = 'metric';
+    } else {
+      ctx.driftEl.textContent = `${drift > 0 ? '+' : ''}${drift} px`;
+      ctx.driftEl.className = 'metric ' + (Math.abs(drift) <= 2 ? 'good' : 'bad');
+    }
+    ctx.costEl.textContent = `${cost} ms`;
+    ctx.foldBar.classList.remove('open');
+    ctx.open = false;
+    ctx.folding = false;
+    ctx.phaseEl.textContent = wasFollowing
+      ? '跟尾落底 ✓'
+      : (Math.abs(drift) <= 2 ? '位置保持 ✓' : '位置被顶走 ✗');
+    syncState(ctx);
+  }
+
+  async function toggleFold(ctx) {
+    if (ctx.folding) return;
+    if (!ctx.open) {
+      // 展开（demo 只演示收起，展开直接瞬时，避免噪音）
+      ctx.foldBody.style.transition = 'none';
+      ctx.foldBody.style.gridTemplateRows = '1fr';
+      ctx.foldBody.style.height = '';
+      ctx.foldBody.style.opacity = '1';
+      ctx.foldBar.classList.add('open');
+      ctx.open = true;
+      ctx.driftEl.textContent = '—'; ctx.driftEl.className = 'metric';
+      ctx.costEl.textContent = '—';
+      ctx.phaseEl.textContent = '已展开';
+      return;
+    }
+    await fold(ctx);
+  }
+
+  // ---------- 组装 ----------
+  const grid = document.getElementById('grid');
+  const panes = [];
+
+  function reset() {
+    grid.innerHTML = '';
+    panes.length = 0;
+    for (const mode of [MODES.naive, MODES.dsh]) {
+      const ctx = buildPane(mode, grid);
+      panes.push(ctx);
+    }
+  }
+
+  document.getElementById('btn-fold').addEventListener('click', () => {
+    for (const ctx of panes) fold(ctx);
+  });
+  document.getElementById('btn-stream').addEventListener('click', () => {
+    for (const ctx of panes) streamOnce(ctx);
+  });
+  document.getElementById('btn-reset').addEventListener('click', reset);
+
+  reset();
+
+  // 自动化验收用：?auto=1 自动点折叠并把两栏漂移写进 body[data-auto-result]
+  if (new URLSearchParams(location.search).has('auto')) {
+    setTimeout(() => {
+      document.getElementById('btn-fold').click();
+      const started = Date.now();
+      const poll = () => {
+        const drifts = [...document.querySelectorAll('[data-role=drift]')].map((el) => el.textContent.trim());
+        const phases = [...document.querySelectorAll('[data-role=phase]')].map((el) => el.textContent.trim());
+        const settled = drifts.every((t) => t && t !== '—');
+        if (settled || Date.now() - started > 4000) {
+          document.body.setAttribute('data-auto-result', JSON.stringify(drifts));
+          document.body.setAttribute('data-auto-phases', JSON.stringify(phases));
+          return;
+        }
+        setTimeout(poll, 100);
+      };
+      poll();
+    }, 500);
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,721 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>目标形态 demo v3：行式过程流 + 运行扫光 + 平滑折叠</title>
+<style>
+  :root {
+    --bg: #0b0c0e;
+    --pane: #121417;
+    --pane-2: #171a1e;
+    --line: rgba(255, 255, 255, .075);
+    --line-2: rgba(255, 255, 255, .05);
+    --text: #e7e9ee;
+    --dim: #8b909a;
+    --faint: #5f646d;
+    --run: #cfd6e2;
+    --accent: #6ea8fe;
+    --ok: #4ade80;
+    --bad: #f87171;
+    --mono: 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+    --shimmer: rgba(255, 255, 255, .45);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 22px 20px 34px; background: var(--bg); color: var(--text);
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  }
+  h1 { margin: 0 0 3px; font-size: 18px; font-weight: 600; letter-spacing: -.01em; }
+  .sub { margin: 0 0 14px; color: var(--dim); font-size: 12.5px; }
+  .toolbar {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    padding: 10px 12px; margin-bottom: 14px;
+    background: var(--pane); border: 1px solid var(--line); border-radius: 12px;
+  }
+  button {
+    font: inherit; font-size: 12.5px; padding: 6px 11px; border-radius: 7px;
+    border: 1px solid rgba(255,255,255,.12); background: #1d2025; color: var(--text);
+    cursor: pointer; transition: background .15s, border-color .15s; white-space: nowrap;
+  }
+  button:hover { background: #262a30; }
+  button.primary { background: #2563eb; border-color: #2563eb; }
+  .switch { display: inline-flex; gap: 6px; align-items: center; font-size: 12.5px; color: var(--dim); cursor: pointer; }
+  .speed { display: inline-flex; gap: 4px; align-items: center; color: var(--dim); font-size: 12.5px; }
+  .speed select {
+    font: inherit; font-size: 12px; background: #1d2025; color: var(--text);
+    border: 1px solid rgba(255,255,255,.12); border-radius: 6px; padding: 4px 6px;
+  }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+
+  .pane {
+    background: var(--pane); border: 1px solid var(--line); border-radius: 12px;
+    display: flex; flex-direction: column; overflow: hidden; min-width: 0;
+  }
+  .pane-head {
+    display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+    border-bottom: 1px solid var(--line); background: var(--pane-2);
+  }
+  .pane-name { font-size: 12.5px; font-weight: 600; }
+  .tag { font-size: 10.5px; padding: 1px 6px; border-radius: 999px; border: 1px solid rgba(248,113,113,.35); color: #fca5a5; background: rgba(248,113,113,.08); }
+  .tag.good { border-color: rgba(74,222,128,.35); color: #86efac; background: rgba(74,222,128,.08); }
+  .state { margin-left: auto; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
+  .scroller {
+    height: 440px; overflow-y: auto; overflow-x: clip;
+    padding: 14px 14px 10px; scrollbar-gutter: stable;
+    overflow-anchor: none;              /* 全程手工补偿：避免原生锚定与解析式补偿打架 */
+  }
+  .scroller::-webkit-scrollbar { width: 8px; }
+  .scroller::-webkit-scrollbar-thumb { background: #2a2e35; border-radius: 4px; }
+
+  .msg { margin-bottom: 12px; font-size: 13px; }
+  .msg.user { display: flex; justify-content: flex-end; }
+  .bubble { max-width: 88%; padding: 8px 11px; border-radius: 10px; background: #1c2026; font-size: 12.5px; }
+  .msg.user .bubble { background: #1a2536; }
+  .msg p { margin: 0 0 8px; color: #c9ced8; }
+
+  /* ================= 目标形态：裸行（DSH process row） ================= */
+  .plain .row {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    min-height: 33px; padding: 0 0 8px; margin: 0;
+    border: 0; border-bottom: .5px solid var(--line); background: none;
+    color: var(--dim); font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+    transition: color 100ms ease; contain: layout paint;
+  }
+  .plain .row:hover { color: #b9bec8; }
+  .plain .row .chev {
+    flex: none; width: 12px; height: 12px; margin-left: 2px; opacity: 0;
+    transition: transform 100ms ease, opacity 100ms ease; color: inherit;
+  }
+  .plain .row:hover .chev, .plain .row[data-open] .chev { opacity: .65; }
+  .plain .row[data-open] .chev { transform: rotate(180deg); }
+  .plain .row .ico { flex: none; width: 16px; text-align: center; font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .plain .row .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .plain .row .meta { flex: none; font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .plain .row .meta.done { color: #4f545c; }
+  .plain .row.running { color: var(--run); }
+  .plain .row.running .ico { color: #9aa3b2; }
+
+  .plain .row-body {
+    padding: 4px 0 10px 24px; color: var(--dim); font-size: 12.5px;
+    white-space: pre-wrap; word-break: break-word; border-bottom: .5px solid var(--line-2);
+  }
+  .plain .row-body .cmd {
+    font-family: var(--mono); font-size: 11.5px; color: #a7b0bd;
+    background: #101317; border: .5px solid var(--line); border-radius: 6px;
+    padding: 5px 8px; display: block; margin: 2px 0 6px;
+  }
+  .plain .row-body .out { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+
+  /* 组头 + 组体：只有左侧 1px rail，没有卡片 */
+  .plain .group-head {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    min-height: 33px; padding: 0 0 8px; margin-top: 4px;
+    border: 0; border-bottom: .5px solid var(--line); background: none;
+    color: var(--dim); font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+  }
+  .plain .group-head .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-left: 3px; flex: none; }
+  .plain .group-head .dot.done { background: var(--ok); }
+  .plain .group-head .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .plain .group-head .meta { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .plain .group-body { border-left: 1px solid var(--line); margin-left: 6px; padding-left: 6px; }
+
+  /* ================= 现状形态：卡片外框 ================= */
+  .boxed .row {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    padding: 8px 10px; margin: 0 0 6px;
+    border: 1px solid var(--line); border-radius: 8px; background: #16191d;
+    color: var(--dim); font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+  }
+  .boxed .row .ico { flex: none; width: 16px; text-align: center; font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .boxed .row .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .boxed .row .meta { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .boxed .row-body { padding: 0 10px 10px 26px; color: var(--faint); font-size: 12px; font-family: var(--mono); }
+  .boxed .group-head {
+    display: flex; align-items: center; gap: 6px; padding: 7px 10px; margin: 6px 0;
+    border: 1px dashed var(--line); border-radius: 8px; color: var(--dim); font-size: 12.5px;
+  }
+  .boxed .group-body { border-left: 2px solid rgba(255,255,255,.06); margin-left: 4px; padding-left: 8px; }
+
+  /* ================= TextShimmer（对齐 DSH） ================= */
+  .shimmer { position: relative; display: inline-block; max-width: 100%; vertical-align: top; min-width: 0; }
+  .shimmer .txt { color: inherit; }
+  .shimmer .deco { position: absolute; inset: 0; overflow: clip; pointer-events: none; user-select: none; color: var(--shimmer); }
+  .shimmer .sweep {
+    position: absolute; inset: 0; overflow: hidden; white-space: nowrap;
+    -webkit-mask-image: linear-gradient(105deg, transparent 0%, #000 40% 60%, transparent 100%);
+    mask-image: linear-gradient(105deg, transparent 0%, #000 40% 60%, transparent 100%);
+    transform: translateX(-100%);
+    animation: shimmer-sweep 1.5s steps(48, end) .3s infinite;
+  }
+  @keyframes shimmer-sweep {
+    0% { transform: translateX(-100%); }
+    66.6667%, 100% { transform: translateX(100%); }
+  }
+  .shimmer:not(.active) .deco { display: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .shimmer .deco { display: none; }
+  }
+  html[data-reduce-motion="1"] .shimmer .deco { display: none; }
+  html[data-reduce-motion="1"] * { transition: none !important; }
+
+  /* 整轮折叠 */
+  .fold-bar {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    min-height: 33px; padding: 0 0 8px; margin: 6px 0 2px;
+    border: 0; border-bottom: .5px solid var(--line); background: none;
+    color: var(--dim); font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+  }
+  .fold-bar .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+  .fold-bar .chev { margin-left: auto; width: 12px; height: 12px; opacity: .6; transition: transform 120ms ease; }
+  .fold-bar[data-open] .chev { transform: rotate(180deg); }
+  .fold-body { overflow: hidden; }
+  .fold-body.grid-mode { display: grid; grid-template-rows: 1fr; }
+  .fold-body.grid-mode > * { min-height: 0; overflow: hidden; }
+
+  .summary { margin: 12px 0 8px; padding: 10px 0 0; border-top: .5px solid var(--line); }
+  .summary h4 { margin: 0 0 5px; font-size: 12.5px; color: #d5d9e0; }
+  .summary p { margin: 0; font-size: 12.5px; color: #a7aebb; line-height: 1.72; }
+  .artifact { padding: 6px 0; font-size: 11.5px; color: var(--faint); border-top: .5px solid var(--line-2); }
+
+  .pane-foot {
+    display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap;
+    padding: 9px 12px; border-top: 1px solid var(--line); background: var(--pane-2);
+    font-size: 11.5px; color: var(--faint);
+  }
+  .metric { font-family: var(--mono); font-size: 12.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .metric.bad { color: var(--bad); font-weight: 600; }
+  .metric.good { color: var(--ok); font-weight: 600; }
+
+  .sse { margin-top: 14px; background: var(--pane); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .sse-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--pane-2); border-bottom: 1px solid var(--line); font-size: 12px; color: var(--dim); }
+  .sse-head .live { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); animation: pulse 1.6s infinite; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(74,222,128,.5); } 70% { box-shadow: 0 0 0 6px rgba(74,222,128,0); } 100% { box-shadow: 0 0 0 0 rgba(74,222,128,0); } }
+  .sse-body { height: 128px; overflow-y: auto; padding: 8px 12px; font-family: var(--mono); font-size: 11px; line-height: 1.65; color: #7d8590; }
+  .sse-line .ev { color: #8ab4f8; }
+  .footnote { margin-top: 12px; color: var(--faint); font-size: 11.5px; line-height: 1.8; }
+  .footnote b { color: var(--dim); }
+</style>
+</head>
+<body>
+  <h1>目标形态 v3：裸行过程流 + 运行扫光 + 解析式折叠补偿</h1>
+  <p class="sub">左栏是现在的卡片式过程区（无扫光、折叠后不补偿）；右栏是目标形态：裸行 + 0.5px 发丝线 + 组内 rail、运行行扫光、完成行转灰。折叠补偿改为<b>解析式</b>（折叠前测一次，帧内只写不读），所以滚动是顺的。</p>
+
+  <div class="toolbar">
+    <button class="primary" id="btn-replay">重播</button>
+    <button id="btn-pause">暂停</button>
+    <label class="switch"><input type="checkbox" id="opt-read" checked /> 收尾时模拟「正在读小结」</label>
+    <label class="switch"><input type="checkbox" id="opt-reduce" /> 减少动效</label>
+    <span class="speed">速度
+      <select id="sel-speed">
+        <option value="1" selected>1×</option>
+        <option value="1.6">1.6×</option>
+        <option value="2.4">2.4×</option>
+      </select>
+    </span>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <section class="sse">
+    <div class="sse-head"><span class="live"></span> SSE 事件流（两栏共享）</div>
+    <div class="sse-body" id="sse-body"></div>
+  </section>
+
+  <p class="footnote">
+    <b>重点看三处：</b>① 右栏"正在执行命令"这一行的文字上有一道从左到右扫过的亮带（1.5s 一轮，steps(48)），执行完立刻变回灰；② 右栏过程区没有任何卡片外框，只有发丝线 + 组内一条竖线；③ 折叠瞬间"本轮小结"在右栏位置不动，左栏被顶走（底部有漂移与帧间隔 P95 两个数字）。
+  </p>
+
+<script>
+(function () {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const SPEED = () => Number($('sel-speed').value) || 1;
+  const reduceMotion = () => $('opt-reduce').checked;
+  const readAtFold = () => $('opt-read').checked;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const clamp01 = (v) => Math.min(1, Math.max(0, v));
+  const smoothstep = (t) => t * t * (3 - 2 * t);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  const STREAM = [
+    { d: 0, e: 'run_started', data: { runId: 'run_demo', mode: 'agent' } },
+    { d: 120, e: 'turn_started', data: { turn: 1 } },
+    { d: 260, e: 'thinking', data: { delta: '先核对折叠实现与规范的约束：现在折叠体是 grid 0fr，收起时没有滚动补偿。' } },
+    { d: 900, e: 'tool_start', data: { callId: 'c1', name: 'bash', detail: 'npm run test:motion' } },
+    { d: 1180, e: 'tool_output_delta', data: { callId: 'c1', delta: '✓ 28 个持续动画已登记\n' } },
+    { d: 1480, e: 'tool_end', data: { callId: 'c1', status: 'ok', ms: 610 } },
+    { d: 1600, e: 'tool_start', data: { callId: 'c2', name: 'read', detail: 'client/src/components/会话流/RunFoldBar.jsx' } },
+    { d: 1950, e: 'tool_end', data: { callId: 'c2', status: 'ok', ms: 340 } },
+    { d: 2100, e: 'token', data: { delta: '现状已看清：折叠体用 ' } },
+    { d: 2300, e: 'token', data: { delta: 'grid-template-rows 收起，' } },
+    { d: 2500, e: 'token', data: { delta: '但收起过程中没有滚动补偿，' } },
+    { d: 2700, e: 'token', data: { delta: '所以读到小结时它会被整体顶走。' } },
+    { d: 2950, e: 'tool_start', data: { callId: 'c3', name: 'write', detail: 'client/src/会话流/滚动意图.js' } },
+    { d: 3250, e: 'tool_end', data: { callId: 'c3', status: 'ok', ms: 420 } },
+    { d: 3400, e: 'thinking', data: { delta: '补偿要有上限：一次性隐藏按半屏 cap，超出就让内容尾停在视口中央。' } },
+    { d: 3650, e: 'tool_start', data: { callId: 'c4', name: 'edit', detail: 'client/src/styles.css' } },
+    { d: 3950, e: 'tool_end', data: { callId: 'c4', status: 'ok', ms: 380 } },
+    { d: 4100, e: 'tool_start', data: { callId: 'c5', name: 'bash', detail: 'npm run test:chat-flow' } },
+    { d: 4400, e: 'tool_end', data: { callId: 'c5', status: 'ok', ms: 320 } },
+    { d: 4550, e: 'tool_start', data: { callId: 'c6', name: 'grep', detail: 'overflow-anchor → 0 处命中' } },
+    { d: 4850, e: 'tool_end', data: { callId: 'c6', status: 'ok', ms: 260 } },
+    { d: 5000, e: 'thinking', data: { delta: '行式化之后不再有卡片边框，运行态靠色阶 + 扫光区分。' } },
+    { d: 5250, e: 'tool_start', data: { callId: 'c7', name: 'read', detail: 'client/src/会话流/TimelineRow.jsx' } },
+    { d: 5550, e: 'tool_end', data: { callId: 'c7', status: 'ok', ms: 280 } },
+    { d: 5700, e: 'tool_start', data: { callId: 'c8', name: 'write', detail: 'client/src/会话流/折叠驱动.js' } },
+    { d: 6000, e: 'tool_end', data: { callId: 'c8', status: 'ok', ms: 290 } },
+    { d: 6150, e: 'token', data: { delta: '正在收尾：跟随阈值降到 24px，' } },
+    { d: 6350, e: 'token', data: { delta: '折叠与滚动共用一个 rAF 帧钟。' } },
+    { d: 6600, e: 'assistant_final', data: { text: '已按方案落地 P0 的滚动与折叠驱动。' } },
+    { d: 6800, e: 'run_finished', data: { status: 'completed', ms: 12800 } }
+  ];
+
+  const MODES = [
+    { key: 'boxed', title: '现状：卡片式过程区', tag: '原样', tagClass: '', threshold: 80, cls: 'boxed' },
+    { key: 'plain', title: '目标：裸行 + 扫光', tag: 'v3 目标', tagClass: 'good', threshold: 24, cls: 'plain' },
+  ];
+
+  // ---------------- 一栏 ----------------
+  function buildPane(mode, host) {
+    const el = document.createElement('section');
+    el.className = 'pane';
+    el.innerHTML = `
+      <div class="pane-head">
+        <span class="pane-name">${mode.title}</span>
+        <span class="tag ${mode.tagClass}">${mode.tag}</span>
+        <span class="state" data-role="state">跟尾中</span>
+      </div>
+      <div class="scroller ${mode.cls}" data-role="scroller">
+        <div class="msg user"><div class="bubble">把会话流的折叠体验改一下，收起时总跳。</div></div>
+        <div class="msg"><p>我先看一版现状：折叠体用 grid-template-rows 过渡，收起时没有滚动补偿，所以结论会被顶走。</p></div>
+        <div class="msg user"><div class="bubble">嗯，就是我读到小结的瞬间它自己跑了。</div></div>
+        <div class="msg"><p>目标是把过程区改成裸行，运行中的行加一道扫光，完成的行转灰；折叠时视口里正在读的那一行不动。</p></div>
+        <div class="msg user"><div class="bubble">还有那些读取、任务的外框我都不要了。</div></div>
+        <div class="msg"><p>明白：去掉卡片，改成 0.5px 发丝线 + 组内一条竖线；先跑一轮给你看。</p></div>
+        <div data-role="run"></div>
+        <div data-role="below"></div>
+      </div>
+      <div class="pane-foot">
+        <span>折叠漂移 <span class="metric" data-role="drift">—</span></span>
+        <span>帧间隔 P95 <span class="metric" data-role="frame">—</span></span>
+        <span>事件 <span class="metric" data-role="count">0</span></span>
+        <span data-role="phase">等待 SSE…</span>
+      </div>`;
+    host.appendChild(el);
+
+    const pane = {
+      mode, el,
+      scroller: el.querySelector('[data-role=scroller]'),
+      run: el.querySelector('[data-role=run]'),
+      below: el.querySelector('[data-role=below]'),
+      driftEl: el.querySelector('[data-role=drift]'),
+      frameEl: el.querySelector('[data-role=frame]'),
+      countEl: el.querySelector('[data-role=count]'),
+      phaseEl: el.querySelector('[data-role=phase]'),
+      stateEl: el.querySelector('[data-role=state]'),
+      follow: true, folding: false, pinScheduled: false, openFold: false,
+      events: 0, rows: new Map(), textEl: null, runningRow: null,
+    };
+    bindScroll(pane);
+    return pane;
+  }
+
+  // ---------------- 滚动：意图 + 单 rAF 跟尾 ----------------
+  function distanceBottom(s) { return s.scrollHeight - s.scrollTop - s.clientHeight; }
+
+  function bindScroll(pane) {
+    let raf = null;
+    pane.scroller.addEventListener('scroll', () => {
+      if (pane.folding) return;
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = null;
+        const near = distanceBottom(pane.scroller) <= pane.mode.threshold;
+        if (near !== pane.follow) { pane.follow = near; syncState(pane); }
+      });
+    }, { passive: true });
+    pane.scroller.addEventListener('wheel', () => {
+      // 用户一旦主动滚，立即退出跟尾（不需要等 scroll 事件）
+      if (!pane.follow) return;
+      pane.follow = false; syncState(pane);
+    }, { passive: true });
+  }
+
+  function syncState(pane) {
+    pane.stateEl.textContent = pane.follow ? '跟尾中' : '阅读中（已停止跟尾）';
+    pane.stateEl.style.color = pane.follow ? 'var(--faint)' : 'var(--accent)';
+  }
+
+  /** 跟尾：每个渲染批次只请求一次，单帧内只写一次 scrollTop（不做测量）。 */
+  function schedulePin(pane) {
+    if (!pane.follow || pane.pinScheduled) return;
+    pane.pinScheduled = true;
+    requestAnimationFrame(() => {
+      pane.pinScheduled = false;
+      if (!pane.follow) return;
+      pane.scroller.scrollTop = pane.scroller.scrollHeight - pane.scroller.clientHeight;
+    });
+  }
+
+  // ---------------- 结构 ----------------
+  function ensureRun(pane) {
+    if (pane.run.dataset.ready) return;
+    pane.run.dataset.ready = '1';
+    pane.run.innerHTML = `
+      <div class="fold-bar" data-role="foldbar"><span class="dot"></span><span class="label" data-role="foldlabel">运行中…</span><span class="chev">⌄</span></div>
+      <div class="fold-body ${pane.mode.key === 'boxed' ? 'grid-mode' : ''}" data-role="foldbody">
+        <div data-role="procs"></div>
+      </div>`;
+    pane.foldBar = pane.run.querySelector('[data-role=foldbar]');
+    pane.foldLabel = pane.run.querySelector('[data-role=foldlabel]');
+    pane.foldBody = pane.run.querySelector('[data-role=foldbody]');
+    pane.procs = pane.run.querySelector('[data-role=procs]');
+    pane.openFold = true;
+    pane.foldBar.dataset.open = '1';
+    pane.foldBar.addEventListener('click', () => toggleFold(pane));
+
+    pane.below.innerHTML = `
+      <div class="summary" data-role="anchor"><h4>本轮小结</h4><p>已定位跳行根因：折叠与滚动没有耦合。方案是「滚动意图控制器 + 单帧钟折叠驱动 + 半屏 cap 补偿」，折叠时按意图二选一落点。</p></div>
+      <div class="artifact">产物 · docs/plans/2026-11-14-001-会话流对标DSH完整方案.md</div>
+      <div class="msg user"><div class="bubble">继续，先把 P0 落地。</div></div>
+      <div class="msg"><p>下一轮已排队：抽 scroll-intent hook，阈值先按 40px 灰度。</p></div>
+      <div class="fold-bar" style="margin-top:8px"><span class="dot"></span><span class="label">已完成 · 用时 48 秒 · 3 步</span><span class="chev">⌄</span></div>
+      <div class="summary"><h4>上一轮小结</h4><p>分页走另一条路径：贴顶时一次性补偿，其余交给原生 overflow-anchor；折叠驱动在分页期间直接禁用 motion。</p></div>
+      <div class="artifact">产物 · client/src/会话流/滚动意图.js</div>
+      <div class="msg user"><div class="bubble">好，就按这个顺序来。今天先把 P0 的两件事做完。</div></div>`;
+    pane.anchor = pane.below.querySelector('[data-role=anchor]');
+  }
+
+  // ---------------- TextShimmer（对齐 DSH） ----------------
+  function shimmerHTML(text) {
+    const t = esc(text);
+    return `<span class="shimmer active"><span class="txt">${t}</span><span class="deco" aria-hidden="true"><span class="sweep">${t}</span></span></span>`;
+  }
+  function shimmerText(el, text, active) {
+    el.innerHTML = active ? shimmerHTML(text) : `<span class="shimmer"><span class="txt">${esc(text)}</span></span>`;
+    const s = el.querySelector('.shimmer');
+    if (s) s.classList.toggle('active', Boolean(active));
+  }
+
+  // ---------------- 事件 → DOM ----------------
+  function handleEvent(pane, ev) {
+    ensureRun(pane);
+    pane.events += 1;
+    pane.countEl.textContent = String(pane.events);
+
+    switch (ev.e) {
+      case 'run_started':
+        pane.phaseEl.textContent = '运行中…';
+        pane.foldLabel.textContent = '运行中…';
+        break;
+      case 'turn_started':
+        addGroup(pane);
+        break;
+      case 'thinking': addThinking(pane, ev.data.delta); break;
+      case 'tool_start': addTool(pane, ev.data); break;
+      case 'tool_output_delta': appendToolOutput(pane, ev.data); break;
+      case 'tool_end': finishTool(pane, ev.data); break;
+      case 'token': appendToken(pane, ev.data.delta); break;
+      case 'assistant_final': pane.textEl = null; break;
+      case 'run_finished':
+        pane.phaseEl.textContent = '已完成';
+        pane.foldLabel.textContent = `已完成 · 用时 12.8 秒 · ${pane.events} 事件`;
+        closeGroup(pane);
+        break;
+    }
+    schedulePin(pane);
+  }
+
+  function curHost(pane) { return pane.curGroup || pane.procs; }
+
+  function addGroup(pane) {
+    if (pane.mode.key === 'plain') {
+      const wrap = document.createElement('div');
+      wrap.className = 'group';
+      wrap.innerHTML = `
+        <div class="group-head" data-role="ghead"><span class="dot"></span><span class="label" data-role="glabel"></span><span class="meta" data-role="gmeta"></span></div>
+        <div class="group-body" data-role="gbody"></div>`;
+      pane.procs.appendChild(wrap);
+      pane.curGroup = wrap.querySelector('[data-role=gbody]');
+      pane.gLabel = wrap.querySelector('[data-role=glabel]');
+      pane.gMeta = wrap.querySelector('[data-role=gmeta]');
+      shimmerText(pane.gLabel, '正在分析请求', true);
+    } else {
+      pane.curGroup = pane.procs;
+    }
+  }
+
+  function addThinking(pane, text) {
+    const host = curHost(pane);
+    const row = document.createElement('div');
+    row.className = 'row think';
+    row.innerHTML = `<svg class="chev" viewBox="0 0 12 12" fill="none"><path d="M3 4.5 6 7.5 9 4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="ico">◌</span><span class="label"></span>`;
+    const label = row.querySelector('.label');
+    if (pane.mode.key === 'plain') shimmerText(label, text.slice(0, 30), true);
+    else { label.textContent = '思考 · ' + text.slice(0, 30); row.style.cursor = 'default'; }
+    host.appendChild(row);
+
+    const body = document.createElement('div');
+    body.className = 'row-body';
+    body.textContent = text;
+    body.style.display = 'none';
+    host.appendChild(body);
+    if (pane.mode.key === 'plain') {
+      row.addEventListener('click', () => {
+        const open = row.dataset.open === '1';
+        row.dataset.open = open ? '0' : '1';
+        body.style.display = open ? 'none' : 'block';
+      });
+    }
+    // 思考行不进入"运行中"高亮，稍后仍要扫光一次，模拟 DSH 的思考行
+    pane.lastThink = label;
+    setTimeout(() => { if (pane.lastThink === label) shimmerText(label, text.slice(0, 30), false); }, 1200);
+  }
+
+  function toolLabel(d) {
+    return ({ bash: '执行了命令', read: '读取了文件', write: '写入了文件', edit: '编辑了文件', grep: '搜索了代码' })[d.name] || d.name;
+  }
+
+  function addTool(pane, d) {
+    const host = curHost(pane);
+    const icon = d.name === 'bash' ? '&gt;_' : d.name === 'read' ? '⌕' : d.name === 'write' ? '✎' : '✐';
+    const row = document.createElement('div');
+    row.className = 'row running';
+    row.innerHTML = `<svg class="chev" viewBox="0 0 12 12" fill="none"><path d="M3 4.5 6 7.5 9 4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="ico">${icon}</span>
+      <span class="label" data-role="rlabel"></span>
+      <span class="meta" data-role="tmeta">进行中</span>`;
+    const label = row.querySelector('[data-role=rlabel]');
+    if (pane.mode.key === 'plain') shimmerText(label, toolLabel(d), true);
+    else label.textContent = toolLabel(d);
+    host.appendChild(row);
+
+    const body = document.createElement('div');
+    body.className = 'row-body';
+    body.innerHTML = `<span class="cmd">${esc(d.detail || d.name)}</span><span class="out" data-role="tout"></span>`;
+    body.style.display = 'none';
+    host.appendChild(body);
+    row.addEventListener('click', () => {
+      const open = row.dataset.open === '1';
+      row.dataset.open = open ? '0' : '1';
+      body.style.display = open ? 'none' : 'block';
+    });
+
+    if (pane.mode.key === 'plain' && pane.gLabel) {
+      shimmerText(pane.gLabel, `正在${toolLabel(d).replace('了', '')} · ${d.detail || ''}`, true);
+    }
+    pane.rows.set(d.callId, { row, label, body, meta: row.querySelector('[data-role=tmeta]'), out: body.querySelector('[data-role=tout]') });
+  }
+
+  function appendToolOutput(pane, d) {
+    const rec = pane.rows.get(d.callId);
+    if (rec && rec.out) rec.out.textContent += d.delta;
+  }
+
+  function finishTool(pane, d) {
+    const rec = pane.rows.get(d.callId);
+    if (!rec) return;
+    rec.row.classList.remove('running');
+    rec.meta.textContent = d.status === 'ok' ? `${d.ms}ms` : '失败';
+    rec.meta.classList.add('done');
+    if (pane.mode.key === 'plain') shimmerText(rec.label, rec.label.textContent.trim(), false);
+    if (pane.mode.key === 'plain' && pane.gLabel) shimmerText(pane.gLabel, '正在分析请求', true);
+  }
+
+  function appendToken(pane, delta) {
+    const host = curHost(pane);
+    if (!pane.textEl) {
+      pane.textEl = document.createElement('div');
+      pane.textEl.className = 'msg';
+      pane.textEl.innerHTML = '<p data-role="txt"></p>';
+      host.appendChild(pane.textEl);
+    }
+    pane.textEl.querySelector('[data-role=txt]').textContent += delta;
+  }
+
+  function closeGroup(pane) {
+    if (pane.mode.key !== 'plain' || !pane.gLabel) return;
+    const head = pane.procs.querySelector('[data-role=ghead]');
+    if (head) {
+      head.querySelector('.dot').classList.add('done');
+      shimmerText(pane.gLabel, '已读取文件并执行了命令', false);
+      pane.gMeta.textContent = '4 次';
+    }
+  }
+
+  // ---------------- 折叠：两种引擎 ----------------
+  async function toggleFold(pane) {
+    if (pane.folding) return;
+    if (pane.openFold) return fold(pane);
+    pane.folding = true;
+    if (pane.mode.key === 'boxed') {
+      pane.foldBody.style.transition = 'none';
+      pane.foldBody.style.gridTemplateRows = '1fr';
+    } else {
+      pane.foldBody.style.height = '';
+      pane.foldBody.style.opacity = '1';
+    }
+    pane.openFold = true;
+    pane.foldBar.dataset.open = '1';
+    pane.folding = false;
+    pane.driftEl.textContent = '—'; pane.driftEl.className = 'metric';
+  }
+
+  async function fold(pane) {
+    pane.folding = true;
+    pane.phaseEl.textContent = '折叠中…';
+
+    if (readAtFold()) {
+      pane.follow = false;
+      syncState(pane);
+      const target = 0.44 * pane.scroller.clientHeight;
+      const top = pane.anchor.getBoundingClientRect().top - pane.scroller.getBoundingClientRect().top;
+      pane.scroller.scrollTop += top - target;
+      await sleep(40);
+    }
+
+    const followAtStart = pane.follow;
+    const body = pane.foldBody;
+    // ---- 只测一次 ----
+    const H = body.getBoundingClientRect().height;
+    const top0 = pane.scroller.scrollTop;
+    const anchorTop0 = pane.anchor.getBoundingClientRect().top - pane.scroller.getBoundingClientRect().top;
+    const reduce = reduceMotion();
+    const t0 = performance.now();
+    const gaps = [];
+    let last = 0;
+
+    if (pane.mode.key === 'boxed') {
+      // 现状：CSS 过渡 + 不补偿
+      if (reduce) {
+        body.style.transition = 'none';
+        body.style.gridTemplateRows = '0fr';
+      } else {
+        body.style.transition = 'grid-template-rows 200ms cubic-bezier(.4,0,.2,1)';
+        requestAnimationFrame(() => { body.style.gridTemplateRows = '0fr'; });
+      }
+      await sleep(reduce ? 0 : 240);
+    } else {
+      // 目标：单帧钟 + 解析式补偿（帧内只写不读）
+      if (reduce) {
+        body.style.transition = 'none';
+        body.style.height = '0px';
+        body.style.opacity = '0';
+        pane.scroller.scrollTop = top0 - H;
+      } else {
+        await new Promise((resolve) => {
+          const step = (now) => {
+            if (last) gaps.push(now - last);
+            last = now;
+            const el = now - t0;
+            const p = smoothstep(clamp01((el - 50) / 110));
+            body.style.height = (H * (1 - p)).toFixed(2) + 'px';
+            body.style.opacity = String(clamp01(1 - el / 70));
+            pane.scroller.scrollTop = top0 - H * p;   // 跟尾 / 保行 同一解析式
+            if (p < 1) requestAnimationFrame(step);
+            else resolve();
+          };
+          requestAnimationFrame(step);
+        });
+        body.style.height = '0px';
+        body.style.opacity = '0';
+        pane.scroller.scrollTop = top0 - H;
+      }
+    }
+
+    const drift = Math.round((pane.anchor.getBoundingClientRect().top - pane.scroller.getBoundingClientRect().top) - anchorTop0);
+    pane.driftEl.textContent = followAtStart
+      ? '跟尾落底（预期）'
+      : `${drift > 0 ? '+' : ''}${drift} px`;
+    pane.driftEl.className = 'metric ' + (followAtStart ? '' : (Math.abs(drift) <= 2 ? 'good' : 'bad'));
+
+    if (pane.mode.key === 'plain') {
+      const p95 = gaps.length ? gaps.slice().sort((a, b) => a - b)[Math.floor(gaps.length * 0.95)] : 0;
+      const max = gaps.length ? Math.max(...gaps) : 0;
+      pane.frameEl.textContent = `${p95.toFixed(1)} / ${max.toFixed(1)} ms`;
+      pane.frameEl.className = 'metric ' + (p95 <= 20 ? 'good' : 'bad');
+    }
+
+    pane.phaseEl.textContent = followAtStart ? '跟尾落底 ✓' : (Math.abs(drift) <= 2 ? '位置保持 ✓' : '位置被顶走 ✗');
+    pane.foldBar.dataset.open = '0';
+    pane.openFold = false;
+    pane.folding = false;
+    syncState(pane);
+  }
+
+  // ---------------- SSE ticker ----------------
+  const sseBody = $('sse-body');
+  function logEvent(ev) {
+    const line = document.createElement('div');
+    line.className = 'sse-line';
+    const data = JSON.stringify(ev.data);
+    line.innerHTML = `<span class="ev">event: ${ev.e}</span>  <span class="data">${esc(data.length > 100 ? data.slice(0, 100) + '…' : data)}</span>`;
+    sseBody.appendChild(line);
+    sseBody.scrollTop = sseBody.scrollHeight;
+    while (sseBody.childNodes.length > 80) sseBody.removeChild(sseBody.firstChild);
+  }
+
+  // ---------------- 编排 ----------------
+  let panes = [];
+  let aborted = false;
+  let paused = false;
+  let timer = null;
+
+  function reset() {
+    aborted = true;
+    clearTimeout(timer);
+    $('grid').innerHTML = '';
+    sseBody.innerHTML = '';
+    document.documentElement.dataset.reduceMotion = $('opt-reduce').checked ? '1' : '0';
+    panes = [];
+    for (const mode of MODES) panes.push(buildPane(mode, $('grid')));
+    $('btn-pause').textContent = '暂停';
+    paused = false;
+    start();
+  }
+
+  function start() {
+    aborted = false;
+    const speed = SPEED();
+    let i = 0;
+    const step = () => {
+      if (aborted) return;
+      if (paused) { timer = setTimeout(step, 120); return; }
+      if (i >= STREAM.length) { finishScenario(); return; }
+      const ev = STREAM[i];
+      logEvent(ev);
+      for (const pane of panes) handleEvent(pane, ev);
+      i += 1;
+      const next = STREAM[i];
+      const gap = next ? Math.max(16, (next.d - (STREAM[i - 1]?.d || 0)) / speed) : 0;
+      timer = setTimeout(step, gap);
+    };
+    step();
+  }
+
+  async function finishScenario() {
+    await sleep(1100 / SPEED());
+    if (aborted) return;
+    for (const pane of panes) fold(pane);
+  }
+
+  $('btn-replay').addEventListener('click', reset);
+  $('btn-pause').addEventListener('click', () => {
+    paused = !paused;
+    $('btn-pause').textContent = paused ? '继续' : '暂停';
+  });
+  $('opt-reduce').addEventListener('change', () => {
+    document.documentElement.dataset.reduceMotion = $('opt-reduce').checked ? '1' : '0';
+  });
+
+  reset();
+})();
+</script>
+</body>
+</html>
