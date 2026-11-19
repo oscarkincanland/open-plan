@@ -21,6 +21,8 @@ import { agentManager, classifyAgentError, getCredentialErrors, isAbortLikeError
 import { bashEnvironmentInfo } from "./环境能力.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
+import { registerKbRoutes } from "./路由/知识库路由.mjs";
+import { registerTplRoutes } from "./路由/模板库路由.mjs";
 import * as map from "./map.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
@@ -495,116 +497,11 @@ app.post("/api/diagnostics/streams/close", (req, res) => {
   res.json({ closed: closeServerStreams({ id, path, client }), stats: serverStreamStats() });
 });
 
-// ---------- 知识库（本地索引 + IMA 云端） ----------
-app.get("/api/kb/status", async (_req, res) => {
-  await kb.scan();
-  res.json(kb.status());
-});
+// ---------- 知识库（本地索引 + IMA 云端；含文档联动，路由分组见 server/路由/知识库路由.mjs） ----------
+registerKbRoutes(app, { kb });
 
-app.post("/api/kb/roots", async (req, res) => {
-  const r = kb.addRoot(req.body?.path);
-  if (!r.ok) return res.status(400).json(r);
-  await kb.scan(true);
-  res.json({ ok: true, roots: r.roots, fileCount: kb.status().fileCount });
-});
-
-app.delete("/api/kb/roots", async (req, res) => {
-  const r = kb.removeRoot(req.body?.path);
-  await kb.scan(true);
-  res.json(r);
-});
-
-app.get("/api/kb/tree", async (req, res) => {
-  await kb.scan();
-  const rootIdx = parseInt(req.query.root, 10);
-  const dir = req.query.dir || "";
-  res.json(kb.getTreeLevel(isNaN(rootIdx) ? 0 : rootIdx, dir));
-});
-
-app.get("/api/kb/search", async (req, res) => {
-  await kb.scan();
-  const rootIdx = parseInt(req.query.root, 10);
-  res.json({
-    results: kb.search(req.query.q || "", isNaN(rootIdx) ? null : rootIdx, parseInt(req.query.limit, 10) || 30),
-  });
-});
-
-app.get("/api/kb/graph", async (req, res) => {
-  await kb.scan();
-  const rootIdx = parseInt(req.query.root, 10);
-  const include = (req.query.include || "links").split(",").filter(Boolean);
-  res.json(kb.getGraph({ rootIdx: isNaN(rootIdx) ? null : rootIdx, include, maxNodes: parseInt(req.query.max, 10) || 800 }));
-});
-
-app.get("/api/kb/doc", async (req, res) => {
-  await kb.scan();
-  const rootIdx = parseInt(req.query.root, 10);
-  const doc = kb.getDoc(req.query.path || "", isNaN(rootIdx) ? null : rootIdx);
-  if (!doc) return res.status(404).json({ error: "not found" });
-  res.json(doc);
-});
-
-// IMA 云端知识库（凭证未配置时返回 configured:false）
-app.get("/api/kb/ima/status", async (_req, res) => res.json(await kb.imaStatus()));
-app.get("/api/kb/ima/bases", async (_req, res) => res.json(await kb.imaListBases()));
-app.get("/api/kb/ima/search", async (req, res) => res.json(await kb.imaSearch(req.query.q || "", req.query.kb || "")));
-app.get("/api/kb/ima/doc", async (req, res) => res.json(await kb.imaDoc(req.query.media_id || "")));
-
-// ---------- 模版库 ----------
-app.get("/api/templates", (req, res) => {
-  const cat = req.query.category;
-  const cats = tpl.getCategories();
-  const items = tpl.getTemplatesByCategory(cat);
-  res.json({ categories: cats, items, total: items.length });
-});
-
-app.get("/api/templates/content", (req, res) => {
-  const relPath = req.query.path || "";
-  if (!relPath) return res.status(400).json({ error: "path required" });
-  const c = tpl.getTemplateContent(relPath);
-  if (!c) return res.status(404).json({ error: "not found" });
-  res.json(c);
-});
-
-app.post("/api/templates/refresh", (_req, res) => {
-  tpl.refresh();
-  res.json({ ok: true, total: tpl.getTemplates().length });
-});
-
-// 红头会议通知生成（docx 库生成 → 写工作区）
-app.post("/api/templates/generate-notice", async (req, res) => {
-  try {
-    const { generateNotice } = await import("./notice.mjs");
-    const r = await generateNotice(req.body || {});
-    res.json({ ok: true, name: r.name });
-  } catch (e) {
-    res.status(500).json({ error: String(e?.message || e) });
-  }
-});
-
-// ---------- 文档 ↔ 知识库联动 ----------
-// docx → md 入知识库（工作区注册为 kb 根）
-app.post("/api/kb/ingest", async (req, res) => {
-  try {
-    const r = await kb.ingestDocx(req.body?.name);
-    if (!r.ok) return res.status(400).json(r);
-    res.json(r);
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e?.message || e) });
-  }
-});
-
-// kb 文档 → docx 写工作区
-app.post("/api/kb/export-docx", async (req, res) => {
-  try {
-    const rootIdx = parseInt(req.body?.rootIdx, 10);
-    const r = await kb.exportDocx(req.body?.relPath, isNaN(rootIdx) ? null : rootIdx);
-    if (!r.ok) return res.status(400).json(r);
-    res.json(r);
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e?.message || e) });
-  }
-});
+// ---------- 模版库（路由分组见 server/路由/模板库路由.mjs） ----------
+registerTplRoutes(app, { tpl });
 
 // ---------- 预览文件身份（D01） ----------
 // 预览相关路由统一用「工作区根 + 相对路径 + 文件版本」表达文件身份，
