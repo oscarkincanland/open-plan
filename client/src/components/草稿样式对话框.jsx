@@ -2,16 +2,19 @@
 import Icon from "./Icon.jsx";
 import 提示气泡 from "./提示气泡.jsx";
 import OverlayPortal from "./OverlayPortal.jsx";
+import { 令牌色, 补充色 } from "../地图/色板.js";
 
-const DEFAULT_STYLE = {
-  color: "#2563eb",
+// 草稿默认样式：颜色/描边取琥珀 pending 语义令牌（方案 2026-11-18-002 A1/D1），
+// 经令牌色() 随主题取值，组件初始化时求值。
+const 默认样式 = () => ({
+  color: 令牌色("map-draft-pending"),
   opacity: 0.85,
   width: 2.2,
   radius: 6,
   fillOpacity: 0.18,
-  stroke: "#ffffff",
+  stroke: 令牌色("map-draft-stroke") || 补充色.圆点描边,
   dashed: true,
-};
+});
 
 /**
  * 草稿层样式对话框：颜色 / 线宽或半径 / 透明度 / 填充透明度 / 描边 / 虚线。
@@ -19,7 +22,7 @@ const DEFAULT_STYLE = {
  */
 export default function 草稿样式对话框({ draft, onClose, onSave }) {
   const geometry = String(draft?.geometryType || "point");
-  const initial = useMemo(() => ({ ...DEFAULT_STYLE, ...(draft?.style || {}) }), [draft]);
+  const initial = useMemo(() => ({ ...默认样式(), ...(draft?.style || {}) }), [draft]);
   const [style, setStyle] = useState(initial);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
