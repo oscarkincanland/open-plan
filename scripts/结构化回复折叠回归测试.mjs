@@ -97,7 +97,7 @@ console.log("\n▶ 时间流（run 消息）路径：结构化小节必须提到
 test("时间流按「过程 / 收尾结论小节」二分渲染", () => {
   assert.match(chat, /const \{ foldTimelineItems, liftedTimelineItems \} = useMemo/, "缺少时间流二分");
   assert.match(chat, /splitRunTimelineSections\(runTimelineView, \{ live: isTaskLive \}\)/, "二分未接入 splitRunTimelineSections 纯函数");
-  assert.match(projectionSource, /item\?\.kind === "text"\s*&& !isNarrationText\(item\.text\)\s*&& index > lastProcessIndex/, "二分未按 isNarrationText + 收尾位置判定");
+  assert.match(projectionSource, /item\?\.kind === "text"\s*&& index === lastConclusionIndex\s*&& index > lastProcessIndex/, "二分未按「最后一段结论 + 收尾位置」判定");
   assert.match(chat, /foldTimelineItems\.map\(renderTimelineItem\)/, "折叠体内应只渲染过程条目");
   assert.match(chat, /liftedTimelineItems\.map\(renderTimelineItem\)/, "结构化小节必须在折叠体外渲染");
   assert.match(chat, /className="tl-lifted-sections"/, "缺少折叠体外容器");
@@ -129,15 +129,16 @@ test("收尾后：最后一次过程条目之前的结构化文本留在过程�
   assert.deepEqual(foldTimelineItems.map((item) => item.id), items.map((item) => item.id), "fold 必须保持原顺序");
 });
 
-test("收尾后：最后一次过程条目之后的结论小节外提且保持原顺序", () => {
+test("收尾后：只外提最后一段结论小节，中间结构化小结留在过程里", () => {
   const conclusionA = structuredText("结论A");
   const conclusionB = structuredText("结论B");
   const narration = narrationText("收尾");
   const items = [toolItem("1"), conclusionA, narration, conclusionB];
   const { foldTimelineItems, liftedTimelineItems } = splitRunTimelineSections(items);
-  assert.deepEqual(liftedTimelineItems.map((item) => item.id), [conclusionA.id, conclusionB.id], "结尾结构化小节必须外提且有序");
+  // 2026-11-18：中间小结若也外提，折叠体外会同时出现两段结论（用户实测"两份结论"）。
+  assert.deepEqual(liftedTimelineItems.map((item) => item.id), [conclusionB.id], "只允许最后一段结论外提");
+  assert.ok(foldTimelineItems.some((item) => item.id === conclusionA.id), "较早的结构化小结留在过程里");
   assert.ok(foldTimelineItems.some((item) => item.id === narration.id), "结尾的播报文本仍属过程，留在 fold");
-  assert.ok(!foldTimelineItems.some((item) => item.id === conclusionA.id), "结论小节不得同时出现在 fold（避免重复）");
 });
 
 test("收尾后：无过程条目时（纯文本回合）结构化文本仍外提", () => {
@@ -148,7 +149,11 @@ test("收尾后：无过程条目时（纯文本回合）结构化文本仍外�
 });
 
 test("失败/取消轮仍保持默认折叠（不能靠默认展开绕过规范）", () => {
-  assert.match(chat, /pendingLabel=\{runFoldPending\} defaultOpen=\{false\}/, "运行结束的过程折叠必须默认收起");
+  // 2026-11-18（计划 2026-11-18-006 批次 2）：默认开合改由用户「活动显示」设置决定，
+  // 运行时终态不得触发默认展开；默认（compact）仍收起。
+  assert.match(chat, /pendingLabel=\{runFoldPending\} defaultOpen=\{Boolean\(executionFlow\?\.defaultExpanded\)\}/, "折叠默认开合应只由「活动显示」设置决定");
+  assert.match(chat, /const flowDefaultExpanded = appearance\.activityDisplay === "expanded"/, "只有「展开」设置才默认打开，终态不得绕过");
+  assert.doesNotMatch(chat, /defaultOpen=\{runFold\.state/, "不得按终态决定默认展开");
 });
 
 console.log("\n▶ 终稿拆分不得丢失任何小节（2026-11-12 第二个吞点）");

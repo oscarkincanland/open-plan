@@ -21,6 +21,39 @@ const 跑马灯 = read("../client/src/components/跑马灯文本.jsx");
 const 界面外观 = read("../client/src/界面外观.js");
 const 入口页 = read("../client/index.html");
 
+// ============================ 0. 动效令牌作用域 ============================
+// 2026-11-18-005：--dur-* / --ease-out / --pulse-* 必须在全局 :root 定义。
+// 它们曾只存在于 :root[data-oaw-style="qoder"]，而该皮肤默认关闭；按 CSS 规范，
+// var() 未定义且无 fallback 会让整条 transition / animation 声明在计算值阶段失效，
+// 会话流 12 条过渡与脉冲实际没有运行，而当时的测试只比对动画名、全绿。
+{
+  const 根块结束 = 样式.indexOf("\n}", 样式.indexOf(":root {"));
+  assert.ok(根块结束 > 0, "样式表应存在全局 :root 块");
+  const 全局根 = 样式.slice(0, 根块结束);
+  for (const 令牌 of [
+    "--dur-fast",
+    "--dur-base",
+    "--dur-slow",
+    "--ease-out",
+    "--pulse-fast",
+    "--pulse-base",
+    "--pulse-slow",
+  ]) {
+    assert.match(
+      全局根,
+      new RegExp(`\\n\\s*${令牌}:`),
+      `动效令牌 ${令牌} 必须在全局 :root 定义，不能只放在皮肤作用域（否则默认主题下整条声明失效）`,
+    );
+  }
+  // 脉冲只允许三档：新增脉冲必须引用令牌，不能写裸时间
+  const 裸时间脉冲 = [...样式.matchAll(/animation:\s*(?:pulse|brain-pulse|dot-breathe-soft|pulse-status|pulse-status-soft|session-pulse|streaming-label-breathe)\s+([\d.]+s)/g)];
+  assert.deepEqual(
+    裸时间脉冲.map((m) => m[0]),
+    [],
+    "脉冲动画必须使用 --pulse-fast/base/slow 令牌，不能写裸时间值",
+  );
+}
+
 // ============================ 1. 跑马灯：层次分离 ============================
 // 组件必须渲染两个层次：滚动层（.marquee-inner）+ 灯效层（.marquee-text）
 assert.match(
@@ -104,7 +137,7 @@ const 期望持续动画 = [
   "activity-marquee-sweep", "blink", "brain-pulse", "dot-breathe-soft",
   "marquee-neon", "marquee-scroll", "marquee-shine",
   "mp-spin", "oaw-agent-glow", "oaw-agent-pulse", "oaw-agent-tab-glow", "oaw-strip-shimmer",
-  "pulse", "pulse-status", "pulse-status-soft", "session-pulse", "spin", "streaming-label-breathe", "thinking-caret-blink", "task-orb-spin", "transcript-shimmer-sweep",
+  "pulse", "pulse-status", "pulse-status-soft", "session-pulse", "spin", "streaming-label-breathe", "thinking-caret-blink", "task-orb-spin", "tl-shimmer-flow",
 ];
 assert.deepEqual(
   [...无限动画].sort(),
@@ -116,8 +149,8 @@ assert.deepEqual(
 const 持续动画宿主 = {
   spin: [".loading-spinner", ".icon-loading"],
   blink: [".typing", ".run-summary-dot.running"],
-  "dot-breathe-soft": [".efp-pulse", ".execution-flow-item.running .execution-flow-dot", ".streaming-dot"],
-  pulse: [".tool-icon.run", ".tl-state.run"],
+  "dot-breathe-soft": [".efp-pulse", ".tl-state.run", ".streaming-dot"],
+  pulse: [".tool-icon.run"],
   "brain-pulse": [".brain-core.running .brain-core-dot", ".browser-status.loading i"],
   "pulse-status": [".conversation-status.working i", ".browser-connection.offline i", ".execution-flow-live i"],
   "pulse-status-soft": [".execution-flow-live i", ".streaming-dot .open-plan-logo-petal"],
@@ -134,7 +167,7 @@ const 持续动画宿主 = {
   "oaw-agent-tab-glow": [".canvas-tab.agent-editing"],
   "oaw-strip-shimmer": [".oaw-canvas-strip-skeleton"],
   "task-orb-spin": [".task-orb.running .task-orb-ring"],
-  "transcript-shimmer-sweep": [".tl-shimmer-sweep"],
+  "tl-shimmer-flow": [".tl-shimmer"],
 };
 const 宿主清单 = new Set();
 for (const 宿主们 of Object.values(持续动画宿主)) for (const 宿主 of 宿主们) 宿主清单.add(宿主);

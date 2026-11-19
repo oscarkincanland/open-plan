@@ -41,8 +41,7 @@ try {
   assert.match(chatPanelSource, /function appendExecutionFlowEvent\(/, "执行流应合并重复的文件/总结事件");
   assert.doesNotMatch(chatPanelSource, /className="chat-topbar"/, "输入栏收敛后消息流上方不再有独立横带");
   assert.match(chatPanelSource, /const showExecutionFlow = busy &&/, "SSE 执行流只在当前运行期间呈现");
-  const chatBodyStart = chatPanelSource.indexOf('<div className="chat-body"');
-  assert.ok(chatBodyStart >= 0 && chatPanelSource.indexOf("<ExecutionFlow", chatBodyStart) > chatBodyStart, "实时执行流应作为当前消息流的一部分呈现");
+  assert.match(chatPanelSource, /const timelineEventsSource = timelinePath/, "SSE 事件应作为时间线数据源呈现");
   assert.doesNotMatch(chatPanelSource, /className="task-status-bar"/, "顶部不再重复展示复杂状态栏");
   assert.doesNotMatch(stylesSource, /\.chat-body > \.execution-flow \{\s*position: sticky/, "消息内执行流不能吸顶遮挡消息");
   assert.match(workProductSource, /import React, \{[^}]*useCallback/, "改动页签使用的 useCallback 必须正确从 React 导入");
@@ -52,12 +51,10 @@ try {
   assert.match(workProductSource, /abortRef\.current\?\.abort\(\)/, "切换会话/组件卸载时应取消过期的改动请求");
   assert.match(apiSource, /if \(options\.includeEvents\) params\.set\("includeEvents", options\.includeEvents\)/, "Run 列表接口应允许请求轻量元数据");
   assert.match(apiSource, /options\.signal \? \{ signal: options\.signal \} : \{\}/, "Run 数据请求应支持 AbortSignal");
-  assert.match(chatPanelSource, /useState\(Boolean\(defaultExpanded \|\| running\)\)/, "活动 SSE 执行流应在运行时展开");
-  assert.match(chatPanelSource, /if \(running && !wasRunning\)[\s\S]{0,180}setExpanded\(true\)/, "SSE 运行开始时应展开过程流");
-  assert.match(chatPanelSource, /else if \(!running && wasRunning\)[\s\S]{0,80}setExpanded\(false\)/, "SSE 运行结束后应自动收束");
-  assert.match(chatPanelSource, /executionListRef[\s\S]{0,260}list\.scrollTop = list\.scrollHeight/, "展开的实时事件流应自动跟随最新事件");
-  assert.match(chatPanelSource, /followExecutionTailRef\.current = list\.scrollHeight - list\.scrollTop - list\.clientHeight <= 28/, "用户向上回看时应暂停自动滚动，回到底部后恢复跟随");
-  assert.match(chatPanelSource, /const messageExecutionFlow = executionFlow \? \{ \.\.\.executionFlow, events: visibleExecutionEvents \} : null/, "SSE 工具事件应先与富交互工具卡去重");
+  assert.match(chatPanelSource, /className="tl-next-step" role="status"/, "下一步指引应以常驻状态行呈现");
+  assert.match(chatPanelSource, /className="tl-system-notes"/, "系统提示聚合应以常驻折叠行呈现");
+  assert.match(chatPanelSource, /className="tl-flow-restore"/, "隐藏态应提供流内恢复入口");
+  assert.doesNotMatch(chatPanelSource, /messageExecutionFlow|visibleExecutionEvents/, "C4 专属去重投影已删除（时间线自行归约）");
   const runSummarySource = chatPanelSource.slice(chatPanelSource.indexOf("function RunSummary("), chatPanelSource.indexOf("// ========== 消息组件"));
   assert.match(runSummarySource, /const \[resultTab, setResultTab\] = useState\("products"\)/, "本轮结果区应是页签结构，默认落在“本轮产物”");
   assert.match(runSummarySource, /role="tablist" aria-label="本轮结果视图"/, "本轮产物/文件改动/依据应是无障碍页签");
@@ -89,7 +86,7 @@ try {
   assert.match(runSummarySource, /const fallbackSummary = finalAnswer \? "" : \(summaryText \|\|/, "终稿存在时结果卡不再重复摘要");
   assert.match(chatPanelSource, /foldedProcessBlocks/, "思考、工具及运行中的进度播报应并入消息级过程卡");
   assert.match(chatPanelSource, /message-process-scroll/, "过程内容应在一个有界滚动容器中回看");
-  assert.match(chatPanelSource, /<ExecutionFlow \{\.\.\.messageExecutionFlow\} embedded \/>/, "去重后的 SSE 轨迹应嵌入消息过程卡");
+  assert.doesNotMatch(chatPanelSource, /<ExecutionFlow/, "C4 旧执行流卡片已删除");
   assert.match(chatPanelSource, /authoritativeFinalText/, "权威终稿应与过程播报分离，避免折叠误吞结论");
   assert.doesNotMatch(chatPanelSource, /latestTextBlock\?\.text/, "不能把最后一条过程播报猜成最终答复并留在折叠区外");
   // 过程折叠的归属：只收思考/工具/审批/子代理/系统提醒；模型发言（小节结论）留在正文原位。
@@ -177,23 +174,21 @@ try {
   assert.match(chatPanelSource, /const pendingAsk = useMemo/, "应计算待回答项");
   assert.match(chatPanelSource, /<PendingActionBar\s/, "待处理条应渲染进输入栏");
   // 执行行去重：同一工具的调用/完成只保留一行；tool_start 不再重复工具名
-  assert.match(chatPanelSource, /const endedToolCalls = new Set/, "已结束的工具调用应从事件行中去重");
+  assert.match(chatPanelSource, /buildRunTimeline\(\{ blocks: timelineBlocks, trace: runTraceForTimeline \}\)/, "工具事件去重与聚合由时间线归约承担");
   assert.match(chatPanelSource, /className={`conn-status \$\{connectionNotice\.state\}`}/, "输入框旁应有连接状态点");
   assert.doesNotMatch(chatPanelSource, /pushSystem\("模型连接已恢复/, "恢复不应再作为系统消息堆在对话里");
-  assert.match(chatPanelSource, /if \(event\.type === "agent_retry_end"\) return false;/, "过程区不应显示“已恢复”行");
   assert.match(chatPanelSource, /blockIndex !== hiddenFinalTextIndex/, "与权威终稿同源的文本块不应重复渲染一份");
   assert.doesNotMatch(chatPanelSource, /block\?\.type === "text" && isTaskActivity && streaming\) return false/, "流式正文不能在首字后继续隐藏");
   assert.match(chatPanelSource, /let lastTextBlockIndex = -1/, "应显式计算最后一段文本块");
-  assert.match(chatPanelSource, /const dedupedEvents = visibleEvents.filter/, "事件行应使用去重后的序列");
-  assert.match(chatPanelSource, /event.type === "tool_start" \? "" : event.type === "file_changed"/, "tool_start 不应重复显示工具名 detail");
+  assert.doesNotMatch(chatPanelSource, /dedupedEvents|eventRows/, "旧执行流的事件行渲染已删除");
   // 嵌入事件直接进入同一个过程滚动区，不再添加第二层折叠。
   assert.doesNotMatch(chatPanelSource, /execution-flow-embedded-toggle/, "过程内部不应再有第二个事件折叠按钮");
   // 消息流不再摊开 SSE 事件时间线（计划/执行逐条事件是诊断信息），阶段分组已整体移除。
   assert.doesNotMatch(chatPanelSource, /execution-phase-group/, "计划/执行事件时间线不应再渲染进消息流");
   assert.doesNotMatch(chatPanelSource, /execution-flow-phase/, "阶段不再用逐条插入的平面标题");
   assert.match(chatPanelSource, /消息流里不再摊开 SSE 事件时间线/, "应以注释说明事件时间线的归属（诊断视图在右栏事件页签）");
-  assert.match(chatPanelSource, /if \(!notes\.length\) return null;/, "嵌入式执行流没有系统提示时不占位");
-  assert.match(chatPanelSource, /const eventRows = dedupedEvents\.map\(\(event, index\) => eventRow\(event, index\)\)/, "事件行仍供独立执行流使用");
+  assert.match(chatPanelSource, /const flowNotes = Array\.isArray\(executionFlow\?\.notes\)/, "系统提示应从 executionFlow 数据源读取");
+  assert.doesNotMatch(chatPanelSource, /if \(!notes\.length\) return null;/, "旧执行流的空占位逻辑已删除");
   // 每轮用时与 token：常驻指标行 + 可展开的逐轮明细，数据来自持久化的回合/用量事件。
   assert.match(chatPanelSource, /const turnMetrics = useMemo\(\(\) => \(Array\.isArray\(m\.events\) && m\.events\.length \? reduceTurnMetrics\(m\.events\) : \[\]\)/, "每轮指标应由回合事件归约得到");
   assert.match(chatPanelSource, /const metricsText = useMemo\(\(\) => turnMetricsText\(turnTotals, \{ durationMs: trace\?\.durationMs \}\)/, "指标行文案应由统一函数生成");
@@ -272,8 +267,7 @@ try {
   assert.match(chatPanelSource, /const visibleMessages = useMemo\([\s\S]{0,100}associateRunMessages\(messages\.slice\(visibleStart\)\)/, "渲染层必须再次保障历史过程消息按 Run 归组");
   assert.doesNotMatch(chatPanelSource, /<span>\{activityCount\} 项/, "执行过程摘要不显示容易与模型轮次混淆的数量标签");
   // 唯一展示所有权：过程折叠（思考/工具/SSE）→ 小节结论 → 最终答复 → 结果与产物。
-  assert.match(chatPanelSource, /const renderMessageBlocks = \(\) => renderSegments\.map/, "过程折叠应按片段渲染，并包含去重后的 SSE 轨迹");
-  assert.match(chatPanelSource, /isLastProcess && messageExecutionFlow && <ExecutionFlow \{\.\.\.messageExecutionFlow\} embedded \/>/, "SSE 轨迹只挂在最后一个过程片段里");
+  assert.match(chatPanelSource, /const renderMessageBlocks = \(\) => renderSegments\.map/, "过程折叠应按片段顺序渲染");
   assert.doesNotMatch(chatPanelSource.slice(chatPanelSource.indexOf("const renderProcessBlock ="), chatPanelSource.indexOf("className=\"msg-blocks\"")), /RunSummary/, "结果卡不得再渲染进过程折叠容器");
   assert.match(chatPanelSource, /className="msg-blocks">[\s\S]{0,120}?\{renderMessageBlocks\(\)\}[\s\S]{0,900}?assistant-final-answer[\s\S]{0,1500}?\{runSummary && \(\s*<RunSummary/, "DOM 顺序应为：过程与正文 → 答案 → 结果与产物");
   // 2026-11-08：统一输入面板的 hook 必须先声明；依赖数组在 render 期求值，提前引用会 TDZ 崩页。

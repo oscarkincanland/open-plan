@@ -21,11 +21,10 @@ import Logo from "./Logo.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
 import QueueDock from "./QueueDock.jsx";
 import GoalBar from "./GoalBar.jsx";
-import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数, 计算权威文本缺口, 追加流式文本块 } from "./流式文本队列.js";
-import { completionLabel, formatDuration, formatTokenCount, reduceRunTrace, reduceTurnMetrics, resolveRunElapsedMs, runToolDetailText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, summarizeTurnMetrics, turnMetricsText, verificationLabel } from "../运行轨迹.js";
+import { completionLabel, formatDuration, formatTokenCount, reduceRunTrace, reduceTurnMetrics, resolveRunElapsedMs, runToolDetailText, summarizeTurnMetrics, turnMetricsText, verificationLabel } from "../运行轨迹.js";
 import { associateRunMessages, findAssistantEntryByText, hiddenLegacySummaryRuns, isInternalHarnessMessage, projectLegacyRunSummary, upsertRunSummaryMessage } from "../运行展示投影.js";
-import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, toolIdentity } from "../事件展示.js";
+import { FLOW_EVENT_TYPES, toolIdentity } from "../事件展示.js";
 import { buildArtifactIndex } from "../产物类型.js";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
@@ -5423,23 +5422,6 @@ case "runtime_connecting":
     || "";
   // 实时事件属于当前消息流，不做固定在对话上方的第二条状态栏；终态轨迹由 RunSummary 收纳。
   const showExecutionFlow = busy && (executionEvents.length > 0 || runInProgressRef.current);
-  // 最近一段"像进度小结"的模型正文：进度行右侧展示"最近小结"，
-  // 只在正文出现进度关键词时摘取首行，避免把普通正文误当小结。
-  // E03：进度文本只来自结构化事件（待办 / 工具边界 / 阶段），
-  // 不再用正则从模型正文里猜“进度句”，避免把结论误当进度、也避免每轮重复叙述。
-  const recentNarration = useMemo(() => {
-    const active = (Array.isArray(todoItems) ? todoItems : [])
-      .find((item) => ["in_progress", "running"].includes(String(item?.status || "")));
-    if (active?.title) return String(active.title).slice(0, 68);
-    for (let index = executionEvents.length - 1; index >= 0; index -= 1) {
-      const event = executionEvents[index];
-      const type = String(event?.type || "");
-      if (!type || STAGE_ONLY_EVENTS.has(type) || type === "stats" || type === "token") continue;
-      const label = String(flowEventLabel(event) || "").trim();
-      if (label) return label.length > 68 ? `${label.slice(0, 68)}…` : label;
-    }
-    return "";
-  }, [executionEvents, todoItems]);
 
   return (
     <ErrorBoundary>
@@ -5670,15 +5652,10 @@ case "runtime_connecting":
               finishing: isExecutionAnchor && showExecutionFlow && runState.status === "finishing",
               onFocusTool: focusTool,
               notes: isExecutionAnchor ? systemNotes : [],
-              note: isExecutionAnchor ? recentNarration : "",
-              compaction: isExecutionAnchor ? runState.compaction || null : null,
               hidden: isExecutionAnchor ? flowHidden : false,
               defaultExpanded: isExecutionAnchor && flowDefaultExpanded,
               onHiddenChange: setFlowHidden,
-              statusText: frozen ? "会话已冻结" : agentPhase || "任务执行中",
               nextStep: nextStepText,
-              pendingApproval: isExecutionAnchor ? pendingApproval : null,
-              onLocateApproval: locateApproval,
             } : null;
             return (
               <React.Fragment key={m.id}>
@@ -6950,52 +6927,6 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
   const isProcessBlock = (block) => Boolean(block) && processBlockTypes.has(block.type);
   const foldedProcessBlocks = blocks.filter(isProcessBlock);
   const lastThinkingBlockIndex = foldedProcessBlocks.reduce((last, block, blockIndex) => block.type === "thinking" ? blockIndex : last, -1);
-  // 工具既有富交互 block，也会出现在 SSE 轨迹中；保留工具卡，只让轨迹补充缺少卡片的调用。
-  const processToolIds = new Set(foldedProcessBlocks
-    .filter((block) => block.type === "tool")
-    .map((block) => String(block.toolCallId || block.id || "").trim())
-    .filter(Boolean));
-  const processToolNames = new Set();
-  foldedProcessBlocks.filter((block) => block.type === "tool").forEach((block) => {
-    const name = String(block.name || "").trim();
-    if (name) processToolNames.add(name);
-  });
-  const processAskIds = new Set(foldedProcessBlocks
-    .filter((block) => block.type === "ask")
-    .map((block) => String(block.id || "").trim())
-    .filter(Boolean));
-  const processApprovalIds = new Set(foldedProcessBlocks
-    .filter((block) => block.type === "approval")
-    .map((block) => String(block.id || "").trim())
-    .filter(Boolean));
-  const processSubagentIds = new Set(foldedProcessBlocks
-    .filter((block) => block.type === "subagent")
-    .map((block) => String(block.id || "").trim())
-    .filter(Boolean));
-  const toolEventTypes = new Set(["tool_start", "tool_end"]);
-  const visibleExecutionEvents = (executionFlow?.events || []).filter((event) => {
-    const data = event?.data || {};
-    if (toolEventTypes.has(event?.type)) {
-      const id = String(data.toolCallId || "").trim();
-      if (id) return !processToolIds.has(id);
-      const name = String(data.name || "").trim();
-      return !(name && processToolNames.has(name));
-    }
-    if (event?.type === "ask_user") {
-      const id = String(data.askId || `${data.runId || "ask"}:${data.question || ""}`).trim();
-      return !processAskIds.has(id);
-    }
-    if (["tool_approval_request", "tool_approval_resolved"].includes(event?.type)) {
-      const id = String(data.id || `${data.runId || "approval"}:${data.tool || ""}:${data.input || ""}`).trim();
-      return !processApprovalIds.has(id);
-    }
-    if (["subagent_start", "subagent_tool", "subagent_update", "subagent_end"].includes(event?.type)) {
-      const id = String(data.childId || data.parentToolCallId || "").trim();
-      return !processSubagentIds.has(id);
-    }
-    return true;
-  });
-  const messageExecutionFlow = executionFlow ? { ...executionFlow, events: visibleExecutionEvents } : null;
   // 权威终稿若与某个文本块对应，该块由"最终答复"通道单独渲染，避免重复一份。
   // v3：最终答复不再走「隐藏文本块 + 单独渲染总结卡」的双通道，而是作为正文常显在折叠体外，
   // 因此不隐藏该文本块（否则 v3 下终稿会消失）。
@@ -7030,10 +6961,15 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     () => (timelinePath && timelineEventsSource.length ? reduceRunTrace(timelineEventsSource, m.runId) : null),
     [timelinePath, timelineEventsSource, m.runId],
   );
-  const timelineBlocks = useMemo(
-    () => (timelinePath ? blocks.filter((block, blockIndex) => blockIndex !== hiddenFinalTextIndex) : []),
-    [timelinePath, blocks, hiddenFinalTextIndex],
-  );
+  // 终稿之后的块不再进入过程流：模型偶尔会在终稿后继续输出思考或正文，
+  // 渲染出来就是"结论下面又跑一轮"和第二份结论（2026-11-18 用户反馈）。
+  const timelineBlocks = useMemo(() => {
+    if (!timelinePath) return [];
+    const stopIndex = finalTextBlockIndex >= 0 ? finalTextBlockIndex : -1;
+    return blocks.filter((block, blockIndex) => (
+      blockIndex !== hiddenFinalTextIndex && (stopIndex < 0 || blockIndex <= stopIndex)
+    ));
+  }, [timelinePath, blocks, hiddenFinalTextIndex, finalTextBlockIndex]);
   const runTimeline = useMemo(
     () => (timelinePath ? buildRunTimeline({ blocks: timelineBlocks, trace: runTraceForTimeline }) : []),
     [timelinePath, timelineBlocks, runTraceForTimeline],
@@ -7345,10 +7281,6 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     }
     renderSegments.push({ kind: "block", block, blockIndex });
   });
-  // SSE 轨迹（事件流）挂在最后一个过程区里；没有过程块时单独补一个，保证轨迹仍可回看。
-  if (messageExecutionFlow && !renderSegments.some((segment) => segment.kind === "process")) {
-    renderSegments.push({ kind: "process", items: [], flowOnly: true });
-  }
   const lastProcessSegmentIndex = renderSegments.reduce((last, segment, segmentIndex) => (segment.kind === "process" ? segmentIndex : last), -1);
   const renderProcessBlock = ({ block, blockIndex, processOrder }) => {
     const key = block.id || `block-${blockIndex}`;
@@ -7458,7 +7390,6 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
             {/* 过程条目统一用会话流时间线容器（左侧 1px 竖线 + 2px 行距），
                 与 Run 轮次的新路径视觉一致；旧的过程卡片样式不再使用。 */}
             <div className="tl-list">{segment.items.map(renderProcessBlock)}</div>
-            {isLastProcess && messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
           </div>
         </div>
       </details>
@@ -7491,7 +7422,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     const list = processScrollRef.current;
     if (!isTaskLive || !list || !followProcessTailRef.current) return;
     list.scrollTop = list.scrollHeight;
-  }, [blocks, messageExecutionFlow?.events, runSummary, isTaskLive, processOpenMap]);
+  }, [blocks, executionFlow?.events, runSummary, isTaskLive, processOpenMap]);
 
   const handleProcessScroll = (event) => {
     const list = event.currentTarget;
@@ -7523,6 +7454,40 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
     const hasVisibleAnswer = visibleBlocks.some((block) => block?.type === "text" && String(block.text || "").trim());
     if (hasVisibleAnswer) markFirstDomText();
   }, [streaming, visibleBlocks]);
+  // C4 删除后的常驻提示行：下一步与系统提示不再依赖「执行流」卡片，
+  // 运行中/收尾后都在过程区附近可见。流式正文存在时关掉 next-step 的播报，
+  // 保证任一时刻只有一条 aria-live 出口（正文由 .flow-stream-text 播报）。
+  // 消息流里不再摊开 SSE 事件时间线（诊断信息留在右栏事件页签与任务中心）。
+  const hasStreamingTextBlock = streaming && blocks.some((block) => block.type === "text" && String(block.text || "").trim());
+  const flowNotes = Array.isArray(executionFlow?.notes) ? executionFlow.notes : [];
+  const renderFlowExtras = () => (
+    <>
+      {executionFlow?.nextStep ? (
+        <div className="tl-next-step" role="status" aria-live={hasStreamingTextBlock ? "off" : "polite"}>
+          <Icon name="arrowRight" size={11} />
+          <span>{executionFlow.nextStep}</span>
+        </div>
+      ) : null}
+      {!executionFlow?.hidden && flowNotes.length > 0 ? (
+        <details className="tl-system-notes">
+          <summary><Icon name="info" size={12} /><span>系统提示 {flowNotes.length} 条</span></summary>
+          <div className="tl-system-notes-list">
+            {flowNotes.map((item) => (
+              <div key={item.key} className={`tl-note-item kind-${item.kind || "info"}`}>
+                <span className="tl-note-text">{item.text}</span>
+                {Number(item.count) > 1 ? <span className="tl-note-count">×{item.count}</span> : null}
+              </div>
+            ))}
+          </div>
+        </details>
+      ) : null}
+    </>
+  );
+  const renderFlowRestore = () => (
+    <button type="button" className="tl-flow-restore" onClick={() => executionFlow?.onHiddenChange?.(false)}>
+      <Icon name="eye" size={12} /> 过程区已隐藏 · 显示
+    </button>
+  );
   return (
     <div className={`msg ${isUser ? "user" : "assistant"} ${m.status || ""}`} data-msg-index={index}>
       <div className="msg-main">
@@ -7563,10 +7528,10 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                     不再单独占一行——否则结算瞬间这一行消失会让整段内容上跳。
                     compact/嵌入式隐藏消息头时仍保留独立行作为兜底。 */}
                 {runElapsedText && hideHeader && !showTimelineSummary && <div className="tl-elapsed">{runElapsedText}</div>}
-                <div className={`tl-list ${isTaskLive ? "is-live" : ""}`}>{(runTimelineSegments || null) ? runTimelineSegments.map(renderTimelineSegment) : foldTimelineItems.map(renderTimelineItem)}</div>
-                {/* v3：旧「执行流」事件卡（对 SSE 事件再投影一遍）与新的过程组是同一份信息，
-                    同时出现就是两套界面（用户 2026-11-15 反馈"中断后又冒出老式 SSE 界面"）。v3 下不再渲染。 */}
-                {!transcriptV3 && messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
+                {executionFlow?.hidden ? renderFlowRestore() : (
+                  <div className={`tl-list ${isTaskLive ? "is-live" : ""}`}>{(runTimelineSegments || null) ? runTimelineSegments.map(renderTimelineSegment) : foldTimelineItems.map(renderTimelineItem)}</div>
+                )}
+                {renderFlowExtras()}
               </>
             ) : v3SegmentSplit ? (
               <>
@@ -7574,10 +7539,12 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                     折叠体内 = 过程组 + 过程旁白（无「阶段小结」标签）；
                     折叠体外 = 结构化小节（liftedOutside，按时间序）+ 最终答复（常显、带编号目录）。
                     不再渲染「本轮总结」卡片，避免与模型正文重复。 */}
-                <RunFoldBar state={runFold.state} label={runFold.label} steps={runTimeline.length} pendingLabel={runFoldPending} defaultOpen={false} v3>
-                  <div className="tl-list">{v3SegmentSplit.inside.map(renderTimelineSegment)}</div>
-                  {!transcriptV3 && messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
-                </RunFoldBar>
+                {executionFlow?.hidden ? renderFlowRestore() : (
+                  <RunFoldBar state={runFold.state} label={runFold.label} steps={runTimeline.length} pendingLabel={runFoldPending} defaultOpen={Boolean(executionFlow?.defaultExpanded)} v3>
+                    <div className="tl-list">{v3SegmentSplit.inside.map(renderTimelineSegment)}</div>
+                    {renderFlowExtras()}
+                  </RunFoldBar>
+                )}
                 {v3SegmentSplit.liftedOutside.length > 0 && (
                   <div className="tl-lifted-sections">{v3SegmentSplit.liftedOutside.map(renderTimelineItem)}</div>
                 )}
@@ -7602,10 +7569,12 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                   </div>
                 ) : null)}
               </>
+            ) : executionFlow?.hidden ? (
+              renderFlowRestore()
             ) : (
-              <RunFoldBar state={runFold.state} label={runFold.label} steps={runTimeline.length} pendingLabel={runFoldPending} defaultOpen={false} v3={transcriptV3}>
+              <RunFoldBar state={runFold.state} label={runFold.label} steps={runTimeline.length} pendingLabel={runFoldPending} defaultOpen={Boolean(executionFlow?.defaultExpanded)} v3={transcriptV3}>
                 <div className="tl-list">{runTimelineSegments ? runTimelineSegments.map(renderTimelineSegment) : foldTimelineItems.map(renderTimelineItem)}</div>
-                {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
+                {renderFlowExtras()}
               </RunFoldBar>
             )}
             {/* 结构化小节属结论、折叠体外按原顺序；仅基线渲染（v3 归属由 v3SegmentSplit 接管，避免重复）。 */}
@@ -8720,214 +8689,6 @@ function ApprovalModeControl({ mode, saving, onChange }) {
   );
 }
 
-// ========== SSE 执行流（运行时跟随消息流，完成后可折叠回看） ==========
-function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], note = "", compaction = null, hidden = false, defaultExpanded = false, onHiddenChange, statusText = "", statusChips = [], statusDotClass = "", nextStep = "", pendingApproval = null, onLocateApproval, embedded = false }) {
-  // 运行时自动展开并跟随最新事件；结束后收束为一行，可随时展开回看。
-  // 隐藏状态仍由用户设置控制；折叠/展开偏好只影响空闲时和下一轮启动前。
-  const [expanded, setExpanded] = useState(Boolean(defaultExpanded || running));
-  const defaultExpandedRef = useRef(Boolean(defaultExpanded));
-  useEffect(() => {
-    if (defaultExpandedRef.current === Boolean(defaultExpanded)) return;
-    defaultExpandedRef.current = Boolean(defaultExpanded);
-    setExpanded(Boolean(defaultExpanded));
-  }, [defaultExpanded]);
-  const [notesOpen, setNotesOpen] = useState(false);
-  // 事件明细列表默认折叠（只保留一行摘要）；运行中的过程内容由消息级区域平铺展示
-  const executionListRef = useRef(null);
-  const followExecutionTailRef = useRef(true);
-  const wasRunningRef = useRef(running);
-  // 纯阶段状态事件（准备/受理/请求模型/回合切换等）合并为一行，不逐条刷屏；清单来自事件展示注册表
-  const contentEvents = events.filter((event) => !STAGE_ONLY_EVENTS.has(event.type));
-  const latest = contentEvents[contentEvents.length - 1] || events[events.length - 1];
-  const visibleEvents = contentEvents.length > 0
-    ? contentEvents
-    : (running ? [{ key: "local:stream_waiting", type: "stream_waiting", data: {}, at: new Date().toISOString() }] : []);
-  // 归约为执行轨迹：工具按 toolCallId 聚合，折叠态展示聚合统计而不是最后一条事件
-  const runTrace = useMemo(() => reduceRunTrace(contentEvents), [contentEvents]);
-  const traceStats = summarizeRunTrace(runTrace);
-  // 完成语义由状态位承载，摘要不再重复"已完成"
-  const traceSummary = runTraceSummaryText(runTrace, { includeCompletion: false });
-  const completion = traceStats.completion;
-  const handleExecutionScroll = (event) => {
-    const list = event.currentTarget;
-    followExecutionTailRef.current = list.scrollHeight - list.scrollTop - list.clientHeight <= 28;
-  };
-  const toggleExpanded = () => {
-    setExpanded((value) => {
-      const next = !value;
-      if (next && running) followExecutionTailRef.current = true;
-      return next;
-    });
-  };
-  useEffect(() => {
-    const wasRunning = wasRunningRef.current;
-    if (running && !wasRunning) {
-      followExecutionTailRef.current = true;
-      setExpanded(true);
-    } else if (!running && wasRunning) {
-      setExpanded(false);
-    }
-    wasRunningRef.current = running;
-  }, [running]);
-  useEffect(() => {
-    const list = executionListRef.current;
-    if (!expanded || !running || !list || !followExecutionTailRef.current) return;
-    list.scrollTop = list.scrollHeight;
-  }, [visibleEvents, expanded, running]);
-  // 运行中的进度行：秒级刷新"用时"，让长任务一眼看出进行到哪一步
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!running) return undefined;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [running]);
-  const progressText = runTraceProgressText(runTrace, { now, running });
-  // 去重：同一工具的“调用/完成”只保留一行（完成行），避免同一动作刷三条。
-  const endedToolCalls = new Set(contentEvents.filter((event) => event.type === "tool_end")
-    .map((event) => String(event.data?.toolCallId || "")).filter(Boolean));
-  const endedToolNames = new Set(contentEvents.filter((event) => event.type === "tool_end")
-    .map((event) => String(event.data?.name || "")).filter(Boolean));
-  const dedupedEvents = visibleEvents.filter((event, index, list) => {
-    // 连接重试：连续重试只保留最后一条；“已恢复”不再单独成行（由输入框旁状态点承担）
-    if (event.type === "agent_retry_end") return false;
-    if (event.type === "agent_retry") return !(list[index + 1]?.type === "agent_retry");
-    if (event.type !== "tool_start") return true;
-    const id = String(event.data?.toolCallId || "");
-    if (id) return !endedToolCalls.has(id);
-    const name = String(event.data?.name || "");
-    return !(name && endedToolNames.has(name));
-  });
-  // 事件行：文案/明细/语气/时间（只服务非嵌入的独立执行流；消息流不再摊开事件时间线）。
-  const eventRow = (event, index) => {
-    const data = event.data || {};
-    const internalProgressSignal = event.type === "steer" && /^(turn-progress|turn-budget)/.test(String(data.source || ""));
-    const detail = internalProgressSignal ? "" : data.message || (event.type === "tool_start" ? "" : event.type === "file_changed" ? (data.files || []).join(", ") : "");
-    const label = flowEventLabel(event);
-    const showDetail = detail && String(detail).trim() !== String(label).trim();
-    return (
-      <div className={`execution-flow-item ${flowEventTone(event)}`} key={event.key || `${event.seq || event.id || index}:${event.type}`}>
-        <span className="execution-flow-dot" />
-        {(event.type === "tool_start" || event.type === "tool_end") && data.name && <ToolIdentityIcon name={data.name} size={12} className="tool-identity-inline" />}
-        <span className="execution-flow-label">{label}</span>
-        {showDetail && <span className="execution-flow-detail" title={detail}>{String(detail).slice(0, 100)}</span>}
-        <time>{event.at ? new Date(event.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : ""}</time>
-      </div>
-    );
-  };
-  const eventRows = dedupedEvents.map((event, index) => eventRow(event, index));
-  if (!visibleEvents.length) return null;
-  if (hidden) {
-    return (
-      <div className="execution-flow execution-flow-hidden">
-        <button type="button" onClick={() => onHiddenChange?.(false)}>
-          <Icon name="eye" size={12} /> 显示执行流 <span>{events.length ? `${events.length} 个事件` : "等待首个事件"}</span>
-        </button>
-      </div>
-    );
-  }
-  // 会话流统一以 embedded 挂载（会话流三处调用点均传 embedded=true）；下方非嵌入分支
-  // 保留给任务中心 / 诊断视图备用，当前无生产调用点，勿据此判断线上形态。
-  if (embedded) {
-    // 消息流里不再摊开 SSE 事件时间线（计划/执行/验证/交付 逐条事件属于诊断信息，
-    // 右栏「事件」页签与任务中心保留完整轨迹）。这里只留需要用户知道的系统提示；
-    // 每轮用时与 token 由结果卡的「每轮明细」承担。
-    if (!notes.length) return null;
-    return (
-      <div className="execution-flow-embedded" aria-label="系统提示">
-        <div className="execution-flow-embedded-notes">
-          {notes.map((item) => <div key={item.key} className={`efn-item kind-${item.kind || "info"}`}><span className="efn-text">{item.text}</span>{Number(item.count) > 1 && <span className="efn-count">×{item.count}</span>}</div>)}
-        </div>
-      </div>
-    );
-  }
-  const phaseLabel = PHASE_LABELS[runTrace.phase] || "执行";
-  // 单行执行流：状态/阶段 · 工具统计 · 用时 · 产物/校验 · 实时。
-  // 事件数、模式、上下文、引用、精细阶段来自父层拼好的悬停说明（statusTitle）。
-  return (
-    <div className={`execution-flow ${expanded ? "expanded" : ""} ${running ? "live" : ""}`}>
-      <div className="execution-flow-head">
-        <button type="button" className="execution-flow-toggle" onClick={toggleExpanded} aria-expanded={expanded}>
-          <span className="execution-flow-chevron"><Icon name={expanded ? "chevronDown" : "chevronRight"} size={12} /></span>
-          <Icon name="flow" size={12} />
-          <strong>执行过程</strong>
-          <span className="execution-flow-count">{contentEvents.length ? `${contentEvents.length} 个事件` : "等待首个事件"}</span>
-          <span className="execution-flow-current">{traceSummary || flowEventLabel(latest || visibleEvents[0])}</span>
-          {completion && (
-            <span
-              className={`flow-completion ${completion.status}`}
-              title={completion.source === "inferred" ? "由回合结束推断（模型未显式声明完成状态）" : `模型显式声明${completion.summary ? `：${completion.summary}` : ""}`}
-            >
-              {completionLabel(completion.status)}
-            </span>
-          )}
-          {running && <span className="execution-flow-live"><i /> 实时</span>}
-        </button>
-        <button type="button" className="execution-flow-hide" onClick={() => onHiddenChange?.(true)} title="隐藏当前执行过程" aria-label="隐藏执行流"><Icon name="eyeOff" size={12} /></button>
-      </div>
-      {/* 运行状态行：并入原独立状态栏，只占一条，避免上下两条横栏重复 */}
-      {(statusText || statusChips.length > 0 || pendingApproval) && (
-        <div className="execution-flow-status" role="status" aria-live="polite">
-          <span className={`task-status-dot ${statusDotClass}`} />
-          <span className="efs-text">{statusText}</span>
-          {statusChips.map((chip) => (
-            <span className="efs-chip" key={chip.key} title={chip.title || ""}>{chip.label}</span>
-          ))}
-          {/* 上游新增： 待审批一键定位 + 当前下一步（并入单行，不再单独占行） */}
-          {pendingApproval && (
-            <button
-              type="button"
-              className="efs-approval"
-              onClick={() => onLocateApproval?.(pendingApproval)}
-              title="定位到需要你审批的工具卡片；任务中心里也能打开同一条运行"
-            >
-              <Icon name="shield" size={12} /> 待批准：{pendingApproval.tool || "工具"} · 去处理
-            </button>
-          )}
-          {running && nextStep && (
-            <span className="execution-flow-next" role="status" aria-live="polite" title={`下一步：${nextStep}`}>
-              <Icon name="arrowRight" size={11} />
-              <span className="efn-next">{nextStep}</span>
-            </span>
-          )}
-        </div>
-      )}
-      {/* 上游的“运行状态行 / 下一步 / 进度行”三行已并入上方单行状态栏（待审批与下一步在上面） */}
-      {/* 系统提示聚合：压缩 / 文件变更等只留一条可展开摘要，不再逐条堆气泡 */}
-      {notes.length > 0 && (
-        <div className={`execution-flow-notes ${notesOpen ? "open" : ""}`}>
-          <button type="button" className="efn-toggle" onClick={() => setNotesOpen((value) => !value)} aria-expanded={notesOpen}>
-            <Icon name="info" size={12} />
-            <span>系统提示 {notes.length} 条</span>
-            {Number(compaction?.count) > 0 && <span className="efn-chip">上下文压缩 {compaction.count} 次</span>}
-            {notes.some((item) => item.kind === "file") && <span className="efn-chip">文件变更</span>}
-            {notes.some((item) => item.kind === "progress") && <span className="efn-chip">进度播报</span>}
-            <span className="efn-chevron"><Icon name={notesOpen ? "chevronDown" : "chevronRight"} size={12} /></span>
-          </button>
-          {notesOpen && (
-            <div className="efn-list">
-              {notes.map((item) => (
-                <div className={`efn-item kind-${item.kind || "info"}`} key={item.key}>
-                  <span className="efn-text">{item.text}</span>
-                  {Number(item.count) > 1 && <span className="efn-count">×{item.count}</span>}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-      {expanded && (
-        <>
-          {/* 脑回路执行图：工具按类别聚合，点击可在消息流中定位工具卡 */}
-          <AgentBrainGraph trace={runTrace} running={running} onFocusTool={onFocusTool} />
-          <div className="execution-flow-list" ref={executionListRef} onScroll={handleExecutionScroll}>
-          {eventRows}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
 // ========== 输入框上方任务入口：点击查看，离开后自动收起 ==========
 function TaskProgressCard({ tasks, running = false }) {
   const [open, setOpen] = useState(false);
@@ -9302,9 +9063,15 @@ function ToolCard({ tool, expanded = false, onToggle, onOpenFile, settled = fals
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); }
         }}
       >
-        <span className={`tool-icon ${done ? (isError ? "err" : "ok") : pendingUnknown ? "unknown" : "run"}`}>
-          {done ? (isError ? <Icon name="close" size={12} /> : <Icon name="check" size={12} />) : <Icon name="loading" size={12} className={pendingUnknown ? "" : "icon-loading"} />}
-        </span>
+        {/* 完成态不再显示对勾：勾色（--success）在过程流里过于抢眼，
+            行首交给工具语义图标；失败态仍保留关闭标记，运行态保留加载指示。 */}
+        {done ? (isError && (
+          <span className="tool-icon err"><Icon name="close" size={12} /></span>
+        )) : (
+          <span className={`tool-icon ${pendingUnknown ? "unknown" : "run"}`}>
+            <Icon name="loading" size={12} className={pendingUnknown ? "" : "icon-loading"} />
+          </span>
+        )}
         <ToolIdentityIcon name={name} size={12} className="tool-identity-inline" />
         {isMapTool && <span className="tool-map-badge" title="地图操作：结果会实时反映到地图上">地图</span>}
         <span className="tool-phrase" title={inputStr}>

@@ -73,19 +73,13 @@ test("§3.3 段落内不新增硬编码色值（只能用令牌 / color-mix）",
 /* ---------------- 2) 规范到位 ---------------- */
 
 test("① 执行流状态点五态齐全，运行态为强调蓝 + 呼吸动画", () => {
-  for (const 态 of ["running", "success", "warning", "error"]) {
-    assert.ok(
-      取声明(`.execution-flow-item.${态} .execution-flow-dot`, "background"),
-      `缺少 .execution-flow-item.${态} 的状态点配色`,
-    );
-  }
-  assert.equal(取声明(".execution-flow-item.running .execution-flow-dot", "background"), "var(--accent)");
-  const 动画 = 取声明(".execution-flow-item.running .execution-flow-dot", "animation") || "";
-  assert.match(动画, /dot-breathe-soft/, "运行态应复用既有呼吸关键帧 dot-breathe-soft");
-  assert.match(动画, /infinite/, "运行态呼吸应为持续动画（并已纳入统一闸门）");
-  assert.equal(取声明(".execution-flow-item.success .execution-flow-dot", "background"), "var(--success)");
-  assert.equal(取声明(".execution-flow-item.error .execution-flow-dot", "background"), "var(--error)");
-  assert.equal(取声明(".execution-flow-dot", "background"), "var(--op-gray-600)", "无状态兜底应为中性灰");
+  // C4 删除后，五态落到全局过程区选择器（不属于 §3.3 opt-in 段），
+  // 因此这里直接对整份样式断言，避免只看 §3.3 段落产生假绿/假红。
+  assert.match(样式, /\.tl-state\.run \{ background: var\(--accent\); animation: dot-breathe-soft var\(--pulse-base\) ease-in-out infinite; \}/, "运行态应为强调蓝 + 呼吸");
+  assert.match(样式, /\.tl-state\.ok \{ background: var\(--success\); \}/, "完成态应为成功色");
+  assert.match(样式, /\.tl-state\.err \{ background: var\(--error\); \}/, "失败态应为错误色");
+  assert.match(样式, /\.run-fold-dot\.warn \{ background: var\(--warning\); \}/, "降级态应为警告色");
+  assert.match(样式, /\.run-fold-dot \{ flex: none; width: 7px; height: 7px; border-radius: 50%; background: var\(--muted\); \}/, "无状态兜底应为中性灰");
 });
 
 test("② 思考块左竖线 2px + 强调色 22%，hover 提到 45%", () => {
@@ -126,7 +120,7 @@ test("⑥ 动效 token 暗/亮 opt-in 同值齐全（120/200/320ms + ease-out）
 /* ---------------- 3) 不破坏既有 ---------------- */
 
 test("新增持续动画已纳入统一动效闸门，且定义在闸门之前", () => {
-  const 宿主 = ".execution-flow-item.running .execution-flow-dot";
+  const 宿主 = ".tl-state.run";
   assert.ok(样式.indexOf(宿主) < 闸门起, "宿主定义应在闸门之前");
   const 闸门 = 样式.slice(闸门起);
   assert.ok(闸门.includes(宿主), "闸门（data-reduce-motion / data-motion-level=off）清单应包含该宿主");

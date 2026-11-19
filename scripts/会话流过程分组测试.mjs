@@ -162,8 +162,22 @@ test("运行中：没有运行工具时回退思考首行", () => {
   assert.equal(label, "正在分析请求 · 先确认折叠实现");
 });
 
-test("运行中：既无运行工具也无思考时给「正在分析请求」", () => {
-  assert.equal(groupLabel({ members: [tool("t1", "read")], running: true }), "正在分析请求");
+test("运行中：没有运行工具但有已完成工具时，用本组累计摘要兜底", () => {
+  // 2026-11-18 用户口径：模型在两次工具之间思考时，抬头不应退化成「正在分析请求」，
+  // 要能看出这一组已经读了什么、跑了什么（旧行为只认正在运行的工具）。
+  assert.equal(groupLabel({ members: [tool("t1", "read")], running: true }), "已读取文件");
+});
+
+test("运行中：多类工具按次数组合，并保留最近一条的明细", () => {
+  const label = groupLabel({
+    members: [
+      tool("t1", "read", { input: { file_path: "client/src/a.jsx" } }),
+      tool("t2", "bash", { input: { command: "npm test" } }),
+      thinking("k1"),
+    ],
+    running: true,
+  });
+  assert.equal(label, "已读取文件，执行了命令 · npm test");
 });
 
 console.log("\n▶ 段落产物");

@@ -366,7 +366,7 @@ await test("运行中直铺时间流，终态才折叠", () => {
   assert.match(chatPanel, /<RunFoldBar state=\{runFold\.state\} label=\{runFold\.label\} steps=\{runTimeline\.length\}/);
   assert.match(chatPanel, /const runFold = describeRunFold\(\{/);
   // 规范 §2 / ADR 0014 §4.2：失败与取消也默认折叠，可执行动作靠折叠体外「需行动提示」承载。
-  assert.match(chatPanel, /defaultOpen=\{false\}/, "失败/取消轮也必须默认折叠");
+  assert.match(chatPanel, /defaultOpen=\{Boolean\(executionFlow\?\.defaultExpanded\)\}/, "折叠默认开合由用户「活动显示」设置决定，不随终态变化");
   assert.doesNotMatch(chatPanel, /defaultOpen=\{runFold\.state/, "不得按终态决定默认展开");
 });
 
@@ -464,6 +464,23 @@ await test("已完成轮次内缺终态的工具行中性显示（2026-11-17-001
 await test("v3 折叠体内旁白与组头同轴对齐（2026-11-18-001）", () => {
   // 基线的 38px 左内边距锚定旧卡片列；v3 行式化后必须归零，让旁白与组头/行头共用左缘。
   assert.match(styles, /\[data-transcript-v3="1"\] \.tl-list:not\(\.tl-list-replies\) \.textblock \{[^}]*padding: 2px 8px 4px 0;/, "v3 折叠体内旁白左内边距应为 0（与组头同轴）");
+});
+
+await test("v3 过程流不显示横向分割线（2026-11-18 用户口径）", () => {
+  assert.doesNotMatch(styles, /\[data-transcript-v3="1"\] \.tl-row-head \{[^}]*border-bottom/, "v3 行头不得有横向分割线");
+  assert.doesNotMatch(styles, /\[data-transcript-v3="1"\] \.tool-card \{[^}]*border-bottom/, "v3 工具卡不得有横向分割线");
+  // 基线 .tool-detail 自带 border-top:1px，v3 必须显式归零（只删自己的规则会让基线露出来）。
+  assert.match(styles, /\[data-transcript-v3="1"\] \.tool-detail \{[^}]*border-top: 0;/, "v3 工具明细必须显式去掉基线 border-top");
+});
+
+await test("v3 思考行与工具行同色（2026-11-18 用户口径）", () => {
+  assert.match(styles, /\[data-transcript-v3="1"\] \.tl-row-think \.tl-verb,\s*\[data-transcript-v3="1"\] \.tl-row-think \.tl-obj \{ color: var\(--muted\); font-size: 12\.5px; \}/, "思考行动作词应与工具行同色（--muted）");
+  assert.doesNotMatch(styles, /\[data-transcript-v3="1"\] \.tl-row-think[^}]*color: var\(--dim\)/, "思考行不得再用 --dim 区分");
+});
+
+await test("工具行完成态不显示对勾（2026-11-18 用户口径）", () => {
+  assert.match(chatPanel, /done \? \(isError && \(\s*<span className="tool-icon err">/, "完成态只保留失败标记，成功不再渲染对勾");
+  assert.match(chatPanel, /blockIndex <= stopIndex/, "终稿之后的块不得再进入过程流");
 });
 
 await test("结论区本地图片走文件服务地址（2026-11-17-002）", () => {

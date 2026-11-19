@@ -120,11 +120,17 @@ export function splitRunTimelineSections(items = [], { live = false } = {}) {
   list.forEach((item, index) => {
     if (PROCESS_ITEM_KINDS.has(item?.kind)) lastProcessIndex = index;
   });
+  // 只有「最后一段非旁白文本」才允许外提：模型在终稿前写的结构化小结若也外提，
+  // 折叠体外会同时出现两段结论（2026-11-18 复现：tool + 中间小结 + 终稿 → lifted 两段）。
+  let lastConclusionIndex = -1;
+  list.forEach((item, index) => {
+    if (item?.kind === "text" && !isNarrationText(item.text)) lastConclusionIndex = index;
+  });
   const foldTimelineItems = [];
   const liftedTimelineItems = [];
   list.forEach((item, index) => {
     const isConclusionSection = item?.kind === "text"
-      && !isNarrationText(item.text)
+      && index === lastConclusionIndex
       && index > lastProcessIndex;
     (isConclusionSection ? liftedTimelineItems : foldTimelineItems).push(item);
   });

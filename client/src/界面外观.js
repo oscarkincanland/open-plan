@@ -13,14 +13,14 @@ const SETTINGS_KEY = "oaw_settings";
 // 旧值（rainbow/terminal/stripe、violet/amber/emerald、fast）在 loadAppearance 中回落默认。
 export const MARQUEE_STYLES = Object.freeze([
   { id: "shine", label: "流光扫过", hint: "名字滚动 + 一道高光缓缓扫过" },
-  { id: "neon", label: "霓虹呼吸", hint: "整体明暗呼吸，像霓虹灯牌" },
+  { id: "neon", label: "霓虹呼吸", hint: "整体明暗呼吸，不外发光" },
   { id: "static", label: "静态高亮", hint: "不闪动，只用颜色标出运行中" },
 ]);
 
 export const MARQUEE_COLORS = Object.freeze([
   { id: "accent", label: "主题色", hint: "跟随当前皮肤强调色" },
   { id: "cyan", label: "青蓝", hint: "#22d3ee → #3b82f6" },
-  { id: "rainbow", label: "多彩", hint: "红橙黄绿青蓝紫循环" },
+  { id: "rainbow", label: "多彩", hint: "红蓝双色渐变" },
 ]);
 
 export const MARQUEE_SPEEDS = Object.freeze([

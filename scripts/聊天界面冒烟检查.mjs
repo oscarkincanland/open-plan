@@ -268,6 +268,8 @@ try {
   if (pageErrors.length) hardFailures.push(`pageerror ×${pageErrors.length}`);
   if (consoleErrors.length) hardFailures.push(`console.error ×${consoleErrors.length}`);
   if (!fold.skipped && (fold.expandDrift > 2 || fold.collapseDrift > 2)) hardFailures.push("折叠开合位置漂移 > 2px");
+  if (state.legacyExecutionFlow !== 0) hardFailures.push(`旧执行流通道残留 ×${state.legacyExecutionFlow}`);
+  if (!state.groups && !state.folds && !state.toolCards) hardFailures.push("过程区/时间线未渲染");
 
   if (hardFailures.length) {
     console.error(`\n✗ 界面冒烟失败：${hardFailures.join("；")}`);

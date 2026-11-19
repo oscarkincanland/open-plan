@@ -181,6 +181,15 @@ export function groupLabel({ members = [], running = false, counts = null } = {}
       const detail = itemDetail(live.item);
       return detail ? `${RUNNING_LABELS[live.category]} · ${detail}` : RUNNING_LABELS[live.category];
     }
+    // 模型正在思考、没有运行中的工具时，用本组已完成的工具做摘要，
+    // 而不是退化成泛化的「正在分析请求」——用户需要看到这一组读了什么、跑了什么。
+    if (ordered.length) {
+      const labels = ordered.slice(0, 3).map((category) => DONE_LABELS[category] || DONE_LABELS.tools);
+      const summary = labels.join("，") + (ordered.length > 3 ? "等" : "");
+      const recent = [...members].reverse().find((item) => item?.kind === "tool");
+      const detail = recent ? itemDetail(recent) : "";
+      return detail ? `${summary} · ${detail}` : summary;
+    }
     if (live?.text) {
       const firstLine = String(live.text).split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "";
       if (firstLine) return `正在分析请求 · ${firstLine.slice(0, 40)}`;
