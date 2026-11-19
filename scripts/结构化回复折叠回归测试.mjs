@@ -149,11 +149,13 @@ test("收尾后：无过程条目时（纯文本回合）结构化文本仍外�
 });
 
 test("失败/取消轮仍保持默认折叠（不能靠默认展开绕过规范）", () => {
-  // 2026-11-18（计划 2026-11-18-006 批次 2）：默认开合改由用户「活动显示」设置决定，
-  // 运行时终态不得触发默认展开；默认（compact）仍收起。
-  assert.match(chat, /pendingLabel=\{runFoldPending\} defaultOpen=\{Boolean\(executionFlow\?\.defaultExpanded\)\}/, "折叠默认开合应只由「活动显示」设置决定");
-  assert.match(chat, /const flowDefaultExpanded = appearance\.activityDisplay === "expanded"/, "只有「展开」设置才默认打开，终态不得绕过");
+  // 2026-11-19（用户裁定）：结束后一律默认折叠——《会话流前端规范》§2 与 ADR 0014 §4.2
+  // 是硬约束，用户偏好不得绕过；「活动显示」只控制过程区常显/隐藏，不再提供「默认展开」。
+  assert.match(chat, /const flowDefaultExpanded = false/, "折叠默认态必须固定收起，不得跟随用户设置");
   assert.doesNotMatch(chat, /defaultOpen=\{runFold\.state/, "不得按终态决定默认展开");
+  const appearance = read("client/src/界面外观.js");
+  assert.doesNotMatch(appearance, /id: "expanded"/, "「默认展开」选项不得再出现在外观设置里");
+  assert.match(appearance, /RETIRED_ACTIVITY_IDS = new Set\(\["expanded"\]\)/, "历史 expanded 取值必须一次性迁移回落");
 });
 
 console.log("\n▶ 终稿拆分不得丢失任何小节（2026-11-12 第二个吞点）");

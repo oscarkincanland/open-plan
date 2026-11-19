@@ -948,7 +948,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const setFlowHidden = useCallback((next) => {
     setAppearance({ activityDisplay: next ? "hidden" : "compact" });
   }, [setAppearance]);
-  const flowDefaultExpanded = appearance.activityDisplay === "expanded";
+  // 2026-11-19（用户裁定）：结束后一律默认折叠，不被「活动显示」设置绕过——
+  // 《会话流前端规范》§2 与 ADR 0014 §4.2 是硬约束；activityDisplay 只控制
+  // 过程区「常显 / 隐藏（保留流内恢复入口）」，不再提供「默认展开」。
+  const flowDefaultExpanded = false;
   // 弹层定位：以触发器为锚点向上展开（原本 bottom:34px 的语义），
   // 再按视口与安全边距夹取，保证任何一栏布局下四边都在可视范围内。
   const positionModelPop = useCallback(() => {

@@ -35,11 +35,14 @@ export const MOTION_LEVELS = Object.freeze([
 ]);
 
 // B02：执行过程 / 回答详细程度 / 自动打开预览（界面文案与计划一致）
+// 2026-11-19（用户裁定）：删除「默认展开」——结束后一律默认折叠是《会话流前端规范》§2
+// 与 ADR 0014 §4.2 的硬约束，用户偏好不得绕过；这里只保留「紧凑」与「隐藏」。
 export const ACTIVITY_DISPLAY_OPTIONS = Object.freeze([
   { id: "compact", label: "紧凑（默认收起）", hint: "每个 Run 一行过程，点击展开查看工具与输出" },
-  { id: "expanded", label: "默认展开", hint: "进入页面即展开过程细节，便于边跑边看" },
   { id: "hidden", label: "隐藏过程", hint: "只保留状态与结论，需要时点“显示执行流”再展开" },
 ]);
+/** 已下线的取值：读到就回落到默认（设置版本升级时一次性迁移）。 */
+const RETIRED_ACTIVITY_IDS = new Set(["expanded"]);
 
 export const ANSWER_DETAIL_OPTIONS = Object.freeze([
   { id: "auto", label: "自动（推荐）", hint: "短问答直接给结论；有成果时给结构化要点" },
@@ -74,7 +77,7 @@ const MOTION_IDS = new Set(MOTION_LEVELS.map((item) => item.id));
 const ACTIVITY_IDS = new Set(ACTIVITY_DISPLAY_OPTIONS.map((item) => item.id));
 const ANSWER_DETAIL_IDS = new Set(ANSWER_DETAIL_OPTIONS.map((item) => item.id));
 const PREVIEW_AUTO_OPEN_IDS = new Set(PREVIEW_AUTO_OPEN_OPTIONS.map((item) => item.id));
-const SETTINGS_VERSION = 2;
+const SETTINGS_VERSION = 3;
 
 function readSettings() {
   try {
@@ -93,9 +96,9 @@ export function migrateLegacyAppearance() {
     const raw = readSettings();
     if (Number(raw.settingsVersion || 0) >= SETTINGS_VERSION) return false;
     let changed = false;
-    if (!ACTIVITY_IDS.has(raw.activityDisplay)) {
+    if (!ACTIVITY_IDS.has(raw.activityDisplay) || RETIRED_ACTIVITY_IDS.has(raw.activityDisplay)) {
       const legacyHidden = localStorage.getItem(LEGACY_EXECUTION_FLOW_HIDDEN_KEY) === "true";
-      raw.activityDisplay = legacyHidden ? "hidden" : APPEARANCE_DEFAULTS.activityDisplay;
+      raw.activityDisplay = legacyHidden || raw.activityDisplay === "hidden" ? "hidden" : APPEARANCE_DEFAULTS.activityDisplay;
       changed = true;
     }
     raw.settingsVersion = SETTINGS_VERSION;

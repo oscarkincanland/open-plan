@@ -110,9 +110,10 @@ try {
   assert.match(stylesSource, /\.embedded-run-summary \.run-result-fold\.embedded > \.run-result \{[^}]*background: transparent;/, "嵌入式结果摘要底色也应压平");
   assert.match(chatPanelSource, /function ContextUsageRing\(/, "顶部应提供模型上下文用量环形圈");
   assert.match(chatPanelSource, /function ApprovalModeControl\(/, "顶部应提供 Codex 风格审批模式按钮");
-  // B02：执行过程显示改为外观设置驱动（compact|expanded|hidden）并走共享订阅；
+  // B02：执行过程显示由外观设置驱动（2026-11-19 起只剩 compact|hidden）并走共享订阅；
   // 旧独立开关只在 界面外观.js 里做一次性迁移。
   assert.match(chatPanelSource, /const flowHidden = appearance\.activityDisplay === "hidden"/, "执行流隐藏应由设置项决定");
+  assert.match(chatPanelSource, /const flowDefaultExpanded = false/, "结束后一律默认折叠（规范 §2 / ADR 0014），不得跟随设置");
   assert.match(chatPanelSource, /setAppearance\(\{ activityDisplay: next \? "hidden" : "compact" \}\)/, "隐藏/显示选择应写回设置并保留");
   assert.match(chatPanelSource, /useAppearance\(\)/, "执行流显示应订阅外观设置（立即生效，而不是只在挂载时读一次）");
   assert.match(appearanceSource, /LEGACY_EXECUTION_FLOW_HIDDEN_KEY/, "旧隐藏开关应保留常量用于迁移");
@@ -387,7 +388,8 @@ try {
   for (const name of ["ACTIVITY_DISPLAY_OPTIONS", "ANSWER_DETAIL_OPTIONS", "PREVIEW_AUTO_OPEN_OPTIONS"]) {
     assert.match(appearanceSource, new RegExp(`export const ${name} = Object.freeze\\(\\[`), `应导出 ${name} 供设置面板消费`);
   }
-  assert.match(appearanceSource, /const SETTINGS_VERSION = 2;/, "设置应有版本号以便一次性迁移");
+  // 2026-11-19：v3 迁移把历史上「默认展开」的 activityDisplay 回落为 compact。
+  assert.match(appearanceSource, /const SETTINGS_VERSION = 3;/, "设置应有版本号以便一次性迁移");
   assert.match(appearanceSource, /migrateLegacyAppearance\(\);\napplyAppearance\(\);/, "模块加载应先迁移再应用");
   assert.match(appearanceSource, /if \(Number\(raw\.settingsVersion \|\| 0\) >= SETTINGS_VERSION\) return false;/, "迁移必须幂等");
   // 设置面板：文案与计划一致
