@@ -46,7 +46,7 @@ console.log("▶ 图片灯箱");
 
 test("图片渲染为可点击按钮并打开灯箱", () => {
   assert.match(md, /className="md-img-btn"/);
-  assert.match(md, /setLightbox\(\{ src, alt/);
+  assert.match(md, /setLightbox\(\{ src: shown, alt/);
   assert.match(md, /className="md-lightbox"/);
   assert.match(md, /aria-modal="true"/);
 });

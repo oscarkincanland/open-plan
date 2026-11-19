@@ -11,8 +11,9 @@ const MAX_MARKDOWN_CHARS = 100000;
  * 轮次元信息（用时/步数/终态）已由 RunFoldBar 承担，这里不再重复。
  *
  * @param {string} body 连续正文（结论段 + 详细展开）
+ * @param {string} cwd  当前工作区路径：结论内 `![](相对路径)` 图片经它改写为文件服务地址
  */
-export default function SummaryBlock({ body = "", onOpenFile = null, artifacts = null }) {
+export default function SummaryBlock({ body = "", onOpenFile = null, artifacts = null, cwd = "" }) {
   const text = String(body || "").trim();
   if (!text) return null;
   return (
@@ -23,7 +24,7 @@ export default function SummaryBlock({ body = "", onOpenFile = null, artifacts =
           // 这是用户可见的最终结论区，编号在渲染层确定性生成，不依赖模型是否听话。
           // 2026-11-18-001 D1：对话内结论去掉目录条与"复制 Markdown"（文档页眉形态
           // 与 md 文档预览同款，观感上像打开了文件）——只保留编号分节。
-          ? <MarkdownBody onOpenFile={onOpenFile} artifacts={artifacts} numberSections>{text}</MarkdownBody>
+          ? <MarkdownBody onOpenFile={onOpenFile} artifacts={artifacts} numberSections cwd={cwd}>{text}</MarkdownBody>
           : <pre className="large-msg-raw">{text}</pre>}
       </div>
     </div>

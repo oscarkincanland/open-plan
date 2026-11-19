@@ -59,6 +59,9 @@
   /* 时间流竖线缩进（唯一来源）：时间流条目、已决 ask 事件行共用。
      未决 ask 卡片是全宽交互块，与输入框同宽，不参与这个缩进。 */
   --tl-indent: 12px;
+  /* 过程行统一网格（计划 2026-11-19-001）：12px chevron 列 + 8px + 16px 图标列 + 8px。
+     组头、时间线行、工具行、过程旁白的文字左缘都取这个值，保证同轴。 */
+  --tl-lead: 44px;
   /* 加粗字体栈：拉丁字母/数字由系统字体（Segoe UI）承担，与系统界面观感一致；
      中文回落 OPPO Sans 4.0（100–700 可变字体，600 为真实字重，不需要合成加粗）。
      保留系统栈兜底，字体加载失败时仍能显示清晰加粗。 */
@@ -1751,7 +1754,7 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 
 /* ===== MD 增强样式 ===== */
 .md-table-wrap { overflow-x: auto; }
-.md-img { max-width: 100%; border-radius: 4px; }
+.md-img { max-width: 100%; max-height: 60vh; border-radius: 4px; }
 /* 图片灯箱与代码块工具条（对齐 DSH：图片可放大、代码可复制且带语言标签） */
 .md-img-btn { display: block; max-width: 100%; padding: 0; border: 0; background: transparent; cursor: zoom-in; }
 .md-lightbox {
@@ -1837,7 +1840,7 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 .tool-header {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   /* 2026-11-07 节奏收敛：单行工具行原为 6px 内边距 + 1.7 行高 = 32.4px，
      收到 4px + 1.45 = 25.4px；同日二次收敛到 3px + 1.35 = 24.2px。 */
   padding: 3px 8px;
@@ -1940,6 +1943,9 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   transition: transform 0.15s;
 }
 .tool-chevron.open { transform: rotate(90deg); }
+/* 工具行左侧 12px chevron 占位（计划 2026-11-19-001）：v3 行式下与时间线行头同网格。
+   真正的展开 chevron 仍在行尾（.tool-chevron），这里只占列宽。 */
+.tool-chevron-lead { flex: 0 0 12px; width: 12px; }
 .tool-detail {
   border-top: 1px solid var(--border);
   padding: 0;
@@ -11960,7 +11966,8 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
    - 入场动画只挂在运行中的时间流（.tl-list.is-live），历史回放不重播。
    ========================================================================== */
 /* 时间流 */
-.tl-list { border-left: 1px solid color-mix(in srgb, var(--border) 70%, transparent); margin: 2px 0 3px 0; padding-left: var(--tl-indent); display: flex; flex-direction: column; gap: 1px; }
+/* 2026-11-19：过程区不画竖线（业界对标同款），层级靠缩进与行距。 */
+.tl-list { margin: 2px 0 3px 0; padding-left: var(--tl-indent); display: flex; flex-direction: column; gap: 1px; }
 .tl-list.is-live > * { animation: tl-row-in var(--dur-slow) var(--ease-out) both; }
 .tl-row-head {
   display: flex;
@@ -12258,6 +12265,10 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 /* 思考折叠态滚动预览（复用跑马灯体系，动效闸门已覆盖） */
 .tl-think-preview { display: block; min-width: 0; max-width: 320px; overflow: hidden; }
 .tl-think-preview .marquee { max-width: 100%; }
+/* 思考预览是静态摘要，不跟随「多彩」配色：把跑马灯两端色收成当前文字色，
+   避免红/蓝渐变被误读为错误态。该选择器与 [data-marquee-color] .marquee 同为
+   (0,2,0)，依赖源码顺序——本段在跑马灯配色规则之后，故生效。 */
+.tl-think-preview .marquee { --marquee-a: currentColor; --marquee-b: currentColor; }
 /* F8 内容列宽统一：msg-main 整列限宽（用户气泡与助手各卡同列，右缘对齐） */
 .msg .msg-main { max-width: min(var(--msg-content-max), 100%); }
 .msg.user .msg-main .bubble { max-width: 100%; width: fit-content; margin-left: auto; padding: 12px 16px; border-radius: 12px; }
@@ -12403,11 +12414,10 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 /* ===== 会话流 v3（计划 2026-11-14-001）：裸行过程区 + 运行扫光 + 折叠补偿 =====
    v3 由运行时开关 OAW_TRANSCRIPT_V3 控制（默认关）；关闭时以下规则完全不命中，
    渲染与基线逐字等价。行式化对齐 DSH process row：33px 行高、0.5px 发丝线、
-   组内 rail、无卡片外框；运行态只用色阶 + 扫光区分，不靠底色。 */
+   无组内 rail、无卡片外框；运行态只用色阶 + 扫光区分，不靠底色。 */
 [data-transcript-v3="1"] .tl-list {
   gap: 0;
   padding-left: 8px;
-  border-left-color: color-mix(in srgb, var(--border) 55%, transparent);
 }
 [data-transcript-v3="1"] .tl-row-head {
   min-height: 33px;
@@ -12445,10 +12455,14 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   margin: 0;
   overflow: visible;
 }
-[data-transcript-v3="1"] .tool-header { min-height: 33px; padding: 0 0 8px; display: flex; align-items: center; gap: 6px; color: var(--muted); }
+[data-transcript-v3="1"] .tool-header { min-height: 33px; padding: 0 0 8px; display: flex; align-items: center; gap: 8px; color: var(--muted); }
 [data-transcript-v3="1"] .tool-card.pending .tool-header { color: var(--text); }
 [data-transcript-v3="1"] .tool-card.success .tool-header,
 [data-transcript-v3="1"] .tool-card.error .tool-header { color: var(--muted); }
+/* v3 图标列同时承担状态与语义（计划 2026-11-19-001）：完成态保持中性灰，
+   失败态落 --error；不再为成功染绿，避免过程流出现一列绿色图标。 */
+[data-transcript-v3="1"] .tool-card.success .tool-icon { color: var(--muted); }
+[data-transcript-v3="1"] .tool-card.error .tool-icon { color: var(--error); }
 /* 工具行内部文字自己声明了颜色（.tool-phrase{color:var(--text)}），
    只改 .tool-header 的颜色继承不到它——这是"跑完的工具还是亮色"的直接原因。
    这里按运行态/完成态显式分档：运行中=正文亮色，完成后=三级灰。 */
@@ -12490,11 +12504,11 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   font-size: 13px;
   line-height: 1.7;
 }
-/* v3：折叠体内旁白左缘与组头/行头同轴（2026-11-18-001）——
-   基线的 padding-left:38px 锚定旧卡片列，行式化后与组头（47px）错开一整档；
-   左内边距归零后旁白与组头/行头共用同一左缘，五级错位回到两级。 */
+/* v3：折叠体内旁白左缘与组头/行头同轴（计划 2026-11-19-001）——
+   基线的 padding-left:38px 锚定旧卡片列；行式化后改用统一网格 --tl-lead，
+   旁白文字与组头 label、思考 verb、工具 phrase 共用同一左缘。 */
 [data-transcript-v3="1"] .tl-list:not(.tl-list-replies) .textblock {
-  padding: 2px 8px 4px 0;
+  padding: 2px 8px 4px var(--tl-lead);
 }
 
 /* 过程组（阶段 5）：组头摘要 + 组体缩进；只有显隐，不做高度动画 */
@@ -12502,7 +12516,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 [data-transcript-v3="1"] .tl-group-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   width: 100%;
   min-height: 33px;
   padding: 0 0 8px;
@@ -12519,11 +12533,22 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 }
 [data-transcript-v3="1"] .tl-group-head:hover { color: var(--muted); }
 [data-transcript-v3="1"] .tl-group-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* 组头并入统一网格（计划 2026-11-19-001）：12px chevron 占位 + 16px 图标列。
+   文字展开箭头仍在行尾（.tl-group-chev），左侧占位只对齐文字左缘。 */
+[data-transcript-v3="1"] .tl-group-chev-lead { flex: 0 0 12px; width: 12px; }
+[data-transcript-v3="1"] .tl-group-dot-slot {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 [data-transcript-v3="1"] .tl-group-dot {
   flex: none;
   width: 6px;
   height: 6px;
-  margin-left: 3px;
+  margin-left: 0;
   border-radius: 50%;
   background: var(--accent);
 }
@@ -12541,10 +12566,11 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 [data-transcript-v3="1"] .tl-group-head:hover .tl-group-chev,
 [data-transcript-v3="1"] .tl-group.open .tl-group-chev { opacity: 1; }
 [data-transcript-v3="1"] .tl-group.open .tl-group-chev { transform: rotate(90deg); }
+/* 组体不再缩进、不再画竖线（2026-11-19）：组内行与组头共用同一网格。 */
 [data-transcript-v3="1"] .tl-group-body {
-  border-left: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
-  margin-left: 6px;
-  padding-left: 8px;
+  border-left: 0;
+  margin-left: 0;
+  padding-left: 0;
 }
 
 /* 运行态渐变文字流（计划 2026-11-18-005）：单元素，无文字副本、无位移。

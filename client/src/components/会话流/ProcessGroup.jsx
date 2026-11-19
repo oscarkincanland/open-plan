@@ -42,7 +42,10 @@ export default function ProcessGroup({ label = "", count = 0, running = false, d
         aria-controls={idRef.current}
         onClick={() => setOpen((value) => !value)}
       >
-        <span className={`tl-group-dot${running ? "" : " done"}`} aria-hidden="true" />
+        <span className="tl-group-chev-lead" aria-hidden="true" />
+        <span className="tl-group-dot-slot" aria-hidden="true">
+          <span className={`tl-group-dot${running ? "" : " done"}`} />
+        </span>
         <span className="tl-group-label">{label}</span>
         {count > 0 && <span className="tl-group-count">{count} 次</span>}
         <span className="tl-group-chev" aria-hidden="true"><Icon name="chevronRight" size={12} /></span>

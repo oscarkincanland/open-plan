@@ -112,6 +112,41 @@ test("先纠偏无空格标题再编号（顺序不能反）", () => {
   assert.match(out, /^## 二、依据$/m);
 });
 
+test("h3 跟随所属 h2 编号（1.1 / 1.2 / 2.1）", () => {
+  const source = [
+    "## 现状", "### 背景", "正文", "### 目标", "正文",
+    "## 方案", "### 技术路线", "正文",
+  ].join("\n");
+  const out = numberTopLevelSections(source);
+  assert.match(out, /^## 一、现状$/m);
+  assert.match(out, /^### 1\.1 背景$/m);
+  assert.match(out, /^### 1\.2 目标$/m);
+  assert.match(out, /^## 二、方案$/m);
+  assert.match(out, /^### 2\.1 技术路线$/m);
+});
+
+test("h3 编号边界：单 h2 / 无父 h2 / 手写编号 / 围栏内", () => {
+  // 只有一个 h2：整篇不编号（含其下 h3）
+  const single = "## 只有\n### 子标题";
+  assert.equal(numberTopLevelSections(single), single);
+  // 没有父 h2 的 h3 不编号，但后续 h2 仍按序编号
+  const orphan = ["### 前言", "## 甲", "## 乙"].join("\n");
+  const orphanOut = numberTopLevelSections(orphan);
+  assert.match(orphanOut, /^### 前言$/m);
+  assert.match(orphanOut, /^## 一、甲$/m);
+  assert.match(orphanOut, /^## 二、乙$/m);
+  // 任一头已手写编号：整篇跳过，不叠加
+  const manual = "## 甲\n### 1.1 背景\n## 乙";
+  assert.equal(numberTopLevelSections(manual), manual);
+  const manualH2 = "## 一、甲\n### 背景\n## 乙";
+  assert.equal(numberTopLevelSections(manualH2), manualH2);
+  // 围栏代码块内的 ### 不参与编号
+  const fenced = ["```md", "### 代码里的标题", "```", "## 甲", "### 子", "## 乙"].join("\n");
+  const fencedOut = numberTopLevelSections(fenced);
+  assert.match(fencedOut, /### 代码里的标题/);
+  assert.match(fencedOut, /^### 1\.1 子$/m);
+});
+
 test("中文序号转换覆盖 1/10/11/23", () => {
   assert.equal(toChineseNumber(1), "一");
   assert.equal(toChineseNumber(10), "十");
@@ -120,14 +155,14 @@ test("中文序号转换覆盖 1/10/11/23", () => {
 });
 
 test("只在结论区启用：SafeMarkdown 透传、最终答复/兜底总结开启，阶段小结不开启", () => {
-  assert.match(chat, /function SafeMarkdown\(\{ text, onOpenFile, artifacts, numberSections = false \}\)/);
-  assert.match(chat, /<SafeMarkdown text=\{clampAnswer\(authoritativeFinalText\)\}[^>]*numberSections \/>/);
-  assert.match(chat, /<SafeMarkdown text=\{fallbackSummary\}[^>]*numberSections \/>/);
+  assert.match(chat, /function SafeMarkdown\(\{ text, onOpenFile, artifacts, numberSections = false,/);
+  assert.match(chat, /<SafeMarkdown text=\{clampAnswer\(authoritativeFinalText\)\}[^>]*numberSections/);
+  assert.match(chat, /<SafeMarkdown text=\{fallbackSummary\}[^>]*numberSections/);
   assert.doesNotMatch(chat, /<SafeMarkdown text=\{item\.text\}[^>]*numberSections/, "时间流阶段小结不编号");
   // 历史/已完成轮次的结论走 SummaryBlock（.sum-body），同样必须编号——
   // 这是用户实际看到的"结论"路径（2026-11-09 实机确认 finals=0 但 sum-body 有 h2）。
   const summaryBlock = fs.readFileSync(path.join(ROOT, "client/src/components/会话流/SummaryBlock.jsx"), "utf8");
-  assert.match(summaryBlock, /<MarkdownBody onOpenFile=\{onOpenFile\} artifacts=\{artifacts\} numberSections>/, "SummaryBlock 必须开启编号");
+  assert.match(summaryBlock, /<MarkdownBody onOpenFile=\{onOpenFile\} artifacts=\{artifacts\} numberSections cwd=\{cwd\}>/, "SummaryBlock 必须开启编号");
 });
 
 console.log("▶ 提示词约束");

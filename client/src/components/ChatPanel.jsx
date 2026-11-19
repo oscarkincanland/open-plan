@@ -7602,6 +7602,7 @@ function Message({ m, model, onToggleTool, expandedToolIds = EMPTY_TOOL_IDS, onO
                 body={summaryBody}
                 onOpenFile={onOpenFile}
                 artifacts={answerArtifacts}
+                cwd={workspace}
               />
             )}
             {!streaming && timelineUsageText && (
@@ -9066,20 +9067,34 @@ function ToolCard({ tool, expanded = false, onToggle, onOpenFile, settled = fals
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); }
         }}
       >
-        {/* 完成态不再显示对勾：勾色（--success）在过程流里过于抢眼，
-            行首交给工具语义图标；失败态仍保留关闭标记，运行态保留加载指示。 */}
-        {done ? (isError && (
-          <span className="tool-icon err"><Icon name="close" size={12} /></span>
-        )) : (
-          <span className={`tool-icon ${pendingUnknown ? "unknown" : "run"}`}>
-            <Icon name="loading" size={12} className={pendingUnknown ? "" : "icon-loading"} />
+        {/* v3 行式（计划 2026-11-19-001）：左侧 12px chevron 占位 + 16px 图标列，
+            与时间线行头共用同一网格。图标列同时承担状态与语义：运行/未结转显示 spinner，
+            完成/失败显示工具语义图标（失败态由 .tool-card.error 落到 --error）。 */}
+        {v3 && <span className="tool-chevron-lead" aria-hidden="true" />}
+        {v3 ? (
+          <span className={`tool-icon ${done ? (isError ? "err" : "") : (pendingUnknown ? "unknown" : "run")}`}>
+            {done
+              ? <ToolIdentityIcon name={name} size={12} />
+              : <Icon name="loading" size={12} className={pendingUnknown ? "" : "icon-loading"} />}
           </span>
+        ) : (
+          <>
+            {/* 完成态不再显示对勾：勾色（--success）在过程流里过于抢眼，
+                行首交给工具语义图标；失败态仍保留关闭标记，运行态保留加载指示。 */}
+            {done ? (isError && (
+              <span className="tool-icon err"><Icon name="close" size={12} /></span>
+            )) : (
+              <span className={`tool-icon ${pendingUnknown ? "unknown" : "run"}`}>
+                <Icon name="loading" size={12} className={pendingUnknown ? "" : "icon-loading"} />
+              </span>
+            )}
+            <ToolIdentityIcon name={name} size={12} className="tool-identity-inline" />
+          </>
         )}
-        <ToolIdentityIcon name={name} size={12} className="tool-identity-inline" />
-        {isMapTool && <span className="tool-map-badge" title="地图操作：结果会实时反映到地图上">地图</span>}
         <span className="tool-phrase" title={inputStr}>
           {v3 && !done && !pendingUnknown ? <TextShimmer active>{toolPhrase(name, input, done)}</TextShimmer> : toolPhrase(name, input, done)}
         </span>
+        {isMapTool && <span className="tool-map-badge" title="地图操作：结果会实时反映到地图上">地图</span>}
         {resultChip && <span className={`tool-result-chip${isError ? " err" : ""}`} title={resultFirstLine || resultChip}>{resultChip}</span>}
         {tool.startMissing && <span className="tool-recovered" title="开始事件已丢失，状态由结束事件恢复">已恢复</span>}
         {pendingUnknown && <span className="tool-recovered" title="运行记录缺少结束事件，状态未知">未结转</span>}

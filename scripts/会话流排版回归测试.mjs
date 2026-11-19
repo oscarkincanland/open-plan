@@ -461,9 +461,36 @@ await test("已完成轮次内缺终态的工具行中性显示（2026-11-17-001
   assert.match(styles, /\.tool-icon\.unknown \{ color: var\(--dim\); animation: none; \}/, "未结转图标不得跑动画");
 });
 
-await test("v3 折叠体内旁白与组头同轴对齐（2026-11-18-001）", () => {
-  // 基线的 38px 左内边距锚定旧卡片列；v3 行式化后必须归零，让旁白与组头/行头共用左缘。
-  assert.match(styles, /\[data-transcript-v3="1"\] \.tl-list:not\(\.tl-list-replies\) \.textblock \{[^}]*padding: 2px 8px 4px 0;/, "v3 折叠体内旁白左内边距应为 0（与组头同轴）");
+await test("v3 折叠体内旁白与组头同轴对齐（2026-11-19-001 统一网格）", () => {
+  // 2026-11-19：旁白文字左缘不再用 0 / 38px，统一取 --tl-lead（12 chevron + 8 + 16 icon + 8），
+  // 与组头 label、思考 verb、工具 phrase 共用同一网格。
+  assert.match(styles, /\[data-transcript-v3="1"\] \.tl-list:not\(\.tl-list-replies\) \.textblock \{\s*padding: 2px 8px 4px var\(--tl-lead\);\s*\}/, "v3 折叠体内旁白左内边距应为 var(--tl-lead)");
+});
+
+await test("过程行统一网格 --tl-lead 与三层左缘（2026-11-19-001）", () => {
+  assert.match(styles, /--tl-lead: 44px;/, "应有统一网格令牌 --tl-lead: 44px");
+  // 组头：12px chevron 占位 + 16px 圆点槽 + gap 8
+  assert.match(styles, /\[data-transcript-v3="1"\] \.tl-group-head \{[^}]*?gap: 8px;/, "组头 gap 应为 8px");
+  assert.match(styles, /\[data-transcript-v3="1"\] \.tl-group-chev-lead \{ flex: 0 0 12px; width: 12px; \}/, "组头需 12px chevron 占位");
+  assert.match(styles, /\[data-transcript-v3="1"\] \.tl-group-dot-slot \{[^}]*?width: 16px;[^}]*?height: 16px;/, "圆点需包进 16px 居中槽");
+  assert.match(styles, /\[data-transcript-v3="1"\] \.tl-group-dot \{[^}]*?margin-left: 0;/, "圆点不再自带 margin-left");
+  // 工具行：12px 占位 + 状态/语义并入 16px 图标列
+  assert.match(styles, /\.tool-chevron-lead \{ flex: 0 0 12px; width: 12px; \}/, "工具行需 12px chevron 占位");
+  assert.match(styles, /\[data-transcript-v3="1"\] \.tool-header \{[^}]*?gap: 8px;/, "工具行 gap 应为 8px");
+  assert.match(chatPanel, /\{v3 && <span className="tool-chevron-lead" aria-hidden="true" \/>\}/, "v3 工具行应渲染左侧占位");
+  // 完成态/失败态语义图标与运行态 spinner 共用同一图标列
+  assert.match(chatPanel, /tool-icon \$\{done \? \(isError \? "err" : ""\)/, "v3 图标列应同时承担状态与语义");
+});
+
+await test("过程区两层竖线均已去掉（2026-11-19 用户口径）", () => {
+  const listRule = styles.match(/^\.tl-list \{[^}]*\}/m)?.[0] || "";
+  assert.ok(listRule, "未找到 .tl-list 规则");
+  assert.doesNotMatch(listRule, /border-left/, "外层 .tl-list 不得再画竖线");
+  assert.match(styles, /\[data-transcript-v3="1"\] \.tl-group-body \{\s*border-left: 0;\s*margin-left: 0;\s*padding-left: 0;\s*\}/, "组体不得再缩进或画竖线");
+});
+
+await test("思考预览不跟随多彩配色（2026-11-19-001）", () => {
+  assert.match(styles, /\.tl-think-preview \.marquee \{ --marquee-a: currentColor; --marquee-b: currentColor; \}/, "思考预览的跑马灯两端色应取 currentColor");
 });
 
 await test("v3 过程流不显示横向分割线（2026-11-18 用户口径）", () => {
@@ -497,6 +524,18 @@ await test("结论区本地图片走文件服务地址（2026-11-17-002）", () 
   assert.match(chatPanel, /sessionId=\{sessionId\} workspace=\{workspace\}/, "ChatPanel 应把 workspace 传给 Message");
   // 灯箱用改写后的地址（本地路径点击放大不再破图）
   assert.match(md, /setLightbox\(\{ src: shown, alt/, "灯箱应使用改写后的地址");
+});
+
+await test("结论区两条渲染路径都透传 cwd，图片尺寸有上限（2026-11-19-001）", () => {
+  // 非 v3 路径：SummaryBlock 自身接收 cwd 并传给 MarkdownBody；ChatPanel 调用点传入 workspace。
+  assert.match(summaryBlock, /export default function SummaryBlock\(\{ body = "", onOpenFile = null, artifacts = null, cwd = "" \}\)/, "SummaryBlock 应接收 cwd");
+  assert.match(summaryBlock, /numberSections cwd=\{cwd\}/, "SummaryBlock 应把 cwd 透传给 MarkdownBody");
+  assert.match(chatPanel, /<SummaryBlock[\s\S]{0,220}?cwd=\{workspace\}/, "ChatPanel 调用 SummaryBlock 时应传 cwd={workspace}");
+  // 尺寸契约：宽度跟随内容列，单图不超过 60vh。
+  assert.match(styles, /\.md-img \{ max-width: 100%; max-height: 60vh;/, "结论区图片应有 max-width 100% + max-height 60vh");
+  // 提示词：涉及截图/示意图时用 Markdown 图片引用，不只给路径文本。
+  const agent = read("server/agent.mjs");
+  assert.match(agent, /图片引用[^\n]*!\[[^\]]*\]\(工作区相对路径\)/, "输出规范应要求用 Markdown 图片引用");
 });
 
 await test("结论与产物卡不在折叠体内", () => {

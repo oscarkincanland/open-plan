@@ -28,20 +28,23 @@ export function toChineseNumber(value) {
 }
 
 /**
- * 给二级标题自动编号（2026-11-09）。
+ * 给二级 / 三级标题自动编号（2026-11-09，2026-11-19 增补 h3）。
  *
  * 背景：用户多次要求结论出现「一、二、三、四」的分节编号，但纯靠提示词不可靠
  * （模型经常自由发挥）。这里在渲染层做确定性兜底：
- *   - 只处理行首 `## ` 标题，跳过围栏代码块；
- *   - 少于 2 个 h2 不动（单节不需要编号）；
- *   - 任一头已自带编号（`一、`/`1.`/`（一）`/`第X`）就整体不动，避免"一、一、…"；
- *   - 编号按出现顺序生成，形如 `## 一、结论`。
+ *   - 只处理行首 `## ` / `### ` 标题，跳过围栏代码块；
+ *   - h2 少于 2 个时整篇不动（单节不需要编号），其下 h3 也不编号；
+ *   - 任一头（h2 或 h3）已自带编号（`一、`/`1.`/`1.1`/`（一）`/`第X`）就整体不动，避免叠加；
+ *   - h2 编号按出现顺序生成，形如 `## 一、结论`；
+ *   - h3 编号跟随所属 h2，形如 `### 1.1 现状`；没有父 h2 的 h3 不编号；
+ *   - h2 与 h3 在同一遍扫描里完成，避免先给 h2 加「一、」后被自身判成"已编号"。
  */
 export function numberTopLevelSections(source, { prefix = "" } = {}) {
   const text = String(source ?? "");
   if (!text.includes("## ")) return text;
   const lines = text.split("\n");
-  const headingIndexes = [];
+  const h2Indexes = [];
+  const h3Indexes = [];
   let inFence = false;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
@@ -50,20 +53,34 @@ export function numberTopLevelSections(source, { prefix = "" } = {}) {
       continue;
     }
     if (inFence) continue;
+    if (/^###\s+/.test(line)) h3Indexes.push(index);
     // 只认二级标题：`## 标题`（且不是 `###`）。
-    if (/^##\s+/.test(line) && !/^###/.test(line)) headingIndexes.push(index);
+    else if (/^##\s+/.test(line)) h2Indexes.push(index);
   }
-  if (headingIndexes.length < 2) return text;
-  const alreadyNumbered = headingIndexes.some((index) => {
-    const title = lines[index].replace(/^##\s+/, "").trim();
+  if (h2Indexes.length < 2) return text;
+  const alreadyNumbered = [...h2Indexes, ...h3Indexes].some((index) => {
+    const title = lines[index].replace(/^#{2,3}\s+/, "").trim();
     return NUMBERED_HEADING.test(title);
   });
   if (alreadyNumbered) return text;
-  headingIndexes.forEach((lineIndex, order) => {
-    const title = lines[lineIndex].replace(/^##\s+/, "").trim();
-    if (!title) return;
-    lines[lineIndex] = `## ${prefix}${toChineseNumber(order + 1)}、${title}`;
-  });
+  const h2Set = new Set(h2Indexes);
+  const h3Set = new Set(h3Indexes);
+  let sectionOrder = 0;
+  let subOrder = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (h2Set.has(index)) {
+      sectionOrder += 1;
+      subOrder = 0;
+      const title = lines[index].replace(/^##\s+/, "").trim();
+      if (title) lines[index] = `## ${prefix}${toChineseNumber(sectionOrder)}、${title}`;
+    } else if (h3Set.has(index)) {
+      // 没有父 h2 的 h3 不编号（sectionOrder 仍为 0）。
+      if (!sectionOrder) continue;
+      subOrder += 1;
+      const title = lines[index].replace(/^###\s+/, "").trim();
+      if (title) lines[index] = `### ${sectionOrder}.${subOrder} ${title}`;
+    }
+  }
   return lines.join("\n");
 }
 
